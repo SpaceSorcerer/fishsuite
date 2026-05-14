@@ -1,0 +1,104 @@
+# H9 hESC 100x — rna_rna VALIDATION preset WITH CHANNEL LABELS demo.
+#
+# Identical to h9_rna_rna_test.yaml in every numeric / segmentation knob,
+# but populates the new `channels.{dapi,rna,rna2}_label` fields so the
+# downstream outputs (publication filenames, QC overlay legend, thresholds
+# CSV row, run_config.json) carry meaningful per-channel names instead of
+# the generic "RNA1"/"RNA2" defaults.
+#
+# Channel layout (matches the unlabeled preset):
+#   channel 0 = 640 CSU = MIAT-FISH    -> labeled "MIAT-Cy5"
+#   channel 1 = 561 CSU = no probe     -> labeled "Empty-Cy3" (validation only)
+#   channel 2 = 405 CSU = DAPI          -> labeled "DAPI"
+#
+# Use this preset to verify the labels feature end-to-end. For a real
+# two-probe rna_rna experiment, copy this file and edit rna_label,
+# rna2_label, and the channel indices to match your acquisition.
+
+experiment:
+  name: "H9_rna_rna_validation_labeled"
+  description: "rna_rna labels-feature validation on H9 MIAT-FISH dataset"
+  cell_line: "H9 hESC"
+
+conditions:
+  mode: subfolders
+  subfolder_conditions:
+    Folder_MIATKD: "KD ASO"
+  sec_only_folders: []
+  sec_only_files: []
+  condition_order: ["KD ASO"]
+  min_nuclei_for_stats: 6
+
+channels:
+  analysis_mode: rna_rna
+  dapi: 2
+  rna: 0       # 640 CSU MIAT-FISH
+  rna2: 1      # 561 CSU (no probe in H9 dataset)
+  antibody: -1
+  # Human-readable labels — these will appear in publication filenames
+  # (e.g. <stem>__<COND>__MIAT_Cy5_yellow.png), QC overlay legend, the
+  # thresholds.csv rna_label / rna2_label columns, and run_config.json.
+  dapi_label: "DAPI"
+  rna_label: "MIAT-Cy5"
+  rna2_label: "Empty-Cy3"
+
+z_stack:
+  mode: autofocus
+  start_slice: 5
+  end_slice: 15
+
+nuclei:
+  backend: stardist
+  prob_threshold: 0.4
+  nms_threshold: 0.3
+  stardist_model: 2D_versatile_fluo
+  stardist_gauss_sigma: 1.5
+  stardist_postprocess: watershed_otsu
+  stardist_postprocess_otsu_sigma: 2.0
+  stardist_postprocess_mask_closing_px: 8
+  label_smoothing_radius_px: 5
+  min_area_px: 12000
+  exclude_border: true
+  border_margin_px: 5
+
+pixel_coloc:
+  threshold_mode: mad
+  threshold_scope: batch
+  k_mad: 2.5
+
+spot_coloc:
+  pair_distance_um: 0.3
+  report_nn_distance: true
+
+foci:
+  enabled: true
+  backend: bigfish
+  bigfish_voxel_size_nm: 0.0
+  bigfish_voxel_z_nm: 0.0
+  bigfish_spot_radius_nm: 100.0
+  bigfish_spot_radius_z_nm: 300.0
+  threshold_multiplier: 0.5
+  only_nuclear_spots: false
+  # 2026-05-13 validation: exercise per-channel BigFISH overrides for RNA2.
+  # RNA1 uses the shared values above (threshold_multiplier=0.5, lenient).
+  # RNA2 overrides to threshold_multiplier=0.7 (stricter). With the same
+  # input data this should produce a DIFFERENT RNA2 spot count than running
+  # both channels at 0.5, and thresholds.csv should record both effective
+  # values (rna_threshold_multiplier=0.5, rna2_threshold_multiplier=0.7).
+  rna2_overrides:
+    threshold_multiplier: 0.7
+
+cytoplasm:
+  enabled: true
+  voronoi_max_expansion_px: 80
+  measure_nc_ratio: true
+
+output:
+  save_qc_overlays: true
+  save_per_image_csv: true
+  save_masks: true
+  save_publication_images: true
+  prefix: ""
+
+parallel:
+  workers: auto

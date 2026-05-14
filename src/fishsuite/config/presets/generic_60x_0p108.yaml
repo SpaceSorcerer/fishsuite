@@ -1,0 +1,17 @@
+experiment:
+  name: generic_60x
+channels:
+  analysis_mode: rna_only
+z_stack:
+  mode: maxproj
+nuclei:
+  backend: stardist
+  prob_threshold: 0.5
+  stardist_gauss_sigma: 1.5
+  stardist_postprocess: watershed_otsu
+  min_area_px: 1500
+foci:
+  backend: bigfish
+  bigfish_spot_radius_nm: 180.0
+parallel:
+  workers: auto

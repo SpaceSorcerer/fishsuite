@@ -1,0 +1,117 @@
+# BIN1 d8 cMyo 100x confocal — BIN1 RNA-FISH + (RNA2 / protein) co-stain.
+# Differentiated day-8 cardiomyocyte (d8cMyo) BIN1 KO vs WT comparison.
+#
+# Source images: F:\Raw Images\BIN1\20251029_d8cMyo_BIN1-RNAFISH\20251029_d8cMyo_BIN1-RNAFISH\
+# Output convention: F:\Image Analysis Work\BIN1\Run<N>\
+#
+# Metadata (confirmed from BioImage on WT BIN1-100x01.vsi):
+#   4 channels: ch0=640 CSU (Cy5), ch1=561 CSU (Cy3), ch2=488 CSU, ch3=405 CSU
+#   87 z-slices, 1152x1152 px
+#   Pixel size: 0.13 µm/px (2x H9's 0.065 — different objective/binning)
+#   Z step: 0.21 µm
+#
+# Nucleus size at 0.13 µm/px: cardiomyocyte nucleus ~10-15 µm → ~77-115 px
+# diameter → ~4600-10400 px² area. min_area_px set accordingly.
+#
+# Channel-to-role mapping for rna_rna:
+#   ch 0 = 640 (Cy5)  → RNA1 (BIN1 FISH)
+#   ch 1 = 561 (Cy3)  → RNA2 (second RNA — adjust label below)
+#   ch 2 = 488        → Protein (unused in rna_rna)
+#   ch 3 = 405        → DAPI
+
+experiment:
+  name: "BIN1_d8cMyo_rna_rna"
+  description: "BIN1 d8 cardiomyocyte RNA-FISH (rna_rna, KO vs WT)"
+  cell_line: "d8 cardiomyocyte"
+
+conditions:
+  mode: subfolders
+  subfolder_conditions:
+    KO: "KO"
+    WT: "WT"
+  # 2nd Ab-only files are secondary-only controls. Recognized by filename pattern.
+  sec_only_files: []
+  sec_only_folders: []
+  # Files containing "2nd Ab only" in their name will be detected as sec-only
+  # via the legacy SEC_ONLY_PATTERNS rule.
+  condition_order: ["WT", "KO"]
+  min_nuclei_for_stats: 6
+
+channels:
+  analysis_mode: rna_rna
+  dapi: 3
+  rna: 0
+  rna2: 1
+  antibody: 2
+  # Edit these labels to match the actual probes / antibodies used:
+  # 2026-05-13 Brian: this dataset is an exon-vs-intron FISH design.
+  # 647/Cy5 targets BIN1 EXONS (mature + nascent transcripts);
+  # 561/Cy3 targets BIN1 INTRONS (nascent pre-mRNA only).
+  # Expect: exon ∩ intron coloc = active transcription sites (nuclear);
+  # exon-only = mature mRNA (predominantly cytoplasmic).
+  dapi_label: "DAPI"
+  rna_label: "BIN1-exons-Cy5"
+  rna2_label: "BIN1-introns-Cy3"
+  antibody_label: "Protein-488"
+
+z_stack:
+  mode: autofocus
+  # 87 z-slices — autofocus picks one best-focus slice within this window.
+  # Start 20 / end 70 covers the middle ~58% of the stack; widen if cells
+  # are out of focus, narrow if too much background.
+  start_slice: 20
+  end_slice: 70
+
+nuclei:
+  backend: stardist
+  cellpose_model_type: nuclei
+  cellpose_diameter_px: 110.0
+  cellpose_flow_threshold: 0.4
+  cellpose_cellprob_threshold: 0.0
+  prob_threshold: 0.4
+  nms_threshold: 0.3
+  stardist_model: 2D_versatile_fluo
+  stardist_gauss_sigma: 1.5
+  stardist_postprocess: watershed_otsu
+  stardist_postprocess_otsu_sigma: 2.0
+  stardist_postprocess_mask_closing_px: 8
+  label_smoothing_radius_px: 5
+  # 2x larger px → 4x smaller area. H9 had min_area=10000; BIN1 should be ~3000-4000.
+  # 3500 px² ≈ 67 px diameter ≈ 8.7 µm nucleus floor — typical lower bound for cMyo.
+  min_area_px: 3500
+  exclude_border: true
+  border_margin_px: 5
+
+pixel_coloc:
+  threshold_mode: mad
+  threshold_scope: batch
+  k_mad: 2.5
+
+foci:
+  enabled: true
+  backend: bigfish
+  bigfish_voxel_size_nm: 0.0   # 0 = auto-detect (130 nm expected)
+  bigfish_voxel_z_nm: 0.0      # 0 = auto-detect (210 nm expected)
+  # PSF radius at 0.13 µm/px, NA ~1.4-1.5, 668 nm Cy5 emission ≈ 2.1 px = 270 nm.
+  # 130 nm = 1 px (sub-diffraction tight filter); raise to 200-250 nm if spots
+  # look undersized.
+  bigfish_spot_radius_nm: 130.0
+  bigfish_spot_radius_z_nm: 300.0
+  threshold_multiplier: 0.5
+  only_nuclear_spots: false
+  min_sep_px: 1
+
+cytoplasm:
+  enabled: true
+  voronoi_max_expansion_px: 80
+  measure_nc_ratio: true
+
+output:
+  save_qc_overlays: true
+  save_per_image_csv: true
+  save_masks: true
+  save_publication_images: true
+  prefix: ""
+
+parallel:
+  workers: auto

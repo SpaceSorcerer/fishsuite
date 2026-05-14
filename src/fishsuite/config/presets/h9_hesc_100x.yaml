@@ -1,0 +1,175 @@
+# H9 hESC 100x confocal — MIAT RNA-FISH (DAPI + RNA, 2-channel logical model
+# despite 3 acquired channels: 640 CSU + 561 CSU + 405 CSU; only 640/MIAT and
+# 405/DAPI are analyzed in rna_only mode).
+#
+# Validated against the canonical Fiji config:
+#   F:\Image Analysis Work\image-analysis-pipeline\configs\h9_miat_kd_aso_3condition.yaml
+# Numbers chosen to match the H9 GUI profile in
+#   F:\Image Analysis Work\image-analysis-pipeline\python\gui_pipeline.py
+
+experiment:
+  name: "H9_MIAT_KD_ASO_hesc_100x"
+  description: "H9 hESC MIAT-FISH 100x confocal preset"
+  cell_line: "H9 hESC"
+
+conditions:
+  mode: subfolders
+  # Map subfolder names -> human-readable condition labels.
+  subfolder_conditions:
+    Folder_NT: "NT ASO"
+    Folder_MIATKD: "KD ASO"
+    Folder_KD-2only: "Sec-Only"
+    Folder_NT-2only: "Sec-Only"
+  # Folders whose images are secondary-only no-probe controls.
+  sec_only_folders:
+    - Folder_KD-2only
+    - Folder_NT-2only
+  sec_only_files: []
+  condition_order: ["Sec-Only", "NT ASO", "KD ASO"]
+  min_nuclei_for_stats: 6
+
+channels:
+  analysis_mode: rna_only
+  # Brian's setup at this microscope: 0-indexed channels are
+  #   0 = 640 CSU (Cy5, MIAT RNA-FISH)
+  #   1 = 561 CSU (Cy3, unused in rna_only)
+  #   2 = 405 CSU (DAPI)
+  # The spec from MASTER CONTROL says "channel 3 (DAPI)" — Fiji's 1-indexed
+  # channel 3 = python 0-indexed 2. We set explicit indices here; auto-detect
+  # will run as a sanity check on each image.
+  dapi: 2
+  rna: 0
+  antibody: -1
+  # Human-readable channel labels (added 2026-05-13). Used in publication
+  # image filenames, QC overlay legends, thresholds.csv / run_config.json.
+  # Defaults fall back to the generic role names ("RNA1", "DAPI"); the
+  # H9 preset customizes rna_label so dissertation figures auto-label as
+  # MIAT-Cy5 instead of generic "RNA1".
+  dapi_label: "DAPI"
+  rna_label: "MIAT-Cy5"
+
+z_stack:
+  # 2026-05-13: tried maxproj — bad result. Spot counts doubled (spots
+  # from all z planes flatten into 2D) AND nuclei count dropped (cells
+  # at different z overlap in projection → merged into single blobs).
+  # Reverting to autofocus which picks one in-focus slice per image.
+  mode: autofocus
+  start_slice: 5
+  end_slice: 15
+
+nuclei:
+  # 2026-05-12 round 4: Brian eye-checked StarDist Run I (dilate,
+  # prob=0.35) and Run J (NMS=0.3) — "dilate did not work at all".
+  # Same split + miss pattern. StarDist's instance predictions on H9
+  # hESC dense colonies are the limiting factor. Switching to
+  # Cellpose-SAM ("cpsam"): different architecture (mask flow + cell
+  # probability), typically better on dense colonies + variable signal.
+  # 2026-05-13: Cellpose 4.1.1 only has cpsam as built-in; classic
+  # "nuclei" needs separate download + cpsam too slow on Brian's CPU
+  # (no CUDA). Reverting to StarDist; testing max_proj z-mode instead.
+  # 2026-05-13 ALT: tested otsu (748 nuclei, no instance separation —
+  # touching cells merge). Reverting to stardist (885 nuclei in Run O,
+  # 984 in Run R3 with fixed code ordering) which is the proven baseline.
+  backend: stardist
+  cellpose_model_type: nuclei
+  cellpose_diameter_px: 220.0
+  cellpose_flow_threshold: 0.4
+  cellpose_cellprob_threshold: 0.0
+  # StarDist params: returning to round-2 tuning (prob=0.4 + watershed
+  # + closing=8 + nms=0.3) since dilate didn't help Brian's split issue.
+  # Paired with max_proj z-mode to catch nuclei across full depth.
+  prob_threshold: 0.4
+  nms_threshold: 0.3
+  # 2026-05-13: 2D_paper_dsb2018 produced 0 nuclei — sized for small
+  # nuclei (DSB2018 was 256x256 microscopy crops), masks fell below our
+  # 10000 px min_area filter. Reverting to versatile_fluo which IS
+  # sized correctly for 100x H9 images.
+  stardist_model: 2D_versatile_fluo
+  # 2026-05-13: dropping gauss_sigma 3.0 → 1.5 to preserve weak DAPI
+  # structure that 3.0 was smoothing away. Less pre-blur means dim
+  # nuclei keep their definition for StarDist's instance prediction.
+  stardist_gauss_sigma: 1.5
+  stardist_postprocess: watershed_otsu
+  stardist_postprocess_otsu_sigma: 2.0
+  stardist_postprocess_mask_closing_px: 8
+  # 2026-05-13: Brian on the sigma_1_5 run — "definitively over split though.
+  # but only marginally. is it possible to restrict the actual physical shape
+  # of the nuclei to be somewhat rounded? there are some sharp angles that
+  # are causing the splits". StarDist outputs star-convex polygons; where two
+  # predictions partially overlap the watershed boundary can have sharp
+  # corners that look like cuts through what should be a single rounded
+  # nucleus. Per-label morphological closing+opening with a disk SE rounds
+  # those corners off without significantly changing nucleus area or count.
+  # 5 px is the starting recommendation; bump to 7-8 if Brian still sees
+  # angular boundaries, drop to 3 if it merges nuclei.
+  label_smoothing_radius_px: 5
+  # 2026-05-13: Code-ordering fix in segmentation.py — backend now uses a
+  # coarse floor (half of this value), the AUTHORITATIVE min_area filter
+  # is applied AFTER label smoothing. So 12000 now means "post-smoothing
+  # area must be >= 12000 px²" (≈ 8 µm circular). Should filter only the
+  # bottom few % of nuclei (real fragments) without dropping labels that
+  # smoothing would lift into compliance.
+  min_area_px: 12000
+  exclude_border: true
+  border_margin_px: 5
+
+pixel_coloc:
+  # NO preprocessing of the RNA channel is applied before this threshold,
+  # matching Fiji's design exactly. Audit (2026-05-11) of
+  # F:\Image Analysis Work\image-analysis-pipeline\fiji_scripts\Coloc_Pipeline.py
+  # lines 682, 752, 760-761 and Coloc_Analysis.py line 128 confirms that
+  # the MAD threshold is computed on raw nuclear pixel values from
+  # rna2d.getProcessor().convertToFloatProcessor() — NO rolling-ball, NO
+  # Gaussian blur, NO median filter. Rolling-ball (RNA_DETECT_ROLLINGBALL=40)
+  # is applied ONLY to the duplicate used for SPOT DETECTION, never to the
+  # pixel-coloc threshold computation. fishsuite preserves this convention.
+  threshold_mode: mad
+  # 2026-05-12 Brian: REVERT to batch scope. Per-image scope auto-adapts
+  # each field to its own intensity range, which destroys cross-condition
+  # comparability of "fraction above threshold". Batch scope = one global
+  # threshold (median+k_mad*MAD across ALL nuclear pixels in the run),
+  # applied uniformly. This is the correct scope for cross-image reporting.
+  threshold_scope: batch
+  # 2026-05-12: working default 2.5 (per Brian's first complaint that 2.0
+  # was too permissive). Sweep runs A/B/C tested 2.5 / 3.0 / 2.0 with the
+  # new per_image scope — awaiting Brian's visual pick. Per-image scope
+  # alone shifts the cutoff ~5-10 intensity units per Δk_mad=0.5.
+  k_mad: 2.5
+
+foci:
+  enabled: true
+  backend: bigfish
+  bigfish_voxel_size_nm: 0.0   # 0 = auto-detect from VSI metadata
+  bigfish_voxel_z_nm: 0.0
+  # 2026-05-11 Brian: was 130 nm, lowered to 100 nm — spots were being detected
+  # as too-big blobs. 100 nm is near the diffraction limit at 100x 0.065 µm/px
+  # so this catches tight diffraction-limited puncta and rejects diffuse blobs.
+  bigfish_spot_radius_nm: 100.0
+  bigfish_spot_radius_z_nm: 300.0
+  # Was 0.7 → 0.5 to catch dimmer real spots we were missing.
+  # 2026-05-12 sweep D/E/F tested 0.4/0.6/0.7 (all with bogus batch flag).
+  # Now batch scope is genuinely implemented (pre-pass pools all nuclear
+  # RNA pixels → one threshold). Holding default at 0.5 pending Brian's
+  # eye-check pick from the corrected sweep.
+  threshold_multiplier: 0.5
+  # Allow spots in both nucleus and cytoplasm (already the default, kept
+  # explicit per Brian's request).
+  only_nuclear_spots: false
+  # MIN_SEP_PX is set to 1 (minimum) in the runner so adjacent close spots
+  # are NOT merged.
+  min_sep_px: 1
+
+cytoplasm:
+  enabled: true
+  voronoi_max_expansion_px: 80
+  measure_nc_ratio: true
+
+output:
+  save_qc_overlays: true
+  save_per_image_csv: true
+  save_masks: true
+  save_publication_images: true
+  prefix: ""
+
+parallel:
+  workers: auto

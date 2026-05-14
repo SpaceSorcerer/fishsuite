@@ -1,0 +1,65 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Distribution / packaging
+build/
+dist/
+*.egg-info/
+.eggs/
+*.egg
+MANIFEST
+
+# Test / lint caches
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.tox/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+*.cover
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+.python-version
+
+# IDE / editor
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Brian's local-only GUI state (lives in user home, not repo, but defensive)
+.fishsuite_gui.json
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Local logs / scratch
+*.log
+_validate_run.log
+
+# Test/run output directories (user-generated)
+runs/
+out/
+output/
+results/
+
+# Local credentials (never commit)
+.env
+.env.local
+*.pem
+*.key

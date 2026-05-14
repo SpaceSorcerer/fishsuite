@@ -1,0 +1,17 @@
+experiment:
+  name: generic_100x
+channels:
+  analysis_mode: rna_only
+z_stack:
+  mode: autofocus
+nuclei:
+  backend: stardist
+  prob_threshold: 0.5
+  stardist_gauss_sigma: 3.0
+  stardist_postprocess: watershed_otsu
+  min_area_px: 5000
+foci:
+  backend: bigfish
+  bigfish_spot_radius_nm: 150.0
+parallel:
+  workers: auto

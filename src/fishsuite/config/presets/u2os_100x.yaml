@@ -1,0 +1,18 @@
+experiment:
+  name: U2OS_100x
+  cell_line: U2OS
+channels:
+  analysis_mode: rna_only
+z_stack:
+  mode: autofocus
+nuclei:
+  backend: stardist
+  prob_threshold: 0.30
+  stardist_gauss_sigma: 2.0
+  stardist_postprocess: watershed_otsu
+  min_area_px: 3000
+foci:
+  backend: bigfish
+  bigfish_spot_radius_nm: 150.0
+parallel:
+  workers: auto

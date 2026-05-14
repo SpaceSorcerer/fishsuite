@@ -1,0 +1,97 @@
+# H9 hESC 100x — rna_rna VALIDATION preset (testing two-RNA-channel
+# infrastructure on the H9 MIAT-FISH dataset).
+#
+# Biologically this is NOT a real two-probe experiment: H9 MIAT-FISH was
+# acquired on 640 CSU (MIAT, Cy5) + 561 CSU (currently unused — no probe)
+# + 405 CSU (DAPI). We reuse the unused 561 channel as a stand-in
+# "second RNA" so the rna_rna pipeline can be exercised on real data:
+#   channel 0 = 640 CSU = MIAT-FISH = treat as RNA1
+#   channel 1 = 561 CSU = background (no probe) = treat as RNA2
+#   channel 2 = 405 CSU = DAPI
+#
+# Expectation: RNA1 will have many real MIAT spots, RNA2 will have ~zero
+# real spots (just background noise — BigFISH may detect a handful of
+# spurious puncta). Paired-fraction should be near zero. This validates
+# infrastructure end-to-end without making biological claims.
+#
+# For a REAL two-probe rna_rna experiment, point this preset at a dataset
+# with two stained RNA probes and re-tune `channels.rna2`, `pixel_coloc`,
+# and `spot_coloc.pair_distance_um`.
+
+experiment:
+  name: "H9_rna_rna_validation"
+  description: "rna_rna infrastructure test using H9 MIAT-FISH (RNA2=561 unused)"
+  cell_line: "H9 hESC"
+
+conditions:
+  mode: subfolders
+  subfolder_conditions:
+    Folder_MIATKD: "KD ASO"
+  sec_only_folders: []
+  sec_only_files: []
+  condition_order: ["KD ASO"]
+  min_nuclei_for_stats: 6
+
+channels:
+  analysis_mode: rna_rna
+  dapi: 2
+  rna: 0       # 640 CSU MIAT-FISH
+  rna2: 1      # 561 CSU (no probe in H9 dataset — used here only to
+               # exercise the two-channel infrastructure)
+  antibody: -1
+
+z_stack:
+  mode: autofocus
+  start_slice: 5
+  end_slice: 15
+
+nuclei:
+  backend: stardist
+  prob_threshold: 0.4
+  nms_threshold: 0.3
+  stardist_model: 2D_versatile_fluo
+  stardist_gauss_sigma: 1.5
+  stardist_postprocess: watershed_otsu
+  stardist_postprocess_otsu_sigma: 2.0
+  stardist_postprocess_mask_closing_px: 8
+  label_smoothing_radius_px: 5
+  min_area_px: 12000
+  exclude_border: true
+  border_margin_px: 5
+
+pixel_coloc:
+  threshold_mode: mad
+  threshold_scope: batch
+  k_mad: 2.5
+
+spot_coloc:
+  # 0.3 µm = ~4-5 px at the H9 100x voxel size (0.065 µm/px), near the
+  # diffraction limit. Two spots within this distance are considered
+  # paired.
+  pair_distance_um: 0.3
+  report_nn_distance: true
+
+foci:
+  enabled: true
+  backend: bigfish
+  bigfish_voxel_size_nm: 0.0
+  bigfish_voxel_z_nm: 0.0
+  bigfish_spot_radius_nm: 100.0
+  bigfish_spot_radius_z_nm: 300.0
+  threshold_multiplier: 0.5
+  only_nuclear_spots: false
+
+cytoplasm:
+  enabled: true
+  voronoi_max_expansion_px: 80
+  measure_nc_ratio: true
+
+output:
+  save_qc_overlays: true
+  save_per_image_csv: true
+  save_masks: true
+  save_publication_images: true
+  prefix: ""
+
+parallel:
+  workers: auto

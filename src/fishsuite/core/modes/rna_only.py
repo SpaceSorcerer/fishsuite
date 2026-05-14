@@ -1,0 +1,784 @@
+"""rna_only — per-nucleus FISH spot count, intensity, N/C stratification.
+
+Outputs Fiji-pipeline-compatible row dicts (per_image_summary / nuclei_metrics /
+spot_metrics / cell_morphology / thresholds) so downstream tools (Brian's
+combine_to_xlsx.py, single_condition_plots.py, R scripts) can consume the
+fishsuite output transparently.
+"""
+from __future__ import annotations
+
+import math
+import time
+from dataclasses import dataclass, field
+from typing import Dict, List, Optional, Any
+
+import numpy as np
+import pandas as pd
+from skimage import measure
+from skimage.filters import threshold_otsu
+
+from .. import io as _io
+from .. import segmentation as _seg
+from .. import spots as _spots
+from .. import morphology as _morph
+from .. import thresholds as _thr
+
+
+@dataclass
+class ImageResult:
+    image: str
+    condition: str
+    sec_only: bool
+    per_image: dict
+    nuclei: pd.DataFrame
+    spots: pd.DataFrame
+    morphology: pd.DataFrame
+    thresholds: dict
+    qc: dict
+    extra: Dict[str, Any] = field(default_factory=dict)
+
+
+def _safe_float(v) -> float:
+    try:
+        f = float(v)
+        if f != f:
+            return float("nan")
+        return f
+    except (TypeError, ValueError):
+        return float("nan")
+
+
+def _median(values):
+    vals = [v for v in values if v == v]
+    if not vals:
+        return float("nan")
+    s = sorted(vals)
+    n = len(s)
+    return s[n // 2] if n % 2 == 1 else 0.5 * (s[n // 2 - 1] + s[n // 2])
+
+
+def run_one(
+    path,
+    *,
+    condition: str,
+    sec_only: bool,
+    cfg,
+    precomputed_rna_threshold: Optional[float] = None,
+) -> ImageResult:
+    """Run the rna_only pipeline on a single image.
+
+    Parameters
+    ----------
+    precomputed_rna_threshold : float or None
+        When supplied (typically by the batch runner during a
+        ``pixel_coloc.threshold_scope == 'batch'`` run), this scalar is used
+        verbatim as the pixel-coloc threshold for THIS image — bypassing the
+        per-image median+k*MAD computation. The runner does a pre-pass that
+        pools raw nuclear RNA pixels across all images and computes ONE
+        median+k*MAD value, then passes it here so every image in the batch
+        gets the same threshold (matches Fiji's ``COLOC_THR_SCOPE == 'batch'``
+        pre-scan; see ``Coloc_Analysis.run_batch_prescan_for_thresholds``).
+    """
+    t0 = time.time()
+    img = _io.read_image(path)
+
+    one_indexed = bool(cfg.channels.one_indexed)
+    def _chan(idx: int) -> int:
+        return (idx - 1) if (one_indexed and idx > 0) else idx
+
+    dapi_idx = _chan(cfg.channels.dapi)
+    rna_idx = _chan(cfg.channels.rna)
+    if dapi_idx < 0 or rna_idx < 0:
+        auto = _io.autodetect_channels(img)
+        if dapi_idx < 0:
+            dapi_idx = auto["dapi"]
+        if rna_idx < 0:
+            rna_idx = auto["rna"]
+    dapi_idx = max(0, min(img.n_channels - 1, dapi_idx))
+    rna_idx = max(0, min(img.n_channels - 1, rna_idx))
+
+    z_mode = cfg.z_stack.mode
+    z_start = cfg.z_stack.start_slice
+    z_end = cfg.z_stack.end_slice
+    if z_start is not None and z_start > img.n_z:
+        z_start = 1
+    if z_end is not None and z_end > img.n_z:
+        z_end = img.n_z
+
+    dapi_2d = _io.extract_channel(img, dapi_idx, z_mode=z_mode, z_start=z_start, z_end=z_end)
+    if dapi_2d.ndim != 2:
+        dapi_2d = dapi_2d.max(axis=0)
+    rna_2d = _io.extract_channel(img, rna_idx, z_mode=z_mode, z_start=z_start, z_end=z_end)
+    if rna_2d.ndim != 2:
+        rna_2d = rna_2d.max(axis=0)
+
+    voxel_xy_nm = _safe_float(img.voxel_xy_nm)
+    if not (voxel_xy_nm > 0):
+        voxel_xy_nm = 65.0  # H9 100x fallback
+    voxel_z_nm = _safe_float(img.voxel_z_nm)
+    if not (voxel_z_nm > 0):
+        voxel_z_nm = 230.0
+    voxel_xy_um = voxel_xy_nm / 1000.0
+    voxel_z_um = voxel_z_nm / 1000.0
+
+    # ---- DAPI threshold mask (for walkthrough step 02) ---------------------
+    try:
+        dapi_thr_val = float(threshold_otsu(dapi_2d))
+    except Exception:
+        dapi_thr_val = float(dapi_2d.mean())
+    dapi_mask = (dapi_2d >= dapi_thr_val).astype(np.uint8) * 255
+
+    # ---- nuclear segmentation ----------------------------------------------
+    seg_params = dict(
+        min_area=cfg.nuclei.min_area_px,
+        max_area=cfg.nuclei.max_area_px,
+        prob_threshold=cfg.nuclei.prob_threshold,
+        nms_threshold=cfg.nuclei.nms_threshold,
+        n_tiles=cfg.nuclei.n_tiles,
+        stardist_model=cfg.nuclei.stardist_model,
+        stardist_gauss_sigma=cfg.nuclei.stardist_gauss_sigma,
+        stardist_postprocess=cfg.nuclei.stardist_postprocess,
+        stardist_postprocess_dilate_px=cfg.nuclei.stardist_postprocess_dilate_px,
+        stardist_postprocess_otsu_sigma=cfg.nuclei.stardist_postprocess_otsu_sigma,
+        stardist_postprocess_mask_closing_px=cfg.nuclei.stardist_postprocess_mask_closing_px,
+        label_smoothing_radius_px=cfg.nuclei.label_smoothing_radius_px,
+        diameter=cfg.nuclei.cellpose_diameter_px,
+        flow_threshold=cfg.nuclei.cellpose_flow_threshold,
+        cellprob_threshold=cfg.nuclei.cellpose_cellprob_threshold,
+        cellpose_model_type=cfg.nuclei.cellpose_model_type,
+    )
+    labels = _seg.segment_nuclei(dapi_2d, backend=cfg.nuclei.backend, params=seg_params)
+    n_before = int(labels.max())
+    if cfg.nuclei.exclude_border:
+        labels = _seg.exclude_border_labels(labels, margin_px=cfg.nuclei.border_margin_px)
+    n_after = int(labels.max())
+    n_border_excluded = n_before - n_after
+
+    # ---- cytoplasm mask -----------------------------------------------------
+    cyt_labels = None
+    if cfg.cytoplasm.enabled and n_after > 0:
+        cyt_labels = _morph.compute_cytoplasm_mask(
+            labels, max_expand_px=cfg.cytoplasm.voronoi_max_expansion_px
+        )
+
+    # ---- spot detection -----------------------------------------------------
+    spots_df = pd.DataFrame()
+    thr_val = float("nan")
+    if cfg.foci.enabled and not sec_only:
+        vx = cfg.foci.bigfish_voxel_size_nm
+        vz = cfg.foci.bigfish_voxel_z_nm
+        if vx <= 0:
+            vx = voxel_xy_nm
+        if vz <= 0:
+            vz = voxel_z_nm
+        try:
+            spots_df = _spots.detect_spots(
+                rna_2d,
+                backend=cfg.foci.backend,
+                voxel_xy_nm=float(vx),
+                voxel_z_nm=float(vz),
+                spot_radius_nm=cfg.foci.bigfish_spot_radius_nm,
+                spot_radius_z_nm=cfg.foci.bigfish_spot_radius_z_nm,
+                threshold_multiplier=cfg.foci.threshold_multiplier,
+                threshold=cfg.foci.threshold_override,
+                log_threshold=cfg.foci.log_threshold,
+                log_spot_radius_px=cfg.foci.log_spot_radius_px,
+            )
+            thr_val = float(spots_df["threshold_used"].iloc[0]) if len(spots_df) else float("nan")
+        except Exception:
+            spots_df = pd.DataFrame()
+            thr_val = float("nan")
+
+    # ---- spot diameter (FWHM-ish from BigFISH spot_radius) -----------------
+    # rough: spot diameter ~ 2 * spot_radius_nm in micrometers
+    spot_radius_um = float(cfg.foci.bigfish_spot_radius_nm) / 1000.0
+    default_spot_diameter_um = 2.0 * spot_radius_um
+    default_spot_fwhm_px = default_spot_diameter_um / max(voxel_xy_um, 1e-6)
+    default_spot_area_px = math.pi * (default_spot_fwhm_px / 2.0) ** 2
+
+    # Stratify spots vs nuclei / cytoplasm
+    if cyt_labels is not None and len(spots_df) > 0:
+        spots_df = _morph.stratify_spots(spots_df, labels, cytoplasm_labels=cyt_labels)
+    elif len(spots_df) > 0:
+        spots_df = _morph.stratify_spots(spots_df, labels)
+
+    # ---- RNA-positive mask for walkthrough step 05/06 ----------------------
+    # Pixel-coloc threshold — matches Fiji's Coloc_Analysis.coloc_threshold()
+    # design: collect RAW (unpreprocessed) RNA pixel values from within
+    # nuclei and compute the MAD-based threshold = median + k_mad * MAD.
+    # Confirmed against F:\Image Analysis Work\image-analysis-pipeline\
+    # fiji_scripts\Coloc_Pipeline.py (line 682, 752, 760-761): Fiji uses
+    # rna2d.convertToFloatProcessor() directly — NO rolling-ball, NO blur,
+    # NO median filter applied before the threshold. Spot detection has its
+    # own preprocessing (RNA_DETECT_ROLLINGBALL) but it is NEVER applied to
+    # the pixel-coloc threshold.
+    #
+    # 2026-05-11: Brian's eye-check observation that the previous threshold
+    # was "too permissive in some, too critical in others" was because the
+    # old code used BigFISH's spot-detection threshold (which adapts to LoG
+    # response per image) rather than the per-image MAD over RAW nuclear
+    # pixels. Switching to the Fiji-style MAD on raw nuclear pixels matches
+    # what Brian's manual Fiji runs do.
+    #
+    # threshold_scope:
+    #   'per_image' (H9 default per Brian 2026-05-11): each image gets its
+    #     own median+k_mad*MAD from its own nuclear pixels — adapts to
+    #     out-of-focus haze that varies field-to-field.
+    #   'batch': a pooled threshold across all images (not done at the
+    #     per-image stage; pooled threshold would be applied by the runner).
+    pc_cfg = getattr(cfg, "pixel_coloc", None)
+    # When the batch runner has done a pre-pass and supplied a single pooled
+    # threshold for the whole run (scope == 'batch'), use it as-is for every
+    # image instead of computing per-image. This matches Fiji's
+    # COLOC_THR_SCOPE == 'batch' branch (Coloc_Pipeline.py lines 287-304 +
+    # Coloc_Analysis.run_batch_prescan_for_thresholds).
+    _scope = getattr(pc_cfg, "threshold_scope", "per_image") if pc_cfg is not None else "per_image"
+    if (
+        pc_cfg is not None
+        and _scope == "batch"
+        and precomputed_rna_threshold is not None
+        and precomputed_rna_threshold == precomputed_rna_threshold  # not NaN
+        and precomputed_rna_threshold > 0
+    ):
+        rna_thr_value = float(precomputed_rna_threshold)
+    elif pc_cfg is not None and n_after > 0:
+        # Per-image: collect raw nuclear RNA pixels (Fiji's
+        # collect_nuclear_pixel_values_fast) and compute median+k*MAD.
+        nuc_pixel_mask = labels > 0
+        if nuc_pixel_mask.any():
+            rvals_img = rna_2d[nuc_pixel_mask].astype(np.float64).tolist()
+            try:
+                rna_thr_value = float(_thr.coloc_threshold(
+                    rvals_img,
+                    mode=pc_cfg.threshold_mode,
+                    k_mad=float(pc_cfg.k_mad),
+                    percentile=float(pc_cfg.percentile),
+                ))
+            except Exception:
+                rna_thr_value = float("nan")
+        else:
+            rna_thr_value = float("nan")
+    else:
+        rna_thr_value = float("nan")
+
+    # Robust fallback chain — if the MAD computation failed or there were no
+    # nuclei to pool from, fall back to BigFISH auto-threshold, then Otsu,
+    # then a hardcoded 99th-percentile. This keeps the walkthrough+QC
+    # rendering robust on edge-case images (e.g. sec-only controls).
+    if not (rna_thr_value == rna_thr_value and rna_thr_value > 0):
+        if thr_val == thr_val and thr_val > 0:
+            rna_thr_value = float(thr_val)
+        else:
+            try:
+                rna_thr_value = float(threshold_otsu(rna_2d))
+            except Exception:
+                rna_thr_value = float(np.percentile(rna_2d, 99.0))
+    rna_pos_mask = (rna_2d >= rna_thr_value).astype(np.uint8) * 255
+
+    # ---- per-nucleus rows ---------------------------------------------------
+    nuc_rows: List[Dict[str, Any]] = []
+    spot_rows: List[Dict[str, Any]] = []
+    morph_rows: List[Dict[str, Any]] = []
+
+    # regionprops for shape descriptors
+    rp_props = ("label", "area", "perimeter", "centroid",
+                "eccentricity", "solidity", "feret_diameter_max",
+                "major_axis_length", "minor_axis_length")
+    if n_after > 0:
+        rp_table = measure.regionprops_table(labels, properties=rp_props)
+        rp_df = pd.DataFrame(rp_table)
+    else:
+        rp_df = pd.DataFrame(columns=["label"])
+    rp_by_id = {int(r["label"]): r for r in rp_df.to_dict(orient="records")}
+
+    # spot-id offsets so global ids are unique per image (incremented across all)
+    spot_global_id = 0
+
+    # Per-nucleus aggregation of spots
+    spots_by_nid: Dict[int, pd.DataFrame] = {}
+    if len(spots_df) > 0:
+        for nid_val, grp in spots_df.groupby("nucleus_id"):
+            try:
+                spots_by_nid[int(nid_val)] = grp
+            except (TypeError, ValueError):
+                pass
+
+    img_name = path.name
+
+    for nid in range(1, n_after + 1):
+        rp = rp_by_id.get(nid, {})
+        nucleus_area_px = int(rp.get("area", 0))
+        perim_px = float(rp.get("perimeter", 0.0))
+        area_um2 = nucleus_area_px * (voxel_xy_um ** 2)
+        perimeter_um = perim_px * voxel_xy_um
+
+        nuc_mask = labels == nid
+        if nuc_mask.any():
+            rna_vals = rna_2d[nuc_mask].astype(np.float64)
+            dapi_vals = dapi_2d[nuc_mask].astype(np.float64)
+            rna_mean_in_nucleus = float(rna_vals.mean())
+            sum_rna_intensity = float(rna_vals.sum())
+            dapi_mean_in_nucleus = float(dapi_vals.mean())
+        else:
+            rna_mean_in_nucleus = float("nan")
+            sum_rna_intensity = float("nan")
+            dapi_mean_in_nucleus = float("nan")
+
+        if cyt_labels is not None:
+            cyt_mask = (cyt_labels == nid) & (~nuc_mask)
+            if cyt_mask.any():
+                rna_cyto = rna_2d[cyt_mask].astype(np.float64)
+                rna_cytoplasmic_mean = float(rna_cyto.mean())
+                cyto_area_px = int(cyt_mask.sum())
+            else:
+                rna_cytoplasmic_mean = float("nan")
+                cyto_area_px = 0
+        else:
+            rna_cytoplasmic_mean = float("nan")
+            cyto_area_px = 0
+
+        rna_nc_ratio = (rna_mean_in_nucleus / rna_cytoplasmic_mean) \
+            if (rna_cytoplasmic_mean and rna_cytoplasmic_mean > 0
+                and not math.isnan(rna_cytoplasmic_mean)) else float("nan")
+
+        # Per-nucleus spots
+        sub = spots_by_nid.get(nid, pd.DataFrame())
+        nuc_spot_mask = (sub.get("in_nucleus", pd.Series(dtype=bool)) == True)
+        cyt_spot_mask = (sub.get("in_cytoplasm", pd.Series(dtype=bool)) == True)
+        nuclear_spot_count = int(nuc_spot_mask.sum())
+        cyto_spot_count = int(cyt_spot_mask.sum())
+        rna_spot_count = nuclear_spot_count + cyto_spot_count
+        nuclear_spot_fraction = (nuclear_spot_count / float(rna_spot_count)) if rna_spot_count > 0 else float("nan")
+
+        nuclear_spot_density_per_um2 = (
+            rna_spot_count / area_um2
+        ) if area_um2 > 0 else float("nan")
+
+        # Per-nucleus intensity aggregates over its spots
+        if rna_spot_count > 0 and "intensity_peak" in sub.columns:
+            ipeaks = sub["intensity_peak"].astype(float)
+            rna_spot_mean_intensity_bgc_blend = float(ipeaks.mean())
+            rna_spot_total_intensity_bgc_blend = float(ipeaks.sum())
+            rna_spot_median_intensity_bgc_blend = float(ipeaks.median())
+            # Approximate "fit" total = same series (BigFISH peak is fit-like).
+            rna_spot_mean_intensity_fit = float(ipeaks.mean())
+            rna_spot_total_intensity_fit = float(ipeaks.sum())
+            rna_spot_median_intensity_fit = float(ipeaks.median())
+            rna_spot_intensity_cv_fit = (
+                float(ipeaks.std()) / float(ipeaks.mean()) if float(ipeaks.mean()) > 0 else float("nan")
+            )
+            spot_fit_success_count = rna_spot_count  # all succeeded (BigFISH model)
+            spot_fit_success_fraction = 1.0
+        else:
+            rna_spot_mean_intensity_bgc_blend = float("nan")
+            rna_spot_total_intensity_bgc_blend = float("nan")
+            rna_spot_median_intensity_bgc_blend = float("nan")
+            rna_spot_mean_intensity_fit = float("nan")
+            rna_spot_total_intensity_fit = float("nan")
+            rna_spot_median_intensity_fit = float("nan")
+            rna_spot_intensity_cv_fit = float("nan")
+            spot_fit_success_count = 0
+            spot_fit_success_fraction = float("nan")
+
+        # Spot size aggregates (BigFISH gives constant radius — use defaults)
+        mean_spot_diameter_um = default_spot_diameter_um if rna_spot_count > 0 else float("nan")
+        mean_spot_fwhm_px = default_spot_fwhm_px if rna_spot_count > 0 else float("nan")
+        median_spot_fwhm_px = default_spot_fwhm_px if rna_spot_count > 0 else float("nan")
+        mean_spot_area_px = default_spot_area_px if rna_spot_count > 0 else float("nan")
+        mean_spot_volume_vox = (
+            4.0 / 3.0 * math.pi * (default_spot_fwhm_px / 2.0) ** 2
+            * (cfg.foci.bigfish_spot_radius_z_nm / voxel_z_nm)
+        ) if rna_spot_count > 0 else float("nan")
+        mean_spot_volume_um3 = (
+            4.0 / 3.0 * math.pi
+            * (default_spot_diameter_um / 2.0) ** 2
+            * (2.0 * cfg.foci.bigfish_spot_radius_z_nm / 1000.0 / 2.0)
+        ) if rna_spot_count > 0 else float("nan")
+        mean_spot_anisotropy = (
+            (cfg.foci.bigfish_spot_radius_z_nm / cfg.foci.bigfish_spot_radius_nm)
+        ) if rna_spot_count > 0 else float("nan")
+        mean_spot_local_snr = float("nan")
+
+        nuc_row = {
+            "image": img_name,
+            "condition": condition,
+            "secondary_only": sec_only,
+            "experiment_id": "",
+            "nucleus_id": int(nid),
+            "nucleus_area_px": int(nucleus_area_px),
+            "rna_mean_in_nucleus": rna_mean_in_nucleus,
+            "rna_nuclear_mean": rna_mean_in_nucleus,
+            "rna_cytoplasmic_mean": rna_cytoplasmic_mean,
+            "rna_nc_ratio": rna_nc_ratio,
+            "rna_spot_count": int(rna_spot_count),
+            "nuclear_spot_count": int(nuclear_spot_count),
+            "cyto_spot_count": int(cyto_spot_count),
+            "nuclear_spot_fraction": nuclear_spot_fraction,
+            "nuclear_spot_density_per_um2": nuclear_spot_density_per_um2,
+            "mean_spot_diameter_um": mean_spot_diameter_um,
+            "mean_spot_fwhm_px": mean_spot_fwhm_px,
+            "median_spot_fwhm_px": median_spot_fwhm_px,
+            "mean_spot_area_px": mean_spot_area_px,
+            "mean_spot_volume_vox": mean_spot_volume_vox,
+            "mean_spot_volume_um3": mean_spot_volume_um3,
+            "mean_spot_anisotropy": mean_spot_anisotropy,
+            "mean_spot_local_snr": mean_spot_local_snr,
+            "rna_spot_mean_intensity_bgc_blend": rna_spot_mean_intensity_bgc_blend,
+            "rna_spot_total_intensity_bgc_blend": rna_spot_total_intensity_bgc_blend,
+            "rna_spot_median_intensity_bgc_blend": rna_spot_median_intensity_bgc_blend,
+            "rna_spot_mean_intensity_fit": rna_spot_mean_intensity_fit,
+            "rna_spot_total_intensity_fit": rna_spot_total_intensity_fit,
+            "rna_spot_median_intensity_fit": rna_spot_median_intensity_fit,
+            "rna_spot_intensity_cv_fit": rna_spot_intensity_cv_fit,
+            "spot_fit_success_count": int(spot_fit_success_count),
+            "spot_fit_success_fraction": spot_fit_success_fraction,
+            "sum_rna_intensity": sum_rna_intensity,
+            "cyto_area_px": int(cyto_area_px),
+            "cyto_estimation_method": "voronoi" if cyt_labels is not None else "",
+            "n_voxels": int(nucleus_area_px),
+            "n_pix": int(nucleus_area_px),
+            "n_z_slices": int(img.n_z),
+            "z_mode": z_mode,
+            "z_range": f"{z_start}-{z_end}" if (z_start and z_end) else "",
+            "autofocus_z": "",
+            "voxel_xy_um": voxel_xy_um,
+            "voxel_z_um": voxel_z_um,
+            "rna_threshold_value": rna_thr_value,
+            "rna_frac_above_thr": float((rna_2d >= rna_thr_value).sum()) / float(rna_2d.size),
+            "frac_spots_nuc_edge": float("nan"),
+            "dapi_mean_in_nucleus": dapi_mean_in_nucleus,
+        }
+        nuc_rows.append(nuc_row)
+
+        # Morphology row (one per nucleus)
+        major = float(rp.get("major_axis_length", 0.0))
+        minor = float(rp.get("minor_axis_length", 0.0))
+        feret_max_um = float(rp.get("feret_diameter_max", 0.0)) * voxel_xy_um
+        feret_min_um = (minor * voxel_xy_um) if minor > 0 else float("nan")
+        aspect_ratio = (major / minor) if minor > 0 else float("nan")
+        roundness = (minor / major) if major > 0 else float("nan")
+        elongation = aspect_ratio
+        solidity = float(rp.get("solidity", float("nan")))
+        circularity = (
+            4.0 * math.pi * nucleus_area_px / (perim_px ** 2)
+        ) if perim_px > 0 else float("nan")
+        morph_rows.append({
+            "image": img_name,
+            "condition": condition,
+            "experiment_id": "",
+            "cell_id": int(nid),
+            "nucleus_id": int(nid),
+            "segmentation_mode": cfg.nuclei.backend,
+            "area_um2": area_um2,
+            "perimeter_um": perimeter_um,
+            "circularity": circularity,
+            "aspect_ratio": aspect_ratio,
+            "roundness": roundness,
+            "elongation": elongation,
+            "solidity": solidity,
+            "feret_max_um": feret_max_um,
+            "feret_min_um": feret_min_um,
+        })
+
+    # Per-spot rows
+    if len(spots_df) > 0:
+        for _, r in spots_df.iterrows():
+            spot_global_id += 1
+            x_px = int(r.get("x_px", 0))
+            y_px = int(r.get("y_px", 0))
+            z_slice = int(r.get("z_slice", 0))
+            ipeak = float(r.get("intensity_peak", float("nan")))
+            nid_at = int(r.get("nucleus_id", 0))
+            in_nuc = bool(r.get("in_nucleus", False))
+            spot_rows.append({
+                "image": img_name,
+                "condition": condition,
+                "secondary_only": sec_only,
+                "experiment_id": "",
+                "spot_id": int(spot_global_id),
+                "nucleus_id": nid_at,
+                "x_px": x_px,
+                "y_px": y_px,
+                "z_slice": z_slice,
+                "z_position_um": z_slice * voxel_z_um,
+                "spot_peak_intensity": ipeak,
+                "quality": ipeak,
+                "spot_fwhm_px": default_spot_fwhm_px,
+                "fwhm_xy_px_fit": default_spot_fwhm_px,
+                "fwhm_z_px_fit": (cfg.foci.bigfish_spot_radius_z_nm * 2.355 / voxel_z_nm),
+                "sigma_xy_px_fit": default_spot_fwhm_px / 2.355,
+                "sigma_z_px_fit": (cfg.foci.bigfish_spot_radius_z_nm / voxel_z_nm),
+                "spot_diameter_um": default_spot_diameter_um,
+                "spot_area_px": default_spot_area_px,
+                "spot_volume_vox": (
+                    4.0 / 3.0 * math.pi * (default_spot_fwhm_px / 2.0) ** 2
+                    * (cfg.foci.bigfish_spot_radius_z_nm / voxel_z_nm)
+                ),
+                "spot_volume_um3": (
+                    4.0 / 3.0 * math.pi
+                    * (default_spot_diameter_um / 2.0) ** 2
+                    * (cfg.foci.bigfish_spot_radius_z_nm / 1000.0)
+                ),
+                "spot_anisotropy": (
+                    cfg.foci.bigfish_spot_radius_z_nm / cfg.foci.bigfish_spot_radius_nm
+                ),
+                "integrated_intensity_fit": ipeak,
+                "rna_mean_raw_disk": ipeak,
+                "rna_mean_bgc_blend": ipeak,
+                "rna_sum_bgc_blend": ipeak * default_spot_area_px,
+                "rna_sum_raw_disk": ipeak * default_spot_area_px,
+                "rna_bg_blend": float("nan"),
+                "rna_contrast_blend": float("nan"),
+                "spot_bg_estimate": float("nan"),
+                "spot_to_nuc_edge_um": float("nan"),
+                "spot_to_nuc_centroid_um": float("nan"),
+                "spot_to_nuc_edge_px": float("nan"),
+                "spot_to_nuc_centroid_px": float("nan"),
+                "local_snr": float("nan"),
+                "fit_ok": 1,
+                "n_voxels_sampled": int(default_spot_area_px),
+                "z_fwhm_slices": float(cfg.foci.bigfish_spot_radius_z_nm * 2.355 / voxel_z_nm),
+                "colocalized": 0,
+                "coloc_partner_id": -1,
+                "coloc_partner_dist_px": float("nan"),
+                "coloc_partner_dist_um": float("nan"),
+                "coloc_partner_intensity": float("nan"),
+                "contrast_threshold": float("nan"),
+            })
+
+    nuclei_df = pd.DataFrame(nuc_rows)
+    spots_out_df = pd.DataFrame(spot_rows)
+    morph_df = pd.DataFrame(morph_rows)
+
+    # Per-image summary row (Fiji-compatible columns)
+    if len(nuclei_df) > 0:
+        spot_counts = nuclei_df["rna_spot_count"].astype(int).tolist()
+        n = len(spot_counts)
+        m = sum(spot_counts) / float(n) if n > 0 else 0.0
+        sd = math.sqrt(sum((v - m) ** 2 for v in spot_counts) / float(n - 1)) if n > 1 else 0.0
+        cv = (sd / m) if m > 0 else float("nan")
+        spot_diameters = [v for v in nuclei_df["mean_spot_diameter_um"].tolist()
+                          if v == v]
+        densities = [v for v in nuclei_df["nuclear_spot_density_per_um2"].tolist()
+                     if v == v]
+        cell_mean_int_blend = [
+            float(r) for r, c in zip(
+                nuclei_df["rna_spot_mean_intensity_bgc_blend"].tolist(),
+                nuclei_df["rna_spot_count"].tolist())
+            if c > 0 and r == r
+        ]
+        cell_total_int_fit = [
+            float(r) for r, c in zip(
+                nuclei_df["rna_spot_total_intensity_fit"].tolist(),
+                nuclei_df["rna_spot_count"].tolist())
+            if c > 0 and r == r
+        ]
+        if cell_total_int_fit and len(cell_total_int_fit) > 1:
+            tm = sum(cell_total_int_fit) / float(len(cell_total_int_fit))
+            tv = sum((v - tm) ** 2 for v in cell_total_int_fit) / float(len(cell_total_int_fit) - 1)
+            tcv = (math.sqrt(tv) / tm) if tm > 0 else float("nan")
+        else:
+            tcv = float("nan")
+        per_image = {
+            "image": img_name,
+            "condition": condition,
+            "secondary_only": sec_only,
+            "nuclei_analyzed": int(n),
+            "mean_spots_per_nucleus": round(m, 3),
+            "median_spots_per_nucleus": round(_median(spot_counts), 3),
+            "cv_spots_per_nucleus": round(cv, 4) if cv == cv else float("nan"),
+            "frac_nuclei_with_ge_1_spot": round(sum(1 for v in spot_counts if v >= 1) / float(n), 4) if n > 0 else 0.0,
+            "frac_nuclei_with_ge_5_spots": round(sum(1 for v in spot_counts if v >= 5) / float(n), 4) if n > 0 else 0.0,
+            "frac_nuclei_with_ge_10_spots": round(sum(1 for v in spot_counts if v >= 10) / float(n), 4) if n > 0 else 0.0,
+            "mean_spot_diameter_um": round(sum(spot_diameters) / float(len(spot_diameters)), 4) if spot_diameters else float("nan"),
+            "median_spot_diameter_um": round(_median(spot_diameters), 4) if spot_diameters else float("nan"),
+            "mean_nuclear_spot_density_per_um2": round(sum(densities) / float(len(densities)), 6) if densities else float("nan"),
+            "mean_cell_intensity_blend": round(sum(cell_mean_int_blend) / float(len(cell_mean_int_blend)), 3) if cell_mean_int_blend else float("nan"),
+            "median_cell_intensity_blend": round(_median(cell_mean_int_blend), 3) if cell_mean_int_blend else float("nan"),
+            "mean_cell_total_intensity_fit": round(sum(cell_total_int_fit) / float(len(cell_total_int_fit)), 2) if cell_total_int_fit else float("nan"),
+            "median_cell_total_intensity_fit": round(_median(cell_total_int_fit), 2) if cell_total_int_fit else float("nan"),
+            "cv_cell_total_intensity_fit": round(tcv, 4) if tcv == tcv else float("nan"),
+            "mean_spot_volume_um3": round(default_spot_diameter_um, 5) if cell_total_int_fit else float("nan"),
+            "mean_spot_anisotropy": round(
+                cfg.foci.bigfish_spot_radius_z_nm / cfg.foci.bigfish_spot_radius_nm, 3
+            ) if cell_total_int_fit else float("nan"),
+            "n_nuclei_border_excluded": int(n_border_excluded),
+            "total_spots": int(len(spots_out_df)),
+            "spots_in_nuclei": int((spots_out_df.get("nucleus_id", pd.Series(dtype=int)) > 0).sum()) if len(spots_out_df) else 0,
+            "runtime_s": round(time.time() - t0, 3),
+            "dapi_channel": int(dapi_idx),
+            "rna_channel": int(rna_idx),
+            "voxel_xy_nm": voxel_xy_nm,
+            "voxel_z_nm": voxel_z_nm,
+            "n_z": int(img.n_z),
+        }
+    else:
+        per_image = {
+            "image": img_name,
+            "condition": condition,
+            "secondary_only": sec_only,
+            "nuclei_analyzed": 0,
+            "mean_spots_per_nucleus": 0.0,
+            "median_spots_per_nucleus": 0.0,
+            "cv_spots_per_nucleus": float("nan"),
+            "frac_nuclei_with_ge_1_spot": 0.0,
+            "frac_nuclei_with_ge_5_spots": 0.0,
+            "frac_nuclei_with_ge_10_spots": 0.0,
+            "mean_spot_diameter_um": float("nan"),
+            "median_spot_diameter_um": float("nan"),
+            "mean_nuclear_spot_density_per_um2": float("nan"),
+            "mean_cell_intensity_blend": float("nan"),
+            "median_cell_intensity_blend": float("nan"),
+            "mean_cell_total_intensity_fit": float("nan"),
+            "median_cell_total_intensity_fit": float("nan"),
+            "cv_cell_total_intensity_fit": float("nan"),
+            "mean_spot_volume_um3": float("nan"),
+            "mean_spot_anisotropy": float("nan"),
+            "n_nuclei_border_excluded": int(n_border_excluded),
+            "total_spots": 0,
+            "spots_in_nuclei": 0,
+            "runtime_s": round(time.time() - t0, 3),
+            "dapi_channel": int(dapi_idx),
+            "rna_channel": int(rna_idx),
+            "voxel_xy_nm": voxel_xy_nm,
+            "voxel_z_nm": voxel_z_nm,
+            "n_z": int(img.n_z),
+        }
+
+    thresholds = {
+        "image": img_name,
+        "rna_threshold_used": thr_val,
+        "rna_threshold_value": rna_thr_value,
+        "rna_threshold_method": (
+            "pixel_coloc_mad" if (pc_cfg is not None
+                                  and rna_thr_value == rna_thr_value
+                                  and pc_cfg.threshold_mode == "mad")
+            else ("pixel_coloc_" + pc_cfg.threshold_mode if pc_cfg is not None
+                  else "fallback")
+        ),
+        "rna_threshold_k_mad": float(pc_cfg.k_mad) if pc_cfg is not None else float("nan"),
+        "rna_threshold_scope": getattr(pc_cfg, "threshold_scope", "") if pc_cfg is not None else "",
+        "dapi_threshold_method": "Otsu dark",
+        "dapi_threshold_value": dapi_thr_val,
+        "watershed": cfg.nuclei.stardist_postprocess in ("watershed_otsu", "watershed_triangle"),
+        "nuc_min_area_px": cfg.nuclei.min_area_px,
+        "exclude_border_nuclei": cfg.nuclei.exclude_border,
+        "z_mode": z_mode,
+        "z_start": z_start,
+        "z_end": z_end,
+        "segmentation_backend": cfg.nuclei.backend,
+        "stardist_prob_threshold": cfg.nuclei.prob_threshold,
+        "spot_backend": cfg.foci.backend,
+        "bigfish_spot_radius_nm": cfg.foci.bigfish_spot_radius_nm,
+        "bigfish_voxel_size_nm": voxel_xy_nm,
+        "bigfish_voxel_z_nm": voxel_z_nm,
+        "trackmate_threshold": "",
+        "rna_detect_blur_sigma": "",
+        "rna_detect_rollingball": "",
+    }
+
+    qc = dict(
+        labels=labels,
+        dapi_2d=dapi_2d,
+        rna_2d=rna_2d,
+        cyt_labels=cyt_labels,
+        dapi_mask=dapi_mask,
+        rna_pos_mask=rna_pos_mask,
+        voxel_xy_nm=voxel_xy_nm,
+    )
+
+    return ImageResult(
+        image=img_name,
+        condition=condition,
+        sec_only=sec_only,
+        per_image=per_image,
+        nuclei=nuclei_df,
+        spots=spots_out_df,
+        morphology=morph_df,
+        thresholds=thresholds,
+        qc=qc,
+        extra=dict(rna_thr_value=rna_thr_value, dapi_thr_value=dapi_thr_val,
+                   n_border_excluded=n_border_excluded),
+    )
+
+
+from . import register_mode
+
+@register_mode("rna_only")
+def run(*args, **kwargs):
+    return run_one(*args, **kwargs)
+
+
+# Helper used by the batch-scope pre-pass in runner.py. Loads ONE image,
+# segments nuclei (with border exclusion matching the main pass), and returns
+# the raw nuclear RNA pixel values as a 1-D numpy array. Mirrors Fiji's
+# collect_nuclear_pixel_values_fast() called inside
+# run_batch_prescan_for_thresholds() (Coloc_Analysis.py lines 2336-2666):
+# uses raw rna2d (NO rolling-ball, NO blur, NO median filter).
+def collect_nuclear_rna_pixels(path, *, cfg) -> np.ndarray:
+    """Return the raw RNA-channel pixel values inside the nuclei of ONE image.
+
+    Used by the batch runner's pre-pass to pool across the whole batch and
+    compute a single median+k*MAD threshold. Bit-equivalent to the per-image
+    nuclear pixel extraction inside ``run_one`` — same channel resolution,
+    same z-collapse, same segmentation, same border exclusion, same
+    ``labels > 0`` mask, same ``astype(np.float64)``.
+    """
+    img = _io.read_image(path)
+
+    one_indexed = bool(cfg.channels.one_indexed)
+    def _chan(idx: int) -> int:
+        return (idx - 1) if (one_indexed and idx > 0) else idx
+
+    dapi_idx = _chan(cfg.channels.dapi)
+    rna_idx = _chan(cfg.channels.rna)
+    if dapi_idx < 0 or rna_idx < 0:
+        auto = _io.autodetect_channels(img)
+        if dapi_idx < 0:
+            dapi_idx = auto["dapi"]
+        if rna_idx < 0:
+            rna_idx = auto["rna"]
+    dapi_idx = max(0, min(img.n_channels - 1, dapi_idx))
+    rna_idx = max(0, min(img.n_channels - 1, rna_idx))
+
+    z_mode = cfg.z_stack.mode
+    z_start = cfg.z_stack.start_slice
+    z_end = cfg.z_stack.end_slice
+    if z_start is not None and z_start > img.n_z:
+        z_start = 1
+    if z_end is not None and z_end > img.n_z:
+        z_end = img.n_z
+
+    dapi_2d = _io.extract_channel(img, dapi_idx, z_mode=z_mode, z_start=z_start, z_end=z_end)
+    if dapi_2d.ndim != 2:
+        dapi_2d = dapi_2d.max(axis=0)
+    rna_2d = _io.extract_channel(img, rna_idx, z_mode=z_mode, z_start=z_start, z_end=z_end)
+    if rna_2d.ndim != 2:
+        rna_2d = rna_2d.max(axis=0)
+
+    seg_params = dict(
+        min_area=cfg.nuclei.min_area_px,
+        max_area=cfg.nuclei.max_area_px,
+        prob_threshold=cfg.nuclei.prob_threshold,
+        nms_threshold=cfg.nuclei.nms_threshold,
+        n_tiles=cfg.nuclei.n_tiles,
+        stardist_model=cfg.nuclei.stardist_model,
+        stardist_gauss_sigma=cfg.nuclei.stardist_gauss_sigma,
+        stardist_postprocess=cfg.nuclei.stardist_postprocess,
+        stardist_postprocess_dilate_px=cfg.nuclei.stardist_postprocess_dilate_px,
+        stardist_postprocess_otsu_sigma=cfg.nuclei.stardist_postprocess_otsu_sigma,
+        stardist_postprocess_mask_closing_px=cfg.nuclei.stardist_postprocess_mask_closing_px,
+        label_smoothing_radius_px=cfg.nuclei.label_smoothing_radius_px,
+        diameter=cfg.nuclei.cellpose_diameter_px,
+        flow_threshold=cfg.nuclei.cellpose_flow_threshold,
+        cellprob_threshold=cfg.nuclei.cellpose_cellprob_threshold,
+        cellpose_model_type=cfg.nuclei.cellpose_model_type,
+    )
+    labels = _seg.segment_nuclei(dapi_2d, backend=cfg.nuclei.backend, params=seg_params)
+    if cfg.nuclei.exclude_border:
+        labels = _seg.exclude_border_labels(labels, margin_px=cfg.nuclei.border_margin_px)
+
+    nuc_mask = labels > 0
+    if not nuc_mask.any():
+        return np.empty(0, dtype=np.float64)
+    return rna_2d[nuc_mask].astype(np.float64)
