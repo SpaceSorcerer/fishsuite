@@ -1,0 +1,153 @@
+# H9 hESC 100x — MIAT KD ASO (2026-05-08) — STARDIST + downsample x3 backend
+# Comparison arm vs the cellpose ds2 preset (h9_miat_kd_aso_cellpose.yaml).
+#
+# 2026-05-25 (Brian): downsampling DAPI fixes StarDist's over-segmentation at
+# 0.065 µm/px (nuclei ~200 px exceed the model's training scale). On KD_08,
+# StarDist defaults @ downsample x3 (768 px grid) gave 80 nuclei in 1.3s with
+# clean one-per-nucleus boundaries — matching cellpose ds2's 81 ~150x faster.
+# Brian: cellpose ds2 is still the best; StarDist ds3 is "next best, would need
+# a bit more work". Running BOTH full pipelines to compare downstream findings.
+#
+# IMPORTANT: the downsample applies ONLY to DAPI nuclei segmentation. The MIAT
+# (RNA) channel is detected at full 0.065 µm/px resolution; segment_nuclei
+# upsamples labels back to full res before any spot-to-nucleus assignment.
+
+experiment:
+  name: "H9_MIAT_KD_ASO_stardist_ds3_2026-05-08"
+  description: "H9 hESC MIAT WT (NT ASO) vs MIAT KD ASO 100x — StarDist defaults @ downsample x3, single-z per image"
+  cell_line: "H9 hESC"
+
+conditions:
+  mode: subfolders
+  subfolder_conditions:
+    Folder_NT: "NT ASO"
+    Folder_MIATKD: "KD ASO"
+    Folder_KD-2only: "Sec-Only"
+    Folder_NT-2only: "Sec-Only"
+  sec_only_folders:
+    - Folder_KD-2only
+    - Folder_NT-2only
+  sec_only_files: []
+  condition_order: ["Sec-Only", "NT ASO", "KD ASO"]
+  min_nuclei_for_stats: 6
+
+# 2026-05-25 Brian: SHELVE image _06. It was in Folder_NT-2only (secondary-
+# only), but its MIAT spot counts are KD-like (far above the other sec-only
+# controls) — provenance now doubtful, so it is excluded from the analysis
+# entirely (not counted as sec-only NOR injected into KD). Raw file untouched.
+input_file_subset:
+  - "H9-MIAT-ASOs-_02.vsi"
+  - "H9-MIAT-ASOs-_03.vsi"
+  - "H9-MIAT-ASOs-_04.vsi"
+  - "H9-MIAT-ASOs-_05.vsi"
+  - "H9-MIAT-ASOs-_07.vsi"
+  - "H9-MIAT-ASOs-_08.vsi"
+  - "H9-MIAT-ASOs-_09.vsi"
+  - "H9-MIAT-ASOs-_10.vsi"
+  - "H9-MIAT-ASOs-_11.vsi"
+  - "H9-MIAT-ASOs-_12.vsi"
+  - "H9-MIAT-ASOs-_13.vsi"
+
+channels:
+  analysis_mode: rna_only
+  dapi: 2
+  rna: 0
+  antibody: -1
+  dapi_label: "DAPI"
+  rna_label: "MIAT-640"
+
+z_stack:
+  mode: single
+  # Per-channel z (Brian): DAPI single_slice for clean nuclei; RNA maxproj over
+  # [rna_start_slice, rna_end_slice] (v11 windows) for MIAT spot SNR.
+  file_overrides:
+    "H9-MIAT-ASOs-_02.vsi": { single_slice: 12, rna_start_slice: 7,  rna_end_slice: 16 }
+    "H9-MIAT-ASOs-_03.vsi": { single_slice: 19, rna_start_slice: 14, rna_end_slice: 23 }
+    "H9-MIAT-ASOs-_04.vsi": { single_slice: 15, rna_start_slice: 10, rna_end_slice: 19 }
+    "H9-MIAT-ASOs-_05.vsi": { single_slice: 15, rna_start_slice: 10, rna_end_slice: 19 }
+    "H9-MIAT-ASOs-_06.vsi": { single_slice: 11, rna_start_slice: 6,  rna_end_slice: 15 }
+    "H9-MIAT-ASOs-_07.vsi": { single_slice: 13, rna_start_slice: 8,  rna_end_slice: 17 }
+    "H9-MIAT-ASOs-_08.vsi": { single_slice: 14, rna_start_slice: 9,  rna_end_slice: 18 }
+    "H9-MIAT-ASOs-_09.vsi": { single_slice: 18, rna_start_slice: 13, rna_end_slice: 22 }
+    "H9-MIAT-ASOs-_10.vsi": { single_slice: 14, rna_start_slice: 9,  rna_end_slice: 18 }
+    "H9-MIAT-ASOs-_11.vsi": { single_slice: 9,  rna_start_slice: 4,  rna_end_slice: 13 }
+    "H9-MIAT-ASOs-_12.vsi": { single_slice: 15, rna_start_slice: 10, rna_end_slice: 19 }
+    "H9-MIAT-ASOs-_13.vsi": { single_slice: 12, rna_start_slice: 7,  rna_end_slice: 16 }
+
+nuclei:
+  backend: stardist
+  stardist_model: 2D_versatile_fluo
+  # Defaults from the winning ds3 exploration variant (clean 80 nuclei / 1.3s).
+  # 2026-05-25 Brian: 0.5 -> 0.45 -> 0.40 to catch a few more dim nuclei
+  # (small steps to stay above the over-segmentation zone at very low prob).
+  prob_threshold: 0.40
+  nms_threshold: 0.4
+  stardist_gauss_sigma: 0.0
+  # No watershed/smoothing on the downsampled raw StarDist output (the ds3
+  # exploration used raw labels). Can add later if boundaries need rounding.
+  stardist_postprocess: none
+  label_smoothing_radius_px: 0
+  # Downsample DAPI 3x before StarDist (-> 768 px grid, ~0.195 µm/px), upsample
+  # labels back to full res. min_area below is the authoritative FULL-RES floor.
+  cellpose_downsample_factor: 3.0
+  # 2026-05-25: 14000 -> 16000 to drop the few too-small sliver fragments
+  # Brian saw at 14000 (real H9 nuclei cluster 24k-37k px per area audit).
+  min_area_px: 16000
+  max_area_px: 1000000000000.0
+  exclude_border: true
+  border_margin_px: 10
+
+pixel_coloc:
+  threshold_mode: mad
+  threshold_scope: batch
+  k_mad: 2.5
+
+foci:
+  enabled: true
+  backend: bigfish
+  bigfish_voxel_size_nm: 0.0
+  bigfish_voxel_z_nm: 0.0
+  bigfish_spot_radius_nm: 100.0
+  bigfish_spot_radius_z_nm: 300.0
+  threshold_multiplier: 0.5
+  only_nuclear_spots: false
+  min_sep_px: 1
+  # Always detect + report secondary-only spots (background level, reported
+  # not subtracted; Brian expects only ~1 of 4 sec-only images to show signal).
+  detect_in_sec_only: true
+
+cytoplasm:
+  enabled: true
+  voronoi_max_expansion_px: 80
+  measure_nc_ratio: true
+
+nucleolus:
+  enabled: true
+  intra_nuclear_percentile: 25.0
+  min_area_um2: 1.0
+  max_area_frac_of_nucleus: 0.6
+  closing_radius_px: 2
+
+output:
+  save_qc_overlays: true
+  save_per_image_csv: true
+  save_masks: true
+  save_publication_images: true
+  pub_contrast_mode: manual
+  # 2026-05-25: floor 500 -> 1200. The 10-slice RNA maxproj integrates
+  # nonspecific noise above 500, so secondary-only background passed at ~38
+  # spots/nucleus. Maxproj floor audit: at 1200, sec-only keeps ~5% (background
+  # ~3/nuc) while real KD/NT keep healthy signal — only the worst sec-only
+  # image (_06) retains notable signal, matching Brian's expectation.
+  manual_rna_min: 800.0
+  manual_rna_max: 4200.0
+  manual_dapi_min: 300.0
+  manual_dapi_max: 3200.0
+  apply_pub_contrast_floor_to_spots: true
+  prefix: ""
+  # 25 µm bar (proportionate for ~150 µm H9 field) + bigger font.
+  scalebar_um: 25.0
+  scalebar_font_px: 52
+
+parallel:
+  workers: auto

@@ -139,7 +139,39 @@ def segment_nuclei(
         cellprob_threshold=float(p.get("cellprob_threshold", 0.0)),
         cellpose_model_type=str(p.get("cellpose_model_type", "cpsam")),
     )
-    labels = run_backend(backend, dapi_2d, **kwargs)
+    # 2026-05-25: cellpose speed lever (no CUDA on Brian's AMD GPU). cpsam
+    # runtime scales ~quadratically with pixel count, and H9 DAPI at
+    # 0.065 µm/px is heavily oversampled for segmentation (nuclei ~200 px).
+    # Downsample by `cellpose_downsample_factor`, segment on the smaller grid
+    # with a proportionally smaller diameter + min_area, then upsample integer
+    # labels (nearest-neighbour) back to full res. The AUTHORITATIVE full-res
+    # area filter below is unaffected — it runs on the upsampled labels.
+    # The field is named cellpose_downsample_factor for historical reasons but
+    # the downsample applies to ANY backend (StarDist benefits too: at
+    # 0.065 µm/px H9 nuclei ~200 px exceed StarDist's training scale and
+    # over-segment; downsampling to ~0.13 µm/px — the cardiomyocyte scale —
+    # fixes it, ~150x faster than full-res cellpose). diameter is only used by
+    # cellpose (StarDist ignores it); scaling it is harmless.
+    _ds = float(p.get("cellpose_downsample_factor", 1.0))
+    _do_ds = (_ds > 1.0)
+    seg_img = dapi_2d
+    if backend == "cellpose":
+        try:
+            import os as _os, torch as _torch
+            _torch.set_num_threads(int(_os.cpu_count() or 12))
+        except Exception:
+            pass
+    if _do_ds:
+        from skimage.transform import rescale as _rescale
+        seg_img = _rescale(dapi_2d.astype(np.float32), 1.0 / _ds, order=1,
+                           anti_aliasing=True, preserve_range=True)
+        kwargs["diameter"] = float(kwargs.get("diameter", 0.0)) / _ds
+        kwargs["min_area"] = max(1, int(kwargs["min_area"] / (_ds * _ds)))
+    labels = run_backend(backend, seg_img, **kwargs)
+    if _do_ds and labels.shape != dapi_2d.shape:
+        from skimage.transform import resize as _resize
+        labels = _resize(labels, dapi_2d.shape, order=0, preserve_range=True,
+                         anti_aliasing=False).astype(np.int32)
     # Per-label boundary smoothing AFTER backend postprocess (watershed /
     # dilate / none / closing). Default radius 0 = disabled = current
     # behavior. Recommended 3-7 px to round off star-convex artifacts that

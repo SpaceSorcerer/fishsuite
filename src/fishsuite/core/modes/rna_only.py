@@ -10,7 +10,8 @@ from __future__ import annotations
 import math
 import time
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Any
+from pathlib import Path
+from typing import Dict, List, Optional, Any, Tuple
 
 import numpy as np
 import pandas as pd
@@ -48,6 +49,54 @@ def _safe_float(v) -> float:
         return float("nan")
 
 
+def _measure_spot_diameter_um(
+    rna_2d: np.ndarray,
+    spots_df: pd.DataFrame,
+    voxel_xy_um: float,
+    crop_half: int = 4,
+    fallback_diam_um: Optional[float] = None,
+) -> np.ndarray:
+    """Per-spot FWHM diameter (µm) via moment-based 2D Gaussian estimator.
+
+    See rna_rna._measure_spot_diameter_um for full notes. Duplicated here
+    to keep rna_only self-contained (rna_only has no import dep on rna_rna).
+    """
+    n = len(spots_df)
+    if n == 0:
+        return np.array([], dtype=np.float32)
+    if rna_2d.ndim != 2:
+        return np.full(n, float(fallback_diam_um) if fallback_diam_um else 2.0 * voxel_xy_um,
+                       dtype=np.float32)
+    H, W = rna_2d.shape
+    diameters_um = np.zeros(n, dtype=np.float32)
+    fallback = float(fallback_diam_um) if fallback_diam_um else (2.0 * voxel_xy_um)
+    ys_arr = spots_df["y_px"].astype(float).to_numpy()
+    xs_arr = spots_df["x_px"].astype(float).to_numpy()
+    for i in range(n):
+        cy = int(round(ys_arr[i]))
+        cx = int(round(xs_arr[i]))
+        y0, y1 = max(0, cy - crop_half), min(H, cy + crop_half + 1)
+        x0, x1 = max(0, cx - crop_half), min(W, cx + crop_half + 1)
+        if (y1 - y0) < 3 or (x1 - x0) < 3:
+            diameters_um[i] = fallback
+            continue
+        crop = rna_2d[y0:y1, x0:x1].astype(np.float32)
+        bg = float(np.percentile(crop, 10))
+        sig = np.clip(crop - bg, 0, None)
+        total = float(sig.sum())
+        if total <= 0:
+            diameters_um[i] = fallback
+            continue
+        ys_ix, xs_ix = np.indices(sig.shape, dtype=np.float32)
+        my = float((ys_ix * sig).sum() / total)
+        mx = float((xs_ix * sig).sum() / total)
+        var = float((((ys_ix - my) ** 2 + (xs_ix - mx) ** 2) * sig).sum() / total)
+        sigma_px = float(np.sqrt(max(var / 2.0, 0.25)))
+        fwhm_px = 2.355 * sigma_px
+        diameters_um[i] = float(fwhm_px * voxel_xy_um)
+    return diameters_um
+
+
 def _median(values):
     vals = [v for v in values if v == v]
     if not vals:
@@ -64,11 +113,26 @@ def run_one(
     sec_only: bool,
     cfg,
     precomputed_rna_threshold: Optional[float] = None,
+    precomputed_labels: Optional[np.ndarray] = None,
+    analysis_floors: Optional[Dict[str, Any]] = None,
 ) -> ImageResult:
     """Run the rna_only pipeline on a single image.
 
     Parameters
     ----------
+    precomputed_labels : np.ndarray or None
+        When supplied (by the batch runner during a
+        ``pixel_coloc.threshold_scope == 'batch'`` run), this is the FINAL
+        (already border-excluded) nuclei label image produced by the
+        pre-pass ``collect_nuclear_rna_pixels`` for THIS exact image. When
+        not None, ``run_one`` reuses it verbatim and SKIPS both the
+        ``segment_nuclei`` call and the ``exclude_border_labels`` call, so
+        each image is segmented exactly once per batch run (avoids the 2x
+        segmentation cost with slow backends such as cellpose). The collect
+        helper builds an identical ``seg_params`` and applies identical
+        border exclusion, so the cached labels are bit-equivalent to what
+        this function would otherwise compute. When None, segmentation runs
+        exactly as before (per-image / non-batch path is unchanged).
     precomputed_rna_threshold : float or None
         When supplied (typically by the batch runner during a
         ``pixel_coloc.threshold_scope == 'batch'`` run), this scalar is used
@@ -100,17 +164,102 @@ def run_one(
     z_mode = cfg.z_stack.mode
     z_start = cfg.z_stack.start_slice
     z_end = cfg.z_stack.end_slice
+    # 2026-05-22 Brian: per-image z-window override. If the current image's
+    # file name matches a key in cfg.z_stack.file_overrides, use that
+    # image-specific single_slice / start_slice / end_slice instead of the
+    # batch default. Mirrors the rna_rna.py lookup pattern exactly.
+    _file_overrides = getattr(cfg.z_stack, "file_overrides", {}) or {}
+    _img_name = Path(path).name
+    _ovr = _file_overrides.get(_img_name, {}) if _img_name in _file_overrides else {}
+    if _ovr:
+        if "start_slice" in _ovr:
+            z_start = int(_ovr["start_slice"])
+        if "end_slice" in _ovr:
+            z_end = int(_ovr["end_slice"])
+        try:
+            from rich.console import Console as _C
+            _C().print(f"  [dim]z-override: {_img_name} → start={z_start}, end={z_end}[/dim]")
+        except Exception:
+            pass
+    # 2026-05-25 Brian: per-channel z (DAPI single plane, RNA maxproj). When
+    # this image's override carries BOTH rna_start_slice and rna_end_slice,
+    # detect spots on a MAXPROJ of the RNA channel over that 1-indexed
+    # inclusive window while DAPI segmentation stays on the normal path.
+    # When absent → RNA extraction is unchanged (full back-compat).
+    rna_start_slice = _ovr.get("rna_start_slice") if _ovr else None
+    rna_end_slice = _ovr.get("rna_end_slice") if _ovr else None
+    rna_per_channel_z = (rna_start_slice is not None and rna_end_slice is not None)
+    if rna_per_channel_z:
+        rna_start_slice = int(rna_start_slice)
+        rna_end_slice = int(rna_end_slice)
+        if rna_start_slice > img.n_z:
+            rna_start_slice = 1
+        if rna_end_slice > img.n_z:
+            rna_end_slice = img.n_z
+        try:
+            from rich.console import Console as _C
+            _C().print(
+                f"  [dim]rna z-override: {_img_name} → RNA maxproj "
+                f"[{rna_start_slice},{rna_end_slice}][/dim]"
+            )
+        except Exception:
+            pass
     if z_start is not None and z_start > img.n_z:
         z_start = 1
     if z_end is not None and z_end > img.n_z:
         z_end = img.n_z
 
-    dapi_2d = _io.extract_channel(img, dapi_idx, z_mode=z_mode, z_start=z_start, z_end=z_end)
-    if dapi_2d.ndim != 2:
-        dapi_2d = dapi_2d.max(axis=0)
-    rna_2d = _io.extract_channel(img, rna_idx, z_mode=z_mode, z_start=z_start, z_end=z_end)
-    if rna_2d.ndim != 2:
-        rna_2d = rna_2d.max(axis=0)
+    # 2026-05-24 Brian: autofocus_maxproj — per-image DAPI focus-window
+    # detection, then MIP that window for all channels. Replaces the need
+    # for per-image file_overrides on datasets with field-to-field focus
+    # drift (e.g. BIN1 KO_100x02 needed 15-49 vs default 9-78).
+    if z_mode == "autofocus_maxproj":
+        (afm_zs, afm_ze), afm_diag, dapi_2d = _io.extract_dapi_focus_window(
+            img, dapi_idx,
+            metric=cfg.z_stack.focus_metric,
+            threshold_frac=float(cfg.z_stack.focus_threshold_frac),
+            min_slices=int(cfg.z_stack.focus_window_min_slices),
+            max_slices=int(cfg.z_stack.focus_window_max_slices),
+            z_start=z_start, z_end=z_end,
+            fixed_n_slices=int(getattr(cfg.z_stack, "focus_window_fixed_n_slices", 0)),
+            min_intensity_frac_of_peak=float(getattr(cfg.z_stack, "focus_min_intensity_frac_of_peak", 0.0)),
+        )
+        if rna_per_channel_z:
+            rna_2d = _io.extract_channel(
+                img, rna_idx, z_mode="maxproj",
+                z_start=rna_start_slice, z_end=rna_end_slice,
+            )
+            if rna_2d.ndim != 2:
+                rna_2d = rna_2d.max(axis=0)
+        else:
+            rna_2d = _io.extract_channel_in_z_range(
+                img, rna_idx,
+                z_start_1indexed=afm_zs, z_end_1indexed=afm_ze,
+                project="maxproj",
+            )
+        try:
+            from rich.console import Console as _C
+            _C().print(
+                f"  [dim][autofocus_maxproj] {Path(path).name}: "
+                f"focus peak at z={afm_diag['peak_z']+1}, "
+                f"window=[{afm_zs},{afm_ze}] "
+                f"({afm_ze - afm_zs + 1} slices)[/dim]"
+            )
+        except Exception:
+            pass
+    else:
+        dapi_2d = _io.extract_channel(img, dapi_idx, z_mode=z_mode, z_start=z_start, z_end=z_end)
+        if dapi_2d.ndim != 2:
+            dapi_2d = dapi_2d.max(axis=0)
+        if rna_per_channel_z:
+            rna_2d = _io.extract_channel(
+                img, rna_idx, z_mode="maxproj",
+                z_start=rna_start_slice, z_end=rna_end_slice,
+            )
+        else:
+            rna_2d = _io.extract_channel(img, rna_idx, z_mode=z_mode, z_start=z_start, z_end=z_end)
+        if rna_2d.ndim != 2:
+            rna_2d = rna_2d.max(axis=0)
 
     voxel_xy_nm = _safe_float(img.voxel_xy_nm)
     if not (voxel_xy_nm > 0):
@@ -146,13 +295,24 @@ def run_one(
         flow_threshold=cfg.nuclei.cellpose_flow_threshold,
         cellprob_threshold=cfg.nuclei.cellpose_cellprob_threshold,
         cellpose_model_type=cfg.nuclei.cellpose_model_type,
+        cellpose_downsample_factor=cfg.nuclei.cellpose_downsample_factor,
     )
-    labels = _seg.segment_nuclei(dapi_2d, backend=cfg.nuclei.backend, params=seg_params)
-    n_before = int(labels.max())
-    if cfg.nuclei.exclude_border:
-        labels = _seg.exclude_border_labels(labels, margin_px=cfg.nuclei.border_margin_px)
-    n_after = int(labels.max())
-    n_border_excluded = n_before - n_after
+    if precomputed_labels is not None:
+        # Batch threshold_scope pre-pass already segmented + border-excluded
+        # this exact image; reuse those labels and SKIP re-segmentation so
+        # each image is segmented exactly once per run. The cached labels are
+        # already border-excluded, so set the bookkeeping accordingly.
+        labels = precomputed_labels
+        n_after = int(labels.max())
+        n_before = n_after
+        n_border_excluded = 0
+    else:
+        labels = _seg.segment_nuclei(dapi_2d, backend=cfg.nuclei.backend, params=seg_params)
+        n_before = int(labels.max())
+        if cfg.nuclei.exclude_border:
+            labels = _seg.exclude_border_labels(labels, margin_px=cfg.nuclei.border_margin_px)
+        n_after = int(labels.max())
+        n_border_excluded = n_before - n_after
 
     # ---- cytoplasm mask -----------------------------------------------------
     cyt_labels = None
@@ -164,7 +324,12 @@ def run_one(
     # ---- spot detection -----------------------------------------------------
     spots_df = pd.DataFrame()
     thr_val = float("nan")
-    if cfg.foci.enabled and not sec_only:
+    # 2026-05-25 Brian: optionally also detect spots on secondary-only control
+    # images (foci.detect_in_sec_only). Sec-only spot counts are REPORTED
+    # (flow through per_image_summary + per-nucleus CSV like any image) for
+    # background QC, never subtracted from sample images. Default False keeps
+    # legacy behavior (sec-only images skip detection → zero spots).
+    if cfg.foci.enabled and (not sec_only or getattr(cfg.foci, "detect_in_sec_only", False)):
         vx = cfg.foci.bigfish_voxel_size_nm
         vz = cfg.foci.bigfish_voxel_z_nm
         if vx <= 0:
@@ -189,8 +354,37 @@ def run_one(
             spots_df = pd.DataFrame()
             thr_val = float("nan")
 
-    # ---- spot diameter (FWHM-ish from BigFISH spot_radius) -----------------
-    # rough: spot diameter ~ 2 * spot_radius_nm in micrometers
+    # ---- Pub-contrast floor as HARD spot-detection floor -------------------
+    # rna_only parity with rna_rna (2026-05-25 Brian): when
+    # output.apply_pub_contrast_floor_to_spots is True AND the runner forwarded
+    # the resolved RNA floor via analysis_floors, drop spots whose peak
+    # intensity is below the floor — BEFORE stratification so every per-nucleus
+    # count reflects the filtered set. This filter previously existed ONLY in
+    # rna_rna mode, so the MIAT (rna_only) manual_rna_min floor never actually
+    # applied — every rna_only run reported RAW BigFISH detections regardless
+    # of floor. BigFISH detection itself is unchanged; this is a strict
+    # post-detection filter.
+    if (
+        bool(getattr(cfg.output, "apply_pub_contrast_floor_to_spots", False))
+        and analysis_floors and len(spots_df)
+    ):
+        _rna_floor = analysis_floors.get("rna")
+        if _rna_floor:
+            from .rna_rna import _filter_spots_by_floor as _ffbf
+            _n0 = len(spots_df)
+            spots_df = _ffbf(spots_df, _rna_floor, rna_2d)
+            _nd = _n0 - len(spots_df)
+            if _nd:
+                print(f"  [floor-filter] {Path(path).name}: dropped {_nd}/{_n0} "
+                      f"spots below floor={float(_rna_floor):.1f}")
+
+    # ---- spot diameter --------------------------------------------------
+    # Per-spot diameter is MEASURED via a moment-based 2D Gaussian estimator
+    # on a small crop around each spot center (see _measure_spot_diameter_um
+    # above). The previous behavior — reporting the configured BigFISH spot
+    # radius doubled, i.e. a single constant per image — was an error noted
+    # by Brian; the resulting ``spot_diameter_um`` column had no variability,
+    # which broke spot-size figures (figures/25,26).
     spot_radius_um = float(cfg.foci.bigfish_spot_radius_nm) / 1000.0
     default_spot_diameter_um = 2.0 * spot_radius_um
     default_spot_fwhm_px = default_spot_diameter_um / max(voxel_xy_um, 1e-6)
@@ -201,6 +395,15 @@ def run_one(
         spots_df = _morph.stratify_spots(spots_df, labels, cytoplasm_labels=cyt_labels)
     elif len(spots_df) > 0:
         spots_df = _morph.stratify_spots(spots_df, labels)
+
+    # Measured per-spot diameter (µm). Attach as a column so the per-nucleus
+    # aggregator and the per-spot row both see real per-spot values.
+    if len(spots_df) > 0:
+        spots_df = spots_df.copy() if not isinstance(spots_df, pd.DataFrame) else spots_df
+        spots_df["spot_diameter_um"] = _measure_spot_diameter_um(
+            rna_2d, spots_df, voxel_xy_um,
+            fallback_diam_um=default_spot_diameter_um,
+        )
 
     # ---- RNA-positive mask for walkthrough step 05/06 ----------------------
     # Pixel-coloc threshold — matches Fiji's Coloc_Analysis.coloc_threshold()
@@ -380,11 +583,35 @@ def run_one(
             spot_fit_success_count = 0
             spot_fit_success_fraction = float("nan")
 
-        # Spot size aggregates (BigFISH gives constant radius — use defaults)
-        mean_spot_diameter_um = default_spot_diameter_um if rna_spot_count > 0 else float("nan")
-        mean_spot_fwhm_px = default_spot_fwhm_px if rna_spot_count > 0 else float("nan")
-        median_spot_fwhm_px = default_spot_fwhm_px if rna_spot_count > 0 else float("nan")
-        mean_spot_area_px = default_spot_area_px if rna_spot_count > 0 else float("nan")
+        # Spot size aggregates — now computed from MEASURED per-spot diameters
+        # (column added to spots_df above). Falls back to the BigFISH-nominal
+        # default if the measured column is somehow missing (older runs).
+        if rna_spot_count > 0 and len(sub) > 0 and "spot_diameter_um" in sub.columns:
+            d_um = pd.to_numeric(sub["spot_diameter_um"], errors="coerce").to_numpy()
+            d_um = d_um[np.isfinite(d_um) & (d_um > 0)]
+            if d_um.size > 0:
+                mean_spot_diameter_um = float(d_um.mean())
+                _vx = max(voxel_xy_um, 1e-6)
+                fwhm_px_arr = d_um / _vx
+                mean_spot_fwhm_px = float(fwhm_px_arr.mean())
+                median_spot_fwhm_px = float(np.median(fwhm_px_arr))
+                area_px_arr = math.pi * (fwhm_px_arr / 2.0) ** 2
+                mean_spot_area_px = float(area_px_arr.mean())
+            else:
+                mean_spot_diameter_um = default_spot_diameter_um
+                mean_spot_fwhm_px = default_spot_fwhm_px
+                median_spot_fwhm_px = default_spot_fwhm_px
+                mean_spot_area_px = default_spot_area_px
+        elif rna_spot_count > 0:
+            mean_spot_diameter_um = default_spot_diameter_um
+            mean_spot_fwhm_px = default_spot_fwhm_px
+            median_spot_fwhm_px = default_spot_fwhm_px
+            mean_spot_area_px = default_spot_area_px
+        else:
+            mean_spot_diameter_um = float("nan")
+            mean_spot_fwhm_px = float("nan")
+            median_spot_fwhm_px = float("nan")
+            mean_spot_area_px = float("nan")
         mean_spot_volume_vox = (
             4.0 / 3.0 * math.pi * (default_spot_fwhm_px / 2.0) ** 2
             * (cfg.foci.bigfish_spot_radius_z_nm / voxel_z_nm)
@@ -490,6 +717,13 @@ def run_one(
             ipeak = float(r.get("intensity_peak", float("nan")))
             nid_at = int(r.get("nucleus_id", 0))
             in_nuc = bool(r.get("in_nucleus", False))
+            in_cyt = bool(r.get("in_cytoplasm", False))
+            # Use the MEASURED per-spot diameter attached to spots_df above.
+            spot_diam_um = float(r.get("spot_diameter_um", default_spot_diameter_um))
+            if not (spot_diam_um == spot_diam_um and spot_diam_um > 0):
+                spot_diam_um = default_spot_diameter_um
+            spot_fwhm_px_val = spot_diam_um / max(voxel_xy_um, 1e-6)
+            spot_area_px_val = math.pi * (spot_fwhm_px_val / 2.0) ** 2
             spot_rows.append({
                 "image": img_name,
                 "condition": condition,
@@ -499,24 +733,30 @@ def run_one(
                 "nucleus_id": nid_at,
                 "x_px": x_px,
                 "y_px": y_px,
+                # 2026-05-25 Brian: surface in_nucleus / in_cytoplasm flags on
+                # the per-spot rows (rna_rna already does this). Needed by the
+                # nucleolus subnuclear-region classifier and Excel Section G,
+                # which gate nucleolar counts on in_nucleus. Pure-additive.
+                "in_nucleus": int(in_nuc),
+                "in_cytoplasm": int(in_cyt),
                 "z_slice": z_slice,
                 "z_position_um": z_slice * voxel_z_um,
                 "spot_peak_intensity": ipeak,
                 "quality": ipeak,
-                "spot_fwhm_px": default_spot_fwhm_px,
-                "fwhm_xy_px_fit": default_spot_fwhm_px,
+                "spot_fwhm_px": spot_fwhm_px_val,
+                "fwhm_xy_px_fit": spot_fwhm_px_val,
                 "fwhm_z_px_fit": (cfg.foci.bigfish_spot_radius_z_nm * 2.355 / voxel_z_nm),
-                "sigma_xy_px_fit": default_spot_fwhm_px / 2.355,
+                "sigma_xy_px_fit": spot_fwhm_px_val / 2.355,
                 "sigma_z_px_fit": (cfg.foci.bigfish_spot_radius_z_nm / voxel_z_nm),
-                "spot_diameter_um": default_spot_diameter_um,
-                "spot_area_px": default_spot_area_px,
+                "spot_diameter_um": spot_diam_um,
+                "spot_area_px": spot_area_px_val,
                 "spot_volume_vox": (
-                    4.0 / 3.0 * math.pi * (default_spot_fwhm_px / 2.0) ** 2
+                    4.0 / 3.0 * math.pi * (spot_fwhm_px_val / 2.0) ** 2
                     * (cfg.foci.bigfish_spot_radius_z_nm / voxel_z_nm)
                 ),
                 "spot_volume_um3": (
                     4.0 / 3.0 * math.pi
-                    * (default_spot_diameter_um / 2.0) ** 2
+                    * (spot_diam_um / 2.0) ** 2
                     * (cfg.foci.bigfish_spot_radius_z_nm / 1000.0)
                 ),
                 "spot_anisotropy": (
@@ -525,8 +765,8 @@ def run_one(
                 "integrated_intensity_fit": ipeak,
                 "rna_mean_raw_disk": ipeak,
                 "rna_mean_bgc_blend": ipeak,
-                "rna_sum_bgc_blend": ipeak * default_spot_area_px,
-                "rna_sum_raw_disk": ipeak * default_spot_area_px,
+                "rna_sum_bgc_blend": ipeak * spot_area_px_val,
+                "rna_sum_raw_disk": ipeak * spot_area_px_val,
                 "rna_bg_blend": float("nan"),
                 "rna_contrast_blend": float("nan"),
                 "spot_bg_estimate": float("nan"),
@@ -536,7 +776,7 @@ def run_one(
                 "spot_to_nuc_centroid_px": float("nan"),
                 "local_snr": float("nan"),
                 "fit_ok": 1,
-                "n_voxels_sampled": int(default_spot_area_px),
+                "n_voxels_sampled": int(spot_area_px_val),
                 "z_fwhm_slices": float(cfg.foci.bigfish_spot_radius_z_nm * 2.355 / voxel_z_nm),
                 "colocalized": 0,
                 "coloc_partner_id": -1,
@@ -549,6 +789,67 @@ def run_one(
     nuclei_df = pd.DataFrame(nuc_rows)
     spots_out_df = pd.DataFrame(spot_rows)
     morph_df = pd.DataFrame(morph_rows)
+
+    # ---- Nucleolus + chromatin (optional) ----------------------------------
+    # 2026-05-25 Brian: rna_only parity with rna_rna. When cfg.nucleolus.enabled,
+    # detect DAPI-low subnuclear regions (nucleoli) and add nucleolus / chromatin
+    # columns to nuclei_df + spots_out_df. SINGLE-RNA adaptation: rna_rna runs
+    # classify on rna1 AND rna2; rna_only has one RNA channel (spots_out_df), so
+    # we classify that single channel only. Column names match rna_rna exactly so
+    # the Excel/figure code consumes them identically (the single RNA maps to the
+    # rna1-equivalent "Introns" row in Excel Section G). Pure-additive: no existing
+    # columns are removed or renamed; if disabled this block is a no-op (byte-
+    # identical legacy behavior). Guarded in try/except — nucleolus is "nice to
+    # have" and must never crash the run.
+    nucleolus_enabled = (
+        getattr(cfg, "nucleolus", None) is not None
+        and getattr(cfg.nucleolus, "enabled", False)
+    )
+    nucleolus_labels_for_qc = None
+    if nucleolus_enabled:
+        try:
+            from ..nucleolus import (
+                NucleolusParams,
+                detect_nucleoli,
+                chromatin_metrics_per_nucleus,
+                classify_spots_by_subnuclear_region,
+            )
+            _ncfg = cfg.nucleolus
+            _params = NucleolusParams(
+                intra_nuclear_percentile=float(_ncfg.intra_nuclear_percentile),
+                min_area_um2=float(_ncfg.min_area_um2),
+                max_area_frac_of_nucleus=float(_ncfg.max_area_frac_of_nucleus),
+                closing_radius_px=int(_ncfg.closing_radius_px),
+                min_border_distance_px=int(getattr(_ncfg, "min_border_distance_px", 3)),
+            )
+            _pix_um = float(voxel_xy_nm) / 1000.0 if voxel_xy_nm else 0.13
+            nucleolus_labels = detect_nucleoli(
+                labels, dapi_2d, pixel_size_um=_pix_um, params=_params
+            )
+            nucleolus_labels_for_qc = nucleolus_labels  # exposed via qc dict below
+            # Per-spot in_nucleolus + refined in_nucleus_excluding_nucleolus
+            # (single RNA channel).
+            if len(spots_out_df) and "x_px" in spots_out_df.columns:
+                spots_out_df = classify_spots_by_subnuclear_region(
+                    spots_out_df, labels, nucleolus_labels
+                )
+            # Merge chromatin metrics into nuclei_df by nucleus_id
+            chrom_df = chromatin_metrics_per_nucleus(labels, dapi_2d, nucleolus_labels)
+            if len(chrom_df) and len(nuclei_df) and "nucleus_id" in nuclei_df.columns:
+                # Drop duplicate columns the merge would otherwise create.
+                _to_drop = [
+                    c for c in ["nucleus_area_px"]
+                    if c in chrom_df.columns and c in nuclei_df.columns
+                ]
+                chrom_df = chrom_df.drop(columns=_to_drop)
+                nuclei_df = nuclei_df.merge(chrom_df, on="nucleus_id", how="left")
+        except Exception as _exc:
+            import traceback as _tb
+            print(
+                f"  WARN: nucleolus detection failed on {img_name} "
+                f"({type(_exc).__name__}: {_exc}); continuing without nucleolus cols.\n"
+                f"{_tb.format_exc()}"
+            )
 
     # Per-image summary row (Fiji-compatible columns)
     if len(nuclei_df) > 0:
@@ -685,6 +986,11 @@ def run_one(
         dapi_mask=dapi_mask,
         rna_pos_mask=rna_pos_mask,
         voxel_xy_nm=voxel_xy_nm,
+        # 2026-05-25 Brian: rna_only parity — expose nucleolus labels so the
+        # runner's generic nucleolus-overlay step (runner.py ~L1668) renders
+        # <prefix><stem>__nucleolus_overlay.png into the nucleolus_overlay/ dir.
+        # None when cfg.nucleolus.enabled is False (overlay step is skipped).
+        nucleolus_labels=nucleolus_labels_for_qc,
     )
 
     return ImageResult(
@@ -715,14 +1021,21 @@ def run(*args, **kwargs):
 # collect_nuclear_pixel_values_fast() called inside
 # run_batch_prescan_for_thresholds() (Coloc_Analysis.py lines 2336-2666):
 # uses raw rna2d (NO rolling-ball, NO blur, NO median filter).
-def collect_nuclear_rna_pixels(path, *, cfg) -> np.ndarray:
-    """Return the raw RNA-channel pixel values inside the nuclei of ONE image.
+def collect_nuclear_rna_pixels(path, *, cfg) -> Tuple[np.ndarray, np.ndarray]:
+    """Return ``(rna_nuclear_pixels, labels)`` for ONE image.
 
-    Used by the batch runner's pre-pass to pool across the whole batch and
-    compute a single median+k*MAD threshold. Bit-equivalent to the per-image
-    nuclear pixel extraction inside ``run_one`` — same channel resolution,
-    same z-collapse, same segmentation, same border exclusion, same
-    ``labels > 0`` mask, same ``astype(np.float64)``.
+    Used by the batch runner's pre-pass to pool RNA pixels across the whole
+    batch and compute a single median+k*MAD threshold. Bit-equivalent to the
+    per-image nuclear pixel extraction inside ``run_one`` — same channel
+    resolution, same z-collapse, same segmentation, same border exclusion,
+    same ``labels > 0`` mask, same ``astype(np.float64)``.
+
+    The SECOND return value is the FINAL (post-border-exclude) nuclei label
+    image. The runner caches it keyed by image path and feeds it back into
+    ``run_one`` via ``precomputed_labels=`` so each image is segmented exactly
+    ONCE in a ``threshold_scope == 'batch'`` run (avoids a 2x segmentation
+    cost with slow backends such as cellpose). On the empty-mask early return
+    the labels are still returned so the runner can cache them.
     """
     img = _io.read_image(path)
 
@@ -744,17 +1057,87 @@ def collect_nuclear_rna_pixels(path, *, cfg) -> np.ndarray:
     z_mode = cfg.z_stack.mode
     z_start = cfg.z_stack.start_slice
     z_end = cfg.z_stack.end_slice
+    # 2026-05-22 Brian: per-image z-window override (mirrors run_one). Keeps
+    # the batch pixel-threshold pre-scan extracting the SAME pixels run_one
+    # will analyze for this image.
+    _file_overrides = getattr(cfg.z_stack, "file_overrides", {}) or {}
+    _img_name = Path(path).name
+    _ovr = _file_overrides.get(_img_name, {}) if _img_name in _file_overrides else {}
+    if _ovr:
+        if "start_slice" in _ovr:
+            z_start = int(_ovr["start_slice"])
+        if "end_slice" in _ovr:
+            z_end = int(_ovr["end_slice"])
+    # 2026-05-25 Brian: per-channel z. When BOTH rna_start_slice and
+    # rna_end_slice are set for this image, pool the RNA pixels from a MAXPROJ
+    # of the RNA channel over that window — SAME pixels run_one detects spots
+    # on. DAPI handling is unchanged.
+    rna_start_slice = _ovr.get("rna_start_slice") if _ovr else None
+    rna_end_slice = _ovr.get("rna_end_slice") if _ovr else None
+    rna_per_channel_z = (rna_start_slice is not None and rna_end_slice is not None)
+    if rna_per_channel_z:
+        rna_start_slice = int(rna_start_slice)
+        rna_end_slice = int(rna_end_slice)
+        if rna_start_slice > img.n_z:
+            rna_start_slice = 1
+        if rna_end_slice > img.n_z:
+            rna_end_slice = img.n_z
     if z_start is not None and z_start > img.n_z:
         z_start = 1
     if z_end is not None and z_end > img.n_z:
         z_end = img.n_z
 
-    dapi_2d = _io.extract_channel(img, dapi_idx, z_mode=z_mode, z_start=z_start, z_end=z_end)
-    if dapi_2d.ndim != 2:
-        dapi_2d = dapi_2d.max(axis=0)
-    rna_2d = _io.extract_channel(img, rna_idx, z_mode=z_mode, z_start=z_start, z_end=z_end)
-    if rna_2d.ndim != 2:
-        rna_2d = rna_2d.max(axis=0)
+    # 2026-05-24 Brian: autofocus_maxproj — per-image DAPI focus-window
+    # detection, then MIP that window for all channels. Replaces the need
+    # for per-image file_overrides on datasets with field-to-field focus
+    # drift (e.g. BIN1 KO_100x02 needed 15-49 vs default 9-78).
+    if z_mode == "autofocus_maxproj":
+        (afm_zs, afm_ze), afm_diag, dapi_2d = _io.extract_dapi_focus_window(
+            img, dapi_idx,
+            metric=cfg.z_stack.focus_metric,
+            threshold_frac=float(cfg.z_stack.focus_threshold_frac),
+            min_slices=int(cfg.z_stack.focus_window_min_slices),
+            max_slices=int(cfg.z_stack.focus_window_max_slices),
+            z_start=z_start, z_end=z_end,
+            fixed_n_slices=int(getattr(cfg.z_stack, "focus_window_fixed_n_slices", 0)),
+            min_intensity_frac_of_peak=float(getattr(cfg.z_stack, "focus_min_intensity_frac_of_peak", 0.0)),
+        )
+        if rna_per_channel_z:
+            rna_2d = _io.extract_channel(
+                img, rna_idx, z_mode="maxproj",
+                z_start=rna_start_slice, z_end=rna_end_slice,
+            )
+            if rna_2d.ndim != 2:
+                rna_2d = rna_2d.max(axis=0)
+        else:
+            rna_2d = _io.extract_channel_in_z_range(
+                img, rna_idx,
+                z_start_1indexed=afm_zs, z_end_1indexed=afm_ze,
+                project="maxproj",
+            )
+        try:
+            from rich.console import Console as _C
+            _C().print(
+                f"  [dim][autofocus_maxproj] {Path(path).name}: "
+                f"focus peak at z={afm_diag['peak_z']+1}, "
+                f"window=[{afm_zs},{afm_ze}] "
+                f"({afm_ze - afm_zs + 1} slices)[/dim]"
+            )
+        except Exception:
+            pass
+    else:
+        dapi_2d = _io.extract_channel(img, dapi_idx, z_mode=z_mode, z_start=z_start, z_end=z_end)
+        if dapi_2d.ndim != 2:
+            dapi_2d = dapi_2d.max(axis=0)
+        if rna_per_channel_z:
+            rna_2d = _io.extract_channel(
+                img, rna_idx, z_mode="maxproj",
+                z_start=rna_start_slice, z_end=rna_end_slice,
+            )
+        else:
+            rna_2d = _io.extract_channel(img, rna_idx, z_mode=z_mode, z_start=z_start, z_end=z_end)
+        if rna_2d.ndim != 2:
+            rna_2d = rna_2d.max(axis=0)
 
     seg_params = dict(
         min_area=cfg.nuclei.min_area_px,
@@ -773,6 +1156,7 @@ def collect_nuclear_rna_pixels(path, *, cfg) -> np.ndarray:
         flow_threshold=cfg.nuclei.cellpose_flow_threshold,
         cellprob_threshold=cfg.nuclei.cellpose_cellprob_threshold,
         cellpose_model_type=cfg.nuclei.cellpose_model_type,
+        cellpose_downsample_factor=cfg.nuclei.cellpose_downsample_factor,
     )
     labels = _seg.segment_nuclei(dapi_2d, backend=cfg.nuclei.backend, params=seg_params)
     if cfg.nuclei.exclude_border:
@@ -780,5 +1164,5 @@ def collect_nuclear_rna_pixels(path, *, cfg) -> np.ndarray:
 
     nuc_mask = labels > 0
     if not nuc_mask.any():
-        return np.empty(0, dtype=np.float64)
-    return rna_2d[nuc_mask].astype(np.float64)
+        return np.empty(0, dtype=np.float64), labels
+    return rna_2d[nuc_mask].astype(np.float64), labels

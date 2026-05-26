@@ -1,0 +1,178 @@
+# H9 hESC 100x — MIAT KD ASO (2026-05-08 dataset) — CELLPOSE nuclei backend
+# Dissertation-critical preset for Brian's MIAT WT (NT ASO) vs MIAT KD RNA-FISH.
+#
+# 2026-05-25 DECISION: switched nuclei backend StarDist -> Cellpose (cpsam).
+# StarDist 2D_versatile_fluo systematically OVER-segmented H9 nuclei at
+# 0.065 µm/px because the nuclei (~200 px) far exceed the model's training
+# scale -> each nucleus shattered into star-convex fragments on internal
+# bright features (nucleoli/chromocentres). Every StarDist sweep landed at
+# ~100 nuclei on KD_08 with internal splits. Cellpose cpsam with an explicit
+# diameter=200 gave 81 nuclei on KD_08 with clean one-per-nucleus boundaries
+# — Brian confirmed "literally perfect". (KD_08 is a dense field; ~80 is the
+# true count, not over-segmentation.)
+#
+# SPEED: cpsam runs on CPU (no CUDA on Brian's AMD GPU). To keep runtime
+# reasonable we downsample DAPI 2x before segmentation (cellpose_downsample_
+# factor: 2.0) and upsample labels back. Verified on KD_08: downsample x2
+# gives the IDENTICAL 81 nuclei with indistinguishable boundaries, ~5.3 min
+# vs 8.2 min full-res. ~60 min for all 12 images.
+#
+# Voxel auto-detected from VSI metadata: 65 nm/px (0.065 µm/px), z=210 nm.
+
+experiment:
+  name: "H9_MIAT_KD_ASO_cellpose_2026-05-08"
+  description: "H9 hESC MIAT WT (NT ASO) vs MIAT KD ASO 100x confocal — cellpose cpsam nuclei, single-z per image"
+  cell_line: "H9 hESC"
+
+conditions:
+  mode: subfolders
+  subfolder_conditions:
+    Folder_NT: "NT ASO"
+    Folder_MIATKD: "KD ASO"
+    Folder_KD-2only: "Sec-Only"
+    Folder_NT-2only: "Sec-Only"
+  sec_only_folders:
+    - Folder_KD-2only
+    - Folder_NT-2only
+  sec_only_files: []
+  condition_order: ["Sec-Only", "NT ASO", "KD ASO"]
+  min_nuclei_for_stats: 6
+
+# 2026-05-25 Brian: SHELVE _06 (was sec-only but KD-like spot counts;
+# provenance doubtful) — excluded from analysis. Raw file untouched.
+input_file_subset:
+  - "H9-MIAT-ASOs-_02.vsi"
+  - "H9-MIAT-ASOs-_03.vsi"
+  - "H9-MIAT-ASOs-_04.vsi"
+  - "H9-MIAT-ASOs-_05.vsi"
+  - "H9-MIAT-ASOs-_07.vsi"
+  - "H9-MIAT-ASOs-_08.vsi"
+  - "H9-MIAT-ASOs-_09.vsi"
+  - "H9-MIAT-ASOs-_10.vsi"
+  - "H9-MIAT-ASOs-_11.vsi"
+  - "H9-MIAT-ASOs-_12.vsi"
+  - "H9-MIAT-ASOs-_13.vsi"
+
+channels:
+  analysis_mode: rna_only
+  dapi: 2
+  rna: 0
+  antibody: -1
+  dapi_label: "DAPI"
+  rna_label: "MIAT-640"
+
+z_stack:
+  # Single z-slice per image at Brian's visually-picked middle-z (same as the
+  # segmentation sweeps). H9 colonies are 3D; one in-focus plane per image is
+  # the working approach (autofocus_maxproj undersamples the colony).
+  mode: single
+  # 2026-05-25 Brian: per-channel z. DAPI segments on single_slice (clean
+  # nuclei); RNA spots detected on a MAXPROJ over [rna_start_slice,
+  # rna_end_slice] (Brian's v11 windows) for better MIAT-vs-background SNR.
+  # The maxproj-tuned 500 RNA floor (below) is valid again with maxproj RNA.
+  file_overrides:
+    "H9-MIAT-ASOs-_02.vsi": { single_slice: 12, rna_start_slice: 7,  rna_end_slice: 16 }
+    "H9-MIAT-ASOs-_03.vsi": { single_slice: 19, rna_start_slice: 14, rna_end_slice: 23 }
+    "H9-MIAT-ASOs-_04.vsi": { single_slice: 15, rna_start_slice: 10, rna_end_slice: 19 }
+    "H9-MIAT-ASOs-_05.vsi": { single_slice: 15, rna_start_slice: 10, rna_end_slice: 19 }
+    "H9-MIAT-ASOs-_06.vsi": { single_slice: 11, rna_start_slice: 6,  rna_end_slice: 15 }
+    "H9-MIAT-ASOs-_07.vsi": { single_slice: 13, rna_start_slice: 8,  rna_end_slice: 17 }
+    "H9-MIAT-ASOs-_08.vsi": { single_slice: 14, rna_start_slice: 9,  rna_end_slice: 18 }
+    "H9-MIAT-ASOs-_09.vsi": { single_slice: 18, rna_start_slice: 13, rna_end_slice: 22 }
+    "H9-MIAT-ASOs-_10.vsi": { single_slice: 14, rna_start_slice: 9,  rna_end_slice: 18 }
+    "H9-MIAT-ASOs-_11.vsi": { single_slice: 9,  rna_start_slice: 4,  rna_end_slice: 13 }
+    "H9-MIAT-ASOs-_12.vsi": { single_slice: 15, rna_start_slice: 10, rna_end_slice: 19 }
+    "H9-MIAT-ASOs-_13.vsi": { single_slice: 12, rna_start_slice: 7,  rna_end_slice: 16 }
+
+nuclei:
+  backend: cellpose
+  # Cellpose 4.x ships only the cpsam transformer generalist.
+  cellpose_model_type: cpsam
+  # Explicit diameter (px) at full resolution: H9 nuclei ~13 µm / 0.065 µm/px
+  # ~= 200 px. This is THE scale knob that fixed the over-segmentation.
+  cellpose_diameter_px: 200.0
+  cellpose_flow_threshold: 0.4
+  cellpose_cellprob_threshold: 0.0
+  # Speed: segment on a 2x-downsampled grid (diameter + min_area auto-scaled
+  # internally), then upsample labels. Verified lossless on KD_08.
+  cellpose_downsample_factor: 2.0
+
+  # Authoritative full-res min area (applied after upsampling). 14000 px²
+  # (~7.7 µm circular floor at 0.065 µm/px) matches the value used in the
+  # cellpose validation test on KD_08 (81 nuclei).
+  # 2026-05-25: bumped 14000 -> 16000 (Brian: StarDist/cellpose still kept a
+  # few too-small sliver fragments at 14000; real H9 nuclei cluster 24k-37k px
+  # per single-z area audit, fragments are the <16k slivers).
+  min_area_px: 16000
+  max_area_px: 1000000000000.0
+
+  exclude_border: true
+  border_margin_px: 10
+
+  # StarDist-only knobs below are IGNORED when backend=cellpose; kept so the
+  # backend can be flipped back without re-deriving them.
+  stardist_model: 2D_versatile_fluo
+  prob_threshold: 0.5
+  nms_threshold: 0.5
+  stardist_gauss_sigma: 3.0
+  stardist_postprocess: none
+  label_smoothing_radius_px: 0
+
+pixel_coloc:
+  threshold_mode: mad
+  threshold_scope: batch
+  k_mad: 2.5
+
+foci:
+  enabled: true
+  backend: bigfish
+  bigfish_voxel_size_nm: 0.0
+  bigfish_voxel_z_nm: 0.0
+  bigfish_spot_radius_nm: 100.0
+  bigfish_spot_radius_z_nm: 300.0
+  threshold_multiplier: 0.5
+  only_nuclear_spots: false
+  min_sep_px: 1
+  # 2026-05-25 Brian: always detect + report spots in secondary-only images
+  # so the background/nonspecific level is quantified every run (reported, not
+  # subtracted). Brian expects only ~1 of the 4 sec-only images to show signal.
+  detect_in_sec_only: true
+
+cytoplasm:
+  enabled: true
+  voronoi_max_expansion_px: 80
+  measure_nc_ratio: true
+
+nucleolus:
+  enabled: true
+  intra_nuclear_percentile: 25.0
+  min_area_um2: 1.0
+  max_area_frac_of_nucleus: 0.6
+  closing_radius_px: 2
+
+output:
+  save_qc_overlays: true
+  save_per_image_csv: true
+  save_masks: true
+  save_publication_images: true
+  pub_contrast_mode: manual
+  # 2026-05-25: RNA floor 1000. The spot floor is NOW actually applied in
+  # rna_only (was an rna_rna-only bug; fixed in rna_only.py). Maxproj floor
+  # audit: floor ~1000-1200 cleanly separates real MIAT from secondary-only
+  # background. Brian chose ~1000 to keep a bit more dim real signal (validated
+  # at 1200: sec-only -> ~0, NT 25.9 / KD 16.5 spots/nuc; 1000 keeps slightly
+  # more dim real spots, minor sec-only creep).
+  manual_rna_min: 800.0
+  manual_rna_max: 4200.0
+  # DAPI floor dropped to 300 to surface dim nuclei (Brian's request).
+  manual_dapi_min: 300.0
+  manual_dapi_max: 3200.0
+  apply_pub_contrast_floor_to_spots: true
+  prefix: ""
+  # 2026-05-25 Brian: 50 µm bar spans 1/3 of the ~150 µm H9 field — too long.
+  # 25 µm (385 px) is proportionate; bigger font for the 2304 px frame.
+  scalebar_um: 25.0
+  scalebar_font_px: 52
+
+parallel:
+  workers: auto

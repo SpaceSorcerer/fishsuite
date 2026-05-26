@@ -7,12 +7,13 @@ consume fishsuite output transparently.
 from __future__ import annotations
 
 import json
+import os
 import platform
 import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 import numpy as np
 import pandas as pd
@@ -23,6 +24,10 @@ from . import __version__
 from .config.schema import FishsuiteConfig
 from .core import io as _io
 from .core import output as _out
+from .core.excel_report import (
+    write_analysis_summary_workbook,
+    write_raw_data_workbook,
+)
 from .core.modes import get_mode
 from .core.parallel import auto_n_workers
 
@@ -42,6 +47,7 @@ def _make_output_dirs(output_dir: Path, cfg: FishsuiteConfig) -> Dict[str, Path]
         "publication_images": output_dir / "publication_images",
         "pipeline_walkthrough": output_dir / "pipeline_walkthrough",
         "nuclei_popouts": output_dir / "nuclei_popouts",
+        "nucleolus_overlay": output_dir / "nucleolus_overlay",
     }
     for p in out.values():
         p.mkdir(parents=True, exist_ok=True)
@@ -49,20 +55,62 @@ def _make_output_dirs(output_dir: Path, cfg: FishsuiteConfig) -> Dict[str, Path]
 
 
 def _stem_with_condition(stem: str, condition: str | None) -> str:
-    """Compose ``<stem>__<condition_sanitized>`` for per-image output files.
+    """Compose ``<condition_sanitized>__<stem>`` for per-image output files.
 
-    When the condition is missing or sanitizes to empty (e.g. unlabeled or
-    blank), the bare stem is returned so we don't emit ugly trailing
-    double-underscores. Sanitization rules: see
-    ``output.sanitize_condition_for_filename``.
+    2026-05-22 Brian: condition FIRST so files sort by condition when
+    browsing the directory (WT_1, WT_2, KO_3, KO_4 ... grouped together).
 
     Examples:
-        ("H9-MIAT-ASOs-_03", "NT ASO")    -> "H9-MIAT-ASOs-_03__NT_ASO"
-        ("H9-MIAT-ASOs-_10", "Sec-Only")  -> "H9-MIAT-ASOs-_10__Sec_Only"
+        ("H9-MIAT-ASOs-_03", "NT ASO")    -> "NT_ASO__H9-MIAT-ASOs-_03"
+        ("H9-MIAT-ASOs-_10", "Sec-Only")  -> "Sec_Only__H9-MIAT-ASOs-_10"
         ("H9-MIAT-ASOs-_03", None)        -> "H9-MIAT-ASOs-_03"
     """
     csan = _out.sanitize_condition_for_filename(condition)
-    return f"{stem}__{csan}" if csan else stem
+    return f"{csan}__{stem}" if csan else stem
+
+
+def _compute_common_filename_prefix(stems: list[str]) -> str:
+    """Find the longest common leading substring across input stems, trimmed
+    back to the last separator ('_', '-', or ' ') so we don't slice through
+    a meaningful token.
+
+    Used to auto-strip boilerplate from output filenames:
+      ["TRANK1-CAMK2D-WT-KO_10_6ADVMLE fast",
+       "TRANK1-CAMK2D-WT-KO_13_50ADVMLE fast",
+       "TRANK1-CAMK2D-WT-KO_17"]
+    -> "TRANK1-CAMK2D-WT-KO_"
+    so "TRANK1-CAMK2D-WT-KO_10_6ADVMLE fast" becomes "10_6ADVMLE fast"
+    in output files. Stems with no shared prefix (or only 1 file) get
+    the empty string back.
+    """
+    if len(stems) <= 1:
+        return ""
+    common = os.path.commonprefix(stems)
+    if not common:
+        return ""
+    # Trim back to the last separator inside the common prefix so the
+    # leftover starts at a meaningful token boundary.
+    for sep in ("_", "-", " "):
+        idx = common.rfind(sep)
+        if idx >= 0:
+            common = common[: idx + 1]
+            break
+    # Sanity: don't strip if the common prefix is shorter than 4 chars
+    # (no real boilerplate to remove).
+    if len(common) < 4:
+        return ""
+    return common
+
+
+def _simplify_stem(stem: str, strip_prefix: str) -> str:
+    """Strip the auto-detected common prefix and replace spaces with
+    underscores so output filenames are filesystem-friendly and short.
+    """
+    out = stem
+    if strip_prefix and out.startswith(strip_prefix):
+        out = out[len(strip_prefix):]
+    out = out.replace(" ", "_")
+    return out or stem  # never return empty string
 
 
 def _write_per_image_csvs(per_dir: Path, stem: str,
@@ -112,6 +160,17 @@ def run_batch(
     Returns a dict with summary stats.
     """
     cfg = FishsuiteConfig.from_yaml(config_path)
+    # 2026-05-25 Brian: per-preset scale-bar length + label font. The render
+    # functions read these as output-module constants; the per-image pass is
+    # serial single-process so setting them once here is safe and propagates
+    # everywhere (all-in-one QC, publication images, walkthrough). Defaults
+    # (50 µm / 32 px) leave legacy presets byte-identical.
+    try:
+        from .core import output as _output_mod
+        _output_mod.SCALEBAR_UM = float(cfg.output.scalebar_um)
+        _output_mod.SCALEBAR_FONT_PX = int(cfg.output.scalebar_font_px)
+    except Exception:
+        pass
     input_dir = Path(input_dir)
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -204,6 +263,13 @@ def run_batch(
     # (rna_pixels, rna2_pixels); we pool each separately.
     batch_rna_threshold: float | None = None
     batch_rna2_threshold: float | None = None
+    # Cache of FINAL (post-border-exclude) nuclei labels produced by the
+    # batch threshold pre-scan, keyed by str(image path). Reused in the main
+    # analysis pass so each image is segmented exactly ONCE per run (avoids a
+    # 2x segmentation cost with slow backends such as cellpose). Populated
+    # ONLY when threshold_scope == 'batch'; empty otherwise, so the per-image
+    # path's behavior is byte-identical to before (dict.get -> None).
+    precomputed_labels_by_path: Dict[str, np.ndarray] = {}
     pc_cfg = getattr(cfg, "pixel_coloc", None)
     is_rna_rna = (cfg.channels.analysis_mode == "rna_rna")
     if pc_cfg is not None and getattr(pc_cfg, "threshold_scope", "per_image") == "batch":
@@ -244,15 +310,19 @@ def run_batch(
                 for dimg in images:
                     try:
                         if _collect_two is not None:
-                            v1, v2 = _collect_two(dimg.path, cfg=cfg)
+                            v1, v2, labels = _collect_two(dimg.path, cfg=cfg)
                             if v1.size > 0:
                                 pooled_list.append(v1)
                             if v2.size > 0:
                                 pooled2_list.append(v2)
                         else:
-                            vals = collect_nuclear_rna_pixels(dimg.path, cfg=cfg)
+                            vals, labels = collect_nuclear_rna_pixels(dimg.path, cfg=cfg)
                             if vals.size > 0:
                                 pooled_list.append(vals)
+                        # Cache the final (border-excluded) labels so the main
+                        # analysis pass can skip re-segmenting this image.
+                        if labels is not None:
+                            precomputed_labels_by_path[str(dimg.path)] = labels
                     except Exception as e:
                         _console.print(
                             f"[yellow]Pre-scan failed on {dimg.path.name}: {e} — "
@@ -307,6 +377,692 @@ def run_batch(
                         f"(mode={pc_cfg.threshold_mode}, k_mad={pc_cfg.k_mad})"
                     )
 
+    # ---- Batch-scope pub-image contrast pre-pass --------------------------
+    # When ``output.pub_contrast_mode == "auto_batch"`` (the default), we
+    # pool RAW pixels per channel across every non-sec-only image, compute
+    # ONE (floor, ceil) per channel from configured percentiles, and apply
+    # those uniform values to every image's publication PNG (and to the
+    # sec-only images too — they render with the same contrast as the
+    # real-probe images so the dim no-probe control correctly appears dim).
+    #
+    # This is "true" batch contrast — different from the legacy running-max
+    # cache in core/output.py, which is order-dependent and biased by the
+    # first image processed. The runner stores the computed values in
+    # ``run_config.json`` under "batch_contrast" so downstream tooling /
+    # Brian's manual audits can read back exactly what was applied.
+    #
+    # Manual mode: skip the pre-scan, apply the user-typed
+    # ``manual_*_min/max`` values verbatim per image.
+    # Auto-per-image mode: skip the pre-scan, each image computes its own
+    # percentiles (legacy / Fiji "auto_per_image" parity).
+    batch_contrast: Dict[str, tuple[float, float]] = {}
+    # Hoisted out of the conditional so the run_config.json provenance block
+    # at the end of run_batch can always read it (manual / auto_per_image
+    # modes still populate this string).
+    _pub_mode = getattr(cfg.output, "pub_contrast_mode", "auto_batch")
+    # 2026-05-20 Brian/Sam: reference_image mode runs the same auto_batch
+    # whole-batch pre-scan first to populate dapi + antibody fallback floor/
+    # ceil values; the per-channel RNA values are then OVERWRITTEN below by
+    # the reference-image computation. This keeps DAPI sensible without
+    # requiring the user to also pin manual_dapi_min/max (though they can,
+    # and those pins take precedence in the per-image render branch).
+    # 2026-05-21 Brian: also run the auto_batch pre-scan in MANUAL mode
+    # when any of manual_dapi_min/max, manual_rna_min/max, manual_rna2_min/max
+    # are unset. Lets users pin RNA channels manually but get a consistent
+    # auto-batch DAPI (Sam-style "auto per image" but applied uniformly
+    # across the batch — fixes the DAPI inconsistency from pinning to a
+    # single reference value that doesn't fit every image).
+    _manual_needs_autobatch = (
+        _pub_mode == "manual"
+        and (
+            cfg.output.manual_dapi_min is None or cfg.output.manual_dapi_max is None
+            or cfg.output.manual_rna_min is None or cfg.output.manual_rna_max is None
+            or cfg.output.manual_rna2_min is None or cfg.output.manual_rna2_max is None
+        )
+    )
+    if (
+        cfg.output.save_publication_images
+        and (_pub_mode in ("auto_batch", "reference_image") or _manual_needs_autobatch)
+        and len(images) > 0
+    ):
+        _floor_pct = float(cfg.output.pub_contrast_floor_pct)
+        _ceil_pct = float(cfg.output.pub_contrast_ceil_pct)
+        _dapi_floor_pct = float(cfg.output.pub_contrast_dapi_floor_pct)
+        _dapi_ceil_pct = float(cfg.output.pub_contrast_dapi_ceil_pct)
+        _console.print(
+            "[bold]PRE-SCAN[/bold] pub_contrast_mode=auto_batch: pooling raw "
+            f"pixels per channel across {len(images)} images (FISH "
+            f"p{_floor_pct}/p{_ceil_pct}, DAPI "
+            f"p{_dapi_floor_pct}/p{_dapi_ceil_pct})..."
+        )
+        # Per-channel pooled flat arrays (whole-image pixel values from the
+        # same z-slice the per-image pass will use). Sec-only images are
+        # EXCLUDED from the pool — their dim/autofluorescent background
+        # would pull the ceiling down and make real-probe images look
+        # blown out. This mirrors the Fiji
+        # ``compute_pub_images_batch_contrast`` skip-sec-only behavior
+        # (Coloc_Analysis.py lines 3990-3992).
+        _pool: Dict[str, List[np.ndarray]] = {
+            "dapi": [], "rna": [], "rna2": [], "antibody": [],
+        }
+
+        # Pre-resolve channel indices once via cfg + one-indexed flag (we
+        # don't have an image handle here, so unresolved (-1) entries get
+        # auto-detected per-image inside the loop).
+        _ch_cfg = cfg.channels
+        _one_indexed = bool(getattr(_ch_cfg, "one_indexed", False))
+
+        def _chan_idx(raw: int) -> int:
+            return (raw - 1) if (_one_indexed and raw > 0) else raw
+
+        _cfg_dapi = _chan_idx(int(getattr(_ch_cfg, "dapi", -1)))
+        _cfg_rna = _chan_idx(int(getattr(_ch_cfg, "rna", -1)))
+        _cfg_rna2 = _chan_idx(int(getattr(_ch_cfg, "rna2", -1)))
+        _cfg_ab = _chan_idx(int(getattr(_ch_cfg, "antibody", -1)))
+
+        _z_mode = cfg.z_stack.mode
+        _z_start = cfg.z_stack.start_slice
+        _z_end = cfg.z_stack.end_slice
+        _mode = cfg.channels.analysis_mode
+        _need_rna2 = (_mode == "rna_rna")
+        _need_ab = (_mode in ("rna_protein", "ab_ab", "protein_only"))
+
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(),
+            TextColumn("{task.completed}/{task.total}"),
+            TimeElapsedColumn(),
+            console=_console,
+        ) as ppg:
+            ptask = ppg.add_task(
+                "Pre-pass: pub-image pixel pooling", total=len(images),
+            )
+            for dimg in images:
+                # Sec-only images don't contribute to the pool — see comment
+                # above. They still get rendered later with the same uniform
+                # (floor, ceil) so they correctly appear dim.
+                if bool(dimg.sec_only):
+                    ppg.advance(ptask)
+                    continue
+                try:
+                    img_h = _io.read_image(dimg.path)
+                    # Resolve unset (-1) channel indices per-image via
+                    # autodetect. We do this lazily so the pre-scan honors
+                    # the same channel resolution the per-image run_one
+                    # path would arrive at.
+                    auto = None
+                    di = _cfg_dapi
+                    ri = _cfg_rna
+                    r2i = _cfg_rna2
+                    abi = _cfg_ab
+                    if di < 0 or ri < 0 or (_need_rna2 and r2i < 0) or (_need_ab and abi < 0):
+                        auto = _io.autodetect_channels(img_h)
+                        if di < 0:
+                            di = auto.get("dapi", -1)
+                        if ri < 0:
+                            ri = auto.get("rna", -1)
+                        if _need_rna2 and r2i < 0:
+                            # rna_rna mode: derive rna2 from remaining channels
+                            # (rna_rna._resolve_channels does this — copy
+                            # the cheap fallback: pick the first remaining
+                            # non-DAPI non-RNA channel).
+                            used = {di, ri}
+                            for k in range(img_h.n_channels):
+                                if k not in used and k >= 0:
+                                    r2i = k
+                                    break
+                        if _need_ab and abi < 0:
+                            abi = auto.get("ab", -1)
+
+                    # Clamp to valid range
+                    def _clamp(idx: int) -> int:
+                        if idx < 0:
+                            return -1
+                        return max(0, min(img_h.n_channels - 1, idx))
+
+                    di = _clamp(di)
+                    ri = _clamp(ri)
+                    r2i = _clamp(r2i) if _need_rna2 else -1
+                    abi = _clamp(abi) if _need_ab else -1
+
+                    # 2026-05-18 Brian: lock pre-scan pool to DAPI's
+                    # autofocus z so the pooled pixels match the slice that
+                    # will actually be rendered + analyzed downstream. Without
+                    # this, the pool mixes RNA-autofocus-z pixels into the
+                    # contrast histogram while the per-image render uses
+                    # DAPI-autofocus-z — auto_batch min/max ends up calibrated
+                    # to a different plane than the one the user sees.
+                    dapi_z_lock: Optional[int] = None
+                    # 2026-05-24 Brian: autofocus_maxproj pre-scan — compute
+                    # the per-image DAPI focus window once and MIP it for all
+                    # channels, so the pooled pixel histogram matches the
+                    # per-image render's anatomy.
+                    afm_zs_1: Optional[int] = None
+                    afm_ze_1: Optional[int] = None
+                    if di >= 0:
+                        if _z_mode == "autofocus":
+                            dapi_z_lock, d2 = _io.extract_channel_autofocus_with_idx(
+                                img_h, di, z_start=_z_start, z_end=_z_end,
+                            )
+                        elif _z_mode == "autofocus_maxproj":
+                            (afm_zs_1, afm_ze_1), _afm_diag, d2 = _io.extract_dapi_focus_window(
+                                img_h, di,
+                                metric=cfg.z_stack.focus_metric,
+                                threshold_frac=float(cfg.z_stack.focus_threshold_frac),
+                                min_slices=int(cfg.z_stack.focus_window_min_slices),
+                                max_slices=int(cfg.z_stack.focus_window_max_slices),
+                                z_start=_z_start, z_end=_z_end,
+                                fixed_n_slices=int(getattr(cfg.z_stack, "focus_window_fixed_n_slices", 0)),
+                                min_intensity_frac_of_peak=float(getattr(cfg.z_stack, "focus_min_intensity_frac_of_peak", 0.0)),
+                            )
+                        else:
+                            d2 = _io.extract_channel(
+                                img_h, di, z_mode=_z_mode,
+                                z_start=_z_start, z_end=_z_end,
+                            )
+                            if d2.ndim != 2:
+                                d2 = d2.max(axis=0)
+                        _pool["dapi"].append(d2.astype(np.float32).ravel())
+                    if ri >= 0:
+                        if dapi_z_lock is not None:
+                            r2 = _io.extract_channel_at_z(img_h, ri, z_1indexed=dapi_z_lock)
+                        elif afm_zs_1 is not None and afm_ze_1 is not None:
+                            r2 = _io.extract_channel_in_z_range(
+                                img_h, ri,
+                                z_start_1indexed=afm_zs_1,
+                                z_end_1indexed=afm_ze_1,
+                                project="maxproj",
+                            )
+                        else:
+                            r2 = _io.extract_channel(
+                                img_h, ri, z_mode=_z_mode,
+                                z_start=_z_start, z_end=_z_end,
+                            )
+                            if r2.ndim != 2:
+                                r2 = r2.max(axis=0)
+                        _pool["rna"].append(r2.astype(np.float32).ravel())
+                    if _need_rna2 and r2i >= 0:
+                        if dapi_z_lock is not None:
+                            r22 = _io.extract_channel_at_z(img_h, r2i, z_1indexed=dapi_z_lock)
+                        elif afm_zs_1 is not None and afm_ze_1 is not None:
+                            r22 = _io.extract_channel_in_z_range(
+                                img_h, r2i,
+                                z_start_1indexed=afm_zs_1,
+                                z_end_1indexed=afm_ze_1,
+                                project="maxproj",
+                            )
+                        else:
+                            r22 = _io.extract_channel(
+                                img_h, r2i, z_mode=_z_mode,
+                                z_start=_z_start, z_end=_z_end,
+                            )
+                            if r22.ndim != 2:
+                                r22 = r22.max(axis=0)
+                        _pool["rna2"].append(r22.astype(np.float32).ravel())
+                    if _need_ab and abi >= 0:
+                        if dapi_z_lock is not None:
+                            ab2 = _io.extract_channel_at_z(img_h, abi, z_1indexed=dapi_z_lock)
+                        elif afm_zs_1 is not None and afm_ze_1 is not None:
+                            ab2 = _io.extract_channel_in_z_range(
+                                img_h, abi,
+                                z_start_1indexed=afm_zs_1,
+                                z_end_1indexed=afm_ze_1,
+                                project="maxproj",
+                            )
+                        else:
+                            ab2 = _io.extract_channel(
+                                img_h, abi, z_mode=_z_mode,
+                                z_start=_z_start, z_end=_z_end,
+                            )
+                            if ab2.ndim != 2:
+                                ab2 = ab2.max(axis=0)
+                        _pool["antibody"].append(ab2.astype(np.float32).ravel())
+                except Exception as e:
+                    _console.print(
+                        f"[yellow]Pub-contrast pre-scan failed on {dimg.path.name}: "
+                        f"{e} — image excluded from pool[/yellow]"
+                    )
+                ppg.advance(ptask)
+
+        # Reduce: per-channel (floor, ceil) from configured percentiles.
+        for _ch_key, _bundle in _pool.items():
+            if not _bundle:
+                continue
+            pooled = np.concatenate(_bundle)
+            if _ch_key == "dapi":
+                lo_pct, hi_pct = _dapi_floor_pct, _dapi_ceil_pct
+            else:
+                lo_pct, hi_pct = _floor_pct, _ceil_pct
+            try:
+                f = float(np.percentile(pooled, lo_pct))
+                c = float(np.percentile(pooled, hi_pct))
+            except Exception as e:
+                _console.print(
+                    f"[yellow]Batch contrast percentile for {_ch_key} failed "
+                    f"({e}); falling back to per-image[/yellow]"
+                )
+                continue
+            # 2026-05-18 Brian: bump the auto floor for RNA-class channels
+            # (RNA1, RNA2, antibody) by pub_contrast_rna_floor_bump_pct.
+            # DAPI is exempt — its histogram structure is different
+            # (bright nuclei against dark background) and the 10/99.9
+            # pair already handles it cleanly. Manual-mode contrast is
+            # NOT bumped — explicit numbers shouldn't be second-guessed.
+            if _ch_key in ("rna", "rna2", "antibody"):
+                bump = float(
+                    getattr(cfg.output, "pub_contrast_rna_floor_bump_pct", 0.0)
+                ) / 100.0
+                if bump > 0 and f > 0:
+                    f = f * (1.0 + bump)
+            if c <= f:
+                c = f + 1.0
+            batch_contrast[_ch_key] = (f, c)
+            _console.print(
+                f"  batch_contrast[{_ch_key}] = ({f:.2f}, {c:.2f})  "
+                f"n_pixels={pooled.size:,}"
+            )
+
+    # ---- Reference-image (Sam-style) pub-image contrast override ----------
+    # When ``output.pub_contrast_mode == "reference_image"``, override the
+    # RNA1 / RNA2 (floor, ceil) values in batch_contrast with values
+    # computed from a per-channel REFERENCE IMAGE + REGION. This replicates
+    # Sam's (Brian's PI's) manual B&C tuning:
+    #
+    #   * Introns probe (typically RNA1 / 640): tune on a KO image. Floor
+    #     just above the cytoplasmic noise tail so cytoplasm clips to black,
+    #     but bright nuclear puncta remain. Apply to all images.
+    #
+    #   * Exons probe (typically RNA2 / 561): tune on a WT image. Floor just
+    #     above the nuclear background tail so the nucleoplasm clips to
+    #     black, but cytoplasmic exon spots remain visible. Apply to all
+    #     images.
+    #
+    # Region semantics:
+    #   - "cytoplasm" : Voronoi-expanded label minus the nucleus interior
+    #   - "nucleus"   : the nucleus label mask
+    #   - "all"       : the entire 2D plane (whole image percentile)
+    #
+    # If the named reference image is missing from the discovered batch, or
+    # if segmentation / channel extraction fails, we log a yellow warning
+    # and FALL BACK to the auto_batch percentile for that channel (which
+    # the block above already populated). DAPI + antibody are unaffected.
+    if (
+        cfg.output.save_publication_images
+        and _pub_mode == "reference_image"
+        and len(images) > 0
+    ):
+        # Lazy-import the segmentation + morphology helpers so the cheaper
+        # modes don't pay the StarDist / scikit-image import cost.
+        try:
+            from .core import segmentation as _seg
+            from .core import morphology as _morph
+            _ref_imports_ok = True
+        except Exception as e:
+            _console.print(
+                f"[yellow]reference_image mode: could not import segmentation/"
+                f"morphology helpers ({e}); falling back to auto_batch for "
+                f"all channels.[/yellow]"
+            )
+            _ref_imports_ok = False
+
+        if _ref_imports_ok:
+            # Build a basename → DiscoveredImage lookup so we can resolve the
+            # configured reference images to their full paths.
+            _by_name: Dict[str, Any] = {im.path.name: im for im in images}
+
+            _ch_cfg = cfg.channels
+            _one_indexed = bool(getattr(_ch_cfg, "one_indexed", False))
+
+            def _chan_idx2(raw: int) -> int:
+                return (raw - 1) if (_one_indexed and raw > 0) else raw
+
+            _cfg_dapi = _chan_idx2(int(getattr(_ch_cfg, "dapi", -1)))
+            _cfg_rna = _chan_idx2(int(getattr(_ch_cfg, "rna", -1)))
+            _cfg_rna2 = _chan_idx2(int(getattr(_ch_cfg, "rna2", -1)))
+
+            _z_mode = cfg.z_stack.mode
+            _z_start = cfg.z_stack.start_slice
+            _z_end = cfg.z_stack.end_slice
+
+            def _resolve_idx(img_h, want: int, role: str) -> int:
+                """Resolve a channel index, auto-detecting when unset (-1)."""
+                if want >= 0:
+                    return max(0, min(img_h.n_channels - 1, want))
+                try:
+                    auto = _io.autodetect_channels(img_h)
+                except Exception:
+                    return -1
+                return int(auto.get(role, -1))
+
+            def _compute_ref_channel(
+                ref_name: str,
+                channel_role: str,        # "rna" or "rna2" (for autodetect)
+                cfg_channel_idx: int,
+                floor_region: str,
+                floor_pct: float,
+                ceil_region: str,
+                ceil_pct: float,
+            ) -> Optional[tuple]:
+                """Compute (floor, ceil) on a single reference image.
+
+                Returns None on any failure (caller falls back to
+                batch_contrast / auto_batch). Logs verbosely so Brian can
+                audit what region + percentile produced what value.
+                """
+                dimg = _by_name.get(ref_name)
+                if dimg is None:
+                    _console.print(
+                        f"[yellow]reference_image: reference '{ref_name}' for "
+                        f"{channel_role} not found in discovered batch — "
+                        f"falling back to auto_batch for that channel.[/yellow]"
+                    )
+                    return None
+                try:
+                    img_h = _io.read_image(dimg.path)
+                except Exception as e:
+                    _console.print(
+                        f"[yellow]reference_image: failed to open '{ref_name}' "
+                        f"({e}) — falling back to auto_batch.[/yellow]"
+                    )
+                    return None
+
+                # Resolve channel indices (DAPI for segmentation + the RNA
+                # channel of interest).
+                di = _resolve_idx(img_h, _cfg_dapi, "dapi")
+                ri = _resolve_idx(img_h, cfg_channel_idx, channel_role)
+                if di < 0 or ri < 0:
+                    _console.print(
+                        f"[yellow]reference_image: could not resolve channel "
+                        f"indices on '{ref_name}' (dapi={di}, "
+                        f"{channel_role}={ri}) — falling back to auto_batch.[/yellow]"
+                    )
+                    return None
+
+                # DAPI autofocus + DAPI-locked RNA extraction (same pattern
+                # the main pipeline uses).
+                try:
+                    if _z_mode == "autofocus":
+                        dapi_z, dapi_2d = _io.extract_channel_autofocus_with_idx(
+                            img_h, di, z_start=_z_start, z_end=_z_end,
+                        )
+                        rna_2d = _io.extract_channel_at_z(
+                            img_h, ri, z_1indexed=dapi_z,
+                        )
+                    else:
+                        dapi_2d = _io.extract_channel(
+                            img_h, di, z_mode=_z_mode,
+                            z_start=_z_start, z_end=_z_end,
+                        )
+                        if dapi_2d.ndim != 2:
+                            dapi_2d = dapi_2d.max(axis=0)
+                        rna_2d = _io.extract_channel(
+                            img_h, ri, z_mode=_z_mode,
+                            z_start=_z_start, z_end=_z_end,
+                        )
+                        if rna_2d.ndim != 2:
+                            rna_2d = rna_2d.max(axis=0)
+                except Exception as e:
+                    _console.print(
+                        f"[yellow]reference_image: channel extraction failed on "
+                        f"'{ref_name}' ({e}) — falling back to auto_batch.[/yellow]"
+                    )
+                    return None
+
+                # Segment nuclei + build Voronoi cytoplasm (reuse the same
+                # cfg.nuclei + cfg.cytoplasm parameters as the per-image
+                # pass would).
+                nuc_mask = None
+                cyt_mask = None
+                if floor_region in ("cytoplasm", "nucleus") or ceil_region in ("cytoplasm", "nucleus"):
+                    try:
+                        seg_params = dict(
+                            min_area=cfg.nuclei.min_area_px,
+                            max_area=cfg.nuclei.max_area_px,
+                            prob_threshold=cfg.nuclei.prob_threshold,
+                            nms_threshold=cfg.nuclei.nms_threshold,
+                            n_tiles=cfg.nuclei.n_tiles,
+                            stardist_model=cfg.nuclei.stardist_model,
+                            stardist_gauss_sigma=cfg.nuclei.stardist_gauss_sigma,
+                            stardist_postprocess=cfg.nuclei.stardist_postprocess,
+                            stardist_postprocess_dilate_px=cfg.nuclei.stardist_postprocess_dilate_px,
+                            stardist_postprocess_otsu_sigma=cfg.nuclei.stardist_postprocess_otsu_sigma,
+                            stardist_postprocess_mask_closing_px=cfg.nuclei.stardist_postprocess_mask_closing_px,
+                            label_smoothing_radius_px=cfg.nuclei.label_smoothing_radius_px,
+                            diameter=cfg.nuclei.cellpose_diameter_px,
+                            flow_threshold=cfg.nuclei.cellpose_flow_threshold,
+                            cellprob_threshold=cfg.nuclei.cellpose_cellprob_threshold,
+                            cellpose_model_type=cfg.nuclei.cellpose_model_type,
+                        )
+                        labels = _seg.segment_nuclei(
+                            dapi_2d, backend=cfg.nuclei.backend, params=seg_params,
+                        )
+                        if cfg.nuclei.exclude_border:
+                            labels = _seg.exclude_border_labels(
+                                labels, margin_px=cfg.nuclei.border_margin_px,
+                            )
+                        nuc_mask = labels > 0
+                        if cfg.cytoplasm.enabled and labels.max() > 0:
+                            cyt_labels = _morph.compute_cytoplasm_mask(
+                                labels,
+                                max_expand_px=cfg.cytoplasm.voronoi_max_expansion_px,
+                            )
+                            cyt_mask = (cyt_labels > 0) & (~nuc_mask)
+                    except Exception as e:
+                        _console.print(
+                            f"[yellow]reference_image: segmentation failed on "
+                            f"'{ref_name}' ({e}) — falling back to auto_batch "
+                            f"for that channel.[/yellow]"
+                        )
+                        return None
+
+                def _pixels_for_region(region: str) -> Optional[np.ndarray]:
+                    if region == "all":
+                        return rna_2d.astype(np.float32).ravel()
+                    if region == "cytoplasm":
+                        if cyt_mask is None or not cyt_mask.any():
+                            return None
+                        return rna_2d[cyt_mask].astype(np.float32)
+                    if region == "nucleus":
+                        if nuc_mask is None or not nuc_mask.any():
+                            return None
+                        return rna_2d[nuc_mask].astype(np.float32)
+                    return None
+
+                floor_px = _pixels_for_region(floor_region)
+                ceil_px = _pixels_for_region(ceil_region)
+                if floor_px is None or floor_px.size == 0:
+                    _console.print(
+                        f"[yellow]reference_image: floor region '{floor_region}' "
+                        f"on '{ref_name}' produced zero pixels — falling back "
+                        f"to auto_batch for that channel.[/yellow]"
+                    )
+                    return None
+                if ceil_px is None or ceil_px.size == 0:
+                    _console.print(
+                        f"[yellow]reference_image: ceil region '{ceil_region}' "
+                        f"on '{ref_name}' produced zero pixels — falling back "
+                        f"to auto_batch for that channel.[/yellow]"
+                    )
+                    return None
+
+                try:
+                    f_val = float(np.percentile(floor_px, float(floor_pct)))
+                    c_val = float(np.percentile(ceil_px, float(ceil_pct)))
+                except Exception as e:
+                    _console.print(
+                        f"[yellow]reference_image: percentile failed on "
+                        f"'{ref_name}' ({e}) — falling back to auto_batch.[/yellow]"
+                    )
+                    return None
+                # 2026-05-21 Brian: ONLY fall back when ceil ≤ floor (truly
+                # broken / inverted range). The original "ceil ≤ floor × 1.2"
+                # heuristic fired surprisingly under percentile tweaks
+                # (e.g. asking for Exons ceil p99.9 produced ceil < floor*1.2
+                # because of a fluke in the cyto pixel distribution, then
+                # whole-image p99.9 was lower than region p99.5 → ceiling
+                # collapsed). User-set percentiles should be trusted as long
+                # as the resulting range is non-zero.
+                region_ceil = c_val
+                if c_val <= f_val:
+                    fallback_ceil = float(np.percentile(rna_2d, 99.9))
+                    if fallback_ceil > f_val * 1.2:
+                        c_val = fallback_ceil
+                        _console.print(
+                            f"[yellow]reference_image ceil ({channel_role}) "
+                            f"fell back to whole-image p99.9 ({c_val:.0f}) "
+                            f"because region p{ceil_pct} ({region_ceil:.0f}) "
+                            f"was too close to floor ({f_val:.0f}).[/yellow]"
+                        )
+                    else:
+                        c_val = float(rna_2d.max())
+                        _console.print(
+                            f"[yellow]reference_image ceil ({channel_role}) "
+                            f"fell back to whole-image MAX ({c_val:.0f}) "
+                            f"because whole-image p99.9 ({fallback_ceil:.0f}) "
+                            f"was also too close to floor "
+                            f"({f_val:.0f}).[/yellow]"
+                        )
+                if c_val <= f_val:
+                    c_val = f_val + 1.0
+                _console.print(
+                    f"  Reference-image contrast ({channel_role}): "
+                    f"floor=[bold]{f_val:.2f}[/bold] ({floor_region} p{floor_pct} "
+                    f"of {ref_name}); "
+                    f"ceil=[bold]{c_val:.2f}[/bold] ({ceil_region} p{ceil_pct} "
+                    f"of {ref_name})"
+                )
+                return (f_val, c_val)
+
+            # RNA1
+            _ref_rna_name = getattr(cfg.output, "manual_rna_reference_image", None)
+            if _ref_rna_name:
+                _console.print(
+                    "[bold]PRE-SCAN[/bold] pub_contrast_mode=reference_image: "
+                    f"computing RNA1 (floor, ceil) from '{_ref_rna_name}' ..."
+                )
+                _res = _compute_ref_channel(
+                    _ref_rna_name, "rna", _cfg_rna,
+                    cfg.output.manual_rna_floor_region,
+                    float(cfg.output.manual_rna_floor_pct),
+                    cfg.output.manual_rna_ceil_region,
+                    float(cfg.output.manual_rna_ceil_pct),
+                )
+                if _res is not None:
+                    batch_contrast["rna"] = _res
+            else:
+                _console.print(
+                    "[yellow]reference_image: manual_rna_reference_image not "
+                    "set — RNA1 will use auto_batch fallback.[/yellow]"
+                )
+
+            # RNA2 (only meaningful in rna_rna mode, but harmless otherwise)
+            _ref_rna2_name = getattr(cfg.output, "manual_rna2_reference_image", None)
+            if _ref_rna2_name:
+                _console.print(
+                    "[bold]PRE-SCAN[/bold] pub_contrast_mode=reference_image: "
+                    f"computing RNA2 (floor, ceil) from '{_ref_rna2_name}' ..."
+                )
+                _res2 = _compute_ref_channel(
+                    _ref_rna2_name, "rna", _cfg_rna2,
+                    cfg.output.manual_rna2_floor_region,
+                    float(cfg.output.manual_rna2_floor_pct),
+                    cfg.output.manual_rna2_ceil_region,
+                    float(cfg.output.manual_rna2_ceil_pct),
+                )
+                if _res2 is not None:
+                    batch_contrast["rna2"] = _res2
+            else:
+                if cfg.channels.analysis_mode == "rna_rna":
+                    _console.print(
+                        "[yellow]reference_image: manual_rna2_reference_image "
+                        "not set — RNA2 will use auto_batch fallback.[/yellow]"
+                    )
+
+            # 2026-05-21 Brian/Sam: Manual override for DAPI / antibody when
+            # reference_image mode is set but the user pinned explicit values.
+            # The reference_image fields (manual_rna_reference_image etc.) only
+            # apply to RNA1/RNA2, so DAPI + antibody default to the auto_batch
+            # fallback populated in the pre-scan above — but the manual_*_min/
+            # max pair takes precedence over that fallback when BOTH halves are
+            # set. Mirrors the manual-mode block's behavior (no bump, verbatim).
+            # Caught when CAMK2D auto_tune ran with manual_dapi_min=100,
+            # manual_dapi_max=800 but produced DAPI batch_contrast = (28, 1695)
+            # from the auto_batch percentile fallback.
+            _mn = getattr(cfg.output, "manual_dapi_min", None)
+            _mx = getattr(cfg.output, "manual_dapi_max", None)
+            if _mn is not None and _mx is not None:
+                try:
+                    _f = float(_mn)
+                    _c = float(_mx)
+                    if _c <= _f:
+                        _c = _f + 1.0
+                    batch_contrast["dapi"] = (_f, _c)
+                    _console.print(
+                        f"  batch_contrast[dapi] = ({_f:.2f}, {_c:.2f})  "
+                        f"(manual override in reference_image mode)"
+                    )
+                except (TypeError, ValueError):
+                    pass
+            _mn = getattr(cfg.output, "manual_antibody_min", None)
+            _mx = getattr(cfg.output, "manual_antibody_max", None)
+            if _mn is not None and _mx is not None:
+                try:
+                    _f = float(_mn)
+                    _c = float(_mx)
+                    if _c <= _f:
+                        _c = _f + 1.0
+                    batch_contrast["antibody"] = (_f, _c)
+                    _console.print(
+                        f"  batch_contrast[antibody] = ({_f:.2f}, {_c:.2f})  "
+                        f"(manual override in reference_image mode)"
+                    )
+                except (TypeError, ValueError):
+                    pass
+
+    # ---- Manual-mode batch_contrast population (2026-05-20 Brian/Sam) -------
+    # When ``output.pub_contrast_mode == "manual"``, the auto_batch and
+    # reference_image pre-scan branches above are skipped, so batch_contrast
+    # stays empty. That breaks two downstream consumers:
+    #
+    #   (a) ``analysis_floors`` lookup further down (line ~916) reads
+    #       batch_contrast["rna" / "rna2"] to forward the floor into the
+    #       rna_rna mode → without this block, analysis_floors comes through
+    #       as None and every *_above_floor_intensity_* column ends up NaN
+    #       (even when apply_pub_contrast_floor_to_analysis = True).
+    #
+    #   (b) ``apply_pub_contrast_floor_to_spots`` filter in rna_rna.py reads
+    #       the same analysis_floors dict → without this block, spots are
+    #       never filtered against the manual floor.
+    #
+    # Mirror the manual_*_min/max into batch_contrast so all three modes
+    # (auto_batch, reference_image, manual) feed the same dict uniformly.
+    # Manual mode is verbatim user-typed values — NO bump applied (the
+    # bump is reserved for auto_batch percentile-derived floors).
+    if cfg.output.pub_contrast_mode == "manual":
+        _manual_pairs = (
+            ("rna",      "manual_rna_min",      "manual_rna_max"),
+            ("rna2",     "manual_rna2_min",     "manual_rna2_max"),
+            ("dapi",     "manual_dapi_min",     "manual_dapi_max"),
+            ("antibody", "manual_antibody_min", "manual_antibody_max"),
+        )
+        for _key, _min_attr, _max_attr in _manual_pairs:
+            _mn = getattr(cfg.output, _min_attr, None)
+            _mx = getattr(cfg.output, _max_attr, None)
+            if _mn is not None and _mx is not None:
+                try:
+                    _f = float(_mn)
+                    _c = float(_mx)
+                except (TypeError, ValueError):
+                    continue
+                if _c <= _f:
+                    _c = _f + 1.0
+                batch_contrast[_key] = (_f, _c)
+                _console.print(
+                    f"  batch_contrast[{_key}] = ({_f:.2f}, {_c:.2f})  "
+                    f"(manual pub_contrast_mode)"
+                )
+
     mode_fn = get_mode(cfg.channels.analysis_mode)
 
     per_image_rows: List[dict] = []
@@ -339,10 +1095,14 @@ def run_batch(
         TimeRemainingColumn(),
         console=_console,
     ) as progress:
+        # 2026-05-21 Brian: auto-strip the common leading prefix from all
+        # input filenames so per-image outputs use short, readable names.
+        # e.g. "TRANK1-CAMK2D-WT-KO_10_6ADVMLE fast" -> "10_6ADVMLE_fast".
+        _strip_prefix = _compute_common_filename_prefix([im.path.stem for im in images])
         task = progress.add_task("Processing images", total=len(images))
         for i, dimg in enumerate(images):
             progress.update(task, description=f"[{i+1}/{len(images)}] {dimg.path.name}")
-            raw_stem = dimg.path.stem
+            raw_stem = _simplify_stem(dimg.path.stem, _strip_prefix)
             # Embed the (sanitized) condition into every per-image output
             # filename so Brian doesn't have to cross-reference an image
             # number against the conditions table to know what condition
@@ -369,6 +1129,46 @@ def run_batch(
                     and cfg.channels.analysis_mode == "rna_rna"
                 ):
                     _mode_kwargs["precomputed_rna2_threshold"] = batch_rna2_threshold
+                # Reuse the nuclei labels the batch threshold pre-scan already
+                # computed for this image so it is segmented exactly once per
+                # run. Only rna_only / rna_rna run_one accept this kwarg; the
+                # dict is empty unless threshold_scope == 'batch', so per-image
+                # runs pass nothing and behavior is unchanged. Gate on a cached
+                # entry actually existing so other modes never receive it.
+                if cfg.channels.analysis_mode in ("rna_only", "rna_rna"):
+                    _cached_labels = precomputed_labels_by_path.get(str(dimg.path))
+                    if _cached_labels is not None:
+                        _mode_kwargs["precomputed_labels"] = _cached_labels
+                # 2026-05-20 Brian/Sam: forward the resolved per-channel pub-
+                # image contrast floor as a hard quantification floor when
+                # output.apply_pub_contrast_floor_to_analysis is True. The
+                # floor values come from the batch_contrast dict the runner
+                # has already resolved via auto_batch / manual /
+                # reference_image (whichever mode is active). We pass even
+                # when None — the mode treats missing floors as NaN columns
+                # so the schema stays stable.
+                # ALSO forward when apply_pub_contrast_floor_to_spots is True
+                # — same dict, separate downstream effect (filters detected
+                # spots whose peak intensity falls below the channel's floor).
+                if (
+                    cfg.channels.analysis_mode in ("rna_rna", "rna_only")
+                    and (
+                        bool(getattr(cfg.output, "apply_pub_contrast_floor_to_analysis", False))
+                        or bool(getattr(cfg.output, "apply_pub_contrast_floor_to_spots", False))
+                    )
+                ):
+                    _rna_floor_pair = batch_contrast.get("rna")
+                    _rna2_floor_pair = batch_contrast.get("rna2")
+                    _mode_kwargs["analysis_floors"] = {
+                        "rna": (
+                            float(_rna_floor_pair[0])
+                            if _rna_floor_pair is not None else None
+                        ),
+                        "rna2": (
+                            float(_rna2_floor_pair[0])
+                            if _rna2_floor_pair is not None else None
+                        ),
+                    }
                 res = mode_fn(
                     dimg.path,
                     **_mode_kwargs,
@@ -477,12 +1277,65 @@ def run_batch(
                         if rna2 is not None:
                             spots1 = qc.get("spots1", pd.DataFrame())
                             spots2 = qc.get("spots2", pd.DataFrame())
+                            # 2026-05-19 Brian: pass BOTH channel LUT colors
+                            # through so QC overlay markers / fills match the
+                            # preset's rna_lut / rna2_lut (was hardcoding
+                            # yellow for RNA1 regardless of LUT).
+                            _rna_lut_name = (
+                                getattr(_ch, "rna_lut", None) or "yellow"
+                            )
+                            _rna_w = _out.lut_name_to_weights(
+                                _rna_lut_name, (1.0, 1.0, 0.0),
+                            )
+                            _rna_color_u8 = (
+                                int(_rna_w[0] * 255),
+                                int(_rna_w[1] * 255),
+                                int(_rna_w[2] * 255),
+                            )
+                            _rna2_lut_name = (
+                                getattr(_ch, "rna2_lut", None) or "magenta"
+                            )
+                            _rna2_w = _out.lut_name_to_weights(
+                                _rna2_lut_name, (1.0, 0.0, 1.0),
+                            )
+                            _rna2_color_u8 = (
+                                int(_rna2_w[0] * 255),
+                                int(_rna2_w[1] * 255),
+                                int(_rna2_w[2] * 255),
+                            )
+                            # 2026-05-21 Brian: pass batch_contrast values
+                            # into the QC overlay so RNA channels match
+                            # publication_images/.
+                            # 2026-05-22 Brian: DAPI specifically uses
+                            # PER-IMAGE auto contrast in QC overlays. Some
+                            # batches (e.g. CAMK2D) have nuclear DAPI
+                            # medians varying 10× across images — a single
+                            # batch DAPI floor either washes out dim
+                            # nuclei or oversaturates bright ones. QC
+                            # overlays are for visual inspection of nucleus
+                            # + spot localization, so each image should
+                            # display its own DAPI cleanly. Publication
+                            # PNGs still use batch DAPI for cross-image
+                            # comparability.
+                            _qc_df, _qc_dc = None, None  # per-image auto
+                            _qc_rf, _qc_rc = batch_contrast.get("rna", (None, None))
+                            _qc_r2f, _qc_r2c = batch_contrast.get("rna2", (None, None))
                             all_in_one = _out.render_all_in_one_qc_rna_rna(
                                 dapi, rna, rna2, labels, spots1, spots2, vx,
                                 sec_only=bool(dimg.sec_only),
                                 dapi_label=_dapi_lbl,
                                 rna_label=_rna_lbl,
                                 rna2_label=_rna2_lbl,
+                                rna_color=_rna_color_u8,
+                                rna_lut_weights=_rna_w,
+                                rna2_color=_rna2_color_u8,
+                                rna2_lut_weights=_rna2_w,
+                                dapi_floor_override=_qc_df,
+                                dapi_ceil_override=_qc_dc,
+                                rna_floor_override=_qc_rf,
+                                rna_ceil_override=_qc_rc,
+                                rna2_floor_override=_qc_r2f,
+                                rna2_ceil_override=_qc_r2c,
                             )
                             _out.save_png(
                                 all_in_one,
@@ -515,14 +1368,96 @@ def run_batch(
                     dapi = qc.get("dapi_2d")
                     rna = qc.get("rna_2d")
                     rna2 = qc.get("rna2_2d")
+                    # Antibody/protein channel 2D — keyed by either name
+                    # depending on the mode that produced this qc dict.
+                    # rna_protein currently does not stash the AB channel in
+                    # qc (it consumes it inline), so this is usually None;
+                    # future modes can wire it up by adding the key to qc.
+                    protein_2d = qc.get("antibody_2d")
+                    if protein_2d is None:
+                        protein_2d = qc.get("protein_2d")
                     vx = float(qc.get("voxel_xy_nm", 65.0))
                     if dapi is not None and rna is not None:
                         _ch = cfg.channels
+                        # Resolve per-channel (floor, ceil) overrides based on
+                        # pub_contrast_mode. auto_batch -> use the pre-scan
+                        # batch_contrast dict (one uniform value per channel
+                        # for the whole run). manual -> use cfg.output.manual_*
+                        # min/max (None means "fall through to percentiles").
+                        # auto_per_image -> leave all overrides as None so the
+                        # bundle falls back to per-image percentile logic.
+                        _df = _dc = _rf = _rc = None
+                        _r2f = _r2c = _abf = _abc = None
+                        if _pub_mode == "auto_batch":
+                            _df, _dc = batch_contrast.get("dapi", (None, None))
+                            _rf, _rc = batch_contrast.get("rna", (None, None))
+                            _r2f, _r2c = batch_contrast.get("rna2", (None, None))
+                            _abf, _abc = batch_contrast.get("antibody", (None, None))
+                        elif _pub_mode == "manual":
+                            _df = cfg.output.manual_dapi_min
+                            _dc = cfg.output.manual_dapi_max
+                            _rf = cfg.output.manual_rna_min
+                            _rc = cfg.output.manual_rna_max
+                            _r2f = cfg.output.manual_rna2_min
+                            _r2c = cfg.output.manual_rna2_max
+                            _abf = cfg.output.manual_antibody_min
+                            _abc = cfg.output.manual_antibody_max
+                        elif _pub_mode == "reference_image":
+                            # Sam-style: rna / rna2 floor+ceil come from the
+                            # per-channel reference-image computation that
+                            # populated batch_contrast in the pre-scan. DAPI
+                            # + antibody come from the auto_batch fallback
+                            # values (also in batch_contrast), with manual_*
+                            # overrides applied on top when set (the BIN1
+                            # preset pins manual_dapi_min/max explicitly).
+                            _rf, _rc = batch_contrast.get("rna", (None, None))
+                            _r2f, _r2c = batch_contrast.get("rna2", (None, None))
+                            _df, _dc = batch_contrast.get("dapi", (None, None))
+                            _abf, _abc = batch_contrast.get("antibody", (None, None))
+                            # Manual DAPI / antibody overrides win when both
+                            # min and max are supplied; partial pins fall
+                            # through to the batch_contrast value.
+                            if (cfg.output.manual_dapi_min is not None
+                                    and cfg.output.manual_dapi_max is not None):
+                                _df = cfg.output.manual_dapi_min
+                                _dc = cfg.output.manual_dapi_max
+                            if (cfg.output.manual_antibody_min is not None
+                                    and cfg.output.manual_antibody_max is not None):
+                                _abf = cfg.output.manual_antibody_min
+                                _abc = cfg.output.manual_antibody_max
                         _out.save_publication_images_bundle(
                             dirs["publication_images"], f"{prefix}{stem}",
                             dapi, rna, vx,
                             rna2=rna2,
+                            protein=protein_2d,
                             sec_only=bool(dimg.sec_only),
+                            # Floor/ceil overrides (None = use legacy
+                            # percentile path).
+                            dapi_floor=_df, dapi_ceil=_dc,
+                            rna_floor=_rf, rna_ceil=_rc,
+                            rna2_floor=_r2f, rna2_ceil=_r2c,
+                            ab_floor=_abf, ab_ceil=_abc,
+                            # Per-channel percentile knobs (used when an
+                            # override is None — pub_contrast_floor_pct
+                            # also influences sec-only renders in auto_per_image
+                            # mode).
+                            dapi_floor_pct=float(cfg.output.pub_contrast_dapi_floor_pct),
+                            dapi_ceil_pct=float(cfg.output.pub_contrast_dapi_ceil_pct),
+                            rna_floor_pct=float(cfg.output.pub_contrast_floor_pct),
+                            rna_ceil_pct=float(cfg.output.pub_contrast_ceil_pct),
+                            rna2_floor_pct=float(cfg.output.pub_contrast_floor_pct),
+                            rna2_ceil_pct=float(cfg.output.pub_contrast_ceil_pct),
+                            # 2026-05-18 Brian: post-percentile floor bump
+                            # for RNA-class channels (auto_per_image path).
+                            # auto_batch path applies the bump inside the
+                            # pre-scan; this only affects per-image renders
+                            # that fall through the percentile resolver.
+                            rna_floor_bump_pct=float(
+                                getattr(cfg.output,
+                                        "pub_contrast_rna_floor_bump_pct",
+                                        0.0)
+                            ),
+                            save_tifs=bool(cfg.output.save_publication_tifs),
                             dapi_label=getattr(_ch, "dapi_label", None),
                             rna_label=getattr(_ch, "rna_label", None),
                             rna2_label=getattr(_ch, "rna2_label", None),
@@ -533,34 +1468,116 @@ def run_batch(
                             antibody_lut=getattr(_ch, "antibody_lut", None),
                         )
 
-                # Pipeline walkthrough — skip sec_only (no RNA threshold pretense)
-                if not dimg.sec_only:
-                    qc = res.qc
-                    dapi = qc.get("dapi_2d")
-                    rna = qc.get("rna_2d")
-                    rna2 = qc.get("rna2_2d")
-                    labels = qc.get("labels")
-                    dmask = qc.get("dapi_mask")
-                    rmask = qc.get("rna_pos_mask")
-                    rmask2 = qc.get("rna2_pos_mask")
-                    vx = float(qc.get("voxel_xy_nm", 65.0))
-                    if all(x is not None for x in (dapi, rna, labels, dmask, rmask)):
-                        if rna2 is not None and rmask2 is not None:
-                            _out.save_walkthrough_bundle_rna_rna(
-                                dirs["pipeline_walkthrough"], f"{prefix}{stem}",
-                                dapi=dapi, rna1=rna, rna2=rna2,
-                                dapi_mask=dmask, labels=labels,
-                                rna1_pos_mask=rmask, rna2_pos_mask=rmask2,
-                                voxel_xy_nm=vx, sec_only=False,
-                            )
-                        else:
-                            _out.save_walkthrough_bundle(
-                                dirs["pipeline_walkthrough"], f"{prefix}{stem}",
-                                dapi=dapi, rna=rna, dapi_mask=dmask,
-                                labels=labels, rna_pos_mask=rmask,
-                                voxel_xy_nm=vx,
-                                sec_only=False,
-                            )
+                # Pipeline walkthrough — emitted for both real and sec-only
+                # images (Brian 2026-05-14: sec-only no-probe controls still
+                # need walkthrough PNGs so QC reviewers can inspect the
+                # nuclear segmentation + background-level "threshold" the
+                # same way as real images). sec_only=True is propagated to
+                # the renderer so contrast-cache pollution is avoided
+                # (consult-but-don't-update behavior).
+                qc = res.qc
+                dapi = qc.get("dapi_2d")
+                rna = qc.get("rna_2d")
+                rna2 = qc.get("rna2_2d")
+                labels = qc.get("labels")
+                dmask = qc.get("dapi_mask")
+                rmask = qc.get("rna_pos_mask")
+                rmask2 = qc.get("rna2_pos_mask")
+                cyt = qc.get("cyt_labels")
+                vx = float(qc.get("voxel_xy_nm", 65.0))
+                # spots dataframes — for the new step07/08 (rna_only) and
+                # step07/08/09 (rna_rna) panels. res.spots already mirrors
+                # the per-spot rows; for rna_rna we use the channel-specific
+                # frames from qc since res.spots stacks them with a 'channel'
+                # column.
+                _spots_rna_only = res.spots if len(res.spots) else None
+                _spots_rna1 = qc.get("spots1")
+                _spots_rna2 = qc.get("spots2")
+                if all(x is not None for x in (dapi, rna, labels, dmask, rmask)):
+                    if rna2 is not None and rmask2 is not None:
+                        _ch_wk = cfg.channels
+                        # 2026-05-19 Brian: pass BOTH RNA LUT colors through.
+                        _rna_lut_wk = (
+                            getattr(_ch_wk, "rna_lut", None) or "yellow"
+                        )
+                        _rna_w_wk = _out.lut_name_to_weights(
+                            _rna_lut_wk, (1.0, 1.0, 0.0),
+                        )
+                        _rna_color_wk = (
+                            int(_rna_w_wk[0] * 255),
+                            int(_rna_w_wk[1] * 255),
+                            int(_rna_w_wk[2] * 255),
+                        )
+                        _rna2_lut_wk = (
+                            getattr(_ch_wk, "rna2_lut", None) or "magenta"
+                        )
+                        _rna2_w_wk = _out.lut_name_to_weights(
+                            _rna2_lut_wk, (1.0, 0.0, 1.0),
+                        )
+                        _rna2_color_wk = (
+                            int(_rna2_w_wk[0] * 255),
+                            int(_rna2_w_wk[1] * 255),
+                            int(_rna2_w_wk[2] * 255),
+                        )
+                        # 2026-05-22 Brian: pull pub contrast for walkthrough
+                        # the same way callout figures do (manual or auto_batch).
+                        _wk_df = _wk_dc = _wk_rf = _wk_rc = _wk_r2f = _wk_r2c = None
+                        try:
+                            _wk_pm = getattr(cfg.output, "pub_contrast_mode", "auto_batch")
+                            if _wk_pm == "manual":
+                                _wk_df = cfg.output.manual_dapi_min
+                                _wk_dc = cfg.output.manual_dapi_max
+                                _wk_rf = cfg.output.manual_rna_min
+                                _wk_rc = cfg.output.manual_rna_max
+                                _wk_r2f = cfg.output.manual_rna2_min
+                                _wk_r2c = cfg.output.manual_rna2_max
+                            else:
+                                _wk_df, _wk_dc = batch_contrast.get("dapi", (None, None))
+                                _wk_rf, _wk_rc = batch_contrast.get("rna", (None, None))
+                                _wk_r2f, _wk_r2c = batch_contrast.get("rna2", (None, None))
+                        except Exception:
+                            pass
+                        _out.save_walkthrough_bundle_rna_rna(
+                            dirs["pipeline_walkthrough"], f"{prefix}{stem}",
+                            dapi=dapi, rna1=rna, rna2=rna2,
+                            dapi_mask=dmask, labels=labels,
+                            rna1_pos_mask=rmask, rna2_pos_mask=rmask2,
+                            voxel_xy_nm=vx,
+                            sec_only=bool(dimg.sec_only),
+                            spots1=_spots_rna1, spots2=_spots_rna2,
+                            cyt_labels=cyt,
+                            rna_color=_rna_color_wk,
+                            rna_lut_weights=_rna_w_wk,
+                            rna2_color=_rna2_color_wk,
+                            rna2_lut_weights=_rna2_w_wk,
+                            # 2026-05-19 Brian: filename-embedded labels so
+                            # step04_<rna_label>_raw.png reflects the preset.
+                            rna_label=getattr(_ch_wk, "rna_label", None),
+                            rna2_label=getattr(_ch_wk, "rna2_label", None),
+                            dapi_label=getattr(_ch_wk, "dapi_label", None),
+                            dapi_floor_override=_wk_df,
+                            dapi_ceil_override=_wk_dc,
+                            rna_floor_override=_wk_rf,
+                            rna_ceil_override=_wk_rc,
+                            rna2_floor_override=_wk_r2f,
+                            rna2_ceil_override=_wk_r2c,
+                        )
+                    else:
+                        _ch_wk2 = cfg.channels
+                        _out.save_walkthrough_bundle(
+                            dirs["pipeline_walkthrough"], f"{prefix}{stem}",
+                            dapi=dapi, rna=rna, dapi_mask=dmask,
+                            labels=labels, rna_pos_mask=rmask,
+                            voxel_xy_nm=vx,
+                            sec_only=bool(dimg.sec_only),
+                            spots=_spots_rna_only,
+                            cyt_labels=cyt,
+                            # 2026-05-19 Brian: filename-embedded labels for
+                            # rna_only mode walkthroughs (rna_rna already
+                            # threads labels through).
+                            rna_label=getattr(_ch_wk2, "rna_label", None),
+                            dapi_label=getattr(_ch_wk2, "dapi_label", None),
+                        )
 
                 # Per-nucleus popouts — skip sec_only
                 if not dimg.sec_only and len(res.nuclei):
@@ -570,6 +1587,29 @@ def run_batch(
                     labels = qc.get("labels")
                     vx = float(qc.get("voxel_xy_nm", 65.0))
                     if dapi is not None and rna is not None and labels is not None:
+                        # 2026-05-22 Brian: reuse the same _cb_* contrast values
+                        # computed below for save_nuclei_callout_figure so the
+                        # individual popout PNGs also use pub contrast. rna2 is
+                        # passed so rna_rna mode shows both channels.
+                        # NOTE: _cb_* are assigned in the callout block below;
+                        # initialise to None here so they exist even if the
+                        # callout block is restructured later.
+                        _pop_df = _pop_dc = _pop_rf = _pop_rc = _pop_r2f = _pop_r2c = None
+                        try:
+                            _pop_pm = getattr(cfg.output, "pub_contrast_mode", "auto_batch")
+                            if _pop_pm == "manual":
+                                _pop_df = cfg.output.manual_dapi_min
+                                _pop_dc = cfg.output.manual_dapi_max
+                                _pop_rf = cfg.output.manual_rna_min
+                                _pop_rc = cfg.output.manual_rna_max
+                                _pop_r2f = cfg.output.manual_rna2_min
+                                _pop_r2c = cfg.output.manual_rna2_max
+                            else:
+                                _pop_df, _pop_dc = batch_contrast.get("dapi", (None, None))
+                                _pop_rf, _pop_rc = batch_contrast.get("rna", (None, None))
+                                _pop_r2f, _pop_r2c = batch_contrast.get("rna2", (None, None))
+                        except Exception:
+                            pass
                         _out.save_nuclei_popouts(
                             dirs["nuclei_popouts"], f"{prefix}{stem}",
                             dapi=dapi, rna=rna, labels=labels,
@@ -577,6 +1617,79 @@ def run_batch(
                             per_nuc_rows=res.nuclei.to_dict(orient="records"),
                             voxel_xy_nm=vx,
                             n_per_image=2,
+                            dapi_floor=_pop_df, dapi_ceil=_pop_dc,
+                            rna_floor=_pop_rf, rna_ceil=_pop_rc,
+                            rna2=qc.get("rna2_2d"),
+                            rna2_floor=_pop_r2f, rna2_ceil=_pop_r2c,
+                        )
+                        # 2026-05-22 Brian: combined main-image + popout figure
+                        # with red boxes showing where each crop came from.
+                        # Pull contrast floors/ceils from the same source the
+                        # publication images use so the callout panels look
+                        # identical to the publication renders.
+                        _cb_df = _cb_dc = _cb_rf = _cb_rc = _cb_r2f = _cb_r2c = None
+                        try:
+                            _pm = getattr(cfg.output, "pub_contrast_mode", "auto_batch")
+                            if _pm == "manual":
+                                _cb_df = cfg.output.manual_dapi_min
+                                _cb_dc = cfg.output.manual_dapi_max
+                                _cb_rf = cfg.output.manual_rna_min
+                                _cb_rc = cfg.output.manual_rna_max
+                                _cb_r2f = cfg.output.manual_rna2_min
+                                _cb_r2c = cfg.output.manual_rna2_max
+                            else:
+                                _cb_df, _cb_dc = batch_contrast.get("dapi", (None, None))
+                                _cb_rf, _cb_rc = batch_contrast.get("rna", (None, None))
+                                _cb_r2f, _cb_r2c = batch_contrast.get("rna2", (None, None))
+                        except Exception:
+                            pass
+                        try:
+                            _out.save_nuclei_callout_figure(
+                                dirs["nuclei_popouts"], f"{prefix}{stem}",
+                                dapi=dapi, rna=rna, rna2=qc.get("rna2_2d"),
+                                labels=labels,
+                                per_nuc_rows=res.nuclei.to_dict(orient="records"),
+                                voxel_xy_nm=vx,
+                                n_popouts=4,
+                                dapi_floor=_cb_df, dapi_ceil=_cb_dc,
+                                rna_floor=_cb_rf, rna_ceil=_cb_rc,
+                                rna2_floor=_cb_r2f, rna2_ceil=_cb_r2c,
+                            )
+                        except Exception as _exc:
+                            _console.print(
+                                f"[yellow]nuclei callout figure failed for {stem}: "
+                                f"{type(_exc).__name__}: {_exc}[/yellow]"
+                            )
+
+                # 2026-05-22 Brian: nucleolus QC overlay — moved OUTSIDE
+                # the sec_only gate so sec-only images also get overlays
+                # (useful for visually confirming negative controls).
+                qc_obj = res.qc
+                _nucleolus_labels = qc_obj.get("nucleolus_labels")
+                _dapi_for_overlay = qc_obj.get("dapi_2d")
+                _labels_for_overlay = qc_obj.get("labels")
+                if (
+                    _nucleolus_labels is not None
+                    and _dapi_for_overlay is not None
+                    and _labels_for_overlay is not None
+                ):
+                    try:
+                        from .core.nucleolus import render_nucleolus_overlay
+                        import imageio.v3 as _iio
+                        overlay = render_nucleolus_overlay(
+                            _dapi_for_overlay, _labels_for_overlay, _nucleolus_labels,
+                        )
+                        _iio.imwrite(
+                            dirs["nucleolus_overlay"]
+                            / f"{prefix}{stem}__nucleolus_overlay.png",
+                            overlay,
+                        )
+                    except Exception as _exc:
+                        import traceback as _tb
+                        _console.print(
+                            f"[yellow]nucleolus overlay save failed for {stem}: "
+                            f"{type(_exc).__name__}: {_exc}[/yellow]\n"
+                            f"{_tb.format_exc()}"
                         )
 
             except Exception as e:
@@ -605,28 +1718,9 @@ def run_batch(
     thr_df = pd.DataFrame(threshold_rows)
     thr_df.to_csv(output_dir / f"{prefix}thresholds.csv", index=False)
 
-    # ---- Excel workbook ----------------------------------------------------
-    try:
-        with pd.ExcelWriter(output_dir / f"{prefix}analysis_summary.xlsx", engine="openpyxl") as xl:
-            pd.DataFrame([
-                dict(field="purpose", value="fishsuite end-to-end results"),
-                dict(field="version", value=__version__),
-                dict(field="config", value=str(config_path)),
-                dict(field="input_dir", value=str(input_dir)),
-                dict(field="output_dir", value=str(output_dir)),
-                dict(field="n_images", value=len(images)),
-            ]).to_excel(xl, sheet_name="How_to_read", index=False)
-            per_image_df.to_excel(xl, sheet_name="Per_Image_Summary", index=False)
-            if len(nuclei_df):
-                nuclei_df.to_excel(xl, sheet_name="Per_Nucleus_Metrics", index=False)
-            if len(spots_df):
-                spots_df.to_excel(xl, sheet_name="Per_Spot_Metrics", index=False)
-            if len(morph_df):
-                morph_df.to_excel(xl, sheet_name="Cell_Morphology", index=False)
-            if len(thr_df):
-                thr_df.to_excel(xl, sheet_name="Thresholds", index=False)
-    except Exception as e:
-        _console.print(f"[yellow]Could not write Excel workbook: {e}[/yellow]")
+    _run_start_utc = datetime.fromtimestamp(
+        t_start, tz=timezone.utc,
+    ).isoformat()
 
     # ---- Provenance --------------------------------------------------------
     run_config = dict(
@@ -672,6 +1766,27 @@ def run_batch(
         SAVE_QC_OVERLAYS=cfg.output.save_qc_overlays,
         SAVE_MASKS=cfg.output.save_masks,
         SAVE_PUBLICATION_IMAGES=cfg.output.save_publication_images,
+        SAVE_PUBLICATION_TIFS=cfg.output.save_publication_tifs,
+        # Pub-image contrast — record the strategy used + the per-channel
+        # absolute (floor, ceil) actually applied so Brian / downstream
+        # tooling can read back what contrast each PNG was rendered with
+        # without having to inspect the image histograms. Empty dict in
+        # manual / auto_per_image modes (no batch-wide values were computed).
+        PUB_CONTRAST_MODE=_pub_mode,
+        PUB_CONTRAST_FLOOR_PCT=float(cfg.output.pub_contrast_floor_pct),
+        PUB_CONTRAST_CEIL_PCT=float(cfg.output.pub_contrast_ceil_pct),
+        PUB_CONTRAST_DAPI_FLOOR_PCT=float(cfg.output.pub_contrast_dapi_floor_pct),
+        PUB_CONTRAST_DAPI_CEIL_PCT=float(cfg.output.pub_contrast_dapi_ceil_pct),
+        # 2026-05-18 Brian: post-percentile floor bump for RNA-class
+        # channels (rna, rna2, antibody). Applied AFTER the
+        # pub_contrast_floor_pct percentile selection. 0 = disabled.
+        PUB_CONTRAST_RNA_FLOOR_BUMP_PCT=float(
+            getattr(cfg.output, "pub_contrast_rna_floor_bump_pct", 0.0)
+        ),
+        batch_contrast={
+            k: {"floor": float(v[0]), "ceil": float(v[1])}
+            for k, v in batch_contrast.items()
+        },
         # Channel labels — promote to top-level fields so downstream tooling
         # (Fiji parity, Brian's plotting scripts) can read the human names
         # without having to walk into config_resolved.channels.
@@ -683,6 +1798,64 @@ def run_batch(
     )
     with open(output_dir / "run_config.json", "w", encoding="utf-8") as f:
         json.dump(run_config, f, indent=2, default=str)
+
+    # ---- Excel workbook (PI-ready) ----------------------------------------
+    # Written AFTER run_config.json so the Run_Config sheet can read the
+    # flattened JSON straight off disk.
+    try:
+        _fallback_cols = write_analysis_summary_workbook(
+            out_path=output_dir / f"{prefix}analysis_summary.xlsx",
+            per_image_df=per_image_df,
+            nuclei_df=nuclei_df,
+            spots_df=spots_df,
+            morph_df=morph_df,
+            thr_df=thr_df,
+            fishsuite_version=__version__,
+            run_start_utc=_run_start_utc,
+            config_path=Path(config_path),
+            input_dir=Path(input_dir),
+            output_dir=Path(output_dir),
+            z_mode=str(cfg.z_stack.mode),
+            # start_slice/end_slice are None when using single mode + per-image
+            # file_overrides (no global z-window); coalesce to 0 so the Excel
+            # workbook still writes (was crashing int(None) -> Excel skipped).
+            z_start=int(cfg.z_stack.start_slice or 0),
+            z_end=int(cfg.z_stack.end_slice or 0),
+            images=images,
+            n_workers=int(n_workers),
+        )
+        if _fallback_cols:
+            _console.print(
+                f"[yellow]Excel glossary fallback fired for "
+                f"{len(_fallback_cols)} column(s): "
+                f"{', '.join(_fallback_cols[:8])}"
+                f"{' ...' if len(_fallback_cols) > 8 else ''}[/yellow]"
+            )
+    except Exception as e:
+        import traceback as _tb
+        _console.print(
+            f"[yellow]Could not write Excel workbook: {e}[/yellow]\n"
+            f"{_tb.format_exc()}"
+        )
+
+    # ---- Excel companion: raw-data workbook -------------------------------
+    try:
+        write_raw_data_workbook(
+            out_path=output_dir / f"{prefix}analysis_raw_data.xlsx",
+            per_image_df=per_image_df,
+            nuclei_df=nuclei_df,
+            spots_df=spots_df,
+            morph_df=morph_df,
+            fishsuite_version=__version__,
+            run_start_utc=_run_start_utc,
+            output_dir=Path(output_dir),
+        )
+    except Exception as e:
+        import traceback as _tb
+        _console.print(
+            f"[yellow]Could not write raw-data Excel workbook: {e}[/yellow]\n"
+            f"{_tb.format_exc()}"
+        )
 
     _console.print(
         f"[green]Done[/green] in {run_config['runtime_s']}s  "

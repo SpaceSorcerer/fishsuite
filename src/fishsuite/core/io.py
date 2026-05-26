@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional, Tuple, List
+from typing import Optional, Tuple, List, Literal
 
 import numpy as np
 
@@ -166,16 +166,351 @@ def extract_channel(
         return sub.max(axis=0)
     if z_mode == "autofocus":
         return _autofocus_plane(sub)
+    if z_mode == "autofocus_maxproj":
+        # autofocus_maxproj is normally dispatched by the mode runners,
+        # which compute the focus window once on DAPI then MIP that window
+        # for all channels. When extract_channel is invoked directly with
+        # this z_mode (e.g. the runner's pre-scan pub-contrast pool path
+        # that doesn't know the DAPI channel), fall back to a per-channel
+        # autofocus window using default parameters on the channel itself.
+        # This keeps the pre-scan pool consistent with the per-image
+        # render (both MIP a focus-derived slab) without requiring the
+        # pre-scan to know which channel is DAPI.
+        (ws, we), _ = compute_focus_window(sub)
+        return sub[ws : we + 1].max(axis=0)
     raise ValueError(f"Unknown z_mode {z_mode!r}")
 
 
 def _autofocus_plane(stack: np.ndarray) -> np.ndarray:
     """Pick the sharpest 2D plane from a 3D stack by normalized Laplacian variance."""
+    _, plane = _autofocus_plane_with_idx(stack)
+    return plane
+
+
+# ---------------------------------------------------------------------------
+# Per-slice focus metrics (used by autofocus_maxproj z-mode)
+# ---------------------------------------------------------------------------
+
+def _focus_score_variance_of_laplacian(plane: np.ndarray) -> float:
+    """Variance of the Laplacian-filtered plane (Pertuz et al. 2013).
+
+    Standard focus operator for fluorescence microscopy. Normalized by
+    mean intensity so the score is insensitive to the absolute brightness
+    of the slice — only the spatial structure of the gradient matters.
+    """
+    from scipy import ndimage as ndi
+    p = plane.astype(np.float32)
+    m = float(p.mean())
+    if m <= 0:
+        return 0.0
+    lap = ndi.laplace(p / m)
+    return float(np.var(lap))
+
+
+def _focus_score_tenengrad(plane: np.ndarray) -> float:
+    """Sum of squared Sobel-gradient magnitudes ("Tenengrad" focus measure).
+
+    Sharper response to oriented edges than the Laplacian; sometimes
+    preferred when the focus profile is shallow. Normalized by mean
+    intensity for brightness invariance.
+    """
+    from scipy import ndimage as ndi
+    p = plane.astype(np.float32)
+    m = float(p.mean())
+    if m <= 0:
+        return 0.0
+    pn = p / m
+    gx = ndi.sobel(pn, axis=1)
+    gy = ndi.sobel(pn, axis=0)
+    return float(np.sum(gx * gx + gy * gy))
+
+
+def _focus_score_normalized_variance(plane: np.ndarray) -> float:
+    """Variance / mean^2 ("normalized variance") — brightness-invariant.
+
+    Cheapest of the three metrics; useful as a sanity-check fallback.
+    """
+    p = plane.astype(np.float32)
+    m = float(p.mean())
+    if m <= 0:
+        return 0.0
+    return float(np.var(p) / (m * m))
+
+
+_FOCUS_METRICS = {
+    "variance_of_laplacian": _focus_score_variance_of_laplacian,
+    "tenengrad": _focus_score_tenengrad,
+    "normalized_variance": _focus_score_normalized_variance,
+}
+
+
+def compute_focus_window(
+    dapi_zstack: np.ndarray,
+    *,
+    metric: str = "variance_of_laplacian",
+    threshold_frac: float = 0.5,
+    min_slices: int = 3,
+    max_slices: int = 0,
+    outer_start: Optional[int] = None,
+    outer_end: Optional[int] = None,
+    fixed_n_slices: int = 0,
+    min_intensity_frac_of_peak: float = 0.0,
+) -> Tuple[Tuple[int, int], dict]:
+    """Detect the per-image in-focus DAPI z-window for autofocus_maxproj mode.
+
+    Two modes:
+      - **FWHM-style (default, fixed_n_slices=0)**: walk outward from peak
+        focus slice while score >= threshold_frac * peak; per-image window
+        width VARIES depending on the focus profile.
+      - **Fixed-N centered (fixed_n_slices > 0)**: window is exactly N
+        slices wide, centered on the peak-focus slice (symmetric for odd
+        N, with the extra slice trailing the peak for even N). Per-image
+        window WIDTH IS CONSTANT — only the position adapts. If clamping
+        to outer bounds would shrink the window below N, the window is
+        SHIFTED (slid toward the bound that wasn't violated) instead of
+        shrunk, so the integration depth stays consistent across images.
+        Window only shrinks below N when the *outer-bound interval itself*
+        is narrower than N.
+
+    Parameters
+    ----------
+    dapi_zstack : np.ndarray
+        Full DAPI 3D stack with shape (Z, Y, X) — 0-indexed along Z.
+    metric : {"variance_of_laplacian", "tenengrad", "normalized_variance"}
+        Per-slice sharpness metric. Default: variance_of_laplacian (Pertuz
+        et al. 2013, standard for fluorescence microscopy).
+    threshold_frac : float
+        FWHM-style threshold. Slices with focus_score >= threshold_frac *
+        peak_score are included in the window. 0.5 = FWHM. Unused when
+        fixed_n_slices > 0.
+    min_slices : int
+        Minimum number of slices in the returned window. If the natural
+        FWHM window is smaller, the window is symmetrically expanded
+        around the peak slice (clamped to valid stack indices and to
+        outer_start/outer_end if set). Unused when fixed_n_slices > 0.
+    max_slices : int
+        Maximum number of slices. 0 = no cap. Unused when fixed_n_slices > 0.
+    outer_start, outer_end : int or None
+        0-indexed inclusive outer bounds the returned window must lie
+        within. If set, the focus-score peak search and window expansion
+        are both restricted to this range. (Used by the runner to honor
+        cfg.z_stack.start_slice / end_slice as hard ceilings on what the
+        per-image autofocus is allowed to pick.)
+    fixed_n_slices : int
+        When > 0, switches to fixed-N centered mode (see above). The
+        window is exactly N slices wide, positioned to keep the peak-
+        focus slice centered (subject to outer-bound clamping). When 0
+        (default), uses FWHM-style variable-N logic.
+
+    Returns
+    -------
+    (window_start, window_end), diagnostics
+        ``window_start`` and ``window_end`` are inclusive 0-indexed slice
+        indices into the original dapi_zstack. diagnostics is a dict:
+        ``{"peak_z": int, "peak_score": float, "focus_scores": list[float],
+        "window_size": int, "window_start": int, "window_end": int,
+        "threshold_used": float, "expanded_to_min": bool,
+        "clipped_to_max": bool, "metric": str}``. When fixed_n_slices > 0,
+        the diagnostics dict also contains ``"fixed_n": True,
+        "requested_n": int, "actual_n": int, "shifted_for_bounds": bool,
+        "shrunk_by_bounds": bool``. ``actual_n`` equals ``requested_n``
+        unless the outer-bound interval is narrower than N (in which case
+        ``shrunk_by_bounds`` is True). ``shifted_for_bounds`` is True
+        when the window was slid off-center to keep the requested N.
+    """
+    if dapi_zstack.ndim != 3:
+        raise ValueError(
+            f"compute_focus_window: expected 3D stack, got shape {dapi_zstack.shape}"
+        )
+    nz = int(dapi_zstack.shape[0])
+    if nz == 0:
+        raise ValueError("compute_focus_window: empty z-stack")
+
+    # Resolve outer bounds (0-indexed inclusive). Default = whole stack.
+    lo = 0 if outer_start is None else max(0, int(outer_start))
+    hi = (nz - 1) if outer_end is None else min(nz - 1, int(outer_end))
+    if lo > hi:
+        # Bad outer bounds — fall back to whole stack
+        lo, hi = 0, nz - 1
+
+    score_fn = _FOCUS_METRICS.get(metric)
+    if score_fn is None:
+        raise ValueError(
+            f"compute_focus_window: unknown metric {metric!r} "
+            f"(valid: {sorted(_FOCUS_METRICS)})"
+        )
+
+    # Compute per-slice focus scores. We compute over the FULL stack so
+    # diagnostics include the whole profile (useful for inspection),
+    # but the peak / window expansion is restricted to [lo, hi].
+    focus_scores: list[float] = []
+    for z in range(nz):
+        focus_scores.append(float(score_fn(dapi_zstack[z])))
+
+    # 2026-05-24 v7 Brian: min-intensity pre-filter. Disqualify slices whose
+    # mean DAPI intensity is below ``min_intensity_frac_of_peak * max_slice_mean``
+    # by overwriting their focus_score with -inf BEFORE peak search. Guards
+    # against noisy/empty edge slices (top/bottom of stack) that score
+    # spuriously high on variance_of_laplacian or normalized_variance.
+    excluded_by_intensity = []
+    if min_intensity_frac_of_peak and min_intensity_frac_of_peak > 0.0:
+        slice_means = np.asarray(
+            [float(dapi_zstack[z].mean()) for z in range(nz)], dtype=float
+        )
+        max_mean = float(slice_means.max()) if slice_means.size else 0.0
+        cutoff = max_mean * float(min_intensity_frac_of_peak)
+        for z in range(nz):
+            if slice_means[z] < cutoff:
+                focus_scores[z] = float("-inf")
+                excluded_by_intensity.append(z)
+
+    # Find peak within [lo, hi]
+    sub_scores = focus_scores[lo : hi + 1]
+    peak_offset = int(np.argmax(sub_scores))
+    peak_z = lo + peak_offset
+    peak_score = float(focus_scores[peak_z])
+
+    # ─── Branch: fixed-N centered window ──────────────────────────────────
+    # When fixed_n_slices > 0, return exactly N slices centered on peak_z,
+    # bypassing the FWHM threshold + min/max-slice machinery entirely.
+    # Window is positioned to keep peak_z centered (symmetric for odd N);
+    # for even N, the extra slice trails the peak (peak - n//2, peak + (n-1)//2).
+    # If centered position would violate outer bounds, SHIFT (don't shrink)
+    # the window toward the bound that wasn't violated, so integration
+    # depth stays constant across the batch. Window only shrinks below N
+    # when the outer-bound interval [lo, hi] itself is narrower than N.
+    if fixed_n_slices and int(fixed_n_slices) > 0:
+        n_req = int(fixed_n_slices)
+        outer_span = hi - lo + 1
+        if n_req >= outer_span:
+            # Outer bounds force a smaller window than requested.
+            ws, we = lo, hi
+            actual_n = outer_span
+            shifted = False
+            shrunk = True
+        else:
+            # Center on peak (asymmetric for even N: half before, n-1-half after)
+            half_lo = n_req // 2          # slices BEFORE peak
+            half_hi = n_req - 1 - half_lo # slices AFTER peak (= (n-1)//2)
+            ws = peak_z - half_lo
+            we = peak_z + half_hi
+            shifted = False
+            # Slide the whole window toward the bound that wasn't violated
+            if ws < lo:
+                shift = lo - ws
+                ws += shift
+                we += shift
+                shifted = True
+            elif we > hi:
+                shift = we - hi
+                ws -= shift
+                we -= shift
+                shifted = True
+            actual_n = we - ws + 1
+            shrunk = False  # outer_span > n_req, so width is preserved
+        diagnostics = {
+            "metric": metric,
+            "peak_z": int(peak_z),
+            "peak_score": float(peak_score),
+            "focus_scores": focus_scores,
+            "window_size": int(actual_n),
+            "window_start": int(ws),
+            "window_end": int(we),
+            "threshold_used": 0.0,
+            "outer_start": int(lo),
+            "outer_end": int(hi),
+            "expanded_to_min": False,
+            "clipped_to_max": False,
+            "fixed_n": True,
+            "requested_n": int(n_req),
+            "actual_n": int(actual_n),
+            "shifted_for_bounds": bool(shifted),
+            "shrunk_by_bounds": bool(shrunk),
+        }
+        return (int(ws), int(we)), diagnostics
+
+    # ─── Default: FWHM-style variable-N window ────────────────────────────
+    threshold = float(threshold_frac) * peak_score
+
+    # FWHM-style window expansion: walk outward from peak while score >=
+    # threshold. Stop on first slice below threshold (don't keep going
+    # past a dip and rejoining).
+    ws = peak_z
+    while ws - 1 >= lo and focus_scores[ws - 1] >= threshold:
+        ws -= 1
+    we = peak_z
+    while we + 1 <= hi and focus_scores[we + 1] >= threshold:
+        we += 1
+
+    expanded_to_min = False
+    clipped_to_max = False
+
+    # Enforce min_slices: symmetric expansion around peak, clamped to [lo, hi]
+    mn = max(1, int(min_slices))
+    while (we - ws + 1) < mn:
+        expanded_to_min = True
+        grew = False
+        # Try to grow on the side that has more room (prefer symmetric)
+        room_left = ws - lo
+        room_right = hi - we
+        if room_left == 0 and room_right == 0:
+            break  # cannot grow further
+        if room_left >= room_right and room_left > 0:
+            ws -= 1
+            grew = True
+        elif room_right > 0:
+            we += 1
+            grew = True
+        if not grew:
+            break
+
+    # Enforce max_slices ceiling: symmetric trim around peak
+    if max_slices and max_slices > 0:
+        mx = int(max_slices)
+        if (we - ws + 1) > mx:
+            clipped_to_max = True
+            # Re-center on peak, take ±(mx//2) around it, clamped
+            half = mx // 2
+            # Try to keep peak inside the trimmed window
+            ws_new = max(lo, peak_z - half)
+            we_new = ws_new + mx - 1
+            if we_new > hi:
+                we_new = hi
+                ws_new = max(lo, we_new - mx + 1)
+            ws, we = ws_new, we_new
+
+    diagnostics = {
+        "metric": metric,
+        "peak_z": int(peak_z),
+        "peak_score": float(peak_score),
+        "focus_scores": focus_scores,
+        "window_size": int(we - ws + 1),
+        "window_start": int(ws),
+        "window_end": int(we),
+        "threshold_used": float(threshold),
+        "outer_start": int(lo),
+        "outer_end": int(hi),
+        "expanded_to_min": bool(expanded_to_min),
+        "clipped_to_max": bool(clipped_to_max),
+        "fixed_n": False,
+    }
+    return (int(ws), int(we)), diagnostics
+
+
+def _autofocus_plane_with_idx(stack: np.ndarray) -> "tuple[int, np.ndarray]":
+    """Like ``_autofocus_plane`` but also returns the picked 0-indexed slice.
+
+    Callers that need to lock other channels to the same focal plane (e.g.
+    rna_rna mode, where RNA1/RNA2 spots must be measured at DAPI's z so the
+    nuclear mask + spot xy come from the SAME physical plane) use this to
+    grab the index, then re-extract the other channels in 'single' mode at
+    that absolute z.
+    """
     from scipy import ndimage as ndi
     if stack.ndim != 3:
         raise ValueError("expected 3D stack")
     if stack.shape[0] == 1:
-        return stack[0]
+        return 0, stack[0]
     best_idx = 0
     best_score = -np.inf
     for z in range(stack.shape[0]):
@@ -190,7 +525,158 @@ def _autofocus_plane(stack: np.ndarray) -> np.ndarray:
         if score > best_score:
             best_score = score
             best_idx = z
-    return stack[best_idx]
+    return best_idx, stack[best_idx]
+
+
+def extract_channel_autofocus_with_idx(
+    img: ImageWrapper,
+    channel_idx: int,
+    z_start: Optional[int] = None,
+    z_end: Optional[int] = None,
+) -> "tuple[int, np.ndarray]":
+    """Autofocus a single channel; return (absolute_z_1indexed, 2D plane).
+
+    The returned z is 1-indexed against the full stack (so it can be passed
+    back into ``extract_channel(z_mode='single', z_start=z, z_end=z)`` to
+    lock other channels to the same physical plane).
+    """
+    if channel_idx < 0 or channel_idx >= img.n_channels:
+        raise IndexError(
+            f"Channel {channel_idx} out of range (image has {img.n_channels})"
+        )
+    zyx = img.bio.get_image_data("ZYX", T=0, C=channel_idx)  # type: ignore[attr-defined]
+    if zyx.ndim == 2:
+        zyx = zyx[None, :, :]
+    nz = zyx.shape[0]
+    zs0 = 0 if z_start is None else max(0, int(z_start) - 1)
+    ze0 = nz if z_end is None else min(nz, int(z_end))
+    if zs0 >= ze0:
+        zs0, ze0 = 0, nz
+    sub = zyx[zs0:ze0]
+    local_idx, plane = _autofocus_plane_with_idx(sub)
+    # local_idx is 0-indexed within the windowed substack; convert to
+    # 1-indexed absolute z against the full stack.
+    abs_z_1indexed = zs0 + local_idx + 1
+    return abs_z_1indexed, plane
+
+
+def extract_dapi_focus_window(
+    img: ImageWrapper,
+    dapi_channel_idx: int,
+    *,
+    metric: str = "variance_of_laplacian",
+    threshold_frac: float = 0.5,
+    min_slices: int = 3,
+    max_slices: int = 0,
+    z_start: Optional[int] = None,
+    z_end: Optional[int] = None,
+    fixed_n_slices: int = 0,
+    min_intensity_frac_of_peak: float = 0.0,
+) -> "tuple[Tuple[int, int], dict, np.ndarray]":
+    """Compute the per-image in-focus DAPI z-window and return its MIP.
+
+    Used by the autofocus_maxproj z-mode dispatch in the per-image mode
+    runners. Returns the focus-window bounds (1-indexed, inclusive, for
+    consistency with extract_channel_in_z_range), the diagnostics dict,
+    and the DAPI MIP over that window — so the caller can re-use the
+    same window for the RNA channels via extract_channel_in_z_range.
+
+    z_start / z_end are 1-indexed inclusive outer bounds (same convention
+    as cfg.z_stack.start_slice / end_slice). Pass None to use the whole
+    stack.
+
+    fixed_n_slices: when > 0, use fixed-N centered window mode (see
+    compute_focus_window docstring). When 0 (default), use FWHM logic.
+    """
+    if dapi_channel_idx < 0 or dapi_channel_idx >= img.n_channels:
+        raise IndexError(
+            f"Channel {dapi_channel_idx} out of range (image has {img.n_channels})"
+        )
+    zyx = img.bio.get_image_data("ZYX", T=0, C=dapi_channel_idx)  # type: ignore[attr-defined]
+    if zyx.ndim == 2:
+        zyx = zyx[None, :, :]
+    nz = zyx.shape[0]
+    # Convert 1-indexed outer bounds to 0-indexed inclusive (compute_focus_window
+    # takes 0-indexed bounds).
+    outer_start_0 = None if z_start is None else max(0, int(z_start) - 1)
+    outer_end_0 = None if z_end is None else min(nz - 1, int(z_end) - 1)
+
+    (ws0, we0), diag = compute_focus_window(
+        zyx,
+        metric=metric,
+        threshold_frac=threshold_frac,
+        min_slices=min_slices,
+        max_slices=max_slices,
+        outer_start=outer_start_0,
+        outer_end=outer_end_0,
+        fixed_n_slices=fixed_n_slices,
+        min_intensity_frac_of_peak=min_intensity_frac_of_peak,
+    )
+    dapi_mip = zyx[ws0 : we0 + 1].max(axis=0)
+    # Convert window to 1-indexed inclusive for the caller (parity with the
+    # rest of the io.py 1-indexed API).
+    return (int(ws0 + 1), int(we0 + 1)), diag, dapi_mip
+
+
+def extract_channel_in_z_range(
+    img: ImageWrapper,
+    channel_idx: int,
+    *,
+    z_start_1indexed: int,
+    z_end_1indexed: int,
+    project: Literal["maxproj", "mean", "none"] = "maxproj",
+) -> np.ndarray:
+    """Extract a non-DAPI channel over a pre-computed z-window.
+
+    Companion to extract_dapi_focus_window: once the DAPI focus window is
+    chosen, the RNA / antibody channels are pulled over the SAME slab and
+    MIP'd so all channels are anatomically aligned.
+
+    z_start_1indexed / z_end_1indexed are 1-indexed inclusive (matches
+    the cfg.z_stack.* convention). project="maxproj" (default) returns
+    the max projection over the slab; "mean" returns the mean projection;
+    "none" returns the raw (Z, Y, X) sub-stack.
+    """
+    if channel_idx < 0 or channel_idx >= img.n_channels:
+        raise IndexError(
+            f"Channel {channel_idx} out of range (image has {img.n_channels})"
+        )
+    zyx = img.bio.get_image_data("ZYX", T=0, C=channel_idx)  # type: ignore[attr-defined]
+    if zyx.ndim == 2:
+        zyx = zyx[None, :, :]
+    nz = zyx.shape[0]
+    zs0 = max(0, int(z_start_1indexed) - 1)
+    ze0 = min(nz, int(z_end_1indexed))  # half-open
+    if zs0 >= ze0:
+        zs0, ze0 = 0, nz
+    sub = zyx[zs0:ze0]
+    if project == "none":
+        return sub
+    if project == "mean":
+        return sub.mean(axis=0)
+    return sub.max(axis=0)
+
+
+def extract_channel_at_z(
+    img: ImageWrapper,
+    channel_idx: int,
+    z_1indexed: int,
+) -> np.ndarray:
+    """Extract a single 2D plane at an exact 1-indexed z (no autofocus, no maxproj).
+
+    Used to lock RNA / antibody channels to DAPI's autofocus pick so the
+    nuclear mask + spot xy come from the same physical plane.
+    """
+    if channel_idx < 0 or channel_idx >= img.n_channels:
+        raise IndexError(
+            f"Channel {channel_idx} out of range (image has {img.n_channels})"
+        )
+    zyx = img.bio.get_image_data("ZYX", T=0, C=channel_idx)  # type: ignore[attr-defined]
+    if zyx.ndim == 2:
+        return zyx
+    nz = zyx.shape[0]
+    z0 = max(0, min(nz - 1, int(z_1indexed) - 1))
+    return zyx[z0]
 
 
 def get_voxel_size_nm(img: ImageWrapper) -> Tuple[float, float]:
