@@ -219,6 +219,15 @@ class NucleiCfg(BaseModel):
     # (same scale as the cardiomyocyte runs) ≈ 4× faster, no quality loss.
     # Applies to the cellpose backend only.
     cellpose_downsample_factor: float = 1.0
+    # 2026-05-27: OPT-IN GPU acceleration for the cpsam transformer via
+    # torch-directml (Brian's AMD RX 6750 XT — no CUDA). DEFAULT "cpu" keeps
+    # the production CPU path byte-for-byte unchanged. "directml" builds the
+    # cellpose net in fp32, moves only the network to the DirectML device, and
+    # forces the sparse flow-dynamics step back to CPU (DirectML has no sparse
+    # kernel) — see core.segmentation + segment_image.segment_cellpose. Only
+    # usable from an env that has torch-directml installed (e.g. fishproc_dml);
+    # the production fishproc env never selects it. cellpose backend only.
+    cellpose_device: Literal["cpu", "directml"] = "cpu"
     exclude_border: bool = True
     border_margin_px: int = 5
 
@@ -532,6 +541,33 @@ class OutputCfg(BaseModel):
 
 class ParallelCfg(BaseModel):
     workers: int | str = "auto"  # int or "auto"
+    # 2026-05-27 PERF: asymmetric parallelism is now the FISHSUITE DEFAULT.
+    # Empirically validated 3.9x end-to-end speedup on the H9 MIAT-KD ASO
+    # cohort on Brian's box (12 physical / 24 logical / 128 GB) with
+    # byte-identical numeric results vs the legacy serial path
+    # (F:\Image Analysis Work\H9-MIAT-KD\_gpu_accel_investigation\PIPELINE_PERF.md).
+    #
+    #   seg_workers     — process count for the segmentation pre-scan
+    #                     (cpsam is memory-heavy on CPU; on directml it MUST
+    #                     stay 1-2 since processes can't share the 12 GB VRAM).
+    #                     DEFAULT "auto" -> memory + core aware count on CPU
+    #                     (caps at 8; ~6 on Brian's box), forced to 1 on the
+    #                     directml device. 1 = legacy serial (still supported).
+    #   main_workers    — process count for the main per-image pass (BigFISH +
+    #                     measurement + figure rendering). Memory-light and
+    #                     embarrassingly parallel. Default stays at 1
+    #                     (memory-conservative; raising it 4x's transient RAM
+    #                     during the figure-render phase, opt-in per-preset).
+    #                     "auto" -> high on CPU.
+    #   threads_per_worker — cap OMP/MKL/numexpr/torch threads INSIDE each
+    #                     worker so N_workers x threads stays <= logical cores
+    #                     (avoid BLAS oversubscription). DEFAULT 4 — with
+    #                     seg_workers='auto' resolving to ~6, 6 x 4 = 24
+    #                     matches the logical-core count exactly. 0 disables
+    #                     the cap (legacy behavior; lets BLAS pick).
+    seg_workers: int | str = "auto"
+    main_workers: int | str = 1
+    threads_per_worker: int = 4
 
 
 class FishsuiteConfig(BaseModel):

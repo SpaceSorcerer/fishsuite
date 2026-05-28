@@ -138,6 +138,13 @@ def segment_nuclei(
         flow_threshold=float(p.get("flow_threshold", 0.4)),
         cellprob_threshold=float(p.get("cellprob_threshold", 0.0)),
         cellpose_model_type=str(p.get("cellpose_model_type", "cpsam")),
+        # 2026-05-27: OPT-IN GPU device selector. Default "cpu" => existing
+        # CPU behavior is byte-for-byte unchanged (run_backend forwards "cpu"
+        # to segment_cellpose, which takes the legacy gpu=False path). Only
+        # "directml" enables the torch-directml GPU path (fp32 net on GPU,
+        # sparse flow-dynamics forced back to CPU). Non-cellpose backends
+        # ignore this kwarg.
+        cellpose_device=str(p.get("cellpose_device", "cpu")),
     )
     # 2026-05-25: cellpose speed lever (no CUDA on Brian's AMD GPU). cpsam
     # runtime scales ~quadratically with pixel count, and H9 DAPI at

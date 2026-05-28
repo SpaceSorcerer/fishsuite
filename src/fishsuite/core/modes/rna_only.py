@@ -296,6 +296,7 @@ def run_one(
         cellprob_threshold=cfg.nuclei.cellpose_cellprob_threshold,
         cellpose_model_type=cfg.nuclei.cellpose_model_type,
         cellpose_downsample_factor=cfg.nuclei.cellpose_downsample_factor,
+        cellpose_device=getattr(cfg.nuclei, "cellpose_device", "cpu"),
     )
     if precomputed_labels is not None:
         # Batch threshold_scope pre-pass already segmented + border-excluded
@@ -1157,6 +1158,7 @@ def collect_nuclear_rna_pixels(path, *, cfg) -> Tuple[np.ndarray, np.ndarray]:
         cellprob_threshold=cfg.nuclei.cellpose_cellprob_threshold,
         cellpose_model_type=cfg.nuclei.cellpose_model_type,
         cellpose_downsample_factor=cfg.nuclei.cellpose_downsample_factor,
+        cellpose_device=getattr(cfg.nuclei, "cellpose_device", "cpu"),
     )
     labels = _seg.segment_nuclei(dapi_2d, backend=cfg.nuclei.backend, params=seg_params)
     if cfg.nuclei.exclude_border:

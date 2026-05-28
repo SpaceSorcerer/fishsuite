@@ -142,6 +142,34 @@ def _write_masks(mask_dir: Path, stem: str, *,
 
 
 # ---------------------------------------------------------------------------
+# Parallel pre-scan worker (module-level so it is picklable for ProcessPool).
+# ---------------------------------------------------------------------------
+
+def _prescan_one(args):
+    """Segment ONE image and return pooled nuclear pixels + labels.
+
+    Runs in a worker process. Returns
+        (path_str, v1, v2_or_None, labels_or_None, err_or_None)
+    so the parent can pool identically to the serial path. cfg is a pydantic
+    model (picklable); is_rna_rna selects the collector. Byte-identical to the
+    serial collectors — same functions, just invoked in a subprocess.
+    """
+    path, cfg, is_rna_rna = args
+    try:
+        if is_rna_rna:
+            from .core.modes.rna_rna import collect_nuclear_rna_pixels as _c2
+            v1, v2, labels = _c2(path, cfg=cfg)
+            return (str(path), v1, v2, labels, None)
+        else:
+            from .core.modes.rna_only import collect_nuclear_rna_pixels as _c1
+            vals, labels = _c1(path, cfg=cfg)
+            return (str(path), vals, None, labels, None)
+    except Exception as e:  # noqa: BLE001
+        import traceback
+        return (str(path), None, None, None, f"{e!r}\n{traceback.format_exc()}")
+
+
+# ---------------------------------------------------------------------------
 # Main batch entry point
 # ---------------------------------------------------------------------------
 
@@ -298,6 +326,41 @@ def run_batch(
             )
             pooled_list: List[np.ndarray] = []
             pooled2_list: List[np.ndarray] = []
+            # 2026-05-27 PERF: resolve segmentation pre-scan worker count.
+            # Device-aware: directml forces 1 (single GPU, no VRAM sharing);
+            # CPU "auto" budgets memory + cores. seg_workers=1 -> legacy serial
+            # loop (byte-identical). Each worker caps its BLAS/torch threads so
+            # N_workers x threads stays <= logical cores.
+            from .core.parallel import (
+                resolve_workers as _resolve_workers,
+                _init_worker_threads,
+            )
+            _seg_device = getattr(cfg.nuclei, "cellpose_device", "cpu")
+            _seg_workers = _resolve_workers(
+                getattr(cfg.parallel, "seg_workers", 1),
+                kind="seg", device=_seg_device,
+            )
+            _tpw = int(getattr(cfg.parallel, "threads_per_worker", 0) or 0)
+            _console.print(
+                f"[bold]PRE-SCAN[/bold] segmentation workers: "
+                f"[bold]{_seg_workers}[/bold] (device={_seg_device}, "
+                f"threads/worker={_tpw or 'unset'})"
+            )
+
+            def _accumulate(path_str, v1, v2, labels, err):
+                if err is not None:
+                    _console.print(
+                        f"[yellow]Pre-scan failed on {Path(path_str).name}: "
+                        f"{err.splitlines()[0]} — image excluded from pool[/yellow]"
+                    )
+                    return
+                if v1 is not None and v1.size > 0:
+                    pooled_list.append(v1)
+                if is_rna_rna and v2 is not None and v2.size > 0:
+                    pooled2_list.append(v2)
+                if labels is not None:
+                    precomputed_labels_by_path[path_str] = labels
+
             with Progress(
                 SpinnerColumn(),
                 TextColumn("[progress.description]{task.description}"),
@@ -307,28 +370,32 @@ def run_batch(
                 console=_console,
             ) as ppg:
                 ptask = ppg.add_task("Pre-pass: nuclear-pixel pooling", total=len(images))
-                for dimg in images:
-                    try:
-                        if _collect_two is not None:
-                            v1, v2, labels = _collect_two(dimg.path, cfg=cfg)
-                            if v1.size > 0:
-                                pooled_list.append(v1)
-                            if v2.size > 0:
-                                pooled2_list.append(v2)
-                        else:
-                            vals, labels = collect_nuclear_rna_pixels(dimg.path, cfg=cfg)
-                            if vals.size > 0:
-                                pooled_list.append(vals)
-                        # Cache the final (border-excluded) labels so the main
-                        # analysis pass can skip re-segmenting this image.
-                        if labels is not None:
-                            precomputed_labels_by_path[str(dimg.path)] = labels
-                    except Exception as e:
-                        _console.print(
-                            f"[yellow]Pre-scan failed on {dimg.path.name}: {e} — "
-                            f"image excluded from pool[/yellow]"
-                        )
-                    ppg.advance(ptask)
+                if _seg_workers <= 1:
+                    # Serial path — byte-identical to the pre-2026-05-27 loop.
+                    for dimg in images:
+                        try:
+                            if _collect_two is not None:
+                                v1, v2, labels = _collect_two(dimg.path, cfg=cfg)
+                                _accumulate(str(dimg.path), v1, v2, labels, None)
+                            else:
+                                vals, labels = collect_nuclear_rna_pixels(dimg.path, cfg=cfg)
+                                _accumulate(str(dimg.path), vals, None, labels, None)
+                        except Exception as e:
+                            _accumulate(str(dimg.path), None, None, None, repr(e))
+                        ppg.advance(ptask)
+                else:
+                    from concurrent.futures import ProcessPoolExecutor, as_completed
+                    _tasks = [(dimg.path, cfg, bool(is_rna_rna)) for dimg in images]
+                    with ProcessPoolExecutor(
+                        max_workers=_seg_workers,
+                        initializer=_init_worker_threads,
+                        initargs=(_tpw,),
+                    ) as _pool:
+                        _futs = [_pool.submit(_prescan_one, t) for t in _tasks]
+                        for _fut in as_completed(_futs):
+                            path_str, v1, v2, labels, err = _fut.result()
+                            _accumulate(path_str, v1, v2, labels, err)
+                            ppg.advance(ptask)
             if pooled_list:
                 pooled = np.concatenate(pooled_list)
                 try:
@@ -833,6 +900,7 @@ def run_batch(
                             flow_threshold=cfg.nuclei.cellpose_flow_threshold,
                             cellprob_threshold=cfg.nuclei.cellpose_cellprob_threshold,
                             cellpose_model_type=cfg.nuclei.cellpose_model_type,
+                            cellpose_device=getattr(cfg.nuclei, "cellpose_device", "cpu"),
                         )
                         labels = _seg.segment_nuclei(
                             dapi_2d, backend=cfg.nuclei.backend, params=seg_params,
