@@ -63,3 +63,5 @@ results/
 .env.local
 *.pem
 *.key
+_archive_2026-05-27/
+_commit_msg.txt
