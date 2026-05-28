@@ -29,11 +29,13 @@ conditions:
   subfolder_conditions:
     KO: "KO"
     WT: "WT"
-  # 2nd Ab-only files are secondary-only controls. Recognized by filename pattern.
-  sec_only_files: []
+  # 2nd Ab only files = secondary-only controls (no primary FISH probe).
+  sec_only_files:
+    - "KO 2nd Ab only-100x05.vsi"
+    - "KO 2nd Ab only-100x05 (decon).vsi"
+    - "WT 2nd Ab only-100x08.vsi"
+    - "WT 2nd Ab only-100x08 (decon).vsi"
   sec_only_folders: []
-  # Files containing "2nd Ab only" in their name will be detected as sec-only
-  # via the legacy SEC_ONLY_PATTERNS rule.
   condition_order: ["WT", "KO"]
   min_nuclei_for_stats: 6
 
@@ -50,17 +52,29 @@ channels:
   # Expect: exon ∩ intron coloc = active transcription sites (nuclear);
   # exon-only = mature mRNA (predominantly cytoplasmic).
   dapi_label: "DAPI"
-  rna_label: "BIN1-exons-Cy5"
-  rna2_label: "BIN1-introns-Cy3"
+  # 2026-05-19 Brian's PI: ch0 (640/647 nm) = Introns; ch1 (561 nm) = Exons.
+  # Running per PI's labeling. Note: ch0 shows lots of cytoplasmic spots
+  # (~2000 per image) which doesn't match standard intron biology — would
+  # expect only nuclear nascent pre-mRNA foci. Flag for double-check.
+  # 2026-05-19 PI's labeling (final deliverable to send to PI):
+  # ch0/640 = Introns, ch1/561 = Exons.
+  rna_label: "Introns"
+  rna2_label: "Exons"
   antibody_label: "Protein-488"
+  # 2026-05-20 Per Sam: WAVELENGTH-based color convention. 647 always
+  # rendered yellow, 568/561 always magenta — regardless of which probe
+  # (Exons / Introns) lives on which channel. With ch0=640/647=Introns,
+  # this means Introns → yellow and Exons → magenta.
+  rna_lut: "yellow"     # ch0 = 640/647 → yellow (Sam's convention)
+  rna2_lut: "magenta"   # ch1 = 561/568 → magenta
 
 z_stack:
+  # 2026-05-18 Brian: autofocus over 35-60. No maxproj (collapses spots in z).
+  # Per-channel autofocus picks the best in-focus plane per channel within
+  # this window using normalized Laplacian variance.
   mode: autofocus
-  # 87 z-slices — autofocus picks one best-focus slice within this window.
-  # Start 20 / end 70 covers the middle ~58% of the stack; widen if cells
-  # are out of focus, narrow if too much background.
-  start_slice: 20
-  end_slice: 70
+  start_slice: 35
+  end_slice: 60
 
 nuclei:
   backend: stardist
@@ -68,7 +82,15 @@ nuclei:
   cellpose_diameter_px: 110.0
   cellpose_flow_threshold: 0.4
   cellpose_cellprob_threshold: 0.0
-  prob_threshold: 0.4
+  # 2026-05-14 Run 2 diagnosis: WT BIN1 image found only 1 of ~30 visible
+  # nuclei at prob=0.4. The DAPI in real-probe BIN1 images is markedly
+  # dimmer than the sec-only WT (which detected 21/30). Dropping to 0.2
+  # to catch dim nuclei.
+  # 2026-05-19 Brian: 0.25 → 0.3 — tighten further to drop a couple of
+  # low-confidence "nuclei" that visual inspection suggested might be
+  # debris / out-of-focus blur. 0.3 is still permissive enough to catch
+  # the dim cMyo nuclei.
+  prob_threshold: 0.3
   nms_threshold: 0.3
   stardist_model: 2D_versatile_fluo
   stardist_gauss_sigma: 1.5
@@ -77,8 +99,11 @@ nuclei:
   stardist_postprocess_mask_closing_px: 8
   label_smoothing_radius_px: 5
   # 2x larger px → 4x smaller area. H9 had min_area=10000; BIN1 should be ~3000-4000.
-  # 3500 px² ≈ 67 px diameter ≈ 8.7 µm nucleus floor — typical lower bound for cMyo.
-  min_area_px: 3500
+  # 2026-05-14 Run 2 diagnosis: visible nuclei in BIN1 are smaller than
+  # estimated — many are 40-50 px diameter (1300-2000 px²). Dropping
+  # 3500 → 1500 (≈ 44 px = 5.7 µm circular floor). Label smoothing
+  # will still merge over-fragmented bits via the disk SE.
+  min_area_px: 1500
   exclude_border: true
   border_margin_px: 5
 
@@ -97,13 +122,21 @@ foci:
   # look undersized.
   bigfish_spot_radius_nm: 130.0
   bigfish_spot_radius_z_nm: 300.0
-  threshold_multiplier: 0.5
+  # 2026-05-20 Brian: bumped to 1.0 (= BigFISH auto-thresh with no scaling).
+  # This is the "v3 / strict-detection" setting that Brian shipped to the PI.
+  threshold_multiplier: 1.0
   only_nuclear_spots: false
   min_sep_px: 1
+  rna_overrides: {}
+  rna2_overrides: {}
 
 cytoplasm:
   enabled: true
-  voronoi_max_expansion_px: 80
+  # 2026-05-19 Brian: shrink from 80 → 40 px (~5.2 µm at 0.13 µm/px).
+  # Tighter Voronoi cap keeps the cytoplasm region closer to each nucleus
+  # so cytoplasmic spot counts don't bleed into neighboring cells'
+  # territories in dense fields.
+  voronoi_max_expansion_px: 40
   measure_nc_ratio: true
 
 output:
@@ -111,7 +144,55 @@ output:
   save_per_image_csv: true
   save_masks: true
   save_publication_images: true
+  # 2026-05-18 Brian: PNG-only — TIFs doubled the publication_images dir
+  # and Brian rarely opens them. Flip to true if you need 16-bit RGB for
+  # Illustrator / Fiji figure assembly.
+  save_publication_tifs: false
+  # 2026-05-19 Brian: switched from auto_batch to MANUAL. Brian's eye on
+  # the histogram in Fiji says floor ~700 for RNA1 (exons / Cy5) and ~800
+  # for RNA2 (introns / Cy3) is the right cut. Ceilings picked from the
+  # spread of recent auto values + small headroom so the brightest single-
+  # molecule spots saturate but a fraction below them shows pop. Same
+  # numbers applied to every image so WT/KO + real/sec-only are directly
+  # comparable.
+  # 2026-05-20 v3 settings (the version Brian shipped to PI):
+  # ch0/647/Introns: Min 675, Max 1350
+  # ch1/561/Exons:   Min 825, Max 1650
+  # Paired with threshold_multiplier=1.0 (stricter BigFISH LoG above).
+  pub_contrast_mode: manual
+  manual_rna_min: 675.0
+  manual_rna_max: 1350.0
+  manual_rna2_min: 825.0
+  manual_rna2_max: 1650.0
+  # 2026-05-20 Brian: turn ON the pub-contrast-floor-as-analysis-floor so
+  # the pixel-intensity quantification columns reflect what the eye sees.
+  apply_pub_contrast_floor_to_analysis: true
+  # 2026-05-20 Brian: ALSO turn ON the pub-contrast-floor-as-spot-detection
+  # floor. BigFISH still runs LoG detection unchanged (with the new
+  # threshold_multiplier=0.8), but spots whose peak intensity falls below
+  # the channel's manual floor (rna=675, rna2=825) are dropped post-
+  # detection. Same "what the eye sees" cut applied to spot counts.
+  apply_pub_contrast_floor_to_spots: true
+  # 2026-05-19 Brian: pin DAPI a bit higher to crisp up cellular DAPI
+  # background. Prior auto-batch derived ~900 floor — bumping to 1200 to
+  # clip diffuse cytoplasmic autofluorescence without losing the bright
+  # nuclear cores. Ceiling stays wide (DAPI has the largest dynamic range).
+  manual_dapi_min: 1200.0
+  manual_dapi_max: 30000.0
   prefix: ""
 
 parallel:
   workers: auto
+
+# Limit to 100x files; skip 320x (different magnification, different field
+# of view — would skew aggregate stats). 4 files: 1 WT real + 1 WT sec +
+# 1 KO real + 1 KO sec.
+#
+# 2026-05-20 Brian: DECON ONLY — running decon and non-decon together
+# double-counts (they're two processed versions of the SAME acquisition).
+# 4 files: 1 WT real + 1 WT sec + 1 KO real + 1 KO sec.
+input_file_subset:
+  - "KO 2nd Ab only-100x05 (decon).vsi"
+  - "KO BIN1-100x02 (decon).vsi"
+  - "WT 2nd Ab only-100x08 (decon).vsi"
+  - "WT BIN1-100x01 (decon).vsi"
