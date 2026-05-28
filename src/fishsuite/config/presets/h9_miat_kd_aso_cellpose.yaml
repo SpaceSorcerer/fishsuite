@@ -96,6 +96,16 @@ nuclei:
   # Speed: segment on a 2x-downsampled grid (diameter + min_area auto-scaled
   # internally), then upsample labels. Verified lossless on KD_08.
   cellpose_downsample_factor: 2.0
+  # 2026-05-27 DEFAULT: DirectML GPU acceleration (Brian's AMD RX 6750 XT, no
+  # CUDA). ~21% wall-clock improvement over the optimized CPU path on top of
+  # the 3.9x parallel-pre-scan speedup (see _gpu_accel_investigation/
+  # PIPELINE_PERF.md). Requires the fishproc_dml env (torch-directml
+  # installed). Documented cross-backend artifact: image _02 gains +1 nucleus
+  # vs the CPU run — within noise envelope, AB-confirmed in DIRECTML_WHOLE_
+  # PIPELINE_AB.md. If you do not have torch-directml + a compatible GPU,
+  # switch this to "cpu" — the runner will take the legacy CPU path, no
+  # other config change needed.
+  cellpose_device: directml
 
   # Authoritative full-res min area (applied after upsampling). 14000 px²
   # (~7.7 µm circular floor at 0.065 µm/px) matches the value used in the
@@ -176,3 +186,11 @@ output:
 
 parallel:
   workers: auto
+  # 2026-05-27 PERF: seg_workers + threads_per_worker now inherit the fishsuite
+  # schema defaults ("auto" / 4) — empirically validated 3.9x end-to-end
+  # speedup on this preset with byte-identical numeric results vs serial
+  # (see _gpu_accel_investigation/PIPELINE_PERF.md). With cellpose_device:
+  # directml above, auto_seg_workers() forces seg_workers to 1 (single GPU,
+  # no VRAM-sharing across processes) — the GPU is already ~7x faster per
+  # image than CPU, so this is the right trade. To switch back to a parallel
+  # CPU pre-scan, set cellpose_device: cpu above and leave this block alone.
