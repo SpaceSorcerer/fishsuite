@@ -89,6 +89,101 @@ def test_save_walkthrough_bundle_writes_six(tmp_path):
         assert p.exists() and p.suffix == ".png"
 
 
+def test_save_walkthrough_bundle_emits_steps_07_08_09_when_inputs_present(tmp_path):
+    """The extended rna_only walkthrough should emit step07 (spots on
+    DAPI), step08 (spots on RNA threshold), and step09 (cytoplasm mask)
+    when spots + cyt_labels are supplied. Lock down the filename naming
+    so the audit/QC tools can find each panel."""
+    from fishsuite.core.output import save_walkthrough_bundle
+    dapi, rna, labels = _make_dummy_image()
+    dapi_mask = (dapi > dapi.mean()).astype(np.uint8) * 255
+    rna_mask = (rna > rna.mean() * 1.5).astype(np.uint8) * 255
+    spots = pd.DataFrame([
+        {"x_px": 40, "y_px": 40},
+        {"x_px": 60, "y_px": 80},
+        {"x_px": 90, "y_px": 100},
+    ])
+    # Fake cytoplasm = small ring expansion of each nucleus
+    from scipy.ndimage import binary_dilation
+    cyt = np.zeros_like(labels, dtype=np.int32)
+    cyt[binary_dilation(labels > 0, iterations=10)] = 1
+    cyt[labels > 0] = (labels[labels > 0]).astype(np.int32)
+    paths = save_walkthrough_bundle(
+        tmp_path / "walk", "img01",
+        dapi=dapi, rna=rna, dapi_mask=dapi_mask,
+        labels=labels, rna_pos_mask=rna_mask,
+        voxel_xy_nm=65.0,
+        spots=spots, cyt_labels=cyt,
+    )
+    names = sorted(p.name for p in paths)
+    assert any("__step07_spots_on_DAPI" in n for n in names), names
+    assert any("__step08_spots_on_RNA_threshold" in n for n in names), names
+    assert any("__step09_cytoplasm_mask" in n for n in names), names
+    # All 6 base + 3 new = 9 panels
+    assert len(paths) == 9
+
+
+def test_save_walkthrough_bundle_rna_rna_emits_extended_steps(tmp_path):
+    """The rna_rna walkthrough should emit step01-step06 (both channels) +
+    step07a/b (per-channel spots on DAPI) + step08 (paired spots) +
+    step09 (active TSS — when in_nucleus + paired_at_<X>um are on spots1) +
+    step10 (cytoplasm) + step11 (merge all) when the relevant inputs are
+    supplied. Lock down each filename so downstream QC scripts can find
+    every panel."""
+    from fishsuite.core.output import save_walkthrough_bundle_rna_rna
+    dapi, rna, labels = _make_dummy_image()
+    _, rna2, _ = _make_dummy_image(seed=2)
+    dapi_mask = (dapi > dapi.mean()).astype(np.uint8) * 255
+    rna_mask = (rna > rna.mean() * 1.5).astype(np.uint8) * 255
+    rna2_mask = (rna2 > rna2.mean() * 1.5).astype(np.uint8) * 255
+    # Carry the in_nucleus + paired_at_<X>um columns so step09 is exercised.
+    spots1 = pd.DataFrame([
+        {"x_px": 40, "y_px": 40, "in_nucleus": 1, "in_cytoplasm": 0,
+         "paired_at_0.5um": 1},
+        {"x_px": 60, "y_px": 80, "in_nucleus": 0, "in_cytoplasm": 1,
+         "paired_at_0.5um": 0},
+    ])
+    spots2 = pd.DataFrame([
+        {"x_px": 41, "y_px": 40, "in_nucleus": 1, "in_cytoplasm": 0,
+         "paired_at_0.5um": 1},
+        {"x_px": 90, "y_px": 100, "in_nucleus": 0, "in_cytoplasm": 0,
+         "paired_at_0.5um": 0},
+    ])
+    from scipy.ndimage import binary_dilation
+    cyt = np.zeros_like(labels, dtype=np.int32)
+    cyt[binary_dilation(labels > 0, iterations=10)] = 1
+    cyt[labels > 0] = (labels[labels > 0]).astype(np.int32)
+
+    paths = save_walkthrough_bundle_rna_rna(
+        tmp_path / "walk", "img01",
+        dapi=dapi, rna1=rna, rna2=rna2,
+        dapi_mask=dapi_mask, labels=labels,
+        rna1_pos_mask=rna_mask, rna2_pos_mask=rna2_mask,
+        voxel_xy_nm=65.0,
+        spots1=spots1, spots2=spots2, cyt_labels=cyt,
+    )
+    names = sorted(p.name for p in paths)
+    must_have = [
+        "__step01_DAPI_raw",
+        "__step02_DAPI_mask",
+        "__step03_nuclei_outlines_on_DAPI",
+        "__step04_RNA1_raw",
+        "__step04_RNA2_raw",
+        "__step05_RNA1_threshold",
+        "__step05_RNA2_threshold",
+        "__step06_RNA1_threshold_on_signal",
+        "__step06_RNA2_threshold_on_signal",
+        "__step07_RNA1_spots_on_DAPI",
+        "__step07_RNA2_spots_on_DAPI",
+        "__step08_paired_spots",
+        "__step09_active_TSS",
+        "__step10_cytoplasm_mask",
+        "__step11_merge_all",
+    ]
+    for needle in must_have:
+        assert any(needle in n for n in names), f"missing {needle} in {names}"
+
+
 def test_save_publication_images_bundle_writes_six(tmp_path):
     from fishsuite.core.output import save_publication_images_bundle
     dapi, rna, _ = _make_dummy_image()

@@ -55,26 +55,30 @@ import pandas as pd
 
 DAPI_FLOOR_PCT = 10.0
 DAPI_CEIL_PCT = 99.9
-# Brian's H9 preset: DISP_FLOOR_PERCENTILE=95.0, DISP_CEIL_PERCENTILE=99.95
-RNA_FLOOR_PCT = 95.0
-RNA_CEIL_PCT = 99.95
+# 2026-05-18 Brian: previous 80.0/99.5 showed too much diffuse background in
+# the FISH channels — image looked noisy/grainy and the spots didn't pop.
+# Tightening floor to 98 clips out the diffuse cytoplasmic/extracellular
+# background; ceiling stays high so the brightest single-molecule spots are
+# the only thing rendered at full intensity. Both RNA channels share these
+# defaults so RNA1 and RNA2 render with matched contrast envelopes.
+RNA_FLOOR_PCT = 98.0
+RNA_CEIL_PCT = 99.9
 # Magenta/Protein channel (Fiji DISP_*_PERCENTILE for ab channel batch render)
 AB_FLOOR_PCT = 80.0
 AB_CEIL_PCT = 99.5
-# Second RNA channel (rna_rna mode) — cyan (0, 1, 1). Use the same default
-# stretch as the primary RNA channel since both are FISH spots with similar
-# intensity distributions. Batch-coordinated under batch_key="rna2".
-RNA2_FLOOR_PCT = 95.0
-RNA2_CEIL_PCT = 99.95
+# Second RNA channel (rna_rna mode). Same defaults as RNA1.
+RNA2_FLOOR_PCT = 98.0
+RNA2_CEIL_PCT = 99.9
 
 SCALEBAR_UM = 50.0  # all-in-one + publication + walkthrough
 POPOUT_SCALEBAR_UM = 5.0
 
-# Scale-bar geometry — matches Fiji's add_scale_bar_50um exactly
-# (Coloc_Analysis.py line 1687-1688: "width=50 height=12 font=28 color=White
-#  background=None location=[Lower Right] bold overlay").
-SCALEBAR_HEIGHT_PX = 12
-SCALEBAR_FONT_PX = 28
+# Scale-bar geometry — 2026-05-14 Brian: bigger + thicker so the bar reads
+# clearly in publication figures (was 12 px / 28 pt — too small for the
+# 2304x2304 H9 images and barely visible when figures are scaled down).
+# Fiji-side sizes raised to match in Coloc_Analysis.py.
+SCALEBAR_HEIGHT_PX = 14
+SCALEBAR_FONT_PX = 32
 
 # Stroke widths
 NUC_OUTLINE_WIDTH_PX = 2
@@ -591,38 +595,126 @@ def draw_spot_markers(
     color: Tuple[int, int, int] = (255, 255, 0),  # yellow
     radius: int = 4,
     thickness: int = 2,
+    size_mode: str = "auto",
+    voxel_xy_nm: Optional[float] = None,
+    min_radius: int = 3,
+    max_radius: int = 14,
 ) -> np.ndarray:
-    """Draw open circles around each (x_px, y_px) spot. Uses PIL if available,
-    otherwise stamps a square cross."""
+    """Draw open circles around each (x_px, y_px) spot.
+
+    2026-05-18 Brian: previously every spot was a fixed-``radius`` circle
+    (default 4 px), so the QC overlays read as a sea of identical dots —
+    "why are all of the spots the same size?". The detector returns
+    per-spot size information; convey it visually.
+
+    Parameters
+    ----------
+    size_mode
+        ``"fixed"``  — every spot gets the same ``radius`` (legacy behavior).
+        ``"diameter"`` — use ``spot_diameter_um`` / ``voxel_xy_nm`` if both
+            present, else fall back to ``spot_fwhm_px``. The on-screen circle
+            radius is the measured spot half-extent in pixels, clamped to
+            [``min_radius``, ``max_radius``].
+        ``"intensity"`` — radius scaled by ``spot_peak_intensity`` rank
+            within this image (brighter spots → bigger circles).
+        ``"auto"`` (default) — tries ``"diameter"`` first, then falls back
+            to ``"intensity"``, then to the fixed ``radius`` baseline.
+
+    The intent is variability, not absolute calibration — Brian needs to
+    *see* that the pipeline detected spots of different sizes / brightness."""
     if spots is None or len(spots) == 0:
         return rgb_u8.copy()
+
+    # ---------- Compute per-spot radii ----------
+    n = len(spots)
+    base_r = max(int(radius), 1)
+    radii: Optional[np.ndarray] = None
+
+    def _try_diameter() -> Optional[np.ndarray]:
+        # Prefer the µm column + voxel size; fall back to fwhm_px directly.
+        if "spot_diameter_um" in spots.columns and voxel_xy_nm and voxel_xy_nm > 0:
+            d_um = pd.to_numeric(spots["spot_diameter_um"], errors="coerce").to_numpy()
+            r_px = (d_um * 1000.0 / float(voxel_xy_nm)) * 0.5
+        elif "spot_fwhm_px" in spots.columns:
+            r_px = pd.to_numeric(spots["spot_fwhm_px"], errors="coerce").to_numpy() * 0.5
+        else:
+            return None
+        if not np.isfinite(r_px).any():
+            return None
+        # Replace NaN with median, clamp.
+        finite = np.isfinite(r_px)
+        if finite.sum() == 0:
+            return None
+        med = float(np.median(r_px[finite]))
+        r_px = np.where(finite, r_px, med)
+        # Scale up modestly so the smallest visible circle is still readable
+        # against the LUT background — even a true 1-px spot should render
+        # at min_radius.
+        r_px = np.clip(np.round(r_px), int(min_radius), int(max_radius)).astype(int)
+        return r_px
+
+    def _try_intensity() -> Optional[np.ndarray]:
+        col = None
+        for cand in ("spot_peak_intensity", "integrated_intensity_fit", "quality"):
+            if cand in spots.columns:
+                col = cand
+                break
+        if col is None:
+            return None
+        vals = pd.to_numeric(spots[col], errors="coerce").to_numpy()
+        if not np.isfinite(vals).any():
+            return None
+        finite = np.isfinite(vals)
+        if finite.sum() == 0:
+            return None
+        v = vals[finite]
+        # Rank → 0..1 mapping (so a few outliers don't squish the rest).
+        order = np.argsort(np.argsort(v))
+        rank01 = order / max(len(v) - 1, 1)
+        r_finite = int(min_radius) + rank01 * (int(max_radius) - int(min_radius))
+        # Fill back into full-length array.
+        r_full = np.full(n, float(min_radius + max_radius) / 2.0)
+        r_full[finite] = r_finite
+        return np.round(r_full).astype(int)
+
+    if size_mode == "fixed":
+        radii = np.full(n, base_r, dtype=int)
+    elif size_mode == "diameter":
+        radii = _try_diameter()
+    elif size_mode == "intensity":
+        radii = _try_intensity()
+    elif size_mode == "auto":
+        radii = _try_diameter()
+        if radii is None:
+            radii = _try_intensity()
+    if radii is None:
+        radii = np.full(n, base_r, dtype=int)
+
+    # ---------- Draw ----------
+    xs = pd.to_numeric(spots.get("x_px"), errors="coerce").to_numpy()
+    ys = pd.to_numeric(spots.get("y_px"), errors="coerce").to_numpy()
     try:
         from PIL import Image, ImageDraw
         img = Image.fromarray(rgb_u8)
         draw = ImageDraw.Draw(img)
-        for _, row in spots.iterrows():
-            try:
-                x = int(row["x_px"])
-                y = int(row["y_px"])
-            except Exception:
+        for x, y, r in zip(xs, ys, radii):
+            if not (np.isfinite(x) and np.isfinite(y)):
                 continue
-            r = int(radius)
-            draw.ellipse([x - r, y - r, x + r, y + r], outline=color, width=int(thickness))
+            xi, yi, ri = int(x), int(y), int(r)
+            draw.ellipse([xi - ri, yi - ri, xi + ri, yi + ri], outline=color, width=int(thickness))
         return np.asarray(img)
     except Exception:
         out = rgb_u8.copy()
         h, w = out.shape[:2]
-        for _, row in spots.iterrows():
-            try:
-                x = int(row["x_px"])
-                y = int(row["y_px"])
-            except Exception:
+        for x, y, r in zip(xs, ys, radii):
+            if not (np.isfinite(x) and np.isfinite(y)):
                 continue
-            for r in range(-radius, radius + 1):
-                if 0 <= x + r < w and 0 <= y < h:
-                    out[y, x + r] = color
-                if 0 <= y + r < h and 0 <= x < w:
-                    out[y + r, x] = color
+            xi, yi, ri = int(x), int(y), int(r)
+            for k in range(-ri, ri + 1):
+                if 0 <= xi + k < w and 0 <= yi < h:
+                    out[yi, xi + k] = color
+                if 0 <= yi + k < h and 0 <= xi < w:
+                    out[yi + k, xi] = color
         return out
 
 
@@ -724,7 +816,12 @@ def render_all_in_one_qc(
     rgb = merge_rgb_additive([dapi_b, rna_y])
     rgb_u8 = _to_uint8(rgb)
     rgb_u8 = draw_nuclei_outlines(rgb_u8, labels, color=(255, 255, 255), width_px=NUC_OUTLINE_WIDTH_PX)
-    rgb_u8 = draw_spot_markers(rgb_u8, spots, color=(255, 255, 0), radius=4, thickness=2)
+    # 2026-05-18 Brian: per-spot sizing (see rna_rna branch comment).
+    # 2026-05-22 Brian: filter QC markers to in-cell spots only (see rna_rna).
+    if spots is not None and len(spots) and {"in_nucleus", "in_cytoplasm"} <= set(spots.columns):
+        spots = spots.loc[spots["in_nucleus"].astype(bool) | spots["in_cytoplasm"].astype(bool), :]
+    rgb_u8 = draw_spot_markers(rgb_u8, spots, color=(255, 255, 0), radius=4, thickness=2,
+                                size_mode="auto", voxel_xy_nm=voxel_xy_nm)
     rgb_u8 = burn_scale_bar(
         rgb_u8, voxel_xy_nm, bar_um=SCALEBAR_UM,
         height_px=SCALEBAR_HEIGHT_PX, font_px=SCALEBAR_FONT_PX,
@@ -760,44 +857,90 @@ def render_all_in_one_qc_rna_rna(
     rna_label: Optional[str] = None,
     rna2_label: Optional[str] = None,
     dapi_label: Optional[str] = None,
+    # 2026-05-19 Brian: both RNA channel colors are now configurable. The
+    # preset's `channels.rna_lut` / `rna2_lut` drive these via the runner.
+    rna_color: Tuple[int, int, int] = (255, 255, 0),   # default yellow
+    rna_lut_weights: Tuple[float, float, float] = (1.0, 1.0, 0.0),
+    rna2_color: Tuple[int, int, int] = (255, 0, 255),  # default magenta
+    rna2_lut_weights: Tuple[float, float, float] = (1.0, 0.0, 1.0),
+    # 2026-05-21 Brian: optional manual floor/ceil overrides for visual
+    # parity with publication_images/. When ANY override is supplied for a
+    # channel (both floor AND ceil), the percentile path is skipped for
+    # that channel. Lets the runner pass Sam's manual contrast (or the
+    # auto-batch-derived contrast) into QC overlays so the QC images look
+    # consistent with what gets delivered to the PI.
+    dapi_floor_override: Optional[float] = None,
+    dapi_ceil_override: Optional[float] = None,
+    rna_floor_override: Optional[float] = None,
+    rna_ceil_override: Optional[float] = None,
+    rna2_floor_override: Optional[float] = None,
+    rna2_ceil_override: Optional[float] = None,
 ) -> np.ndarray:
-    """rna_rna QC overlay: DAPI(blue) + RNA1(yellow) + RNA2(cyan) +
-    white nuclei outlines + per-channel spot markers (yellow for RNA1,
-    cyan for RNA2) + 50 um scale bar.
+    """rna_rna QC overlay: DAPI(blue) + RNA1 + RNA2 + nuclei outlines +
+    per-channel spot markers + scale bar.
 
-    Uses separate batch_key caches ("rna" for RNA1, "rna2" for RNA2) so
-    each channel's running-max contrast is tracked independently.
+    BOTH RNA channels' rendering colors are now configurable via
+    ``rna_color``+``rna_lut_weights`` and ``rna2_color``+``rna2_lut_weights``.
+    Driven by ``channels.rna_lut`` / ``rna2_lut`` in the YAML preset.
     """
-    dapi_f = _percentile(dapi, dapi_floor_pct)
-    dapi_c = _percentile(dapi, dapi_ceil_pct)
-    rna_bk = "rna" if use_batch_contrast else None
-    rna2_bk = "rna2" if use_batch_contrast else None
-    rna_f, rna_c = _resolve_lut_range(
-        rna1, rna_floor_pct, rna_ceil_pct, batch_key=rna_bk, is_sec_only=sec_only,
-    )
-    rna2_f, rna2_c = _resolve_lut_range(
-        rna2, rna2_floor_pct, rna2_ceil_pct, batch_key=rna2_bk, is_sec_only=sec_only,
-    )
+    if dapi_floor_override is not None and dapi_ceil_override is not None:
+        dapi_f = float(dapi_floor_override)
+        dapi_c = float(dapi_ceil_override)
+    else:
+        dapi_f = _percentile(dapi, dapi_floor_pct)
+        dapi_c = _percentile(dapi, dapi_ceil_pct)
+    if rna_floor_override is not None and rna_ceil_override is not None:
+        rna_f = float(rna_floor_override)
+        rna_c = float(rna_ceil_override)
+    else:
+        rna_bk = "rna" if use_batch_contrast else None
+        rna_f, rna_c = _resolve_lut_range(
+            rna1, rna_floor_pct, rna_ceil_pct, batch_key=rna_bk, is_sec_only=sec_only,
+        )
+    if rna2_floor_override is not None and rna2_ceil_override is not None:
+        rna2_f = float(rna2_floor_override)
+        rna2_c = float(rna2_ceil_override)
+    else:
+        rna2_bk = "rna2" if use_batch_contrast else None
+        rna2_f, rna2_c = _resolve_lut_range(
+            rna2, rna2_floor_pct, rna2_ceil_pct, batch_key=rna2_bk, is_sec_only=sec_only,
+        )
     dapi_b = apply_lut(dapi, 0.0, 0.3, 1.0, floor=dapi_f, ceil=dapi_c)
-    rna_y = apply_lut(rna1, 1.0, 1.0, 0.0, floor=rna_f, ceil=rna_c)
-    rna2_c_layer = apply_lut(rna2, 0.0, 1.0, 1.0, floor=rna2_f, ceil=rna2_c)
-    rgb = merge_rgb_additive([dapi_b, rna_y, rna2_c_layer])
+    rna_layer = apply_lut(
+        rna1, rna_lut_weights[0], rna_lut_weights[1], rna_lut_weights[2],
+        floor=rna_f, ceil=rna_c,
+    )
+    rna2_layer = apply_lut(
+        rna2, rna2_lut_weights[0], rna2_lut_weights[1], rna2_lut_weights[2],
+        floor=rna2_f, ceil=rna2_c,
+    )
+    rgb = merge_rgb_additive([dapi_b, rna_layer, rna2_layer])
     rgb_u8 = _to_uint8(rgb)
     rgb_u8 = draw_nuclei_outlines(rgb_u8, labels, color=(255, 255, 255), width_px=NUC_OUTLINE_WIDTH_PX)
-    # RNA1 spots = yellow circles, RNA2 spots = cyan circles. Different
-    # marker colors keep the two channels distinguishable when overlaid.
-    rgb_u8 = draw_spot_markers(rgb_u8, spots1, color=(255, 255, 0), radius=4, thickness=2)
-    rgb_u8 = draw_spot_markers(rgb_u8, spots2, color=(0, 255, 255), radius=4, thickness=2)
+    # 2026-05-22 Brian: QC overlay should only mark spots that contribute to
+    # the per-nucleus biology metrics. Spots outside both the nucleus and
+    # the Voronoi cytoplasm ("floaters") get filtered before drawing — they
+    # still live in spot_metrics.csv for audit but shouldn't visually inflate
+    # the QC image.
+    def _in_cell(df: pd.DataFrame) -> pd.DataFrame:
+        if df is None or len(df) == 0:
+            return df
+        if "in_nucleus" in df.columns and "in_cytoplasm" in df.columns:
+            keep = df["in_nucleus"].astype(bool) | df["in_cytoplasm"].astype(bool)
+            return df.loc[keep, :]
+        return df
+    rgb_u8 = draw_spot_markers(rgb_u8, _in_cell(spots1), color=rna_color, radius=4, thickness=2,
+                                size_mode="auto", voxel_xy_nm=voxel_xy_nm)
+    rgb_u8 = draw_spot_markers(rgb_u8, _in_cell(spots2), color=rna2_color, radius=4, thickness=2,
+                                size_mode="auto", voxel_xy_nm=voxel_xy_nm)
     rgb_u8 = burn_scale_bar(
         rgb_u8, voxel_xy_nm, bar_um=SCALEBAR_UM,
         height_px=SCALEBAR_HEIGHT_PX, font_px=SCALEBAR_FONT_PX,
     )
-    # Channel legend in the top-left so the reader knows which marker color
-    # belongs to which user-typed channel name.
     legend_entries: List[Tuple[str, Tuple[int, int, int]]] = [
         (str(dapi_label or "DAPI"), (0, 100, 255)),
-        (str(rna_label or "RNA1"), (255, 255, 0)),
-        (str(rna2_label or "RNA2"), (0, 255, 255)),
+        (str(rna_label or "RNA1"), rna_color),
+        (str(rna2_label or "RNA2"), rna2_color),
     ]
     rgb_u8 = burn_channel_legend(rgb_u8, legend_entries)
     return rgb_u8
@@ -817,53 +960,126 @@ def save_walkthrough_bundle_rna_rna(
     voxel_xy_nm: float,
     use_batch_contrast: bool = True,
     sec_only: bool = False,
+    spots1: Optional[pd.DataFrame] = None,
+    spots2: Optional[pd.DataFrame] = None,
+    cyt_labels: Optional[np.ndarray] = None,
+    # 2026-05-19 Brian: BOTH RNA colors configurable. Driven by preset
+    # channels.rna_lut / rna2_lut via runner.py.
+    rna_color: Tuple[int, int, int] = (255, 255, 0),   # default yellow
+    rna_lut_weights: Tuple[float, float, float] = (1.0, 1.0, 0.0),
+    rna2_color: Tuple[int, int, int] = (255, 0, 255),  # default magenta
+    rna2_lut_weights: Tuple[float, float, float] = (1.0, 0.0, 1.0),
+    # 2026-05-19 Brian: filename-embedded channel labels for the per-step
+    # PNG paths. Defaults match the legacy generic names so callers that
+    # don't supply labels render the same as before this helper grew them.
+    rna_label: Optional[str] = None,
+    rna2_label: Optional[str] = None,
+    dapi_label: Optional[str] = None,
+    # 2026-05-22 Brian: optional manual floor/ceil overrides so walkthrough
+    # steps use the same contrast as publication renders. When BOTH floor and
+    # ceil are supplied for a channel the percentile/_resolve path is skipped.
+    dapi_floor_override: Optional[float] = None,
+    dapi_ceil_override: Optional[float] = None,
+    rna_floor_override: Optional[float] = None,
+    rna_ceil_override: Optional[float] = None,
+    rna2_floor_override: Optional[float] = None,
+    rna2_ceil_override: Optional[float] = None,
 ) -> List[Path]:
     """Walkthrough bundle for rna_rna mode.
 
-    Produces both channels' threshold visualisations:
-      Step 01: Raw DAPI grayscale
-      Step 02: DAPI binary mask
-      Step 03: Nuclei outlines on DAPI
-      Step 04a: Raw RNA1 in yellow + scale bar
-      Step 04b: Raw RNA2 in cyan + scale bar
-      Step 05a: RNA1 threshold mask in yellow on black
-      Step 05b: RNA2 threshold mask in cyan on black
-      Step 06a: RNA1 threshold overlay on grayscale RNA1
-      Step 06b: RNA2 threshold overlay on grayscale RNA2
+    Produces both channels' threshold visualisations + paired-spot +
+    cell-territory panels:
+
+      Step 01:     Raw DAPI grayscale
+      Step 02:     DAPI binary mask
+      Step 03:     Nuclei outlines on DAPI
+      Step 04a/b:  Raw RNA1 (yellow) / RNA2 (magenta) + scale bar
+      Step 05a/b:  RNA1 / RNA2 threshold mask on black
+      Step 06a/b:  RNA1 / RNA2 threshold overlay on grayscale RNA channel
+      Step 07a/b:  RNA1 / RNA2 detected spots on DAPI (only when spots given)
+      Step 08:     Paired-spot panel — RNA1 + RNA2 spots together on DAPI,
+                   with paired spots circled in white (paired_at_<X>um
+                   column == 1). Only emitted when both spots dfs supplied.
+      Step 09:     Active TSS overlay — nuclear paired RNA1 spots highlighted
+                   (in_nucleus == 1 AND paired_at_<X>um == 1). Brian's
+                   active-transcription proxy. Only emitted with spots1.
+      Step 10:     Cytoplasm / cell mask overlay (cytoplasm boundaries in
+                   green, nucleus boundaries in white). Only emitted when
+                   cyt_labels supplied.
+      Step 11:     Merge all — DAPI + RNA1 + RNA2 + nucleus outlines
+                   (always emitted; this is the equivalent of the rna_only
+                   "publication merge" but lives in the walkthrough so the
+                   reader sees the final composite alongside the per-step
+                   build-up).
     """
     walk_dir = Path(walk_dir)
     walk_dir.mkdir(parents=True, exist_ok=True)
     out: List[Path] = []
 
+    # Filename-safe channel labels. Defaults match the historic step filenames.
+    _rna_fn  = sanitize_label_for_filename(rna_label,  default="RNA1")
+    _rna2_fn = sanitize_label_for_filename(rna2_label, default="RNA2")
+    _dapi_fn = sanitize_label_for_filename(dapi_label, default="DAPI")
+
     # Step 01: Raw DAPI grayscale
-    df = _percentile(dapi, DAPI_FLOOR_PCT)
-    dc = _percentile(dapi, DAPI_CEIL_PCT)
+    # 2026-05-22 Brian: use override contrast when supplied so walkthrough
+    # steps match publication renders exactly (mirrors render_all_in_one_qc_rna_rna pattern).
+    if dapi_floor_override is not None and dapi_ceil_override is not None:
+        df = float(dapi_floor_override)
+        dc = float(dapi_ceil_override)
+    else:
+        df = _percentile(dapi, DAPI_FLOOR_PCT)
+        dc = _percentile(dapi, DAPI_CEIL_PCT)
     s01 = _to_uint8(apply_lut(dapi, 1.0, 1.0, 1.0, floor=df, ceil=dc))
     s01 = burn_scale_bar(s01, voxel_xy_nm, bar_um=SCALEBAR_UM)
-    p = walk_dir / f"{stem}__step01_DAPI_raw.png"
+    p = walk_dir / f"{stem}__step01_{_dapi_fn}_raw.png"
     save_png(s01, p); out.append(p)
 
     # Step 02: DAPI binary mask
     s02 = (np.asarray(dapi_mask) > 0).astype(np.uint8) * 255
     s02 = np.stack([s02, s02, s02], axis=-1)
-    p = walk_dir / f"{stem}__step02_DAPI_mask.png"
+    p = walk_dir / f"{stem}__step02_{_dapi_fn}_mask.png"
     save_png(s02, p); out.append(p)
 
     # Step 03: Nuclei outlines on DAPI
     s03 = _to_uint8(apply_lut(dapi, 1.0, 1.0, 1.0, floor=df, ceil=dc))
     s03 = draw_nuclei_outlines(s03, labels, color=(255, 255, 255), width_px=NUC_OUTLINE_WIDTH_PX)
     s03 = burn_scale_bar(s03, voxel_xy_nm, bar_um=SCALEBAR_UM)
-    p = walk_dir / f"{stem}__step03_nuclei_outlines_on_DAPI.png"
+    p = walk_dir / f"{stem}__step03_nuclei_outlines_on_{_dapi_fn}.png"
     save_png(s03, p); out.append(p)
 
-    # Step 04a/b + step 05a/b + step 06a/b per channel
-    def _channel_steps(rna, mask, suffix, r_w, g_w, b_w, color_tuple):
-        bk = ("rna" if suffix == "RNA1" else "rna2") if use_batch_contrast else None
-        floor_pct = RNA_FLOOR_PCT if suffix == "RNA1" else RNA2_FLOOR_PCT
-        ceil_pct = RNA_CEIL_PCT if suffix == "RNA1" else RNA2_CEIL_PCT
-        rf, rc = _resolve_lut_range(
-            rna, floor_pct, ceil_pct, batch_key=bk, is_sec_only=sec_only,
+    # Resolve per-channel display ranges up front so steps 04+, 07+, 08, 09,
+    # and 11 can all share them. Mirrors the publication renderer's batch
+    # coordination (each channel under its own batch_key).
+    # 2026-05-22 Brian: when floor+ceil overrides are supplied skip the
+    # percentile/_resolve path so walkthrough images match pub renders exactly.
+    if rna_floor_override is not None and rna_ceil_override is not None:
+        rna1_f = float(rna_floor_override)
+        rna1_c = float(rna_ceil_override)
+    else:
+        rna1_bk = "rna" if use_batch_contrast else None
+        rna1_f, rna1_c = _resolve_lut_range(
+            rna1, RNA_FLOOR_PCT, RNA_CEIL_PCT, batch_key=rna1_bk, is_sec_only=sec_only,
         )
+    if rna2_floor_override is not None and rna2_ceil_override is not None:
+        rna2_f = float(rna2_floor_override)
+        rna2_c = float(rna2_ceil_override)
+    else:
+        rna2_bk = "rna2" if use_batch_contrast else None
+        rna2_f, rna2_c = _resolve_lut_range(
+            rna2, RNA2_FLOOR_PCT, RNA2_CEIL_PCT, batch_key=rna2_bk, is_sec_only=sec_only,
+        )
+
+    # Step 04a/b + step 05a/b + step 06a/b per channel
+    # 2026-05-20 Brian: step05/06 now use ``rf`` (the pub-image / manual
+    # contrast FLOOR) as the threshold so the walkthrough mask matches
+    # what the eye sees and what the analysis quantifies. Previously this
+    # used the pixel-coloc MAD threshold (~280 for BIN1) which is much
+    # lower than the manual floor (~675), giving a noisy step06 that
+    # looked nothing like the published image. The pixel-coloc threshold
+    # is still computed + used internally for Pearson/Costes (see
+    # thresholds.csv).
+    def _channel_steps(rna, mask, suffix, r_w, g_w, b_w, color_tuple, rf, rc):
         s04 = _to_uint8(apply_lut(rna, r_w, g_w, b_w, floor=rf, ceil=rc))
         s04 = burn_scale_bar(
             s04, voxel_xy_nm, bar_um=SCALEBAR_UM,
@@ -872,7 +1088,10 @@ def save_walkthrough_bundle_rna_rna(
         p4 = walk_dir / f"{stem}__step04_{suffix}_raw.png"
         save_png(s04, p4); out.append(p4)
 
-        pos = np.asarray(mask) > 0
+        # Threshold mask = pixels at or above the analysis floor (rf).
+        # Same cut used to render the pub image, so the walkthrough mirrors
+        # what the PI sees.
+        pos = np.asarray(rna) >= float(rf)
         s05 = np.zeros((rna.shape[0], rna.shape[1], 3), dtype=np.uint8)
         s05[pos] = color_tuple
         p5 = walk_dir / f"{stem}__step05_{suffix}_threshold.png"
@@ -890,8 +1109,188 @@ def save_walkthrough_bundle_rna_rna(
         p6 = walk_dir / f"{stem}__step06_{suffix}_threshold_on_signal.png"
         save_png(s06, p6); out.append(p6)
 
-    _channel_steps(rna1, rna1_pos_mask, "RNA1", 1.0, 1.0, 0.0, (255, 255, 0))
-    _channel_steps(rna2, rna2_pos_mask, "RNA2", 0.0, 1.0, 1.0, (0, 255, 255))
+    _channel_steps(
+        rna1, rna1_pos_mask, _rna_fn,
+        rna_lut_weights[0], rna_lut_weights[1], rna_lut_weights[2],
+        rna_color, rna1_f, rna1_c,
+    )
+    _channel_steps(
+        rna2, rna2_pos_mask, _rna2_fn,
+        rna2_lut_weights[0], rna2_lut_weights[1], rna2_lut_weights[2],
+        rna2_color, rna2_f, rna2_c,
+    )
+
+    def _has_paired_col(df: Optional[pd.DataFrame]) -> Optional[str]:
+        """Return the first column whose name starts with 'paired_at_' or
+        None. The pair distance is encoded in the suffix (e.g.
+        ``paired_at_0.5um``) so we don't hard-code the threshold here."""
+        if df is None or len(df) == 0:
+            return None
+        for c in df.columns:
+            if str(c).startswith("paired_at_"):
+                return c
+        return None
+
+    # Step 07a/b: Per-channel detected spots on DAPI. Two separate panels so
+    # the reader can see each channel's call set without the other channel
+    # occluding markers. Mirrors Fiji's step06_RNA1/2_spots intent but
+    # composites onto DAPI (Fiji puts them onto the RNA channel itself).
+    if spots1 is not None and len(spots1) > 0:
+        s07a = _to_uint8(apply_lut(dapi, 1.0, 1.0, 1.0, floor=df, ceil=dc))
+        s07a = draw_nuclei_outlines(
+            s07a, labels, color=(255, 255, 255), width_px=NUC_OUTLINE_WIDTH_PX,
+        )
+        s07a = draw_spot_markers(
+            s07a, spots1, color=rna_color, radius=4, thickness=2,
+            size_mode="auto", voxel_xy_nm=voxel_xy_nm,
+        )
+        s07a = burn_scale_bar(
+            s07a, voxel_xy_nm, bar_um=SCALEBAR_UM,
+            height_px=SCALEBAR_HEIGHT_PX, font_px=SCALEBAR_FONT_PX,
+        )
+        p = walk_dir / f"{stem}__step07_{_rna_fn}_spots_on_{_dapi_fn}.png"
+        save_png(s07a, p); out.append(p)
+
+    if spots2 is not None and len(spots2) > 0:
+        s07b = _to_uint8(apply_lut(dapi, 1.0, 1.0, 1.0, floor=df, ceil=dc))
+        s07b = draw_nuclei_outlines(
+            s07b, labels, color=(255, 255, 255), width_px=NUC_OUTLINE_WIDTH_PX,
+        )
+        s07b = draw_spot_markers(
+            s07b, spots2, color=rna2_color, radius=4, thickness=2,
+            size_mode="auto", voxel_xy_nm=voxel_xy_nm,
+        )
+        s07b = burn_scale_bar(
+            s07b, voxel_xy_nm, bar_um=SCALEBAR_UM,
+            height_px=SCALEBAR_HEIGHT_PX, font_px=SCALEBAR_FONT_PX,
+        )
+        p = walk_dir / f"{stem}__step07_{_rna2_fn}_spots_on_{_dapi_fn}.png"
+        save_png(s07b, p); out.append(p)
+
+    # Step 08: Paired-spot panel. RNA1 (yellow) + RNA2 (magenta) markers on
+    # the DAPI+RNA1+RNA2 composite; spots whose paired_at_<X>um column == 1
+    # get an additional white outer ring so the reader can scan for paired
+    # transcripts visually. When the paired column is missing (e.g. spots
+    # df was reduced before passing in), we still emit the panel — just
+    # without the white ring.
+    if (spots1 is not None and len(spots1) > 0) or (spots2 is not None and len(spots2) > 0):
+        dapi_b = apply_lut(dapi, 0.0, 0.3, 1.0, floor=df, ceil=dc)
+        rna1_y = apply_lut(rna1, 1.0, 1.0, 0.0, floor=rna1_f, ceil=rna1_c)
+        rna2_l = apply_lut(
+            rna2, rna2_lut_weights[0], rna2_lut_weights[1], rna2_lut_weights[2],
+            floor=rna2_f, ceil=rna2_c,
+        )
+        s08 = _to_uint8(merge_rgb_additive([dapi_b, rna1_y, rna2_l]))
+        s08 = draw_nuclei_outlines(
+            s08, labels, color=(255, 255, 255), width_px=NUC_OUTLINE_WIDTH_PX,
+        )
+        if spots1 is not None and len(spots1) > 0:
+            s08 = draw_spot_markers(
+                s08, spots1, color=rna_color, radius=4, thickness=2,
+                size_mode="auto", voxel_xy_nm=voxel_xy_nm,
+            )
+            pc1 = _has_paired_col(spots1)
+            if pc1 is not None:
+                paired1 = spots1.loc[spots1[pc1].astype(int) == 1]
+                if len(paired1) > 0:
+                    # Paired-highlight ring stays uniform (size encodes the
+                    # PAIRING semantic, not the spot diameter).
+                    s08 = draw_spot_markers(
+                        s08, paired1, color=(0, 255, 0),
+                        radius=8, thickness=2, size_mode="fixed",
+                    )
+        if spots2 is not None and len(spots2) > 0:
+            s08 = draw_spot_markers(
+                s08, spots2, color=rna2_color, radius=4, thickness=2,
+                size_mode="auto", voxel_xy_nm=voxel_xy_nm,
+            )
+            pc2 = _has_paired_col(spots2)
+            if pc2 is not None:
+                paired2 = spots2.loc[spots2[pc2].astype(int) == 1]
+                if len(paired2) > 0:
+                    s08 = draw_spot_markers(
+                        s08, paired2, color=(0, 255, 0),
+                        radius=8, thickness=2, size_mode="fixed",
+                    )
+        s08 = burn_scale_bar(
+            s08, voxel_xy_nm, bar_um=SCALEBAR_UM,
+            height_px=SCALEBAR_HEIGHT_PX, font_px=SCALEBAR_FONT_PX,
+        )
+        p = walk_dir / f"{stem}__step08_paired_spots.png"
+        save_png(s08, p); out.append(p)
+
+    # Step 09: Active TSS — nuclear paired spots in the primary RNA channel.
+    # Brian's active-transcription proxy: a transcript is "actively
+    # transcribed" if it has a paired partner in the partner channel AND
+    # sits inside the nucleus. We require both columns in spots1.
+    if spots1 is not None and len(spots1) > 0:
+        pc1 = _has_paired_col(spots1)
+        if pc1 is not None and "in_nucleus" in spots1.columns:
+            tss = spots1.loc[
+                (spots1[pc1].astype(int) == 1)
+                & (spots1["in_nucleus"].astype(bool) == True)
+            ]
+            s09 = _to_uint8(apply_lut(dapi, 1.0, 1.0, 1.0, floor=df, ceil=dc))
+            s09 = draw_nuclei_outlines(
+                s09, labels, color=(255, 255, 255), width_px=NUC_OUTLINE_WIDTH_PX,
+            )
+            if len(tss) > 0:
+                # White inner dot + larger yellow ring so active TSS read
+                # as "highlighted" against the gray DAPI background.
+                s09 = draw_spot_markers(
+                    s09, tss, color=rna_color, radius=8, thickness=2,
+                )
+                s09 = draw_spot_markers(
+                    s09, tss, color=(255, 255, 255), radius=3, thickness=2,
+                )
+            s09 = burn_scale_bar(
+                s09, voxel_xy_nm, bar_um=SCALEBAR_UM,
+                height_px=SCALEBAR_HEIGHT_PX, font_px=SCALEBAR_FONT_PX,
+            )
+            p = walk_dir / f"{stem}__step09_nuclear_overlap_spots.png"
+            save_png(s09, p); out.append(p)
+
+    # Step 10: Cytoplasm / cell mask overlay on DAPI. Green = cytoplasm
+    # boundary, white = nucleus boundary. Only emitted when cyt_labels is
+    # supplied + non-empty.
+    if cyt_labels is not None:
+        cyt_arr = np.asarray(cyt_labels)
+        if cyt_arr.ndim == 2 and int(cyt_arr.max()) > 0:
+            s10 = _to_uint8(apply_lut(dapi, 1.0, 1.0, 1.0, floor=df, ceil=dc))
+            s10 = draw_nuclei_outlines(
+                s10, cyt_arr.astype(np.int32), color=(0, 255, 0),
+                width_px=NUC_OUTLINE_WIDTH_PX,
+            )
+            s10 = draw_nuclei_outlines(
+                s10, labels, color=(255, 255, 255),
+                width_px=NUC_OUTLINE_WIDTH_PX,
+            )
+            s10 = burn_scale_bar(
+                s10, voxel_xy_nm, bar_um=SCALEBAR_UM,
+                height_px=SCALEBAR_HEIGHT_PX, font_px=SCALEBAR_FONT_PX,
+            )
+            p = walk_dir / f"{stem}__step10_cytoplasm_mask.png"
+            save_png(s10, p); out.append(p)
+
+    # Step 11: Full merge — DAPI + RNA1 + RNA2 + nucleus outlines. Always
+    # emitted (last panel of the walkthrough; mirrors Fiji's
+    # save_publication_images_rna_rna __merge_all_DAPI_RNA1_RNA2 visual).
+    dapi_b = apply_lut(dapi, 0.0, 0.3, 1.0, floor=df, ceil=dc)
+    rna1_y = apply_lut(rna1, 1.0, 1.0, 0.0, floor=rna1_f, ceil=rna1_c)
+    rna2_l = apply_lut(
+        rna2, rna2_lut_weights[0], rna2_lut_weights[1], rna2_lut_weights[2],
+        floor=rna2_f, ceil=rna2_c,
+    )
+    s11 = _to_uint8(merge_rgb_additive([dapi_b, rna1_y, rna2_l]))
+    s11 = draw_nuclei_outlines(
+        s11, labels, color=(255, 255, 255), width_px=NUC_OUTLINE_WIDTH_PX,
+    )
+    s11 = burn_scale_bar(
+        s11, voxel_xy_nm, bar_um=SCALEBAR_UM,
+        height_px=SCALEBAR_HEIGHT_PX, font_px=SCALEBAR_FONT_PX,
+    )
+    p = walk_dir / f"{stem}__step11_merge_all.png"
+    save_png(s11, p); out.append(p)
     return out
 
 
@@ -931,6 +1330,26 @@ def save_publication_images_bundle(
     ab_ceil_pct: float = AB_CEIL_PCT,
     rna2_floor_pct: float = RNA2_FLOOR_PCT,
     rna2_ceil_pct: float = RNA2_CEIL_PCT,
+    # Absolute (floor, ceil) overrides — when supplied (not None), take
+    # precedence over the percentile-based computation. Used by the batch
+    # pre-scan in runner.py to apply ONE pair of values uniformly to every
+    # image in the run (pub_contrast_mode="auto_batch") and by the manual-
+    # contrast path (pub_contrast_mode="manual") to use user-typed values
+    # verbatim. Per-channel: if either floor or ceil is None for a channel,
+    # that channel falls back to its percentile-based path for the missing
+    # half — so callers can pin only a floor or only a ceil.
+    dapi_floor: Optional[float] = None,
+    dapi_ceil: Optional[float] = None,
+    rna_floor: Optional[float] = None,
+    rna_ceil: Optional[float] = None,
+    rna2_floor: Optional[float] = None,
+    rna2_ceil: Optional[float] = None,
+    ab_floor: Optional[float] = None,
+    ab_ceil: Optional[float] = None,
+    # When False, only the .png is saved (no .tif). Wired from
+    # ``OutputCfg.save_publication_tifs``. Default True preserves the
+    # historical PNG+TIF dual-save behavior for callers that don't pass it.
+    save_tifs: bool = True,
     dapi_label: Optional[str] = None,
     rna_label: Optional[str] = None,
     rna2_label: Optional[str] = None,
@@ -939,6 +1358,12 @@ def save_publication_images_bundle(
     rna_lut: Optional[str] = None,
     rna2_lut: Optional[str] = None,
     antibody_lut: Optional[str] = None,
+    # 2026-05-18 Brian: post-percentile floor bump (multiplicative) for
+    # RNA-class channels (rna, rna2, antibody). Only applied when the
+    # auto-percentile path is taken (no caller-supplied floor override).
+    # DAPI is exempt — its histogram structure differs. Set 0.0 to
+    # disable. Wired from ``OutputCfg.pub_contrast_rna_floor_bump_pct``.
+    rna_floor_bump_pct: float = 0.0,
 ) -> List[Path]:
     """Save per-channel publication PNGs + TIFs + pairwise/triple merges, with
     50 um scale bars burned in.
@@ -973,19 +1398,66 @@ def save_publication_images_bundle(
     pub_dir = Path(pub_dir)
     pub_dir.mkdir(parents=True, exist_ok=True)
 
-    # DAPI is per-image (Fiji uses explicit p10/p99.9, no batch_key).
-    dapi_f = _percentile(dapi, dapi_floor_pct)
-    dapi_c = _percentile(dapi, dapi_ceil_pct)
-    # RNA is batch-coordinated to keep contrast consistent across the run
-    # (Fiji parity: apply_lut_to_rgb(..., batch_key="rna")). Sec-only
-    # images do NOT update the batch cache (their dim background biases the
-    # running max — Fiji's compute_pub_images_batch_contrast skips sec-only
-    # for the same reason at lines 3990-3992 of Coloc_Analysis.py), but they
-    # DO render with the current batch range, so a real no-probe control
-    # appears dim at the same contrast scale as the NT/KD images.
+    # Per-channel (floor, ceil) resolution — three sources of truth in
+    # priority order:
+    #   1. Caller-supplied absolute (floor, ceil) override (used by the
+    #      runner's auto_batch pre-scan + by the manual-contrast path). When
+    #      either half is None, the other half falls through to step 2/3 so
+    #      callers can pin just a floor or just a ceiling.
+    #   2. Batch running-max cache (legacy "auto" path, kept for callers
+    #      that pass use_batch_contrast=True but don't supply overrides).
+    #   3. Per-image percentiles (auto_per_image path).
+    def _resolve(
+        gray: np.ndarray,
+        floor_pct: float, ceil_pct: float,
+        batch_key: Optional[str],
+        floor_override: Optional[float],
+        ceil_override: Optional[float],
+        bump_rna_floor: bool = False,
+    ) -> tuple[float, float]:
+        # Fast path: BOTH override halves provided — skip percentile work
+        # entirely and skip the batch-cache update too (the caller has
+        # already decided on a single uniform value, so the cache would
+        # become inconsistent with the rendered output). The runner has
+        # already applied the bump to RNA-class floors at the pre-scan
+        # step, so we do NOT re-bump here when override is supplied.
+        if floor_override is not None and ceil_override is not None:
+            return float(floor_override), float(ceil_override)
+        # Mixed / no overrides — fall back to the batch+percentile path.
+        f, c = _resolve_lut_range(
+            gray, floor_pct, ceil_pct,
+            batch_key=batch_key, is_sec_only=sec_only,
+        )
+        if floor_override is not None:
+            f = float(floor_override)
+        elif bump_rna_floor and rna_floor_bump_pct > 0 and f > 0:
+            # 2026-05-18 Brian: auto-per-image floor bump for RNA-class
+            # channels. Multiplies the percentile-derived floor by
+            # (1 + bump/100). Bypassed when the runner supplied an
+            # explicit floor_override (auto_batch / manual modes).
+            f = f * (1.0 + float(rna_floor_bump_pct) / 100.0)
+        if ceil_override is not None:
+            c = float(ceil_override)
+        return f, c
+
+    # DAPI is per-image by default (no batch_key — Fiji parity for
+    # auto_per_image). When an absolute override is supplied (auto_batch
+    # pre-scan or manual mode), we use it verbatim.
+    dapi_f, dapi_c = _resolve(
+        dapi, dapi_floor_pct, dapi_ceil_pct,
+        batch_key=None,
+        floor_override=dapi_floor, ceil_override=dapi_ceil,
+    )
+    # RNA is batch-coordinated when use_batch_contrast and no override is
+    # supplied (legacy "running-max" path). When the runner's pre-scan
+    # supplies an absolute (rna_floor, rna_ceil) — i.e. pub_contrast_mode
+    # == "auto_batch" — those values dominate and the cache is bypassed.
     rna_bk = "rna" if use_batch_contrast else None
-    rna_f, rna_c = _resolve_lut_range(
-        rna, rna_floor_pct, rna_ceil_pct, batch_key=rna_bk, is_sec_only=sec_only,
+    rna_f, rna_c = _resolve(
+        rna, rna_floor_pct, rna_ceil_pct,
+        batch_key=rna_bk,
+        floor_override=rna_floor, ceil_override=rna_ceil,
+        bump_rna_floor=True,
     )
 
     # Resolve per-role LUTs (defaults match historical Blue / Yellow / Cyan /
@@ -1005,8 +1477,11 @@ def save_publication_images_bundle(
 
     if protein is not None:
         ab_bk = "ab" if use_batch_contrast else None
-        ab_f, ab_c = _resolve_lut_range(
-            protein, ab_floor_pct, ab_ceil_pct, batch_key=ab_bk, is_sec_only=sec_only,
+        ab_f, ab_c = _resolve(
+            protein, ab_floor_pct, ab_ceil_pct,
+            batch_key=ab_bk,
+            floor_override=ab_floor, ceil_override=ab_ceil,
+            bump_rna_floor=True,
         )
         prot_m = apply_lut(protein, _ab_w[0], _ab_w[1], _ab_w[2], floor=ab_f, ceil=ab_c)
     else:
@@ -1018,8 +1493,11 @@ def save_publication_images_bundle(
     # Sec-only behavior matches the primary RNA path: consult-but-don't-update.
     if rna2 is not None:
         rna2_bk = "rna2" if use_batch_contrast else None
-        rna2_f, rna2_c = _resolve_lut_range(
-            rna2, rna2_floor_pct, rna2_ceil_pct, batch_key=rna2_bk, is_sec_only=sec_only,
+        rna2_f, rna2_c = _resolve(
+            rna2, rna2_floor_pct, rna2_ceil_pct,
+            batch_key=rna2_bk,
+            floor_override=rna2_floor, ceil_override=rna2_ceil,
+            bump_rna_floor=True,
         )
         rna2_c_layer = apply_lut(rna2, _rna2_w[0], _rna2_w[1], _rna2_w[2], floor=rna2_f, ceil=rna2_c)
     else:
@@ -1036,10 +1514,16 @@ def save_publication_images_bundle(
             font_px=SCALEBAR_FONT_PX,
         )
         p_png = pub_dir / f"{stem}__{suffix}.png"
-        p_tif = pub_dir / f"{stem}__{suffix}.tif"
         save_png(u, p_png)
-        save_rgb_tiff(u, p_tif)
-        saved.extend([p_png, p_tif])
+        saved.append(p_png)
+        # 2026-05-18 Brian: gated by OutputCfg.save_publication_tifs — default
+        # off so we don't double the publication_images directory size with
+        # 16-bit TIFs Brian rarely opens. Flip on for figure assembly in
+        # Illustrator / Fiji where 16-bit dynamic range matters.
+        if save_tifs:
+            p_tif = pub_dir / f"{stem}__{suffix}.tif"
+            save_rgb_tiff(u, p_tif)
+            saved.append(p_tif)
 
     # Resolve per-channel filename-safe labels. Defaults match the legacy
     # generic names ("DAPI", "RNA", "RNA2", "Protein") so a config without
@@ -1094,8 +1578,15 @@ def save_walkthrough_bundle(
     voxel_xy_nm: float,
     use_batch_contrast: bool = True,
     sec_only: bool = False,
+    spots: Optional[pd.DataFrame] = None,
+    cyt_labels: Optional[np.ndarray] = None,
+    # 2026-05-19 Brian: filename-embedded channel labels. Defaults match the
+    # legacy generic names so callers that don't pass labels render the same
+    # filenames as before.
+    rna_label: Optional[str] = None,
+    dapi_label: Optional[str] = None,
 ) -> List[Path]:
-    """Save the 6 pipeline-walkthrough PNGs (matches Fiji step01-step06).
+    """Save the pipeline-walkthrough PNGs (matches Fiji step01-step09).
 
     Step 01: Raw DAPI grayscale + scale bar
     Step 02: DAPI binary mask
@@ -1103,30 +1594,48 @@ def save_walkthrough_bundle(
     Step 04: Raw RNA in yellow + scale bar
     Step 05: RNA threshold mask in yellow on black
     Step 06: RNA threshold overlay on grayscale RNA
+    Step 07: Detected spots on DAPI (yellow spot markers on DAPI gray)
+    Step 08: Detected spots on RNA threshold mask (spots overlaid on the
+             yellow threshold map so the reader can see which spots were
+             called inside vs outside the thresholded signal)
+    Step 09: Cytoplasm / cell mask overlay on DAPI (only emitted when
+             ``cyt_labels`` is supplied; cytoplasm boundaries drawn in
+             green, nucleus boundaries in white — mirrors Fiji's
+             rna_protein walkthrough's "cell territory" panel)
+
+    Steps 07-09 are emitted only when their inputs are available:
+      - step07/08 require non-empty ``spots`` (DataFrame with x_px,y_px)
+      - step09 requires ``cyt_labels`` (a 2D label image)
+    The earlier 6 steps are always emitted so this remains backward
+    compatible with callers that only pass dapi/rna/masks.
     """
     walk_dir = Path(walk_dir)
     walk_dir.mkdir(parents=True, exist_ok=True)
     out: List[Path] = []
+
+    # Filename-safe channel labels. Defaults preserve the legacy step names.
+    _rna_fn  = sanitize_label_for_filename(rna_label,  default="RNA")
+    _dapi_fn = sanitize_label_for_filename(dapi_label, default="DAPI")
 
     # Step 01: Raw DAPI grayscale
     df = _percentile(dapi, DAPI_FLOOR_PCT)
     dc = _percentile(dapi, DAPI_CEIL_PCT)
     s01 = _to_uint8(apply_lut(dapi, 1.0, 1.0, 1.0, floor=df, ceil=dc))
     s01 = burn_scale_bar(s01, voxel_xy_nm, bar_um=SCALEBAR_UM)
-    p = walk_dir / f"{stem}__step01_DAPI_raw.png"
+    p = walk_dir / f"{stem}__step01_{_dapi_fn}_raw.png"
     save_png(s01, p); out.append(p)
 
     # Step 02: DAPI binary mask (white on black)
     s02 = (np.asarray(dapi_mask) > 0).astype(np.uint8) * 255
     s02 = np.stack([s02, s02, s02], axis=-1)
-    p = walk_dir / f"{stem}__step02_DAPI_mask.png"
+    p = walk_dir / f"{stem}__step02_{_dapi_fn}_mask.png"
     save_png(s02, p); out.append(p)
 
     # Step 03: Nuclei outlines on DAPI
     s03 = _to_uint8(apply_lut(dapi, 1.0, 1.0, 1.0, floor=df, ceil=dc))
     s03 = draw_nuclei_outlines(s03, labels, color=(255, 255, 255), width_px=NUC_OUTLINE_WIDTH_PX)
     s03 = burn_scale_bar(s03, voxel_xy_nm, bar_um=SCALEBAR_UM)
-    p = walk_dir / f"{stem}__step03_nuclei_outlines_on_DAPI.png"
+    p = walk_dir / f"{stem}__step03_nuclei_outlines_on_{_dapi_fn}.png"
     save_png(s03, p); out.append(p)
 
     # Step 04: Raw RNA in yellow LUT — batch-coordinated contrast matches
@@ -1141,14 +1650,14 @@ def save_walkthrough_bundle(
         s04, voxel_xy_nm, bar_um=SCALEBAR_UM,
         height_px=SCALEBAR_HEIGHT_PX, font_px=SCALEBAR_FONT_PX,
     )
-    p = walk_dir / f"{stem}__step04_RNA_raw_yellow.png"
+    p = walk_dir / f"{stem}__step04_{_rna_fn}_raw_yellow.png"
     save_png(s04, p); out.append(p)
 
     # Step 05: RNA threshold mask in yellow on black
     rna_pos = np.asarray(rna_pos_mask) > 0
     s05 = np.zeros((rna.shape[0], rna.shape[1], 3), dtype=np.uint8)
     s05[rna_pos] = (255, 255, 0)
-    p = walk_dir / f"{stem}__step05_RNA_threshold_yellow.png"
+    p = walk_dir / f"{stem}__step05_{_rna_fn}_threshold_yellow.png"
     save_png(s05, p); out.append(p)
 
     # Step 06: RNA threshold overlay on grayscale RNA (50% alpha-ish blend).
@@ -1165,9 +1674,228 @@ def save_walkthrough_bundle(
         s06, voxel_xy_nm, bar_um=SCALEBAR_UM,
         height_px=SCALEBAR_HEIGHT_PX, font_px=SCALEBAR_FONT_PX,
     )
-    p = walk_dir / f"{stem}__step06_RNA_threshold_on_signal.png"
+    p = walk_dir / f"{stem}__step06_{_rna_fn}_threshold_on_signal.png"
     save_png(s06, p); out.append(p)
+
+    # Step 07: Detected spots on DAPI grayscale. Mirrors Fiji's
+    # save_spot_walkthrough_steps step14/15 visual style (spot markers on a
+    # grayscale base) but uses DAPI as the base so the reader can confirm
+    # spot calls sit within / around nuclei. Only emitted when spots is
+    # supplied + non-empty — keeps the 6-step minimum bundle for callers
+    # that don't pass spots (e.g. early integration tests).
+    if spots is not None and len(spots) > 0:
+        s07 = _to_uint8(apply_lut(dapi, 1.0, 1.0, 1.0, floor=df, ceil=dc))
+        s07 = draw_nuclei_outlines(
+            s07, labels, color=(255, 255, 255), width_px=NUC_OUTLINE_WIDTH_PX,
+        )
+        s07 = draw_spot_markers(
+            s07, spots, color=(255, 255, 0), radius=4, thickness=2,
+            size_mode="auto", voxel_xy_nm=voxel_xy_nm,
+        )
+        s07 = burn_scale_bar(
+            s07, voxel_xy_nm, bar_um=SCALEBAR_UM,
+            height_px=SCALEBAR_HEIGHT_PX, font_px=SCALEBAR_FONT_PX,
+        )
+        p = walk_dir / f"{stem}__step07_spots_on_{_dapi_fn}.png"
+        save_png(s07, p); out.append(p)
+
+        # Step 08: Detected spots on the RNA threshold mask. Useful for
+        # auditing whether the spot caller is biased towards / away from
+        # the threshold mask regions — Fiji's equivalent panel is
+        # __step15_spots_filtered overlaid on the RNA channel.
+        s08 = np.zeros((rna.shape[0], rna.shape[1], 3), dtype=np.uint8)
+        s08[rna_pos] = (200, 200, 0)  # dim yellow base
+        s08 = draw_spot_markers(
+            s08, spots, color=(255, 255, 255), radius=4, thickness=2,
+            size_mode="auto", voxel_xy_nm=voxel_xy_nm,
+        )
+        s08 = burn_scale_bar(
+            s08, voxel_xy_nm, bar_um=SCALEBAR_UM,
+            height_px=SCALEBAR_HEIGHT_PX, font_px=SCALEBAR_FONT_PX,
+        )
+        p = walk_dir / f"{stem}__step08_spots_on_{_rna_fn}_threshold.png"
+        save_png(s08, p); out.append(p)
+
+    # Step 09: Cytoplasm / cell mask overlay on DAPI. Cytoplasm boundaries
+    # are drawn in green to distinguish them from nucleus boundaries
+    # (white). Only emitted when cyt_labels is supplied (rna_only +
+    # cytoplasm.enabled, or rna_rna). Mirrors Fiji's cytoplasm overlay
+    # rendered by Coloc_Cytoplasm.py in the per-image flow.
+    if cyt_labels is not None:
+        cyt_arr = np.asarray(cyt_labels)
+        if cyt_arr.ndim == 2 and int(cyt_arr.max()) > 0:
+            s09 = _to_uint8(apply_lut(dapi, 1.0, 1.0, 1.0, floor=df, ceil=dc))
+            # Outline the FULL cell territory (nucleus + cytoplasm), then
+            # the nucleus on top so both boundaries are visible.
+            s09 = draw_nuclei_outlines(
+                s09, cyt_arr.astype(np.int32), color=(0, 255, 0),
+                width_px=NUC_OUTLINE_WIDTH_PX,
+            )
+            s09 = draw_nuclei_outlines(
+                s09, labels, color=(255, 255, 255),
+                width_px=NUC_OUTLINE_WIDTH_PX,
+            )
+            s09 = burn_scale_bar(
+                s09, voxel_xy_nm, bar_um=SCALEBAR_UM,
+                height_px=SCALEBAR_HEIGHT_PX, font_px=SCALEBAR_FONT_PX,
+            )
+            p = walk_dir / f"{stem}__step09_cytoplasm_mask.png"
+            save_png(s09, p); out.append(p)
     return out
+
+
+def save_nuclei_callout_figure(
+    popout_dir: Path,
+    stem: str,
+    *,
+    dapi: np.ndarray,
+    rna: np.ndarray,
+    rna2: Optional[np.ndarray] = None,
+    labels: np.ndarray,
+    per_nuc_rows: List[Dict[str, Any]],
+    voxel_xy_nm: float,
+    n_popouts: int = 4,
+    padding_px: int = 40,
+    dapi_floor: Optional[float] = None,
+    dapi_ceil: Optional[float] = None,
+    rna_floor: Optional[float] = None,
+    rna_ceil: Optional[float] = None,
+    rna2_floor: Optional[float] = None,
+    rna2_ceil: Optional[float] = None,
+    rna_color: Tuple[float, float, float] = (1.0, 1.0, 0.0),   # yellow
+    rna2_color: Tuple[float, float, float] = (1.0, 0.0, 1.0),  # magenta
+    scalebar_um: float = POPOUT_SCALEBAR_UM,
+) -> Optional[Path]:
+    """One combined figure per image:
+      LEFT — full-image RGB (DAPI + RNA1 + optional RNA2) with red boxes
+             showing where each popout came from.
+      RIGHT — grid of N high-resolution per-nucleus crops, no spot markers,
+              just channel merge + white nucleus outline.
+
+    White background, high DPI, suptitle. Saved as a single PNG.
+    """
+    import matplotlib.pyplot as plt
+    import matplotlib.patches as patches
+    from matplotlib.gridspec import GridSpec
+
+    popout_dir = Path(popout_dir)
+    popout_dir.mkdir(parents=True, exist_ok=True)
+    if not per_nuc_rows:
+        return None
+
+    # Pick representative nuclei: closest to median rna_mean_in_nucleus
+    means = []
+    for r in per_nuc_rows:
+        v = r.get("rna_mean_in_nucleus")
+        try: vf = float(v)
+        except (TypeError, ValueError): continue
+        if vf == vf: means.append(vf)
+    if not means:
+        return None
+    median = sorted(means)[len(means) // 2]
+    candidates: List[Tuple[int, float]] = []
+    for r in per_nuc_rows:
+        try: nid = int(r.get("nucleus_id", 0))
+        except (TypeError, ValueError): continue
+        try: mean_v = float(r.get("rna_mean_in_nucleus"))
+        except (TypeError, ValueError): continue
+        candidates.append((nid, abs(mean_v - median)))
+    candidates.sort(key=lambda t: t[1])
+    candidates = candidates[: max(1, n_popouts)]
+
+    # Compute contrast for full image (use passed-in if provided, else
+    # per-image percentile fallback)
+    df = dapi_floor if dapi_floor is not None else _percentile(dapi, DAPI_FLOOR_PCT)
+    dc = dapi_ceil  if dapi_ceil  is not None else _percentile(dapi, DAPI_CEIL_PCT)
+    rf = rna_floor  if rna_floor  is not None else _percentile(rna, RNA_FLOOR_PCT)
+    rc = rna_ceil   if rna_ceil   is not None else _percentile(rna, RNA_CEIL_PCT)
+    if rna2 is not None:
+        r2f = rna2_floor if rna2_floor is not None else _percentile(rna2, RNA2_FLOOR_PCT)
+        r2c = rna2_ceil  if rna2_ceil  is not None else _percentile(rna2, RNA2_CEIL_PCT)
+
+    # Build merged RGB image (full)
+    dapi_b = apply_lut(dapi, 0.0, 0.3, 1.0, floor=df, ceil=dc)
+    rna_layer = apply_lut(rna, rna_color[0], rna_color[1], rna_color[2], floor=rf, ceil=rc)
+    layers = [dapi_b, rna_layer]
+    if rna2 is not None:
+        rna2_layer = apply_lut(rna2, rna2_color[0], rna2_color[1], rna2_color[2], floor=r2f, ceil=r2c)
+        layers.append(rna2_layer)
+    rgb_full = _to_uint8(merge_rgb_additive(layers))
+
+    # Build a list of (nid, x0, y0, x1, y1) crop boxes
+    h, w = labels.shape
+    boxes: List[Tuple[int, int, int, int, int]] = []
+    for nid, _ in candidates:
+        mask = labels == nid
+        if not mask.any(): continue
+        ys, xs = np.where(mask)
+        y0 = max(0, int(ys.min()) - padding_px)
+        y1 = min(h, int(ys.max()) + 1 + padding_px)
+        x0 = max(0, int(xs.min()) - padding_px)
+        x1 = min(w, int(xs.max()) + 1 + padding_px)
+        if (y1 - y0) < 16 or (x1 - x0) < 16: continue
+        boxes.append((nid, x0, y0, x1, y1))
+    if not boxes:
+        return None
+
+    n_box = len(boxes)
+    # Figure layout: 1 column for full image + 1 column for popouts (stacked)
+    fig = plt.figure(figsize=(16, max(8, 3 * n_box)), dpi=300, facecolor="white")
+    gs = GridSpec(n_box, 2, figure=fig, width_ratios=[1.4, 1.0],
+                  wspace=0.05, hspace=0.1)
+    # Full image spans all rows of the LEFT column
+    ax_full = fig.add_subplot(gs[:, 0])
+    ax_full.imshow(rgb_full)
+    ax_full.set_facecolor("white")
+    ax_full.set_xticks([]); ax_full.set_yticks([])
+    for spine in ax_full.spines.values(): spine.set_visible(False)
+    # Annotate popout crops with red boxes + numeric labels
+    for i, (nid, x0, y0, x1, y1) in enumerate(boxes, start=1):
+        rect = patches.Rectangle((x0, y0), x1 - x0, y1 - y0,
+                                  fill=False, edgecolor="red", linewidth=2.5)
+        ax_full.add_patch(rect)
+        ax_full.text(x0, y0 - 6, str(i), color="red",
+                     fontsize=14, fontweight="bold")
+    ax_full.set_title(f"{stem}", fontsize=11, color="#333", pad=6)
+
+    # Popouts in right column
+    for i, (nid, x0, y0, x1, y1) in enumerate(boxes):
+        ax = fig.add_subplot(gs[i, 1])
+        d_crop = dapi[y0:y1, x0:x1]
+        r_crop = rna[y0:y1, x0:x1]
+        d_b = apply_lut(d_crop, 0.0, 0.3, 1.0, floor=df, ceil=dc)
+        r_l = apply_lut(r_crop, rna_color[0], rna_color[1], rna_color[2], floor=rf, ceil=rc)
+        crop_layers = [d_b, r_l]
+        if rna2 is not None:
+            r2_crop = rna2[y0:y1, x0:x1]
+            r2_l = apply_lut(r2_crop, rna2_color[0], rna2_color[1], rna2_color[2],
+                              floor=r2f, ceil=r2c)
+            crop_layers.append(r2_l)
+        rgb_crop = _to_uint8(merge_rgb_additive(crop_layers))
+        # White outline only for this nucleus
+        lbl_crop = labels[y0:y1, x0:x1]
+        only_this = (lbl_crop == nid).astype(np.int32)
+        rgb_crop = draw_nuclei_outlines(rgb_crop, only_this,
+                                          color=(255, 255, 255), width_px=2)
+        # Scale bar on each popout
+        rgb_crop = burn_scale_bar(rgb_crop, voxel_xy_nm, bar_um=scalebar_um,
+                                   height_px=4, margin_px=10, font_px=14)
+        ax.imshow(rgb_crop)
+        ax.set_xticks([]); ax.set_yticks([])
+        for spine in ax.spines.values():
+            spine.set_edgecolor("red"); spine.set_linewidth(2.5)
+        # Label the popout in its top-left
+        ax.text(0.02, 0.98, str(i + 1), color="red", fontsize=16, fontweight="bold",
+                ha="left", va="top", transform=ax.transAxes,
+                bbox=dict(boxstyle="circle,pad=0.18", facecolor="white",
+                          edgecolor="red", linewidth=1.5))
+
+    fig.suptitle(f"{stem} — representative nuclei callout",
+                 fontsize=14, fontweight="bold", color="#222", y=0.995)
+    out_path = popout_dir / f"{stem}__nuclei_callouts.png"
+    fig.savefig(out_path, dpi=300, bbox_inches="tight", facecolor="white")
+    plt.close(fig)
+    return out_path
 
 
 def save_nuclei_popouts(
@@ -1183,9 +1911,23 @@ def save_nuclei_popouts(
     n_per_image: int = 1,
     padding_px: int = 30,
     scalebar_um: float = POPOUT_SCALEBAR_UM,
+    # 2026-05-22 Brian: Fix A — contrast overrides so popout PNGs use the
+    # same floors/ceils as publication renders instead of per-image percentiles.
+    dapi_floor: Optional[float] = None,
+    dapi_ceil: Optional[float] = None,
+    rna_floor: Optional[float] = None,
+    rna_ceil: Optional[float] = None,
+    # 2026-05-22 Brian: Fix B — rna2 channel support so rna_rna mode popouts
+    # show both RNA channels (Exons yellow + Introns magenta). Default None
+    # keeps rna_only mode working exactly as before.
+    rna2: Optional[np.ndarray] = None,
+    rna2_floor: Optional[float] = None,
+    rna2_ceil: Optional[float] = None,
+    rna2_lut_weights: Tuple[float, float, float] = (1.0, 0.0, 1.0),
 ) -> List[Path]:
     """Pick representative nuclei (closest to median rna_mean_in_nucleus)
-    and render close-up DAPI(blue)+RNA(yellow) crops with spots + scale bar."""
+    and render close-up DAPI(blue)+RNA(yellow) crops with spots + scale bar.
+    In rna_rna mode, also blends rna2 (magenta by default) when supplied."""
     popout_dir = Path(popout_dir)
     popout_dir.mkdir(parents=True, exist_ok=True)
     if not per_nuc_rows:
@@ -1218,11 +1960,17 @@ def save_nuclei_popouts(
     candidates = candidates[: max(1, n_per_image)]
     saved: List[Path] = []
     h, w = labels.shape
-    # Per-image contrast (computed on parent so contrast is consistent with QC)
-    df = _percentile(dapi, DAPI_FLOOR_PCT)
-    dc = _percentile(dapi, DAPI_CEIL_PCT)
-    rf = _percentile(rna, RNA_FLOOR_PCT)
-    rc = _percentile(rna, RNA_CEIL_PCT)
+    # 2026-05-22 Brian: Fix A — use override contrast when supplied so popout
+    # PNGs match publication renders. Falls back to per-image percentile when
+    # no override is given (backward compatible with rna_only callers).
+    df = dapi_floor if dapi_floor is not None else _percentile(dapi, DAPI_FLOOR_PCT)
+    dc = dapi_ceil  if dapi_ceil  is not None else _percentile(dapi, DAPI_CEIL_PCT)
+    rf = rna_floor  if rna_floor  is not None else _percentile(rna, RNA_FLOOR_PCT)
+    rc = rna_ceil   if rna_ceil   is not None else _percentile(rna, RNA_CEIL_PCT)
+    # rna2 contrast (only used when rna2 array is supplied)
+    if rna2 is not None:
+        r2f = rna2_floor if rna2_floor is not None else _percentile(rna2, RNA2_FLOOR_PCT)
+        r2c = rna2_ceil  if rna2_ceil  is not None else _percentile(rna2, RNA2_CEIL_PCT)
     for nid, _dist, n_spots in candidates:
         mask = labels == nid
         if not mask.any():
@@ -1239,7 +1987,17 @@ def save_nuclei_popouts(
         lbl_crop = labels[y0:y1, x0:x1]
         dapi_b = apply_lut(d_crop, 0.0, 0.3, 1.0, floor=df, ceil=dc)
         rna_y = apply_lut(r_crop, 1.0, 1.0, 0.0, floor=rf, ceil=rc)
-        rgb_u8 = _to_uint8(merge_rgb_additive([dapi_b, rna_y]))
+        # 2026-05-22 Brian: Fix B — blend rna2 (Introns/magenta) when supplied.
+        crop_layers = [dapi_b, rna_y]
+        if rna2 is not None:
+            r2_crop = rna2[y0:y1, x0:x1]
+            rna2_layer = apply_lut(
+                r2_crop,
+                rna2_lut_weights[0], rna2_lut_weights[1], rna2_lut_weights[2],
+                floor=r2f, ceil=r2c,
+            )
+            crop_layers.append(rna2_layer)
+        rgb_u8 = _to_uint8(merge_rgb_additive(crop_layers))
         # Outline only this nucleus
         only_this = (lbl_crop == nid).astype(np.int32)
         rgb_u8 = draw_nuclei_outlines(rgb_u8, only_this, color=(255, 255, 255), width_px=2)
@@ -1251,7 +2009,8 @@ def save_nuclei_popouts(
                 sub["x_px"] = sub["x_px"].astype(int) - x0
                 sub["y_px"] = sub["y_px"].astype(int) - y0
                 rgb_u8 = draw_spot_markers(rgb_u8, sub, color=(255, 255, 255),
-                                           radius=4, thickness=1)
+                                           radius=4, thickness=1,
+                                           size_mode="auto", voxel_xy_nm=voxel_xy_nm)
         rgb_u8 = burn_scale_bar(
             rgb_u8, voxel_xy_nm, bar_um=scalebar_um,
             height_px=4, margin_px=10, font_px=14,
