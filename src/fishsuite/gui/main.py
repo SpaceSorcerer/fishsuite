@@ -635,6 +635,11 @@ if _QT_OK:
             form.addRow("Analysis mode", self.mode_combo)
 
             self.one_indexed_chk = QCheckBox("Channel indices are 1-indexed (Fiji-style)")
+            self.one_indexed_chk.setToolTip(
+                "When checked, the channel index spinners above use Fiji's\n"
+                "1-based convention (first channel = 1). Default (off) is\n"
+                "Python's 0-based convention (first channel = 0)."
+            )
             self.one_indexed_chk.toggled.connect(self._on_field_changed)
             form.addRow("", self.one_indexed_chk)
             v.addLayout(form)
@@ -735,6 +740,11 @@ if _QT_OK:
             sp.setRange(-1, 31)
             sp.setSpecialValueText("auto (-1)")
             sp.setValue(-1)
+            sp.setToolTip(
+                "Channel index. -1 = auto-detect (recommended). Otherwise\n"
+                "0-indexed (default) or 1-indexed when the Fiji-style box\n"
+                "above is checked."
+            )
             sp.valueChanged.connect(self._on_field_changed)
             return sp
 
@@ -795,6 +805,13 @@ if _QT_OK:
                 cb.addItem(name)
             ix = cb.findText(default_name)
             cb.setCurrentIndex(ix if ix >= 0 else 0)
+            cb.setToolTip(
+                "Pseudo-color (LUT) used to render this channel in QC and\n"
+                "publication images. Brian's wavelength convention\n"
+                "(2026-05-14): DAPI/405 → blue, 488 → green, 561/Cy3 →\n"
+                "magenta, 647/Cy5 → yellow. The Detect button auto-suggests\n"
+                "by emission wavelength."
+            )
             cb.currentTextChanged.connect(self._on_field_changed)
             return cb
 
@@ -1024,18 +1041,31 @@ if _QT_OK:
             self.z_start = QSpinBox()
             self.z_start.setRange(1, 999)
             self.z_start.setValue(5)
+            self.z_start.setToolTip(
+                "1-based slice index, lower end of the in-focus band.\n"
+                "In autofocus mode this is the search lower bound — the\n"
+                "sharpest single slice within [start, end] is picked."
+            )
             self.z_start.valueChanged.connect(self._on_field_changed)
             form.addRow("Start slice (1-based)", self.z_start)
 
             self.z_end = QSpinBox()
             self.z_end.setRange(1, 999)
             self.z_end.setValue(15)
+            self.z_end.setToolTip(
+                "1-based slice index, upper end of the in-focus band.\n"
+                "In autofocus mode this is the search upper bound."
+            )
             self.z_end.valueChanged.connect(self._on_field_changed)
             form.addRow("End slice (1-based)", self.z_end)
 
             self.z_single = QSpinBox()
             self.z_single.setRange(1, 999)
             self.z_single.setValue(10)
+            self.z_single.setToolTip(
+                "1-based slice index used when Mode == 'single'. Ignored\n"
+                "in autofocus / maxproj / 3d modes."
+            )
             self.z_single.valueChanged.connect(self._on_field_changed)
             form.addRow("Single slice", self.z_single)
 
@@ -1103,6 +1133,13 @@ if _QT_OK:
             self.nuc_min_area.setRange(1, 10_000_000)
             self.nuc_min_area.setValue(10000)
             self.nuc_min_area.setSuffix(" px")
+            self.nuc_min_area.setToolTip(
+                "Minimum nuclear area in RAW pixels² (not µm²). Drops debris\n"
+                "and small fragments. For H9 hESC at 100x@0.065 µm/px true\n"
+                "nuclei are 10000-40000 px²; default 10000 is a safe floor.\n"
+                "At 100x@0.108 µm/px, 100 µm² ≈ 8600 px². The StarDist label\n"
+                "TIFF has no calibration, so we operate in raw pixels."
+            )
             self.nuc_min_area.valueChanged.connect(self._on_field_changed)
             form.addRow("min_area_px", self.nuc_min_area)
 
@@ -1111,11 +1148,20 @@ if _QT_OK:
             self.nuc_max_area.setDecimals(0)
             self.nuc_max_area.setValue(1e12)
             self.nuc_max_area.setSuffix(" px")
+            self.nuc_max_area.setToolTip(
+                "Maximum nuclear area in RAW pixels². Drops oversized clumps\n"
+                "and debris blobs. Default 1e12 = effectively unlimited. Set\n"
+                "to ~50000 px² at 100x@0.108 µm/px to filter very large clumps."
+            )
             self.nuc_max_area.valueChanged.connect(self._on_field_changed)
             form.addRow("max_area_px", self.nuc_max_area)
 
             self.exclude_border = QCheckBox("Exclude nuclei touching image border")
             self.exclude_border.setChecked(True)
+            self.exclude_border.setToolTip(
+                "Drop nuclei within border_margin_px of any edge. Partial\n"
+                "nuclei skew per-cell statistics. Always on for quantification."
+            )
             self.exclude_border.toggled.connect(self._on_field_changed)
             form.addRow("", self.exclude_border)
 
@@ -1123,17 +1169,48 @@ if _QT_OK:
             self.border_margin.setRange(0, 200)
             self.border_margin.setValue(5)
             self.border_margin.setSuffix(" px")
+            self.border_margin.setToolTip(
+                "How close to the image edge counts as 'touching the border'.\n"
+                "5 px tolerates 1-2 px Gaussian shifts between channels."
+            )
             self.border_margin.valueChanged.connect(self._on_field_changed)
             form.addRow("border_margin_px", self.border_margin)
+
+            # Label smoothing — applied AFTER watershed/dilate to round off
+            # StarDist's sharp polygon corners where neighbors meet. New in
+            # fishsuite GUI (2026-05-19) — previously schema-only.
+            self.nuc_label_smooth = QSpinBox()
+            self.nuc_label_smooth.setRange(0, 20)
+            self.nuc_label_smooth.setValue(0)
+            self.nuc_label_smooth.setSuffix(" px (0 = off)")
+            self.nuc_label_smooth.setToolTip(
+                "Per-label boundary smoothing applied AFTER the watershed /\n"
+                "dilate post-process. 0 = off (current default). 3-7 px rounds\n"
+                "the sharp corners introduced by StarDist's star-convex polygon\n"
+                "predictions where neighboring instances meet. See\n"
+                "core.segmentation._smooth_label_boundaries."
+            )
+            self.nuc_label_smooth.valueChanged.connect(self._on_field_changed)
+            form.addRow("label_smoothing_radius_px", self.nuc_label_smooth)
             v.addLayout(form)
 
             # StarDist group
             self.stardist_box = QGroupBox("StarDist options")
             sgrp = QFormLayout(self.stardist_box)
             self.sd_prob = SliderSpin(0.05, 0.95, 0.05, decimals=2, value=0.5)
+            self.sd_prob.setToolTip(
+                "StarDist detection probability threshold. Lower = more\n"
+                "permissive (catches dim nuclei but also debris). 0.479 is\n"
+                "model default; H9 confluent monolayers typically need ~0.2-0.4."
+            )
             self.sd_prob.valueChanged.connect(self._on_field_changed)
             sgrp.addRow("prob_threshold", self.sd_prob)
             self.sd_nms = SliderSpin(0.05, 0.95, 0.05, decimals=2, value=0.5)
+            self.sd_nms.setToolTip(
+                "Non-maximum suppression IoU threshold for overlapping\n"
+                "detections. Default 0.4. Range 0.1-0.6 — lower = more\n"
+                "aggressive deduplication of touching nuclei."
+            )
             self.sd_nms.valueChanged.connect(self._on_field_changed)
             sgrp.addRow("nms_threshold", self.sd_nms)
             # StarDist model — editable combo. Known pretrained names are
@@ -1158,6 +1235,14 @@ if _QT_OK:
             )
             sgrp.addRow("model", self.sd_model)
             self.sd_gauss = SliderSpin(0.0, 8.0, 0.5, decimals=1, value=3.0)
+            self.sd_gauss.setToolTip(
+                "Gaussian blur sigma applied to DAPI BEFORE StarDist. 0 = off.\n"
+                "CRITICAL at high mag: 100x @ 0.065 µm/px without pre-blur\n"
+                "over-segments (each nucleolus / chromocenter becomes its own\n"
+                "'nucleus'). Sweep-validated for H9 hESC at 100x: sigma=3 with\n"
+                "prob=0.5, nms=0.5, min_area=10000. Keep at 0 for 60x or\n"
+                "100x @ 0.108 µm/px."
+            )
             self.sd_gauss.valueChanged.connect(self._on_field_changed)
             sgrp.addRow("gauss_sigma (pre-blur)", self.sd_gauss)
             self.sd_postprocess = QComboBox()
@@ -1178,15 +1263,32 @@ if _QT_OK:
             self.sd_dilate.setRange(0, 200)
             self.sd_dilate.setValue(30)
             self.sd_dilate.setSuffix(" px")
+            self.sd_dilate.setToolTip(
+                "Uniform dilation distance in pixels for the 'dilate' post-\n"
+                "process mode (skimage.segmentation.expand_labels). Default 30,\n"
+                "useful range 5-80. Ignored unless post-process == 'dilate'."
+            )
             self.sd_dilate.valueChanged.connect(self._on_field_changed)
             sgrp.addRow("dilate_px", self.sd_dilate)
             self.sd_otsu_sigma = SliderSpin(0.0, 8.0, 0.5, decimals=1, value=2.0)
+            self.sd_otsu_sigma.setToolTip(
+                "Gaussian-blur sigma applied to DAPI BEFORE computing the\n"
+                "Otsu / Triangle threshold that bounds the watershed expansion.\n"
+                "Default 2.0. Lower = sharper mask (under-expand); higher =\n"
+                "smoother mask (over-expand). Ignored unless post-process is\n"
+                "a watershed_* mode."
+            )
             self.sd_otsu_sigma.valueChanged.connect(self._on_field_changed)
             sgrp.addRow("postprocess_otsu_sigma", self.sd_otsu_sigma)
             self.sd_close = QSpinBox()
             self.sd_close.setRange(0, 50)
             self.sd_close.setValue(5)
             self.sd_close.setSuffix(" px")
+            self.sd_close.setToolTip(
+                "Binary closing radius applied to the watershed mask to fill\n"
+                "small gaps. Default 5. Set 0 to skip. Ignored unless\n"
+                "post-process is a watershed_* mode."
+            )
             self.sd_close.valueChanged.connect(self._on_field_changed)
             sgrp.addRow("postprocess_mask_closing_px", self.sd_close)
             v.addWidget(self.stardist_box)
@@ -1217,12 +1319,27 @@ if _QT_OK:
             self.cp_diam.setDecimals(1)
             self.cp_diam.setValue(0.0)
             self.cp_diam.setSuffix(" px (0 = auto)")
+            self.cp_diam.setToolTip(
+                "Expected nucleus diameter in pixels. CRITICAL for CPU speed:\n"
+                "passing this lets Cellpose downsample internally to its\n"
+                "training scale (~30 px) and run ~7-10x faster. H9 hESC at\n"
+                "0.065 µm/px ≈ 200 px. Set 0 to fall back to slow auto-estimate."
+            )
             self.cp_diam.valueChanged.connect(self._on_field_changed)
             cgrp.addRow("diameter_px", self.cp_diam)
             self.cp_flow = SliderSpin(0.0, 1.0, 0.05, decimals=2, value=0.4)
+            self.cp_flow.setToolTip(
+                "Cellpose flow threshold. Higher = more permissive on cell\n"
+                "shape (accepts more irregular masks). Default 0.4. Range 0.0-1.0."
+            )
             self.cp_flow.valueChanged.connect(self._on_field_changed)
             cgrp.addRow("flow_threshold", self.cp_flow)
             self.cp_prob = SliderSpin(-6.0, 6.0, 0.1, decimals=2, value=0.0)
+            self.cp_prob.setToolTip(
+                "Cellpose cell-probability threshold. Higher = fewer cells\n"
+                "(stricter). Default 0.0. Range -6.0 to +6.0; negative is\n"
+                "more permissive (catches dimmer cells)."
+            )
             self.cp_prob.valueChanged.connect(self._on_field_changed)
             cgrp.addRow("cellprob_threshold", self.cp_prob)
             v.addWidget(self.cellpose_box)
@@ -1260,6 +1377,11 @@ if _QT_OK:
             v.addWidget(SectionHeader("Foci / spot detection"))
             self.foci_enabled = QCheckBox("Enable spot detection")
             self.foci_enabled.setChecked(True)
+            self.foci_enabled.setToolTip(
+                "Master switch for the whole spot-detection pass. Turn off\n"
+                "to skip spots entirely (e.g. intensity-only / morphology-\n"
+                "only analyses)."
+            )
             self.foci_enabled.toggled.connect(self._on_field_changed)
             v.addWidget(self.foci_enabled)
 
@@ -1276,6 +1398,11 @@ if _QT_OK:
             form.addRow("Backend", self.foci_backend)
 
             self.only_nuclear = QCheckBox("Restrict to nuclear spots only")
+            self.only_nuclear.setToolTip(
+                "Discard cytoplasmic spots before quantification. Set OFF to\n"
+                "keep cytoplasmic spots — required for nuclear/cytoplasmic\n"
+                "ratio metrics."
+            )
             self.only_nuclear.toggled.connect(self._on_field_changed)
             form.addRow("", self.only_nuclear)
             v.addLayout(form)
@@ -1289,12 +1416,25 @@ if _QT_OK:
             self.bf_vx.setRange(0.0, 1000.0)
             self.bf_vx.setDecimals(1)
             self.bf_vx.setSuffix(" nm (0 = auto from VSI)")
+            self.bf_vx.setToolTip(
+                "BigFISH voxel xy size in nanometers. RECOMMENDED: 0\n"
+                "(auto-detect from .vsi metadata). Override only if you've\n"
+                "verified the .vsi metadata is wrong. References:\n"
+                "  100x@1x = 108 nm  ·  100x@2x = 54 nm\n"
+                "  100x VS200 = 65 nm  ·  60x@1x = 180 nm  ·  60x@2x = 108 nm\n"
+                "  40x@1x = 250 nm."
+            )
             self.bf_vx.valueChanged.connect(self._on_field_changed)
             bgrp.addRow("voxel xy (nm)", self.bf_vx)
             self.bf_vz = QDoubleSpinBox()
             self.bf_vz.setRange(0.0, 5000.0)
             self.bf_vz.setDecimals(1)
             self.bf_vz.setSuffix(" nm (0 = auto)")
+            self.bf_vz.setToolTip(
+                "BigFISH voxel z size in nanometers (3D mode only). 0 =\n"
+                "auto-detect from .vsi pixelDepth. Common confocal z-steps:\n"
+                "230 nm (100x), 300 nm (60x@2x), 500 nm (60x), 700 nm (40x)."
+            )
             self.bf_vz.valueChanged.connect(self._on_field_changed)
             bgrp.addRow("voxel z (nm)", self.bf_vz)
             self.bf_rad = QDoubleSpinBox()
@@ -1302,6 +1442,11 @@ if _QT_OK:
             self.bf_rad.setDecimals(1)
             self.bf_rad.setValue(130.0)
             self.bf_rad.setSuffix(" nm")
+            self.bf_rad.setToolTip(
+                "Expected spot radius in nm. Single-molecule FISH typical:\n"
+                "130-150 nm. Larger puncta (smRNA-FISH aggregates) → bump\n"
+                "to 200-300 nm."
+            )
             self.bf_rad.valueChanged.connect(self._on_field_changed)
             bgrp.addRow("spot_radius_nm", self.bf_rad)
             self.bf_rad_z = QDoubleSpinBox()
@@ -1309,9 +1454,19 @@ if _QT_OK:
             self.bf_rad_z.setDecimals(1)
             self.bf_rad_z.setValue(300.0)
             self.bf_rad_z.setSuffix(" nm")
+            self.bf_rad_z.setToolTip(
+                "Expected z-radius for 3D spot detection. 300 nm typical for\n"
+                "confocal single-molecule FISH. Match your axial PSF."
+            )
             self.bf_rad_z.valueChanged.connect(self._on_field_changed)
             bgrp.addRow("spot_radius_z_nm", self.bf_rad_z)
             self.bf_tm = SliderSpin(0.2, 1.5, 0.05, decimals=2, value=0.7)
+            self.bf_tm.setToolTip(
+                "Scale the auto-Otsu threshold. <1.0 catches MORE spots\n"
+                "(smaller / dimmer / noisier); >1.0 is stricter. 1.0 = use\n"
+                "raw auto. Try 0.7-0.8 for small-spot sensitivity, 0.5 for\n"
+                "aggressive. Ignored when threshold_override is set explicitly."
+            )
             self.bf_tm.valueChanged.connect(self._on_field_changed)
             bgrp.addRow("threshold_multiplier", self.bf_tm)
             self.bf_thr_override = QDoubleSpinBox()
@@ -1319,12 +1474,24 @@ if _QT_OK:
             self.bf_thr_override.setDecimals(2)
             self.bf_thr_override.setSpecialValueText("(auto)")
             self.bf_thr_override.setValue(-1.0)
+            self.bf_thr_override.setToolTip(
+                "Override BigFISH's auto-threshold with a fixed numeric value\n"
+                "(e.g. 100). Use only if you see the auto-threshold drift\n"
+                "across sessions. -1 = auto (recommended)."
+            )
             self.bf_thr_override.valueChanged.connect(self._on_field_changed)
             bgrp.addRow("threshold_override", self.bf_thr_override)
             self.bf_min_sep = QSpinBox()
             self.bf_min_sep.setRange(1, 50)
             self.bf_min_sep.setValue(1)
             self.bf_min_sep.setSuffix(" px (Fiji NMS only)")
+            self.bf_min_sep.setToolTip(
+                "Spots closer than this XY-distance are merged (NMS,\n"
+                "brightest kept). Default 2 px ≈ 130 nm at 0.065 µm/px,\n"
+                "matching FISH diffraction limit. Set to 1 to disable.\n"
+                "Bump to 3-4 for very dense fields if you see double-\n"
+                "detections. Consumed by Fiji's NMS pass."
+            )
             self.bf_min_sep.valueChanged.connect(self._on_field_changed)
             bgrp.addRow("min_sep_px", self.bf_min_sep)
             v.addWidget(self.bigfish_box)
@@ -1348,6 +1515,12 @@ if _QT_OK:
             self.bf_rad_r2.setDecimals(1)
             self.bf_rad_r2.setValue(130.0)
             self.bf_rad_r2.setSuffix(" nm")
+            self.bf_rad_r2.setToolTip(
+                "Per-channel spot radius override for the SECOND RNA channel\n"
+                "in rna_rna mode. Use when RNA2's probe / acquisition gives\n"
+                "larger or smaller puncta than RNA1 (e.g. RNA1 130 nm, RNA2\n"
+                "180 nm)."
+            )
             self.bf_rad_r2.valueChanged.connect(self._on_field_changed)
             r2grp.addRow("spot_radius_nm (RNA2)", self.bf_rad_r2)
 
@@ -1356,14 +1529,27 @@ if _QT_OK:
             self.bf_rad_z_r2.setDecimals(1)
             self.bf_rad_z_r2.setValue(300.0)
             self.bf_rad_z_r2.setSuffix(" nm")
+            self.bf_rad_z_r2.setToolTip(
+                "Per-channel z-radius override for RNA2 in rna_rna 3D mode.\n"
+                "Rarely needed — most RNAs share the same axial PSF."
+            )
             self.bf_rad_z_r2.valueChanged.connect(self._on_field_changed)
             r2grp.addRow("spot_radius_z_nm (RNA2)", self.bf_rad_z_r2)
 
             self.bf_tm_r2 = SliderSpin(0.2, 1.5, 0.05, decimals=2, value=0.7)
+            self.bf_tm_r2.setToolTip(
+                "Per-channel sensitivity multiplier override for RNA2.\n"
+                "Use when one channel is much dimmer / brighter than the\n"
+                "other and you want different strictness (e.g. RNA1 at 0.5\n"
+                "+ RNA2 at 0.7)."
+            )
             self.bf_tm_r2.valueChanged.connect(self._on_field_changed)
             r2grp.addRow("threshold_multiplier (RNA2)", self.bf_tm_r2)
 
             self.only_nuclear_r2 = QCheckBox("Restrict to nuclear spots (RNA2)")
+            self.only_nuclear_r2.setToolTip(
+                "Per-channel restrict-to-nuclear-spots override for RNA2."
+            )
             self.only_nuclear_r2.toggled.connect(self._on_field_changed)
             r2grp.addRow("", self.only_nuclear_r2)
 
@@ -1371,17 +1557,55 @@ if _QT_OK:
             self.bf_min_sep_r2.setRange(1, 50)
             self.bf_min_sep_r2.setValue(1)
             self.bf_min_sep_r2.setSuffix(" px (Fiji NMS only)")
+            self.bf_min_sep_r2.setToolTip(
+                "Per-channel NMS spot separation override for RNA2 (consumed\n"
+                "by Fiji's NMS pass)."
+            )
             self.bf_min_sep_r2.valueChanged.connect(self._on_field_changed)
             r2grp.addRow("min_sep_px (RNA2)", self.bf_min_sep_r2)
             v.addWidget(self.rna2_override_box)
+
+            # ── Spot-on-spot colocalization (rna_rna mode) ──
+            # Wired through to schema.spot_coloc (new in fishsuite GUI
+            # 2026-05-19). Only relevant in rna_rna mode where RNA1 and
+            # RNA2 spot lists are nearest-neighbor paired.
+            self.spot_coloc_box = QGroupBox(
+                "Spot-on-spot colocalization (rna_rna)"
+            )
+            scgrp = QFormLayout(self.spot_coloc_box)
+            self.sc_pair_um = QDoubleSpinBox()
+            self.sc_pair_um.setRange(0.05, 5.0)
+            self.sc_pair_um.setDecimals(3)
+            self.sc_pair_um.setSingleStep(0.05)
+            self.sc_pair_um.setValue(0.3)
+            self.sc_pair_um.setSuffix(" µm")
+            self.sc_pair_um.setToolTip(
+                "Maximum nearest-neighbor distance for pairing RNA1 spots\n"
+                "with RNA2 spots, in microns. Default 0.3 µm ≈ 4-5 px at\n"
+                "H9 100x voxel size (~0.065 µm/px) — roughly the diffraction\n"
+                "limit. Tighten for high-confidence pairs, loosen for sparse\n"
+                "data where pairs may be more separated. Consumed by the\n"
+                "cKDTree pairing pass in rna_rna mode."
+            )
+            self.sc_pair_um.valueChanged.connect(self._on_field_changed)
+            scgrp.addRow("pair_distance_um", self.sc_pair_um)
+            v.addWidget(self.spot_coloc_box)
 
             # LoG group
             self.log_box = QGroupBox("LoG options")
             lgrp = QFormLayout(self.log_box)
             self.lg_rad = SliderSpin(0.5, 10.0, 0.1, decimals=1, value=2.5)
+            self.lg_rad.setToolTip(
+                "Expected spot radius in pixels for the LoG (Laplacian of\n"
+                "Gaussian) detector. 2.5 px is good for ~150 nm spots at 100x."
+            )
             self.lg_rad.valueChanged.connect(self._on_field_changed)
             lgrp.addRow("log_spot_radius_px", self.lg_rad)
             self.lg_thr = SliderSpin(0.001, 1.0, 0.005, decimals=3, value=0.05)
+            self.lg_thr.setToolTip(
+                "LoG quality / response threshold. Higher = stricter. Default\n"
+                "0.05. On 16-bit confocal try 0.02-0.10."
+            )
             self.lg_thr.valueChanged.connect(self._on_field_changed)
             lgrp.addRow("log_threshold", self.lg_thr)
             v.addWidget(self.log_box)
@@ -1417,6 +1641,12 @@ if _QT_OK:
             self.rna2_override_box.setVisible(
                 (b == "bigfish") and (mode == "rna_rna")
             )
+            # Spot-on-spot coloc settings only matter in rna_rna mode (the
+            # only mode that runs the pairing pass).
+            try:
+                self.spot_coloc_box.setVisible(mode == "rna_rna")
+            except AttributeError:
+                pass
 
         # ------------------------------------------------------------------
         # Tab 7 — Pixel Colocalization
@@ -1465,11 +1695,22 @@ if _QT_OK:
             form.addRow(scope_note)
 
             self.pc_kmad = SliderSpin(0.5, 6.0, 0.1, decimals=1, value=2.0)
+            self.pc_kmad.setToolTip(
+                "MAD multiplier for threshold_mode='mad'. threshold = median\n"
+                "+ k_mad * 1.4826 * MAD over nuclear pixels. k=2 ≈ the 84th\n"
+                "percentile under a normal distribution. Range 1-3. Higher\n"
+                "= stricter."
+            )
             self.pc_kmad.valueChanged.connect(self._on_field_changed)
             self._pc_kmad_label = QLabel("k_mad")
             form.addRow(self._pc_kmad_label, self.pc_kmad)
 
             self.pc_pct = SliderSpin(50.0, 99.9, 0.5, decimals=1, value=80.0)
+            self.pc_pct.setToolTip(
+                "Percentile of the nuclear pixel distribution used as the\n"
+                "threshold when threshold_mode='percentile'. 80 = drop the\n"
+                "bottom 80% as background. Higher = stricter."
+            )
             self.pc_pct.valueChanged.connect(self._on_field_changed)
             self._pc_pct_label = QLabel("percentile")
             form.addRow(self._pc_pct_label, self.pc_pct)
@@ -1506,6 +1747,11 @@ if _QT_OK:
             ))
             self.cyt_enabled = QCheckBox("Enable cytoplasm estimation")
             self.cyt_enabled.setChecked(True)
+            self.cyt_enabled.setToolTip(
+                "Master switch for the per-cell cytoplasm pass (cell area\n"
+                "minus nucleus). Required for any nuclear/cytoplasmic ratio\n"
+                "metrics."
+            )
             self.cyt_enabled.toggled.connect(self._on_field_changed)
             v.addWidget(self.cyt_enabled)
 
@@ -1514,10 +1760,20 @@ if _QT_OK:
             self.cyt_vme.setRange(1, 1000)
             self.cyt_vme.setValue(80)
             self.cyt_vme.setSuffix(" px")
+            self.cyt_vme.setToolTip(
+                "Maximum pixels of cytoplasmic ring around each nucleus for\n"
+                "the Voronoi expansion. 80 px is reasonable for confluent\n"
+                "monolayer H9 at 100x. Bump higher for sparser fields where\n"
+                "cells have more room."
+            )
             self.cyt_vme.valueChanged.connect(self._on_field_changed)
             form.addRow("voronoi_max_expansion_px", self.cyt_vme)
             self.cyt_nc = QCheckBox("Measure nuclear/cytoplasmic ratio")
             self.cyt_nc.setChecked(True)
+            self.cyt_nc.setToolTip(
+                "Compute per-cell nuclear/cytoplasmic intensity and spot-count\n"
+                "ratios. Standard for subcellular localization analysis."
+            )
             self.cyt_nc.toggled.connect(self._on_field_changed)
             form.addRow("", self.cyt_nc)
             v.addLayout(form)
@@ -1537,34 +1793,249 @@ if _QT_OK:
             v.addWidget(SectionHeader("Output writers"))
             self.o_qc = QCheckBox("Save QC overlays (PNG)")
             self.o_qc.setChecked(True)
+            self.o_qc.setToolTip(
+                "Save the all-in-one per-image QC overlay PNGs (nuclei +\n"
+                "spots + thresholds). Almost always leave on."
+            )
             self.o_per_image = QCheckBox("Save per-image CSVs")
             self.o_per_image.setChecked(True)
+            self.o_per_image.setToolTip(
+                "Save per-image CSVs (per-nucleus + per-spot rows) in\n"
+                "addition to the aggregated workbook."
+            )
             self.o_masks = QCheckBox("Save mask TIFFs (nuclei + spot mask + DAPI)")
             self.o_masks.setChecked(True)
-            self.o_pub = QCheckBox("Save publication images (DAPI/RNA/merge in PNG + TIF)")
+            self.o_masks.setToolTip(
+                "Save label TIFFs (nuclei + spot mask + DAPI threshold) for\n"
+                "downstream re-analysis or visual QC in Fiji."
+            )
+            self.o_pub = QCheckBox("Save publication images (DAPI/RNA/merge PNGs)")
             self.o_pub.setChecked(True)
-            for c in (self.o_qc, self.o_per_image, self.o_masks, self.o_pub):
+            self.o_pub.setToolTip(
+                "Render per-channel + composite publication PNGs with burned-\n"
+                "in scale bars. Required for figure preparation."
+            )
+            # 2026-05-18 Brian: separate TIF toggle (default OFF) so we don't
+            # auto-emit the 16-bit RGB copy of every PNG. Flip on for figure
+            # assembly in Illustrator / Fiji.
+            self.o_pub_tifs = QCheckBox("Also save TIFs alongside PNGs (16-bit RGB)")
+            self.o_pub_tifs.setChecked(False)
+            self.o_pub_tifs.setToolTip(
+                "Also emit a 16-bit RGB TIF beside every publication PNG. OFF\n"
+                "by default — cuts publication_images directory size roughly\n"
+                "in half. Turn on for figure assembly in Illustrator / Fiji."
+            )
+            for c in (self.o_qc, self.o_per_image, self.o_masks,
+                      self.o_pub, self.o_pub_tifs):
                 c.toggled.connect(self._on_field_changed)
                 v.addWidget(c)
+
+            # ── Pub-image contrast strategy ───────────────────────────────
+            v.addWidget(SectionHeader("Publication-image contrast"))
+            ctr_form = QFormLayout()
+            self.o_pub_contrast_mode = QComboBox()
+            self.o_pub_contrast_mode.addItems(
+                ["auto_batch", "auto_per_image", "manual"]
+            )
+            self.o_pub_contrast_mode.setToolTip(
+                "auto_batch (default): one min/max per channel, applied to "
+                "every image — best cross-image comparability.\n"
+                "auto_per_image: each image computes its own min/max "
+                "(legacy fishsuite behavior).\n"
+                "manual: use the typed Min/Max numbers below verbatim."
+            )
+            self.o_pub_contrast_mode.currentTextChanged.connect(
+                self._on_field_changed
+            )
+            self.o_pub_contrast_mode.currentTextChanged.connect(
+                self._on_pub_contrast_mode_changed
+            )
+            ctr_form.addRow("Pub-image contrast mode",
+                            self.o_pub_contrast_mode)
+
+            # Percentile knobs (visible in auto_batch / auto_per_image)
+            self.o_pub_floor_pct = QDoubleSpinBox()
+            self.o_pub_floor_pct.setRange(0.0, 100.0)
+            self.o_pub_floor_pct.setDecimals(2)
+            self.o_pub_floor_pct.setSingleStep(0.5)
+            self.o_pub_floor_pct.setValue(98.0)
+            self.o_pub_floor_pct.setToolTip(
+                "Lower percentile for batch / per-image FISH-channel contrast.\n"
+                "Default 98.0 — clips diffuse background. Tighten (e.g. 99.0)\n"
+                "to clip more shadow noise. Ignored in manual mode."
+            )
+            self.o_pub_floor_pct.valueChanged.connect(self._on_field_changed)
+            ctr_form.addRow("FISH channel floor percentile",
+                            self.o_pub_floor_pct)
+            self.o_pub_ceil_pct = QDoubleSpinBox()
+            self.o_pub_ceil_pct.setRange(0.0, 100.0)
+            self.o_pub_ceil_pct.setDecimals(2)
+            self.o_pub_ceil_pct.setSingleStep(0.05)
+            self.o_pub_ceil_pct.setValue(99.9)
+            self.o_pub_ceil_pct.setToolTip(
+                "Upper percentile for batch / per-image FISH-channel contrast.\n"
+                "Default 99.9. Lower (e.g. 99.5) = more saturation of bright\n"
+                "spots. Ignored in manual mode."
+            )
+            self.o_pub_ceil_pct.valueChanged.connect(self._on_field_changed)
+            ctr_form.addRow("FISH channel ceil percentile",
+                            self.o_pub_ceil_pct)
+            self.o_pub_dapi_floor_pct = QDoubleSpinBox()
+            self.o_pub_dapi_floor_pct.setRange(0.0, 100.0)
+            self.o_pub_dapi_floor_pct.setDecimals(2)
+            self.o_pub_dapi_floor_pct.setSingleStep(0.5)
+            self.o_pub_dapi_floor_pct.setValue(10.0)
+            self.o_pub_dapi_floor_pct.setToolTip(
+                "Lower percentile for DAPI contrast. DAPI fills most of the\n"
+                "cell so its floor sits much lower than FISH channels. Default\n"
+                "10.0. Ignored in manual mode."
+            )
+            self.o_pub_dapi_floor_pct.valueChanged.connect(self._on_field_changed)
+            ctr_form.addRow("DAPI floor percentile",
+                            self.o_pub_dapi_floor_pct)
+            self.o_pub_dapi_ceil_pct = QDoubleSpinBox()
+            self.o_pub_dapi_ceil_pct.setRange(0.0, 100.0)
+            self.o_pub_dapi_ceil_pct.setDecimals(2)
+            self.o_pub_dapi_ceil_pct.setSingleStep(0.05)
+            self.o_pub_dapi_ceil_pct.setValue(99.9)
+            self.o_pub_dapi_ceil_pct.setToolTip(
+                "Upper percentile for DAPI contrast. Default 99.9. Tighten\n"
+                "(e.g. 98.0) when DAPI is overexposed. Ignored in manual mode."
+            )
+            self.o_pub_dapi_ceil_pct.valueChanged.connect(self._on_field_changed)
+            ctr_form.addRow("DAPI ceil percentile",
+                            self.o_pub_dapi_ceil_pct)
+
+            # RNA-class floor bump (new in fishsuite GUI 2026-05-19).
+            self.o_pub_rna_floor_bump = QDoubleSpinBox()
+            self.o_pub_rna_floor_bump.setRange(0.0, 100.0)
+            self.o_pub_rna_floor_bump.setDecimals(1)
+            self.o_pub_rna_floor_bump.setSingleStep(1.0)
+            self.o_pub_rna_floor_bump.setValue(10.0)
+            self.o_pub_rna_floor_bump.setSuffix(" %")
+            self.o_pub_rna_floor_bump.setToolTip(
+                "After percentile selection, multiply the auto-computed floor\n"
+                "by (1 + bump/100) ONLY for RNA-class channels (RNA1, RNA2,\n"
+                "antibody). Helps clip diffuse cytoplasmic background that\n"
+                "the percentile alone doesn't catch. DAPI is unaffected. Set\n"
+                "to 0 to disable. Default 10."
+            )
+            self.o_pub_rna_floor_bump.valueChanged.connect(self._on_field_changed)
+            ctr_form.addRow("RNA-channel floor bump (%)",
+                            self.o_pub_rna_floor_bump)
+            v.addLayout(ctr_form)
+
+            # Manual min/max subpanel — visible only when mode is "manual".
+            # Each spinbox is bounded loosely; -1.0 sentinel means "leave
+            # blank / inherit per-image percentile" (the GUI maps -1.0 ↔
+            # None for the underlying Optional[float] cfg field). Brian
+            # types a Fiji Brightness/Contrast Min and Max here.
+            self.o_pub_manual_group = QGroupBox(
+                "Manual contrast (mode='manual') — Min/Max per channel  "
+                "(-1 = leave blank, inherit per-image percentile)"
+            )
+            mgrid = QGridLayout(self.o_pub_manual_group)
+            mgrid.setSpacing(6)
+            mgrid.setContentsMargins(8, 6, 8, 6)
+
+            def _mk_pair() -> tuple[QDoubleSpinBox, QDoubleSpinBox]:
+                lo = QDoubleSpinBox()
+                lo.setRange(-1.0, 65535.0)
+                lo.setDecimals(2)
+                lo.setSingleStep(10.0)
+                lo.setValue(-1.0)
+                lo.setToolTip(
+                    "Manual contrast floor for this channel (mode='manual').\n"
+                    "Read from Fiji's Brightness/Contrast dialog after\n"
+                    "pressing Reset. -1 = inherit per-image percentile\n"
+                    "(so you can set only the ceiling)."
+                )
+                lo.valueChanged.connect(self._on_field_changed)
+                hi = QDoubleSpinBox()
+                hi.setRange(-1.0, 65535.0)
+                hi.setDecimals(2)
+                hi.setSingleStep(10.0)
+                hi.setValue(-1.0)
+                hi.setToolTip(
+                    "Manual contrast ceiling for this channel (mode='manual').\n"
+                    "-1 = inherit per-image percentile (so you can set only\n"
+                    "the floor)."
+                )
+                hi.valueChanged.connect(self._on_field_changed)
+                return lo, hi
+
+            mgrid.addWidget(QLabel(""), 0, 0)
+            mgrid.addWidget(QLabel("Min"), 0, 1)
+            mgrid.addWidget(QLabel("Max"), 0, 2)
+            (self.o_manual_dapi_min, self.o_manual_dapi_max) = _mk_pair()
+            mgrid.addWidget(QLabel("DAPI"), 1, 0)
+            mgrid.addWidget(self.o_manual_dapi_min, 1, 1)
+            mgrid.addWidget(self.o_manual_dapi_max, 1, 2)
+            (self.o_manual_rna_min, self.o_manual_rna_max) = _mk_pair()
+            mgrid.addWidget(QLabel("RNA1"), 2, 0)
+            mgrid.addWidget(self.o_manual_rna_min, 2, 1)
+            mgrid.addWidget(self.o_manual_rna_max, 2, 2)
+            (self.o_manual_rna2_min, self.o_manual_rna2_max) = _mk_pair()
+            mgrid.addWidget(QLabel("RNA2"), 3, 0)
+            mgrid.addWidget(self.o_manual_rna2_min, 3, 1)
+            mgrid.addWidget(self.o_manual_rna2_max, 3, 2)
+            (self.o_manual_ab_min, self.o_manual_ab_max) = _mk_pair()
+            mgrid.addWidget(QLabel("Protein/AB"), 4, 0)
+            mgrid.addWidget(self.o_manual_ab_min, 4, 1)
+            mgrid.addWidget(self.o_manual_ab_max, 4, 2)
+            v.addWidget(self.o_pub_manual_group)
 
             form = QFormLayout()
             self.o_prefix = QLineEdit()
             self.o_prefix.setPlaceholderText("(blank = no prefix)")
+            self.o_prefix.setToolTip(
+                "Optional prefix prepended to every output filename. Useful\n"
+                "for tagging a re-run while keeping the prior output dir\n"
+                "intact. Blank (default) = no prefix."
+            )
             self.o_prefix.textChanged.connect(self._on_field_changed)
             form.addRow("Filename prefix", self.o_prefix)
 
             self.parallel_combo = QComboBox()
             self.parallel_combo.setEditable(True)
             self.parallel_combo.addItems(["auto", "1", "2", "4", "6", "8", "12", "16"])
+            self.parallel_combo.setToolTip(
+                "Number of parallel worker processes. 'auto' = use\n"
+                "max(1, cpu_count - 4) capped at 12 (reserves headroom\n"
+                "for the OS / Fiji JVM). 1 = serial. Type an explicit\n"
+                "integer to override."
+            )
             self.parallel_combo.currentTextChanged.connect(self._on_field_changed)
             form.addRow("Parallel workers", self.parallel_combo)
 
             self.skip_down = QCheckBox("Skip downstream figure step (analysis.single_condition_plots)")
+            self.skip_down.setToolTip(
+                "Stop after the per-image pipeline. Skip the auto-generated\n"
+                "single-condition plots (figures/ subdir). Useful when you\n"
+                "intend to feed the output into a custom downstream script."
+            )
             self.skip_down.toggled.connect(self._on_field_changed)
             form.addRow("", self.skip_down)
             v.addLayout(form)
             v.addStretch(1)
             self._register_tab("output", scroll, "Output")
+            # Apply initial mode visibility (manual subpanel hidden by default
+            # when the default mode is "auto_batch").
+            self._on_pub_contrast_mode_changed(
+                self.o_pub_contrast_mode.currentText()
+            )
+
+        # Pub-contrast mode visibility helper — show/hide the percentile
+        # row and the manual-min/max group based on which mode the user
+        # picked. Kept as a tab-internal method so it can be reused by
+        # the read_back-from-cfg path below.
+        def _on_pub_contrast_mode_changed(self, mode: str) -> None:
+            is_manual = (mode == "manual")
+            is_auto = (mode in ("auto_batch", "auto_per_image"))
+            for w in (self.o_pub_floor_pct, self.o_pub_ceil_pct,
+                      self.o_pub_dapi_floor_pct, self.o_pub_dapi_ceil_pct):
+                w.setEnabled(is_auto)
+            self.o_pub_manual_group.setVisible(is_manual)
 
         # ------------------------------------------------------------------
         # Tab 10 — Run
@@ -2061,6 +2532,13 @@ if _QT_OK:
             self.sd_close.blockSignals(True)
             self.sd_close.setValue(int(n.get("stardist_postprocess_mask_closing_px", 5)))
             self.sd_close.blockSignals(False)
+            # Label smoothing — new GUI knob 2026-05-19. Schema default is 0.
+            try:
+                self.nuc_label_smooth.blockSignals(True)
+                self.nuc_label_smooth.setValue(int(n.get("label_smoothing_radius_px", 0)))
+                self.nuc_label_smooth.blockSignals(False)
+            except AttributeError:
+                pass
             self._set_open_combo(
                 self.cp_model, str(n.get("cellpose_model_type", "cpsam")),
             )
@@ -2170,6 +2648,15 @@ if _QT_OK:
             self.pc_kmad.setValue(float(pc.get("k_mad", 2.0)))
             self.pc_pct.setValue(float(pc.get("percentile", 80.0)))
             self._refresh_pc_visibility()
+            # ---- spot coloc (rna_rna pairing distance) ----
+            # New GUI knob 2026-05-19. Schema default 0.3 µm.
+            sc = c.get("spot_coloc", {}) or {}
+            try:
+                self.sc_pair_um.blockSignals(True)
+                self.sc_pair_um.setValue(float(sc.get("pair_distance_um", 0.3)))
+                self.sc_pair_um.blockSignals(False)
+            except AttributeError:
+                pass
             # ---- cytoplasm ----
             cy = c.get("cytoplasm", {})
             self.cyt_enabled.blockSignals(True)
@@ -2187,6 +2674,50 @@ if _QT_OK:
             self.o_per_image.blockSignals(True); self.o_per_image.setChecked(bool(o.get("save_per_image_csv", True))); self.o_per_image.blockSignals(False)
             self.o_masks.blockSignals(True); self.o_masks.setChecked(bool(o.get("save_masks", True))); self.o_masks.blockSignals(False)
             self.o_pub.blockSignals(True); self.o_pub.setChecked(bool(o.get("save_publication_images", True))); self.o_pub.blockSignals(False)
+            self.o_pub_tifs.blockSignals(True); self.o_pub_tifs.setChecked(bool(o.get("save_publication_tifs", False))); self.o_pub_tifs.blockSignals(False)
+            # ---- pub-image contrast strategy + percentiles + manual min/max
+            _mode = str(o.get("pub_contrast_mode", "auto_batch") or "auto_batch")
+            self.o_pub_contrast_mode.blockSignals(True)
+            idx = self.o_pub_contrast_mode.findText(_mode)
+            self.o_pub_contrast_mode.setCurrentIndex(idx if idx >= 0 else 0)
+            self.o_pub_contrast_mode.blockSignals(False)
+            for _w, _key, _default in (
+                (self.o_pub_floor_pct, "pub_contrast_floor_pct", 98.0),
+                (self.o_pub_ceil_pct, "pub_contrast_ceil_pct", 99.9),
+                (self.o_pub_dapi_floor_pct, "pub_contrast_dapi_floor_pct", 10.0),
+                (self.o_pub_dapi_ceil_pct, "pub_contrast_dapi_ceil_pct", 99.9),
+            ):
+                _w.blockSignals(True)
+                _w.setValue(float(o.get(_key, _default) or _default))
+                _w.blockSignals(False)
+            # RNA-class floor bump — new GUI knob 2026-05-19. Schema default 10.0.
+            try:
+                self.o_pub_rna_floor_bump.blockSignals(True)
+                self.o_pub_rna_floor_bump.setValue(
+                    float(o.get("pub_contrast_rna_floor_bump_pct", 10.0))
+                )
+                self.o_pub_rna_floor_bump.blockSignals(False)
+            except AttributeError:
+                pass
+            # Manual min/max — None ↔ -1.0 sentinel
+            for _w, _key in (
+                (self.o_manual_dapi_min, "manual_dapi_min"),
+                (self.o_manual_dapi_max, "manual_dapi_max"),
+                (self.o_manual_rna_min, "manual_rna_min"),
+                (self.o_manual_rna_max, "manual_rna_max"),
+                (self.o_manual_rna2_min, "manual_rna2_min"),
+                (self.o_manual_rna2_max, "manual_rna2_max"),
+                (self.o_manual_ab_min, "manual_antibody_min"),
+                (self.o_manual_ab_max, "manual_antibody_max"),
+            ):
+                _val = o.get(_key)
+                _w.blockSignals(True)
+                _w.setValue(-1.0 if _val is None else float(_val))
+                _w.blockSignals(False)
+            # Re-apply visibility (mode may have toggled manual subpanel)
+            self._on_pub_contrast_mode_changed(
+                self.o_pub_contrast_mode.currentText()
+            )
             self.o_prefix.blockSignals(True); self.o_prefix.setText(str(o.get("prefix", "") or "")); self.o_prefix.blockSignals(False)
             par = c.get("parallel", {})
             self.parallel_combo.blockSignals(True)
@@ -2276,6 +2807,7 @@ if _QT_OK:
                 "stardist_postprocess_dilate_px": int(self.sd_dilate.value()),
                 "stardist_postprocess_otsu_sigma": float(self.sd_otsu_sigma.value()),
                 "stardist_postprocess_mask_closing_px": int(self.sd_close.value()),
+                "label_smoothing_radius_px": int(self.nuc_label_smooth.value()),
                 "min_area_px": int(self.nuc_min_area.value()),
                 "max_area_px": float(self.nuc_max_area.value()),
                 "cellpose_diameter_px": float(self.cp_diam.value()),
@@ -2290,6 +2822,16 @@ if _QT_OK:
                 "threshold_scope": self.pc_scope.currentText(),
                 "k_mad": float(self.pc_kmad.value()),
                 "percentile": float(self.pc_pct.value()),
+            }
+            base["spot_coloc"] = {
+                "pair_distance_um": float(self.sc_pair_um.value()),
+                # report_nn_distance is schema-default True and not surfaced
+                # in the GUI today; preserve any value the cfg already carries.
+                "report_nn_distance": bool(
+                    (self._cfg.get("spot_coloc") or {}).get(
+                        "report_nn_distance", True
+                    )
+                ),
             }
             override = float(self.bf_thr_override.value())
             # RNA2 overrides: emit explicit numeric values when the user
@@ -2331,11 +2873,34 @@ if _QT_OK:
                 "voronoi_max_expansion_px": int(self.cyt_vme.value()),
                 "measure_nc_ratio": bool(self.cyt_nc.isChecked()),
             }
+            # Map -1.0 sentinel back to None for the Optional[float] schema
+            # fields so the YAML omits / null's them cleanly.
+            def _opt(w) -> Optional[float]:
+                v = float(w.value())
+                return None if v < 0.0 else v
+
             base["output"] = {
                 "save_qc_overlays": bool(self.o_qc.isChecked()),
                 "save_per_image_csv": bool(self.o_per_image.isChecked()),
                 "save_masks": bool(self.o_masks.isChecked()),
                 "save_publication_images": bool(self.o_pub.isChecked()),
+                "save_publication_tifs": bool(self.o_pub_tifs.isChecked()),
+                "pub_contrast_mode": str(self.o_pub_contrast_mode.currentText()),
+                "pub_contrast_floor_pct": float(self.o_pub_floor_pct.value()),
+                "pub_contrast_ceil_pct": float(self.o_pub_ceil_pct.value()),
+                "pub_contrast_dapi_floor_pct": float(self.o_pub_dapi_floor_pct.value()),
+                "pub_contrast_dapi_ceil_pct": float(self.o_pub_dapi_ceil_pct.value()),
+                "pub_contrast_rna_floor_bump_pct": float(
+                    self.o_pub_rna_floor_bump.value()
+                ),
+                "manual_dapi_min": _opt(self.o_manual_dapi_min),
+                "manual_dapi_max": _opt(self.o_manual_dapi_max),
+                "manual_rna_min": _opt(self.o_manual_rna_min),
+                "manual_rna_max": _opt(self.o_manual_rna_max),
+                "manual_rna2_min": _opt(self.o_manual_rna2_min),
+                "manual_rna2_max": _opt(self.o_manual_rna2_max),
+                "manual_antibody_min": _opt(self.o_manual_ab_min),
+                "manual_antibody_max": _opt(self.o_manual_ab_max),
                 "prefix": self.o_prefix.text(),
             }
             workers_raw = self.parallel_combo.currentText().strip()
