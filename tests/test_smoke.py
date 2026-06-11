@@ -142,3 +142,47 @@ def test_runner_input_file_subset_filter(tmp_path, monkeypatch):
     import pytest
     with pytest.raises(RuntimeError, match="matched 0"):
         _runner.run_batch(cfg_path, tmp_path, tmp_path / "out2", parallel=1, dry_run=False)
+
+
+def test_discover_filename_conditions_flat_folder(tmp_path):
+    """2026-05-31: flat-folder, filename-encoded condition assignment.
+
+    Mirrors the H9 05-05 session layout: a single flat folder whose condition
+    lives in the file NAME (NT / MIAT-KD / Sec-only). Asserts:
+      * the ordered filename_conditions substring map splits NT vs KD,
+      * sec_only_files still forces "Sec-Only" + sec_only=True and is NOT
+        relabelled by the filename map (even though it shares the prefix),
+      * an empty filename_conditions map = legacy behaviour (single condition).
+    """
+    from fishsuite.core.io import discover_inputs
+
+    # Flat folder, filename-labelled (no subdirs -> flat mode).
+    for nm in (
+        "H9-X-ASO-NT_02.vsi", "H9-X-ASO-NT_03.vsi",
+        "H9-X-ASO-MIAT-KD_05.vsi", "H9-X-ASO-MIAT-KD_06.vsi",
+        "H9-X-Sec-only_10.vsi",
+    ):
+        (tmp_path / nm).write_bytes(b"x")
+
+    imgs = discover_inputs(
+        tmp_path,
+        sec_only_files=["sec-only"],
+        filename_conditions=[["-nt_", "NT ASO"], ["-miat-kd_", "KD ASO"]],
+    )
+    by = {i.path.name: i for i in imgs}
+    assert by["H9-X-ASO-NT_02.vsi"].condition == "NT ASO"
+    assert by["H9-X-ASO-NT_02.vsi"].sec_only is False
+    assert by["H9-X-ASO-MIAT-KD_05.vsi"].condition == "KD ASO"
+    # Sec-only must win and NOT be relabelled by the filename map.
+    assert by["H9-X-Sec-only_10.vsi"].condition == "Sec-Only"
+    assert by["H9-X-Sec-only_10.vsi"].sec_only is True
+
+    from collections import Counter
+    counts = Counter(i.condition for i in imgs)
+    assert counts == {"NT ASO": 2, "KD ASO": 2, "Sec-Only": 1}
+
+    # Back-compat: no filename_conditions -> every non-sec file gets the single
+    # flat-mode condition (empty string), legacy behaviour preserved.
+    imgs2 = discover_inputs(tmp_path, sec_only_files=["sec-only"])
+    nonsec2 = {i.condition for i in imgs2 if not i.sec_only}
+    assert nonsec2 == {""}

@@ -38,6 +38,83 @@ def _empty_metrics(n_pix: int) -> Dict[str, float]:
     )
 
 
+def compute_thresholded_compartment_intensity(
+    image_2d: np.ndarray,
+    mask: np.ndarray,
+    floor: Optional[float],
+) -> Dict[str, float]:
+    """Threshold-and-integrate one compartment's RNA-channel intensity.
+
+    The THIRD intensity measurement (2026-06-02 Brian), distinct from the
+    spot-based intensities and from the raw whole-compartment pixel sum
+    (``sum_rna_intensity``, which applies no floor). For the pixels inside
+    ``mask`` whose RAW value in ``image_2d`` is ``>= floor``, returns:
+
+        thresh_total_intensity   sum of the RAW intensities of the >=floor pixels
+        thresh_mean_intensity    mean of the RAW intensities of the >=floor pixels
+        thresh_pos_area_px       count of >=floor pixels
+        thresh_pos_fraction      thresh_pos_area_px / (# pixels in ``mask``)
+
+    This is pure PIXEL-thresholding — it captures all above-floor signal
+    (diffuse + punctate) and is independent of the spot-caller. It mirrors a
+    protein "threshold-and-integrate" measurement.
+
+    Semantics:
+      * ``thresh_total_intensity`` integrates RAW intensities (NOT
+        ``value - floor``); the floor only selects WHICH pixels contribute.
+        This deliberately differs from the existing ``*_above_floor_*`` columns
+        (which sum ``clip(value - floor, 0, None)``).
+      * When ``floor`` is None / NaN / <= 0, OR ``mask`` selects no pixels,
+        every value is NaN EXCEPT ``thresh_pos_area_px`` which is 0 — so the
+        column schema stays stable and the area column never carries NaN.
+      * ``thresh_pos_fraction`` is NaN when the compartment has zero pixels.
+
+    Parameters
+    ----------
+    image_2d : np.ndarray
+        The RNA channel plane (same plane used for spot detection — the
+        objective-window MIP). Cast to float64 internally.
+    mask : np.ndarray
+        Boolean (or truthy) 2-D mask of the compartment (nucleus or
+        cytoplasm), same shape as ``image_2d``.
+    floor : float or None
+        Intensity threshold. Pixels with ``image_2d >= floor`` are counted.
+    """
+    m = np.asarray(mask).astype(bool)
+    compartment_area = int(m.sum())
+    # Floor must be a usable positive, finite number.
+    floor_ok = (
+        floor is not None
+        and floor == floor  # not NaN
+        and float(floor) > 0
+    )
+    if not floor_ok or compartment_area == 0:
+        return dict(
+            thresh_total_intensity=float("nan"),
+            thresh_mean_intensity=float("nan"),
+            thresh_pos_area_px=0,
+            thresh_pos_fraction=(
+                float("nan") if compartment_area == 0 else 0.0
+            ),
+        )
+    vals = np.asarray(image_2d, dtype=np.float64)[m]
+    pos = vals[vals >= float(floor)]
+    n_pos = int(pos.size)
+    if n_pos == 0:
+        return dict(
+            thresh_total_intensity=0.0,
+            thresh_mean_intensity=float("nan"),
+            thresh_pos_area_px=0,
+            thresh_pos_fraction=0.0,
+        )
+    return dict(
+        thresh_total_intensity=float(pos.sum()),
+        thresh_mean_intensity=float(pos.mean()),
+        thresh_pos_area_px=n_pos,
+        thresh_pos_fraction=float(n_pos) / float(compartment_area),
+    )
+
+
 def compute_coloc_metrics(
     rvals: np.ndarray,
     avals: np.ndarray,

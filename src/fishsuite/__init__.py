@@ -3,6 +3,16 @@
 See README.md for a quickstart and docs/IMPLEMENTATION_LOG.md for build status.
 """
 
+import os as _os
+# Force a non-interactive matplotlib backend at the earliest possible point so
+# ANY entry path (CLI, GUI subprocess, Jupyter, ad-hoc script, future test
+# harness) gets the same default. Worker threads on Windows otherwise inherit
+# TkAgg, which calls into Tcl from the wrong thread once Bio-Formats' JVM is
+# alive → Tcl_AsyncDelete crash that brings the JVM down with it. `setdefault`
+# is courteous: anything that already set MPLBACKEND (e.g. the Qt-based GUI)
+# is honored.
+_os.environ.setdefault("MPLBACKEND", "Agg")
+
 __version__ = "0.1.0"
 
 # Apply the bffile numpy-1 compatibility monkeypatch as soon as the package

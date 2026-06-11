@@ -1,6 +1,14 @@
 """Click-based CLI for fishsuite."""
 from __future__ import annotations
 
+import os
+# Force a non-interactive matplotlib backend BEFORE any module imports pyplot.
+# Worker threads on Windows otherwise inherit TkAgg, which calls into Tcl from
+# the wrong thread once Bio-Formats' JVM is alive → Tcl_AsyncDelete crash that
+# brings the JVM down with it. The CLI is always headless; the GUI sets its
+# own backend via Qt before importing fishsuite, so this is safe.
+os.environ.setdefault("MPLBACKEND", "Agg")
+
 import sys
 from pathlib import Path
 

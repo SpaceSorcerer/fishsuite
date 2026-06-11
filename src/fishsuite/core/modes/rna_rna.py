@@ -42,7 +42,10 @@ from .. import segmentation as _seg
 from .. import spots as _spots
 from .. import morphology as _morph
 from .. import thresholds as _thr
-from .rna_only import ImageResult, _safe_float, _median
+from .. import metrics as _metrics
+from .rna_only import (
+    ImageResult, _safe_float, _median, _resolve_thresh_intensity_floor,
+)
 from . import register_mode
 
 
@@ -106,6 +109,223 @@ def _measure_spot_diameter_um(
         fwhm_px = 2.355 * sigma_px
         diameters_um[i] = float(fwhm_px * voxel_xy_um)
     return diameters_um
+
+
+def _sample_partner_local_intensity(
+    partner_2d: np.ndarray,
+    spots_df: pd.DataFrame,
+    radius_px: float,
+) -> np.ndarray:
+    """Per-spot mean RAW intensity of the PARTNER channel in a disk.
+
+    2026-05-29 Brian — intensity-based, spot-centric, FLOOR-ROBUST coloc.
+    For each detected spot (with 'y_px','x_px' columns) we sample the RAW
+    pixel intensities of ``partner_2d`` in a disk of radius ``radius_px``
+    centered at the spot centroid and return the per-spot MEAN.
+
+    ``partner_2d`` is the OTHER channel's 2-D plane on the SAME shared,
+    z-locked plane the spots were detected on (z-lock guarantees one plane),
+    so the disk sample is co-registered with the spot. Intensities are RAW
+    (NOT clipped by manual_antibody_min / apply_pub_contrast_floor) — that is
+    the whole point: this metric does not move when the display/spot floor
+    moves.
+
+    Returns an ndarray of length ``len(spots_df)``. Spots whose disk falls
+    entirely off-image return NaN.
+    """
+    n = len(spots_df)
+    if n == 0:
+        return np.array([], dtype=np.float64)
+    if partner_2d.ndim != 2:
+        return np.full(n, np.nan, dtype=np.float64)
+    H, W = partner_2d.shape
+    rad = float(radius_px)
+    if not np.isfinite(rad) or rad <= 0:
+        rad = 1.0
+    r = int(max(1, round(rad)))
+
+    # Pre-build the (small) disk offset stencil ONCE. ``dy``/``dx`` are the
+    # in-disk offsets (length ~pi*r^2), so each spot costs O(r^2), NOT O(H*W).
+    # This is the whole point of the local-window design: a real image has
+    # thousands of spots (XRN2 ~3-5k / frame) and a full-frame boolean mask or
+    # ``np.where`` per spot would be O(n_spots * H * W) -> minutes/hang.
+    yy, xx = np.mgrid[-r:r + 1, -r:r + 1]
+    disk = (yy * yy + xx * xx) <= (rad ** 2)
+    dy = yy[disk].astype(np.intp)
+    dx = xx[disk].astype(np.intp)
+
+    partner_f = partner_2d.astype(np.float64, copy=False)
+    # Round + cast centroids vectorially; clip the *centre* into-bounds so a
+    # finite (possibly off-by-a-pixel) centroid never indexes out of range.
+    ys_arr = np.rint(spots_df["y_px"].astype(float).to_numpy()).astype(np.intp)
+    xs_arr = np.rint(spots_df["x_px"].astype(float).to_numpy()).astype(np.intp)
+
+    out = np.full(n, np.nan, dtype=np.float64)
+    for i in range(n):
+        cy = ys_arr[i]
+        cx = xs_arr[i]
+        yi = cy + dy
+        xi = cx + dx
+        inb = (yi >= 0) & (yi < H) & (xi >= 0) & (xi < W)
+        if not inb.any():
+            # Disk falls entirely off-image (spot well outside the frame).
+            continue
+        out[i] = float(partner_f[yi[inb], xi[inb]].mean())
+    return out
+
+
+def _disk_stencil(radius_px: float) -> Tuple[np.ndarray, np.ndarray]:
+    """In-disk integer (dy, dx) offsets for a disk of radius ``radius_px``.
+
+    Mirrors the reference scripts' ``disk_stencil``: a square grid of side
+    ``2*round(radius)+1`` keeping offsets with ``dy^2+dx^2 <= radius^2``. The
+    SAME stencil is used for the observed AND the null sample, so the two are
+    sampled identically (the whole point of the null).
+    """
+    rad = float(radius_px)
+    if not np.isfinite(rad) or rad <= 0:
+        rad = 1.0
+    ri = int(max(1, round(rad)))
+    yy, xx = np.mgrid[-ri:ri + 1, -ri:ri + 1]
+    disk = (yy * yy + xx * xx) <= (rad * rad)
+    return yy[disk].astype(np.intp), xx[disk].astype(np.intp)
+
+
+def _disk_means_at(
+    partner_2d: np.ndarray,
+    cys: np.ndarray,
+    cxs: np.ndarray,
+    dy: np.ndarray,
+    dx: np.ndarray,
+) -> np.ndarray:
+    """Vectorized per-center mean partner intensity in a disk stencil.
+
+    For each (cy, cx) center, returns the mean of ``partner_2d`` over the disk
+    stencil (dy, dx) centered there, with centers/disks CLIPPED into the frame
+    (matching the reference scripts' ``disk_mean_at`` clip-to-edge semantics).
+    Fully numpy-batched: shape (n_centers, n_disk) gather, then row-mean — no
+    Python per-center loop. ``cys``/``cxs`` are int arrays of length n_centers.
+    """
+    H, W = partner_2d.shape
+    if cys.size == 0:
+        return np.empty(0, dtype=np.float64)
+    # (n_centers, n_disk) clipped indices.
+    ys = np.clip(cys[:, None] + dy[None, :], 0, H - 1)
+    xs = np.clip(cxs[:, None] + dx[None, :], 0, W - 1)
+    return partner_2d[ys, xs].mean(axis=1)
+
+
+def _partner_null_for_nucleus(
+    partner_2d: np.ndarray,
+    spot_cys: np.ndarray,
+    spot_cxs: np.ndarray,
+    nuc_ys: np.ndarray,
+    nuc_xs: np.ndarray,
+    dy: np.ndarray,
+    dx: np.ndarray,
+    n_null: int,
+    rng: np.random.Generator,
+) -> Tuple[float, np.ndarray]:
+    """Per-nucleus observed stat + the (n_null,) null distribution of the stat.
+
+    observed = mean over the nucleus's rna1 spots of [disk-mean partner intensity
+               at the spot] (the spot-centric coloc statistic).
+    null     = for each of ``n_null`` iterations, draw ``len(spots)`` random
+               positions UNIFORMLY from this nucleus's sampling pixels
+               (``nuc_ys``/``nuc_xs`` — already nucleolus-excluded by the caller
+               when requested), disk-sample the partner, and take the mean. The
+               whole (n_null, n_spots) draw is numpy-batched, so 1000 draws x
+               hundreds of nuclei is fast (the reference scripts looped per spot
+               in Python — this vectorizes that).
+
+    Returns ``(observed_stat, null_stats)`` where ``null_stats`` has shape
+    (n_null,). Returns ``(nan, empty)`` if there are no spots or no sampling
+    pixels.
+    """
+    n_sp = int(spot_cys.size)
+    npix = int(nuc_ys.size)
+    if n_sp == 0 or npix == 0:
+        return float("nan"), np.empty(0, dtype=np.float64)
+    obs_vals = _disk_means_at(partner_2d, spot_cys, spot_cxs, dy, dx)
+    obs_stat = float(obs_vals.mean())
+    # Batched null: draw (n_null * n_sp) random in-nucleus pixel indices at once,
+    # disk-sample them all, reshape to (n_null, n_sp), and row-mean.
+    idx = rng.integers(0, npix, size=n_null * n_sp)
+    rcy = nuc_ys[idx]
+    rcx = nuc_xs[idx]
+    all_means = _disk_means_at(partner_2d, rcy, rcx, dy, dx)  # (n_null*n_sp,)
+    null_stats = all_means.reshape(n_null, n_sp).mean(axis=1)
+    return obs_stat, null_stats
+
+
+def _annulus_stencils(bins_px) -> list:
+    """Concentric-ring integer (dy, dx) offset masks for the radial profile.
+
+    Given outer-edge radii ``bins_px`` (px, ascending), returns one (dy, dx)
+    tuple per ring. Ring 0 is the inner DISK ``0 <= d <= bins_px[0]`` (includes
+    the center pixel); ring ``i`` (i>=1) is the ANNULUS
+    ``bins_px[i-1] < d <= bins_px[i]``. The rings are disjoint and tile the
+    disk of radius ``bins_px[-1]``. Mirrors ``_disk_stencil`` (square grid +
+    radius mask) so the SAME stencil samples the observed AND the null.
+    """
+    edges = [0.0] + [float(b) for b in bins_px]
+    r_max = int(max(1, round(edges[-1])))
+    yy, xx = np.mgrid[-r_max:r_max + 1, -r_max:r_max + 1]
+    d = np.sqrt((yy * yy + xx * xx).astype(np.float64))
+    out = []
+    for i in range(len(edges) - 1):
+        lo, hi = edges[i], edges[i + 1]
+        if i == 0:
+            ring = (d >= lo) & (d <= hi)      # inner disk incl. center
+        else:
+            ring = (d > lo) & (d <= hi)       # annulus
+        out.append((yy[ring].astype(np.intp), xx[ring].astype(np.intp)))
+    return out
+
+
+def _radial_profile_for_nucleus(
+    partner_2d: np.ndarray,
+    spot_cys: np.ndarray,
+    spot_cxs: np.ndarray,
+    nuc_ys: np.ndarray,
+    nuc_xs: np.ndarray,
+    stencils: list,
+    n_null: int,
+    rng: np.random.Generator,
+) -> list:
+    """Per-nucleus radial coloc profile: one ``(obs_mean, null_mean, null_sd,
+    n_spots)`` tuple per concentric ring in ``stencils``.
+
+    For each ring (annulus offset mask), ``obs_mean`` is the mean over this
+    nucleus's rna1 spots of [mean partner intensity in the ring around the spot];
+    the per-ring null draws ``n_null`` sets of ``len(spots)`` random IN-NUCLEUS
+    positions (``nuc_ys``/``nuc_xs`` — already nucleolus-excluded by the caller
+    when requested) and takes the same ring-mean. ONE shared set of random
+    positions is reused across rings (deterministic via ``rng``), so the radial
+    profile shares a common random reference frame. Returns ``(nan, nan, nan,
+    0)`` per ring when there are no spots or no sampling pixels.
+    """
+    n_sp = int(spot_cys.size)
+    npix = int(nuc_ys.size)
+    if n_sp == 0 or npix == 0:
+        return [(float("nan"), float("nan"), float("nan"), 0) for _ in stencils]
+    # One shared draw of random in-nucleus centers reused for every ring.
+    idx = rng.integers(0, npix, size=n_null * n_sp)
+    rcy = nuc_ys[idx]
+    rcx = nuc_xs[idx]
+    out = []
+    for (dy, dx) in stencils:
+        if dy.size == 0:
+            out.append((float("nan"), float("nan"), float("nan"), n_sp))
+            continue
+        obs_vals = _disk_means_at(partner_2d, spot_cys, spot_cxs, dy, dx)
+        obs_stat = float(obs_vals.mean())
+        all_means = _disk_means_at(partner_2d, rcy, rcx, dy, dx)
+        null_stats = all_means.reshape(n_null, n_sp).mean(axis=1)
+        nmean = float(null_stats.mean())
+        nsd = float(null_stats.std(ddof=1)) if null_stats.size > 1 else 0.0
+        out.append((obs_stat, nmean, nsd, n_sp))
+    return out
 
 
 def _resolve_channels(cfg, img) -> Tuple[int, int, int]:
@@ -282,6 +502,7 @@ def run_one(
     precomputed_rna2_threshold: Optional[float] = None,
     analysis_floors: Optional[Dict[str, float]] = None,
     precomputed_labels: Optional[np.ndarray] = None,
+    rna2_is_antibody: bool = False,
 ) -> ImageResult:
     """Run the rna_rna pipeline on a single image.
 
@@ -330,6 +551,18 @@ def run_one(
         available because pub-image was auto_per_image), the corresponding
         above-floor analysis columns are NaN, and the spot filter is a
         no-op for that channel.
+    rna2_is_antibody : bool
+        2026-06-05 Brian: set True ONLY by ``rna_protein.run_one`` (which
+        maps the diffuse antibody/protein channel into the rna2 slot). When
+        True AND ``cfg.foci.detect_antibody_spots`` is False, the rna2
+        (antibody) channel is NOT BigFISH spot-detected — an EMPTY spot set
+        is produced instead, so a diffuse antibody stain (e.g. QKI IF) does
+        not carpet the field with meaningless spots. The intensity-based
+        coloc is UNAFFECTED: ``compute_partner_intensity`` samples antibody
+        PIXELS at the rna1 spots (never the antibody spots), and pixel-coloc
+        reads the rna2 PIXEL plane — both still compute. Default False keeps
+        plain rna_rna byte-identical (both channels always detected); the
+        flag is meaningless unless rna2 is the antibody channel.
     """
     t0 = time.time()
     img = _io.read_image(path)
@@ -372,9 +605,18 @@ def run_one(
     if z_mode == "autofocus":
         dapi_autofocus_z, dapi_2d = _io.extract_channel_autofocus_with_idx(
             img, dapi_idx, z_start=z_start, z_end=z_end,
+            intensity_weighted=bool(getattr(cfg.z_stack, "autofocus_intensity_weighted", False)),
         )
         rna_2d = _io.extract_channel_at_z(img, rna_idx, z_1indexed=dapi_autofocus_z)
         rna2_2d = _io.extract_channel_at_z(img, rna2_idx, z_1indexed=dapi_autofocus_z)
+        try:
+            from rich.console import Console as _C
+            _C().print(
+                f"  [dim]z-lock: {Path(path).name} → all channels @ DAPI plane "
+                f"z={dapi_autofocus_z}[/dim]"
+            )
+        except Exception:
+            pass
     elif z_mode == "autofocus_maxproj":
         (afm_zs, afm_ze), afm_diag, dapi_2d = _io.extract_dapi_focus_window(
             img, dapi_idx,
@@ -385,6 +627,8 @@ def run_one(
             z_start=z_start, z_end=z_end,
             fixed_n_slices=int(getattr(cfg.z_stack, "focus_window_fixed_n_slices", 0)),
             min_intensity_frac_of_peak=float(getattr(cfg.z_stack, "focus_min_intensity_frac_of_peak", 0.0)),
+            intensity_weighted=bool(getattr(cfg.z_stack, "autofocus_intensity_weighted", False)),
+            central_fraction=float(getattr(cfg.z_stack, "focus_central_fraction", 0.0)),
         )
         rna_2d = _io.extract_channel_in_z_range(
             img, rna_idx,
@@ -553,7 +797,24 @@ def run_one(
             return pd.DataFrame(), float("nan")
 
     spots1_df, thr1_val = _detect(rna_2d, rna1_params)
-    spots2_df, thr2_val = _detect(rna2_2d, rna2_params)
+    # 2026-06-05 Brian: diffuse-antibody opt-out. In rna_protein mode
+    # (rna2_is_antibody=True), when cfg.foci.detect_antibody_spots is False the
+    # antibody/protein channel is treated as a DIFFUSE INTENSITY channel: skip
+    # BigFISH spot detection and produce an EMPTY spot set (the same empty-frame
+    # representation _detect returns when foci are disabled, which every
+    # downstream step already tolerates). The rna2 PIXEL plane (rna2_2d) is
+    # still fully loaded, so pixel-coloc (Pearson/Manders/Li) and the
+    # partner-intensity coloc — which samples rna2 PIXELS at the rna1 spots, NOT
+    # rna2 spots — are completely unaffected. Plain rna_rna (rna2_is_antibody
+    # False) ALWAYS detects rna2, so two-real-FISH-target runs are unchanged.
+    if rna2_is_antibody and not bool(getattr(cfg.foci, "detect_antibody_spots", True)):
+        spots2_df, thr2_val = pd.DataFrame(), float("nan")
+        print(
+            f"  [antibody-spots] {path.name}: detect_antibody_spots=False -> "
+            f"skipping antibody (rna2) spot detection; intensity coloc unaffected"
+        )
+    else:
+        spots2_df, thr2_val = _detect(rna2_2d, rna2_params)
 
     # ---- Pub-contrast floor as HARD spot-detection floor (Brian/Sam 2026-05-20) ----
     # When ``output.apply_pub_contrast_floor_to_spots`` is True AND the caller
@@ -649,7 +910,18 @@ def run_one(
         rp_df = pd.DataFrame(columns=["label"])
     rp_by_id = {int(r["label"]): r for r in rp_df.to_dict(orient="records")}
 
-    # Index per-channel spots by nucleus_id for cheap per-nucleus aggregation
+    # Index per-channel spots by nucleus_id for cheap per-nucleus aggregation.
+    # NOTE: this MUST run AFTER every per-spot column the per-nucleus
+    # aggregation reads has been written onto spots1_df/spots2_df. groupby
+    # snapshots the columns that exist at call time, so any column added to the
+    # parent frame later (e.g. ``partner_local_mean_intensity``, added below in
+    # the intensity-coloc block) would be INVISIBLE to the grouped sub-frames —
+    # silently NaN-ing the per-nucleus rollup. The indexes are therefore built
+    # at the END of all per-spot column construction (just above the
+    # per-nucleus loop), not here. (Bug fix 2026-05-29: per-spot
+    # ``partner_local_mean_intensity`` was 100% populated but the per-nucleus
+    # ``*_local_mean_at_*_spots`` / ``*_enrichment_at_*_spots`` were all-NaN
+    # because the index predated the column.)
     def _by_nid(df: pd.DataFrame) -> Dict[int, pd.DataFrame]:
         out_: Dict[int, pd.DataFrame] = {}
         if len(df) > 0 and "nucleus_id" in df.columns:
@@ -659,9 +931,6 @@ def run_one(
                 except (TypeError, ValueError):
                     pass
         return out_
-
-    spots1_by_nid = _by_nid(spots1_df)
-    spots2_by_nid = _by_nid(spots2_df)
 
     # Spot diameter defaults (used as a fallback when per-spot measurement
     # fails for edge-clipped or all-zero crops). The actual reported
@@ -686,6 +955,45 @@ def run_one(
             rna2_2d, spots2_df, voxel_xy_um,
             fallback_diam_um=default_spot_diameter_um,
         )
+
+    # ---- Intensity-based, spot-centric, FLOOR-ROBUST coloc (Brian 2026-05-29)
+    # For each spot, sample the RAW local intensity of the OTHER channel in a
+    # disk of radius = the pipeline's nominal spot radius (bigfish_spot_radius_nm
+    # / voxel) on the SAME z-locked plane. Direction:
+    #   spots1 (RNA1/intron) -> mean RAW rna2 (partner) intensity at the spot
+    #   spots2 (RNA2/partner) -> mean RAW rna1 intensity at the spot
+    # The single column ``partner_local_mean_intensity`` is channel-agnostic
+    # (the "partner" is whatever the row's own ``channel`` is NOT). It is RAW
+    # (never floored), so it is robust to manual_antibody_min / pub-contrast
+    # floor changes — complementing the binary Manders/pairing metrics.
+    # GATED (Brian 2026-05-29): this per-spot sampling HANGS the parallel
+    # per-image worker pool (works single-process only). Until the hang is
+    # fixed it is OFF by default via ``cfg.foci.compute_partner_intensity``.
+    # When False the ``partner_local_mean_intensity`` column is never produced,
+    # the per-nucleus ``*_local_mean_at_*_spots`` / ``*_enrichment_at_*_spots``
+    # blocks and their per-image means are omitted, and the two-channel output
+    # is byte-equivalent to the pre-feature (binary-coloc-only) path. Figures
+    # 74_/75_ self-skip on the absent columns; 70-73 still generate.
+    compute_partner_intensity = bool(
+        getattr(cfg.foci, "compute_partner_intensity", False)
+    )
+    if compute_partner_intensity:
+        partner_disk_radius_px = max(1.0, spot_radius_um / max(voxel_xy_um, 1e-6))
+        if len(spots1_df) > 0:
+            spots1_df["partner_local_mean_intensity"] = _sample_partner_local_intensity(
+                rna2_2d, spots1_df, partner_disk_radius_px,
+            )
+        if len(spots2_df) > 0:
+            spots2_df["partner_local_mean_intensity"] = _sample_partner_local_intensity(
+                rna_2d, spots2_df, partner_disk_radius_px,
+            )
+
+    # Build the per-nucleus spot indexes NOW — after nn_distance/paired,
+    # spot_diameter, and (when enabled) partner_local_mean_intensity have all
+    # been written — so groupby snapshots a frame that already carries every
+    # column the per-nucleus aggregation reads.
+    spots1_by_nid = _by_nid(spots1_df)
+    spots2_by_nid = _by_nid(spots2_df)
 
     nuc_rows: List[Dict[str, Any]] = []
     spot_rows: List[Dict[str, Any]] = []
@@ -725,6 +1033,122 @@ def run_one(
             rna2_2d.astype(np.float64) - float(floor_rna2), 0.0, None
         )
 
+    # ---- Thresholded RNA intensity in compartments (2026-06-02 Brian) ------
+    # Independent of apply_pub_contrast_floor_to_analysis (above): a THIRD
+    # intensity measurement integrating RAW intensities of >=floor pixels,
+    # per compartment, for BOTH channels. Floors default to each channel's
+    # spot floor when unset/0 (see OutputCfg.rna_intensity_threshold). The
+    # rna2 slot carries the antibody floor in rna_protein mode (the
+    # rna_protein wrapper maps analysis_floors["antibody"] -> "rna2", and
+    # cfg.output.rna2_intensity_threshold / manual_rna2_min serve both modes).
+    rna_thresh_floor = _resolve_thresh_intensity_floor(cfg, analysis_floors, "rna")
+    rna2_thresh_floor = _resolve_thresh_intensity_floor(cfg, analysis_floors, "rna2")
+
+    # ---- Per-nucleus RANDOM-POSITION NULL for partner-at-rna1 coloc ---------
+    # 2026-06-05 Brian: PIPELINE-NATIVE proper coloc statistic. GATED behind
+    # cfg.foci.compute_partner_null_enrichment (requires compute_partner_intensity
+    # so the partner channel is the one being sampled). For each nucleus the
+    # partner (rna2 / QKI) intensity at the rna1 (MIAT) spots is compared to the
+    # SAME spot count placed at random IN-NUCLEUS positions, repeated partner_null_n
+    # times -> enrichment (obs/null_mean), z ((obs-null_mean)/null_sd), and a
+    # per-image spot-count-weighted pooled enrichment / z / empirical-p. Disk
+    # radius is the CANONICAL partner_null_disk_px (3.0 px = the validated
+    # reference-script value), NOT the tiny compute_partner_intensity radius.
+    # Reproduces qki_at_miat_null_ALLARMS_tm1.0.py. Default OFF -> no columns,
+    # byte-equivalent output. Single-process is fine (compute_partner_intensity
+    # already forces it); the null draws are numpy-batched for speed.
+    compute_partner_null = (
+        compute_partner_intensity
+        and bool(getattr(cfg.foci, "compute_partner_null_enrichment", False))
+    )
+    # 2026-06-06 Brian: PIPELINE-NATIVE radial QKI-around-MIAT profile (separate
+    # downstream figure). Sweeps concentric annuli around each rna1 spot; reuses
+    # the SAME per-nucleus sampling block (nucleolus-excluded mask, same seed /
+    # n) as the disk null but with its OWN rng so toggling it never perturbs the
+    # disk-null draws (byte-identical pooled-null contract). Emitted ONLY via the
+    # empty-default extra dict. Default OFF.
+    compute_partner_radial = (
+        compute_partner_intensity
+        and bool(getattr(cfg.foci, "compute_partner_radial_profile", False))
+    )
+    # When EITHER feature is on we need the per-nucleus sampling block (nucleolus
+    # detection + shared spot/mask prep). When radial is OFF this is exactly
+    # ``compute_partner_null`` -> the legacy gate -> byte-identical behavior.
+    _need_partner_block = compute_partner_null or compute_partner_radial
+    # Surfaced-output carriers (None -> key never added to extra; defaults OFF).
+    coloc_null_draws_df = None
+    coloc_radial_df = None
+    # Nucleolus-exclusion for the null sampling positions + observed spots.
+    # When requested AND nucleolus is enabled, detect nucleoli ONCE here (the
+    # post-loop nucleolus column block below REUSES this array, so detection
+    # runs only once). The DAPI-poor nucleolar voids — which the partner (QKI)
+    # also avoids — are removed from BOTH the random null positions and the
+    # observed rna1 spots, so the enrichment cannot be inflated by mutual
+    # nucleolar avoidance.
+    _exclude_nucleolus_null = bool(
+        getattr(cfg.foci, "exclude_nucleolus_from_partner_null", False)
+    )
+    _nucleolus_enabled_cfg = (
+        getattr(cfg, "nucleolus", None) is not None
+        and getattr(cfg.nucleolus, "enabled", False)
+    )
+    nucleolus_labels_precomputed = None
+    if (_need_partner_block and _exclude_nucleolus_null and _nucleolus_enabled_cfg
+            and n_after > 0):
+        try:
+            from ..nucleolus import NucleolusParams, detect_nucleoli
+            _ncfg = cfg.nucleolus
+            _np = NucleolusParams(
+                intra_nuclear_percentile=float(_ncfg.intra_nuclear_percentile),
+                min_area_um2=float(_ncfg.min_area_um2),
+                max_area_frac_of_nucleus=float(_ncfg.max_area_frac_of_nucleus),
+                closing_radius_px=int(_ncfg.closing_radius_px),
+                min_border_distance_px=int(getattr(_ncfg, "min_border_distance_px", 3)),
+            )
+            _pix_um = float(voxel_xy_nm) / 1000.0 if voxel_xy_nm else 0.13
+            nucleolus_labels_precomputed = detect_nucleoli(
+                labels, dapi_2d, pixel_size_um=_pix_um, params=_np
+            )
+        except Exception as _nexc:
+            print(
+                f"  WARN: partner-null nucleolus detection failed on {img_name} "
+                f"({type(_nexc).__name__}: {_nexc}); null uses whole nucleus."
+            )
+            nucleolus_labels_precomputed = None
+    # RNG + disk stencil for the null (fixed seed -> deterministic).
+    _null_n = int(getattr(cfg.foci, "partner_null_n", 1000))
+    _null_disk_px = float(getattr(cfg.foci, "partner_null_disk_px", 3.0))
+    _null_seed = int(getattr(cfg.foci, "partner_null_seed", 0))
+    if compute_partner_null:
+        _null_rng = np.random.default_rng(_null_seed)
+        _null_dy, _null_dx = _disk_stencil(_null_disk_px)
+        # Per-image pooled accumulators (spot-count weighted), matching the
+        # reference script's pooling: obs_pool = sum(obs*n_sp)/sum(n_sp);
+        # null_pool[it] = sum(null_stats[it]*n_sp)/sum(n_sp); empirical p from
+        # the pooled null distribution.
+        _null_obs_num = 0.0
+        _null_w_den = 0.0
+        _null_pool = np.zeros(_null_n, dtype=np.float64)
+        _null_n_nuclei_used = 0
+    if compute_partner_radial:
+        # Radial annuli (outer edges µm -> px) + own rng (same SEED, separate
+        # stream so the disk-null draws stay byte-identical) + per-ring
+        # spot-count-weighted accumulators.
+        _radial_bins_um = list(
+            getattr(cfg.foci, "partner_radial_bins_um", [0.25, 0.5, 0.75, 1.0])
+        )
+        _pix_um_radial = float(voxel_xy_nm) / 1000.0 if voxel_xy_nm else 0.13
+        _radial_bins_px = [
+            float(b) / _pix_um_radial for b in _radial_bins_um if float(b) > 0
+        ]
+        _radial_stencils = _annulus_stencils(_radial_bins_px)
+        _n_rings = len(_radial_stencils)
+        _radial_rng = np.random.default_rng(_null_seed)
+        _radial_obs_num = np.zeros(_n_rings, dtype=np.float64)
+        _radial_nullmean_num = np.zeros(_n_rings, dtype=np.float64)
+        _radial_nullsd_num = np.zeros(_n_rings, dtype=np.float64)
+        _radial_w_den = np.zeros(_n_rings, dtype=np.float64)
+
     for nid in range(1, n_after + 1):
         rp = rp_by_id.get(nid, {})
         nucleus_area_px = int(rp.get("area", 0))
@@ -742,6 +1166,33 @@ def run_one(
             sum_rna_intensity = float(rna_vals.sum())
             sum_rna2_intensity = float(rna2_vals.sum())
             dapi_mean = float(dapi_vals.mean())
+            # ---- Per-nucleus MASK (Manders-style) colocalization ----------
+            # 2026-05-28 Brian: bidirectional pixel-mask coloc on the rna ×
+            # rna2 pixel pair WITHIN this nucleus mask, on the SAME shared
+            # DAPI-locked plane the rest of the analysis uses. This is the
+            # Manders/correlation view (DROPPED when rna_protein was routed
+            # through rna_rna); it now lives in the shared core so BOTH modes
+            # get it. ADDITIVE to (coexists with) the spot-spot coloc below.
+            #
+            # Masks use the SAME per-channel pixel-coloc thresholds already
+            # resolved for this run (rna_thr_value / rna2_thr_value), passed as
+            # overrides so the mask boundaries match the rest of the pipeline.
+            #
+            # Direction (compute_coloc_metrics convention; r=rna1, a=rna2):
+            #   manders_m1 = sum(rna1 where rna2>=thr) / sum(rna1)
+            #              = fraction of RNA1 intensity inside the RNA2 mask
+            #                -> "RNA1 in RNA2"  (RNA2 masked, RNA1 measured)
+            #   manders_m2 = sum(rna2 where rna1>=thr) / sum(rna2)
+            #              = fraction of RNA2 intensity inside the RNA1 mask
+            #                -> "RNA2 in RNA1"  (RNA1 masked, RNA2 measured)
+            _cm = _metrics.compute_coloc_metrics(
+                rna_vals, rna2_vals,
+                thr_mode=pc_cfg.threshold_mode if pc_cfg is not None else "mad",
+                k_mad=float(pc_cfg.k_mad) if pc_cfg is not None else 2.0,
+                percentile=float(pc_cfg.percentile) if pc_cfg is not None else 80.0,
+                r_thr_override=rna_thr_value,
+                a_thr_override=rna2_thr_value,
+            )
             # Above-floor nuclear sums (NaN when no global floor available)
             nuclear_above_floor_rna1 = (
                 float(rna_above_floor[nuc_mask].sum()) if rna_above_floor is not None
@@ -753,6 +1204,9 @@ def run_one(
             )
         else:
             rna_mean = rna2_mean = sum_rna_intensity = sum_rna2_intensity = dapi_mean = float("nan")
+            _cm = _metrics.compute_coloc_metrics(
+                np.empty(0, dtype=np.float64), np.empty(0, dtype=np.float64),
+            )
             nuclear_above_floor_rna1 = float("nan")
             nuclear_above_floor_rna2 = float("nan")
 
@@ -783,11 +1237,40 @@ def run_one(
                     0.0 if rna2_above_floor is not None else float("nan")
                 )
         else:
+            cyt_mask = None
             rna_cytoplasmic_mean = rna2_cytoplasmic_mean = float("nan")
             sum_rna_intensity_cyto = sum_rna2_intensity_cyto = 0.0
             cyto_area_px = 0
             cytoplasmic_above_floor_rna1 = float("nan")
             cytoplasmic_above_floor_rna2 = float("nan")
+
+        # ---- Thresholded RNA intensity, per compartment, BOTH channels -----
+        # (2026-06-02 Brian). Same threshold-and-integrate as rna_only, applied
+        # to rna1 (rna_2d) AND rna2 (rna2_2d) at their respective floors. In
+        # rna_protein mode rna2_2d is the antibody channel, so this is also the
+        # protein-channel mirror Brian asked for.
+        _empty_thresh = dict(
+            thresh_total_intensity=float("nan"),
+            thresh_mean_intensity=float("nan"),
+            thresh_pos_area_px=0,
+            thresh_pos_fraction=float("nan"),
+        )
+        _tn1 = _metrics.compute_thresholded_compartment_intensity(
+            rna_2d, nuc_mask, rna_thresh_floor
+        )
+        _tn2 = _metrics.compute_thresholded_compartment_intensity(
+            rna2_2d, nuc_mask, rna2_thresh_floor
+        )
+        if cyt_mask is not None:
+            _tc1 = _metrics.compute_thresholded_compartment_intensity(
+                rna_2d, cyt_mask, rna_thresh_floor
+            )
+            _tc2 = _metrics.compute_thresholded_compartment_intensity(
+                rna2_2d, cyt_mask, rna2_thresh_floor
+            )
+        else:
+            _tc1 = dict(_empty_thresh)
+            _tc2 = dict(_empty_thresh)
 
         # N/C and frac_nuclear ratios for the above-floor variants. Mirror
         # the _nc_total semantics used for the raw sums above: ratio is NaN
@@ -941,6 +1424,104 @@ def run_one(
         n_mature_mrna_rna1 = _mature_mrna_count(spots1_by_nid.get(nid))
         n_mature_mrna_rna2 = _mature_mrna_count(spots2_by_nid.get(nid))
 
+        # ---- Intensity-based, spot-centric, FLOOR-ROBUST coloc (per nucleus)
+        # Mean partner-local-intensity over THIS nucleus's spots, plus an
+        # enrichment ratio vs the whole-nucleus partner-channel mean:
+        #   rna2_local_mean_at_rna1_spots = mean(partner_local @ this nuc's RNA1 spots)
+        #   rna2_enrichment_at_rna1_spots = rna2_local_mean_at_rna1_spots / rna2_mean
+        # >1 => RNA1 (intron) foci sit at partner-BRIGHT sites. Reciprocal for
+        # RNA2 spots vs the RNA1 channel. (rna_protein relabels rna2->protein,
+        # so these read protein_local_mean_at_rna1_spots /
+        # protein_enrichment_at_rna1_spots etc.)
+        def _partner_local_mean_over_spots(sub):
+            if sub is None or len(sub) == 0 or "partner_local_mean_intensity" not in sub.columns:
+                return float("nan")
+            v = pd.to_numeric(sub["partner_local_mean_intensity"], errors="coerce").to_numpy()
+            v = v[np.isfinite(v)]
+            return float(v.mean()) if v.size else float("nan")
+
+        def _enrichment(local_mean, nuc_channel_mean):
+            if not (local_mean == local_mean):  # NaN
+                return float("nan")
+            if nuc_channel_mean and nuc_channel_mean > 0 and (nuc_channel_mean == nuc_channel_mean):
+                return float(local_mean / nuc_channel_mean)
+            return float("nan")
+
+        rna2_local_mean_at_rna1_spots = _partner_local_mean_over_spots(spots1_by_nid.get(nid))
+        rna1_local_mean_at_rna2_spots = _partner_local_mean_over_spots(spots2_by_nid.get(nid))
+        # Partner channel whole-nucleus mean = rna2_mean for RNA1 spots (partner
+        # is rna2), rna_mean for RNA2 spots (partner is rna1).
+        rna2_enrichment_at_rna1_spots = _enrichment(rna2_local_mean_at_rna1_spots, rna2_mean)
+        rna1_enrichment_at_rna2_spots = _enrichment(rna1_local_mean_at_rna2_spots, rna_mean)
+
+        # ---- Per-nucleus RANDOM-POSITION NULL (partner @ rna1 spots) --------
+        # 2026-06-05 Brian. observed = mean over THIS nucleus's rna1 (MIAT)
+        # spots of [disk-mean partner (rna2/QKI) intensity]; null = same #spots
+        # at random in-nucleus positions x partner_null_n, disk-sampled. The
+        # nucleus's sampling pixels are the nucleus mask, MINUS nucleoli when
+        # exclude_nucleolus_from_partner_null is on; observed rna1 spots inside a
+        # nucleolus are likewise dropped. Pooled (spot-weighted) into the
+        # per-image rollup. Mirrors qki_at_miat_null_ALLARMS_tm1.0.py.
+        rna2_enrichment_vs_null_at_rna1_spots = float("nan")
+        rna2_null_z_at_rna1_spots = float("nan")
+        if _need_partner_block and nuc_mask.any():
+            sub1 = spots1_by_nid.get(nid)
+            if sub1 is not None and len(sub1) > 0 and {"y_px", "x_px"}.issubset(sub1.columns):
+                # Sampling pixels = nucleus minus nucleoli (when on). SHARED by
+                # the disk null AND the radial profile so they sample identically.
+                _samp_mask = nuc_mask
+                _nucleolus_in_nuc = None
+                if nucleolus_labels_precomputed is not None:
+                    _nucleolus_in_nuc = (nucleolus_labels_precomputed == nid) & nuc_mask
+                    _nucleoplasm = nuc_mask & (~_nucleolus_in_nuc)
+                    if _nucleoplasm.any():
+                        _samp_mask = _nucleoplasm
+                _nys, _nxs = np.where(_samp_mask)
+                _scy = np.rint(sub1["y_px"].astype(float).to_numpy()).astype(np.intp)
+                _scx = np.rint(sub1["x_px"].astype(float).to_numpy()).astype(np.intp)
+                _scy = np.clip(_scy, 0, rna2_2d.shape[0] - 1)
+                _scx = np.clip(_scx, 0, rna2_2d.shape[1] - 1)
+                # Drop observed rna1 spots whose center is inside a nucleolus.
+                if _nucleolus_in_nuc is not None:
+                    _keep_sp = ~_nucleolus_in_nuc[_scy, _scx]
+                    _scy = _scy[_keep_sp]
+                    _scx = _scx[_keep_sp]
+                if _scy.size > 0 and _nys.size > 0:
+                    _rna2_2d_f = rna2_2d.astype(np.float64, copy=False)
+                    if compute_partner_null:
+                        _obs_stat, _null_stats = _partner_null_for_nucleus(
+                            _rna2_2d_f,
+                            _scy, _scx, _nys, _nxs,
+                            _null_dy, _null_dx, _null_n, _null_rng,
+                        )
+                        if _null_stats.size:
+                            _nmean = float(_null_stats.mean())
+                            _nsd = float(_null_stats.std(ddof=1)) if _null_stats.size > 1 else 0.0
+                            rna2_enrichment_vs_null_at_rna1_spots = (
+                                _obs_stat / _nmean if _nmean > 0 else float("nan")
+                            )
+                            rna2_null_z_at_rna1_spots = (
+                                (_obs_stat - _nmean) / _nsd if _nsd > 0 else float("nan")
+                            )
+                            _n_sp_used = int(_scy.size)
+                            _null_obs_num += _obs_stat * _n_sp_used
+                            _null_w_den += _n_sp_used
+                            _null_pool += _null_stats * _n_sp_used
+                            _null_n_nuclei_used += 1
+                    if compute_partner_radial:
+                        # Per-ring (obs, null_mean, null_sd, n_spots); accumulate
+                        # spot-count-weighted into the per-(image, ring) rollup.
+                        _rad = _radial_profile_for_nucleus(
+                            _rna2_2d_f, _scy, _scx, _nys, _nxs,
+                            _radial_stencils, _null_n, _radial_rng,
+                        )
+                        for _ri, (_ro, _rnm, _rnsd, _rnsp) in enumerate(_rad):
+                            if _rnsp > 0 and _ro == _ro:  # finite observed
+                                _radial_obs_num[_ri] += _ro * _rnsp
+                                _radial_nullmean_num[_ri] += _rnm * _rnsp
+                                _radial_nullsd_num[_ri] += _rnsd * _rnsp
+                                _radial_w_den[_ri] += _rnsp
+
         # Per-nucleus row — column ordering: rna_only-compatible fields first
         # (so anything reading rna_only output still finds its columns), then
         # rna2/spot-coloc additions.
@@ -985,6 +1566,27 @@ def run_one(
             "rna2_spot_median_intensity_fit": a2["median_int"],
             "rna2_spot_intensity_cv_fit": a2["int_cv"],
             "sum_rna2_intensity": sum_rna2_intensity,
+            # ---- Thresholded RNA intensity per compartment (2026-06-02) ----
+            # Third intensity measurement (pixels with RAW value >= floor),
+            # integrated separately in nucleus + cytoplasm, BOTH channels.
+            "rna_thresh_total_intensity_nuclear": _tn1["thresh_total_intensity"],
+            "rna_thresh_mean_intensity_nuclear": _tn1["thresh_mean_intensity"],
+            "rna_thresh_pos_area_px_nuclear": int(_tn1["thresh_pos_area_px"]),
+            "rna_thresh_pos_fraction_nuclear": _tn1["thresh_pos_fraction"],
+            "rna_thresh_total_intensity_cyto": _tc1["thresh_total_intensity"],
+            "rna_thresh_mean_intensity_cyto": _tc1["thresh_mean_intensity"],
+            "rna_thresh_pos_area_px_cyto": int(_tc1["thresh_pos_area_px"]),
+            "rna_thresh_pos_fraction_cyto": _tc1["thresh_pos_fraction"],
+            "rna_thresh_floor": rna_thresh_floor,
+            "rna2_thresh_total_intensity_nuclear": _tn2["thresh_total_intensity"],
+            "rna2_thresh_mean_intensity_nuclear": _tn2["thresh_mean_intensity"],
+            "rna2_thresh_pos_area_px_nuclear": int(_tn2["thresh_pos_area_px"]),
+            "rna2_thresh_pos_fraction_nuclear": _tn2["thresh_pos_fraction"],
+            "rna2_thresh_total_intensity_cyto": _tc2["thresh_total_intensity"],
+            "rna2_thresh_mean_intensity_cyto": _tc2["thresh_mean_intensity"],
+            "rna2_thresh_pos_area_px_cyto": int(_tc2["thresh_pos_area_px"]),
+            "rna2_thresh_pos_fraction_cyto": _tc2["thresh_pos_fraction"],
+            "rna2_thresh_floor": rna2_thresh_floor,
             # ---- Spot-spot colocalization ---------------------------------
             f"median_nn_distance_rna1_um": a1["median_nn_um"],
             f"median_nn_distance_rna2_um": a2["median_nn_um"],
@@ -992,6 +1594,43 @@ def run_one(
             f"paired_fraction_rna2_at_{pair_suffix}": a2["paired_frac"],
             f"paired_spot_count_rna1_at_{pair_suffix}": int(a1["paired_count"]),
             f"paired_spot_count_rna2_at_{pair_suffix}": int(a2["paired_count"]),
+            # ---- Per-nucleus MASK (Manders-style) colocalization ----------
+            # 2026-05-28 Brian: bidirectional pixel-mask coloc (Manders M1/M2 +
+            # correlation/overlap), additive to the spot-spot view above. From
+            # ``compute_coloc_metrics`` on (rna1, rna2) within this nucleus,
+            # thresholded at the run's rna_thr_value / rna2_thr_value.
+            #
+            # DIRECTION is explicit in the column name "<measured>_in_<mask>":
+            #   manders_rna1_in_rna2 = M1 = sum(RNA1 where RNA2>=thr)/sum(RNA1)
+            #       -> RNA2 is the MASK, RNA1 is measured ("how much RNA1 sits
+            #          inside the RNA2-positive region").
+            #   manders_rna2_in_rna1 = M2 = sum(RNA2 where RNA1>=thr)/sum(RNA2)
+            #       -> RNA1 is the MASK, RNA2 is measured.
+            # (_relabel_rna2_to_protein maps rna2->protein, leaving rna1 as-is,
+            #  so rna_protein reads manders_rna1_in_protein / manders_protein_in_rna1.)
+            "manders_rna1_in_rna2": _cm["manders_m1"],
+            "manders_rna2_in_rna1": _cm["manders_m2"],
+            "coloc_pearson_r_rna1_rna2": _cm["pearson_r"],
+            "coloc_spearman_rho_rna1_rna2": _cm["spearman_rho"],
+            "coloc_li_icq_rna1_rna2": _cm["li_icq"],
+            "coloc_cosine_overlap_rna1_rna2": _cm["cosine_overlap"],
+            "coloc_jaccard_rna1_rna2": _cm["jaccard"],
+            "coloc_dice_rna1_rna2": _cm["dice"],
+            "coloc_both_frac_rna1_rna2": _cm["both_frac"],
+            "coloc_frac_above_thr_rna1": _cm["rna_frac_above_thr"],
+            "coloc_frac_above_thr_rna2": _cm["ab_frac_above_thr"],
+            # Enrichment of one channel inside the OTHER's positive mask.
+            #   rna2_enrich_in_rna1_high: mean(RNA2 | RNA1>=thr)/mean(RNA2 | RNA1<thr)
+            #   rna1_enrich_in_rna2_high: mean(RNA1 | RNA2>=thr)/mean(RNA1 | RNA2<thr)
+            "rna2_enrich_in_rna1_high": _cm["ab_enrich_in_rna_high"],
+            "rna1_enrich_in_rna2_high": _cm["rna_enrich_in_ab_high"],
+            "coloc_mask_thr_rna1": _cm["rna_thr"],
+            "coloc_mask_thr_rna2": _cm["ab_thr"],
+            # ---- Intensity-based, spot-centric, FLOOR-ROBUST coloc ---------
+            # 2026-05-29 Brian. GATED behind cfg.foci.compute_partner_intensity
+            # (default OFF; see sampling block above). When OFF these columns
+            # are NOT emitted, so the per-nucleus output is byte-equivalent to
+            # the pre-feature path. When ON they are injected just below.
             # ---- Per-CELL (nucleus + cytoplasm) intensity totals -----------
             # Brian wants total RNA intensity per nucleus AND per cell for
             # BOTH channels. "_cell_" = nucleus + voronoi cytoplasm.
@@ -1054,6 +1693,22 @@ def run_one(
             "rna2_frac_above_thr": float((rna2_2d >= rna2_thr_value).sum()) / float(rna2_2d.size),
             "dapi_mean_in_nucleus": dapi_mean,
         }
+        # GATED intensity-coloc per-nucleus columns (default OFF). Inserted here
+        # (right after coloc_mask_thr_rna2 in the legacy ordering) only when
+        # cfg.foci.compute_partner_intensity is True, so the OFF path is
+        # byte-equivalent to the pre-feature output.
+        if compute_partner_intensity:
+            nuc_row["rna2_local_mean_at_rna1_spots"] = rna2_local_mean_at_rna1_spots
+            nuc_row["rna2_enrichment_at_rna1_spots"] = rna2_enrichment_at_rna1_spots
+            nuc_row["rna1_local_mean_at_rna2_spots"] = rna1_local_mean_at_rna2_spots
+            nuc_row["rna1_enrichment_at_rna2_spots"] = rna1_enrichment_at_rna2_spots
+        # GATED random-position-null coloc per-nucleus columns (default OFF).
+        # Only emitted when cfg.foci.compute_partner_null_enrichment is True
+        # (and compute_partner_intensity is on), so the OFF path stays byte-
+        # equivalent. rna_protein relabels rna2->protein.
+        if compute_partner_null:
+            nuc_row["rna2_enrichment_vs_null_at_rna1_spots"] = rna2_enrichment_vs_null_at_rna1_spots
+            nuc_row["rna2_null_z_at_rna1_spots"] = rna2_null_z_at_rna1_spots
         nuc_rows.append(nuc_row)
 
         # Morphology row (per-nucleus, single block — shape is channel-agnostic)
@@ -1086,6 +1741,79 @@ def run_one(
             "feret_min_um": feret_min_um,
         })
 
+    # ---- Per-image pooled random-position-null rollup ----------------------
+    # 2026-06-05 Brian. Spot-count-weighted pool of the per-nucleus observed
+    # stat + null distribution (matching qki_at_miat_null_ALLARMS_tm1.0.py):
+    #   obs_pool   = sum(obs_n * n_sp_n) / sum(n_sp_n)
+    #   null_pool  = sum(null_stats_n * n_sp_n) / sum(n_sp_n)  (per iteration)
+    #   enrichment = obs_pool / mean(null_pool)
+    #   z          = (obs_pool - mean(null_pool)) / std(null_pool)
+    #   empirical p= (#{null_pool >= obs_pool} + 1) / (n_null + 1)
+    # Only computed when the feature is on; injected into per_image below.
+    pooled_null_enrichment = float("nan")
+    pooled_null_z = float("nan")
+    pooled_null_p_empirical = float("nan")
+    pooled_null_obs = float("nan")
+    pooled_null_mean = float("nan")
+    if compute_partner_null and _null_w_den > 0:
+        _obs_pool = _null_obs_num / _null_w_den
+        _np_pool = _null_pool / _null_w_den
+        _np_mean = float(_np_pool.mean())
+        _np_sd = float(_np_pool.std(ddof=1)) if _np_pool.size > 1 else 0.0
+        pooled_null_obs = float(_obs_pool)
+        pooled_null_mean = _np_mean
+        pooled_null_enrichment = (_obs_pool / _np_mean) if _np_mean > 0 else float("nan")
+        pooled_null_z = ((_obs_pool - _np_mean) / _np_sd) if _np_sd > 0 else float("nan")
+        pooled_null_p_empirical = float(
+            (np.sum(_np_pool >= _obs_pool) + 1) / (_null_n + 1)
+        )
+        # 2026-06-06 Brian: surface the pooled null vector + pooled observed for
+        # the downstream null-distribution overlay. Reuses the SAME _np_pool /
+        # _obs_pool computed above (NO recompute) -> ~zero cost. Gated; default
+        # OFF -> the key is never added to extra (byte-identical carrier).
+        if bool(getattr(cfg.foci, "save_partner_null_draws", False)):
+            coloc_null_draws_df = pd.DataFrame(
+                {
+                    "image": img_name,
+                    "condition": condition,
+                    "iter": np.arange(_null_n, dtype=int),
+                    "pooled_null_value": _np_pool,
+                    "pooled_obs": float(_obs_pool),
+                }
+            )
+
+    # ---- Per-image pooled radial QKI-around-MIAT profile -------------------
+    # 2026-06-06 Brian. Spot-count-weighted pool of the per-nucleus per-ring
+    # (obs, null_mean, null_sd) into one row per (image, ring). enrichment =
+    # obs/null_mean; z = (obs-null_mean)/null_sd. Only built when the feature
+    # is on AND at least one ring accumulated spots.
+    if compute_partner_radial and float(_radial_w_den.sum()) > 0:
+        _rad_rows = []
+        for _ri in range(_n_rings):
+            _w = float(_radial_w_den[_ri])
+            if _w <= 0:
+                continue
+            _o = _radial_obs_num[_ri] / _w
+            _nm = _radial_nullmean_num[_ri] / _w
+            _nsd = _radial_nullsd_num[_ri] / _w
+            _enr = (_o / _nm) if _nm > 0 else float("nan")
+            _z = ((_o - _nm) / _nsd) if _nsd > 0 else float("nan")
+            _rad_rows.append(
+                {
+                    "image": img_name,
+                    "condition": condition,
+                    "ring_um": float(_radial_bins_um[_ri]),
+                    "obs_mean": float(_o),
+                    "null_mean": float(_nm),
+                    "null_sd": float(_nsd),
+                    "enrichment": float(_enr),
+                    "z": float(_z),
+                    "n_spots": int(_w),
+                }
+            )
+        if _rad_rows:
+            coloc_radial_df = pd.DataFrame(_rad_rows)
+
     # ---- Per-spot rows (combined into one DataFrame with ``channel`` col) --
     def _emit_spot_rows(df: pd.DataFrame, label: str):
         nonlocal spot_global_id
@@ -1108,7 +1836,7 @@ def run_one(
                 spot_diam_um = default_spot_diameter_um
             spot_fwhm_px_val = spot_diam_um / max(voxel_xy_um, 1e-6)
             spot_area_px_val = math.pi * (spot_fwhm_px_val / 2.0) ** 2
-            spot_rows.append({
+            spot_row = {
                 "image": img_name,
                 "condition": condition,
                 "secondary_only": sec_only,
@@ -1130,7 +1858,17 @@ def run_one(
                 "integrated_intensity_fit": ipeak,
                 "nn_distance_um": float(r.get("nn_distance_um", float("nan"))),
                 f"paired_at_{pair_suffix}": int(r.get(f"paired_at_{pair_suffix}", 0)),
-            })
+            }
+            # GATED per-spot intensity-coloc column (default OFF). Omitted when
+            # cfg.foci.compute_partner_intensity is False so spot_metrics.csv is
+            # byte-equivalent to the pre-feature output.
+            if compute_partner_intensity:
+                # Intensity-based floor-robust coloc: mean RAW intensity of the
+                # OTHER channel in a spot-radius disk at this spot's centroid.
+                spot_row["partner_local_mean_intensity"] = float(
+                    r.get("partner_local_mean_intensity", float("nan"))
+                )
+            spot_rows.append(spot_row)
 
     _emit_spot_rows(spots1_df, "rna1")
     _emit_spot_rows(spots2_df, "rna2")
@@ -1238,9 +1976,16 @@ def run_one(
                 min_border_distance_px=int(getattr(_ncfg, "min_border_distance_px", 3)),
             )
             _pix_um = float(voxel_xy_nm) / 1000.0 if voxel_xy_nm else 0.13
-            nucleolus_labels = detect_nucleoli(
-                labels, dapi_2d, pixel_size_um=_pix_um, params=_params
-            )
+            # Reuse the labels already detected for the partner-null exclusion
+            # (computed once before the per-nucleus loop) so detection runs only
+            # once per image. Same params (the precompute used the same NucleolusParams),
+            # so the emitted nucleolus columns are byte-identical either way.
+            if nucleolus_labels_precomputed is not None:
+                nucleolus_labels = nucleolus_labels_precomputed
+            else:
+                nucleolus_labels = detect_nucleoli(
+                    labels, dapi_2d, pixel_size_um=_pix_um, params=_params
+                )
             nucleolus_labels_for_qc = nucleolus_labels  # exposed via qc dict below
             # Per-spot in_nucleolus + refined in_nucleus_excluding_nucleolus
             if len(spots_out_df) and "x_px" in spots_out_df.columns:
@@ -1372,6 +2117,12 @@ def run_one(
         mean_active_tss, med_active_tss, _ = _img_stats("n_nuclear_rna1_rna2_overlap_per_nucleus")
         mean_mature_1, med_mature_1, _ = _img_stats("n_cytoplasmic_rna1_spots_per_cell")
         mean_mature_2, med_mature_2, _ = _img_stats("n_cytoplasmic_rna2_spots_per_cell")
+        # Intensity-based, spot-centric, FLOOR-ROBUST coloc image-level rollups
+        # (mean over nuclei of the per-nucleus partner-local mean + enrichment).
+        mean_partner_local_at_rna1, _, _ = _img_stats("rna2_local_mean_at_rna1_spots")
+        mean_partner_enrich_at_rna1, _, _ = _img_stats("rna2_enrichment_at_rna1_spots")
+        mean_partner_local_at_rna2, _, _ = _img_stats("rna1_local_mean_at_rna2_spots")
+        mean_partner_enrich_at_rna2, _, _ = _img_stats("rna1_enrichment_at_rna2_spots")
 
         # frac_nuclei_with_ge_X_spots for both channels
         def _frac(ct, k):
@@ -1495,6 +2246,27 @@ def run_one(
                 if apply_floor
                 else {}
             ),
+            # ---- Thresholded RNA intensity (per-image roll-up, 2026-06-02) -
+            # Plain per-image mean of the per-nucleus thresholded values, both
+            # channels, both compartments. Always emitted (NaN if no floor).
+            "rna_thresh_floor": rna_thresh_floor,
+            "rna2_thresh_floor": rna2_thresh_floor,
+            "mean_rna_thresh_total_intensity_nuclear": _img_stats("rna_thresh_total_intensity_nuclear")[0],
+            "mean_rna_thresh_mean_intensity_nuclear": _img_stats("rna_thresh_mean_intensity_nuclear")[0],
+            "mean_rna_thresh_pos_area_px_nuclear": _img_stats("rna_thresh_pos_area_px_nuclear")[0],
+            "mean_rna_thresh_pos_fraction_nuclear": _img_stats("rna_thresh_pos_fraction_nuclear")[0],
+            "mean_rna_thresh_total_intensity_cyto": _img_stats("rna_thresh_total_intensity_cyto")[0],
+            "mean_rna_thresh_mean_intensity_cyto": _img_stats("rna_thresh_mean_intensity_cyto")[0],
+            "mean_rna_thresh_pos_area_px_cyto": _img_stats("rna_thresh_pos_area_px_cyto")[0],
+            "mean_rna_thresh_pos_fraction_cyto": _img_stats("rna_thresh_pos_fraction_cyto")[0],
+            "mean_rna2_thresh_total_intensity_nuclear": _img_stats("rna2_thresh_total_intensity_nuclear")[0],
+            "mean_rna2_thresh_mean_intensity_nuclear": _img_stats("rna2_thresh_mean_intensity_nuclear")[0],
+            "mean_rna2_thresh_pos_area_px_nuclear": _img_stats("rna2_thresh_pos_area_px_nuclear")[0],
+            "mean_rna2_thresh_pos_fraction_nuclear": _img_stats("rna2_thresh_pos_fraction_nuclear")[0],
+            "mean_rna2_thresh_total_intensity_cyto": _img_stats("rna2_thresh_total_intensity_cyto")[0],
+            "mean_rna2_thresh_mean_intensity_cyto": _img_stats("rna2_thresh_mean_intensity_cyto")[0],
+            "mean_rna2_thresh_pos_area_px_cyto": _img_stats("rna2_thresh_pos_area_px_cyto")[0],
+            "mean_rna2_thresh_pos_fraction_cyto": _img_stats("rna2_thresh_pos_fraction_cyto")[0],
             # ---- Active TS + mature mRNA (per-image roll-up) -------------
             "mean_n_nuclear_rna1_rna2_overlap_per_nucleus": round(mean_active_tss, 3) if mean_active_tss == mean_active_tss else 0.0,
             "median_n_nuclear_rna1_rna2_overlap_per_nucleus": round(med_active_tss, 3) if med_active_tss == med_active_tss else 0.0,
@@ -1502,6 +2274,11 @@ def run_one(
             "median_n_cytoplasmic_rna1_spots_per_cell": round(med_mature_1, 3) if med_mature_1 == med_mature_1 else 0.0,
             "mean_n_cytoplasmic_rna2_spots_per_cell": round(mean_mature_2, 3) if mean_mature_2 == mean_mature_2 else 0.0,
             "median_n_cytoplasmic_rna2_spots_per_cell": round(med_mature_2, 3) if med_mature_2 == med_mature_2 else 0.0,
+            # ---- Intensity-based floor-robust coloc (per-image rollup) ----
+            # GATED (default OFF). The four mean_*_at_*_spots keys are injected
+            # after this if/else only when cfg.foci.compute_partner_intensity is
+            # True, keeping the OFF path byte-equivalent to the pre-feature
+            # per_image_summary.
             # ---- Spot-spot colocalization (between channels) -------------
             f"paired_fraction_rna1_at_{pair_suffix}": img_paired_frac_1,
             f"paired_fraction_rna2_at_{pair_suffix}": img_paired_frac_2,
@@ -1524,6 +2301,22 @@ def run_one(
             "voxel_z_nm": voxel_z_nm,
             "n_z": int(img.n_z),
         }
+        # GATED intensity-coloc per-image rollup (default OFF; see flag above).
+        if compute_partner_intensity:
+            per_image["mean_rna2_local_mean_at_rna1_spots"] = round(mean_partner_local_at_rna1, 3) if mean_partner_local_at_rna1 == mean_partner_local_at_rna1 else float("nan")
+            per_image["mean_rna2_enrichment_at_rna1_spots"] = round(mean_partner_enrich_at_rna1, 4) if mean_partner_enrich_at_rna1 == mean_partner_enrich_at_rna1 else float("nan")
+            per_image["mean_rna1_local_mean_at_rna2_spots"] = round(mean_partner_local_at_rna2, 3) if mean_partner_local_at_rna2 == mean_partner_local_at_rna2 else float("nan")
+            per_image["mean_rna1_enrichment_at_rna2_spots"] = round(mean_partner_enrich_at_rna2, 4) if mean_partner_enrich_at_rna2 == mean_partner_enrich_at_rna2 else float("nan")
+        # GATED random-position-null per-image pooled rollup (default OFF).
+        if compute_partner_null:
+            per_image["rna2_pooled_enrichment_vs_null_at_rna1_spots"] = round(pooled_null_enrichment, 4) if pooled_null_enrichment == pooled_null_enrichment else float("nan")
+            per_image["rna2_pooled_null_z_at_rna1_spots"] = round(pooled_null_z, 3) if pooled_null_z == pooled_null_z else float("nan")
+            per_image["rna2_pooled_null_p_empirical_at_rna1_spots"] = pooled_null_p_empirical
+            per_image["rna2_pooled_obs_at_rna1_spots"] = round(pooled_null_obs, 3) if pooled_null_obs == pooled_null_obs else float("nan")
+            per_image["rna2_pooled_null_mean_at_rna1_spots"] = round(pooled_null_mean, 3) if pooled_null_mean == pooled_null_mean else float("nan")
+            per_image["n_nuclei_partner_null"] = int(_null_n_nuclei_used)
+            per_image["partner_null_n"] = int(_null_n)
+            per_image["partner_null_disk_px"] = float(_null_disk_px)
     else:
         per_image = {
             "image": img_name,
@@ -1580,12 +2373,17 @@ def run_one(
             "median_nc_ratio_total_intensity_rna1": float("nan"),
             "mean_nc_ratio_total_intensity_rna2": float("nan"),
             "median_nc_ratio_total_intensity_rna2": float("nan"),
+            # Thresholded RNA intensity provenance (no nuclei -> NaN means).
+            "rna_thresh_floor": rna_thresh_floor,
+            "rna2_thresh_floor": rna2_thresh_floor,
             "mean_n_nuclear_rna1_rna2_overlap_per_nucleus": 0.0,
             "median_n_nuclear_rna1_rna2_overlap_per_nucleus": 0.0,
             "mean_n_cytoplasmic_rna1_spots_per_cell": 0.0,
             "median_n_cytoplasmic_rna1_spots_per_cell": 0.0,
             "mean_n_cytoplasmic_rna2_spots_per_cell": 0.0,
             "median_n_cytoplasmic_rna2_spots_per_cell": 0.0,
+            # GATED intensity-coloc rollup keys injected after this if/else
+            # (default OFF) — kept absent here for pre-feature byte-equivalence.
             f"paired_fraction_rna1_at_{pair_suffix}": img_paired_frac_1,
             f"paired_fraction_rna2_at_{pair_suffix}": img_paired_frac_2,
             f"paired_count_rna1_at_{pair_suffix}": paired1_total,
@@ -1606,6 +2404,23 @@ def run_one(
             "voxel_z_nm": voxel_z_nm,
             "n_z": int(img.n_z),
         }
+        # GATED intensity-coloc per-image rollup (default OFF) — empty-image
+        # fallback emits NaN for these only when the feature is enabled.
+        if compute_partner_intensity:
+            per_image["mean_rna2_local_mean_at_rna1_spots"] = float("nan")
+            per_image["mean_rna2_enrichment_at_rna1_spots"] = float("nan")
+            per_image["mean_rna1_local_mean_at_rna2_spots"] = float("nan")
+            per_image["mean_rna1_enrichment_at_rna2_spots"] = float("nan")
+        # GATED random-position-null per-image rollup — empty-image fallback.
+        if compute_partner_null:
+            per_image["rna2_pooled_enrichment_vs_null_at_rna1_spots"] = float("nan")
+            per_image["rna2_pooled_null_z_at_rna1_spots"] = float("nan")
+            per_image["rna2_pooled_null_p_empirical_at_rna1_spots"] = float("nan")
+            per_image["rna2_pooled_obs_at_rna1_spots"] = float("nan")
+            per_image["rna2_pooled_null_mean_at_rna1_spots"] = float("nan")
+            per_image["n_nuclei_partner_null"] = 0
+            per_image["partner_null_n"] = int(_null_n)
+            per_image["partner_null_disk_px"] = float(_null_disk_px)
 
     # ---- Thresholds row ----------------------------------------------------
     _kmad = float(pc_cfg.k_mad) if pc_cfg is not None else float("nan")
@@ -1678,6 +2493,22 @@ def run_one(
         nucleolus_labels=nucleolus_labels_for_qc,
     )
 
+    _extra = dict(
+        rna_thr_value=rna_thr_value,
+        rna2_thr_value=rna2_thr_value,
+        dapi_thr_value=dapi_thr_val,
+        n_border_excluded=n_border_excluded,
+        pair_suffix=pair_suffix,
+        pair_distance_um=pair_um,
+        mode="rna_rna",
+    )
+    # 2026-06-06 Brian: NATIVE coloc-figure carriers — added ONLY when the
+    # gating flags are on (defaults OFF -> keys absent -> byte-identical extra).
+    if coloc_null_draws_df is not None:
+        _extra["coloc_null_draws"] = coloc_null_draws_df
+    if coloc_radial_df is not None:
+        _extra["coloc_radial_profile"] = coloc_radial_df
+
     return ImageResult(
         image=img_name,
         condition=condition,
@@ -1688,15 +2519,7 @@ def run_one(
         morphology=morph_df,
         thresholds=thresholds,
         qc=qc,
-        extra=dict(
-            rna_thr_value=rna_thr_value,
-            rna2_thr_value=rna2_thr_value,
-            dapi_thr_value=dapi_thr_val,
-            n_border_excluded=n_border_excluded,
-            pair_suffix=pair_suffix,
-            pair_distance_um=pair_um,
-            mode="rna_rna",
-        ),
+        extra=_extra,
     )
 
 
@@ -1762,9 +2585,18 @@ def collect_nuclear_rna_pixels(path, *, cfg) -> Tuple[np.ndarray, np.ndarray, np
     if z_mode == "autofocus":
         dapi_autofocus_z, dapi_2d = _io.extract_channel_autofocus_with_idx(
             img, dapi_idx, z_start=z_start, z_end=z_end,
+            intensity_weighted=bool(getattr(cfg.z_stack, "autofocus_intensity_weighted", False)),
         )
         rna_2d = _io.extract_channel_at_z(img, rna_idx, z_1indexed=dapi_autofocus_z)
         rna2_2d = _io.extract_channel_at_z(img, rna2_idx, z_1indexed=dapi_autofocus_z)
+        try:
+            from rich.console import Console as _C
+            _C().print(
+                f"  [dim]z-lock (prescan): {Path(path).name} → all channels @ DAPI "
+                f"plane z={dapi_autofocus_z}[/dim]"
+            )
+        except Exception:
+            pass
     elif z_mode == "autofocus_maxproj":
         (afm_zs, afm_ze), afm_diag, dapi_2d = _io.extract_dapi_focus_window(
             img, dapi_idx,
@@ -1775,6 +2607,8 @@ def collect_nuclear_rna_pixels(path, *, cfg) -> Tuple[np.ndarray, np.ndarray, np
             z_start=z_start, z_end=z_end,
             fixed_n_slices=int(getattr(cfg.z_stack, "focus_window_fixed_n_slices", 0)),
             min_intensity_frac_of_peak=float(getattr(cfg.z_stack, "focus_min_intensity_frac_of_peak", 0.0)),
+            intensity_weighted=bool(getattr(cfg.z_stack, "autofocus_intensity_weighted", False)),
+            central_fraction=float(getattr(cfg.z_stack, "focus_central_fraction", 0.0)),
         )
         rna_2d = _io.extract_channel_in_z_range(
             img, rna_idx,

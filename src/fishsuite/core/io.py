@@ -181,9 +181,14 @@ def extract_channel(
     raise ValueError(f"Unknown z_mode {z_mode!r}")
 
 
-def _autofocus_plane(stack: np.ndarray) -> np.ndarray:
-    """Pick the sharpest 2D plane from a 3D stack by normalized Laplacian variance."""
-    _, plane = _autofocus_plane_with_idx(stack)
+def _autofocus_plane(stack: np.ndarray, *, intensity_weighted: bool = False) -> np.ndarray:
+    """Pick the sharpest 2D plane from a 3D stack by normalized Laplacian variance.
+
+    When ``intensity_weighted`` is True the per-plane score is multiplied by the
+    plane mean (see ``_autofocus_plane_with_idx``) — more robust on thick stacks
+    with a near-flat focus profile.
+    """
+    _, plane = _autofocus_plane_with_idx(stack, intensity_weighted=intensity_weighted)
     return plane
 
 
@@ -255,6 +260,8 @@ def compute_focus_window(
     outer_end: Optional[int] = None,
     fixed_n_slices: int = 0,
     min_intensity_frac_of_peak: float = 0.0,
+    intensity_weighted: bool = False,
+    central_fraction: float = 0.0,
 ) -> Tuple[Tuple[int, int], dict]:
     """Detect the per-image in-focus DAPI z-window for autofocus_maxproj mode.
 
@@ -301,6 +308,35 @@ def compute_focus_window(
         window is exactly N slices wide, positioned to keep the peak-
         focus slice centered (subject to outer-bound clamping). When 0
         (default), uses FWHM-style variable-N logic.
+    min_intensity_frac_of_peak : float
+        Pre-filter: slices whose mean intensity is below this fraction of
+        the brightest slice's mean are disqualified (focus_score set to
+        -inf) before the peak search. Guards against noisy/empty edge
+        slices. 0.0 (default) = disabled.
+    intensity_weighted : bool
+        When True, each slice's focus score is MULTIPLIED by that slice's
+        mean intensity — i.e. ``var(laplace(plane/mean)) * mean`` (the BIN1
+        thick-stack fix; see ``_autofocus_plane_with_idx``). This pulls the
+        focus peak toward the bright AND sharp nuclear plane instead of a
+        noise-driven dim edge plane, which is exactly the failure the plain
+        mean-normalized Laplacian variance hit on near-flat / noisy focus
+        profiles (2026-05-31 Brian: the H9 33-plane DAPI stacks picked
+        z=33/z=1 edges under the unweighted metric). Mirrors the
+        single-plane ``autofocus`` z-mode's intensity weighting so
+        ``autofocus_maxproj`` and ``autofocus`` use the SAME per-slice score.
+        Wired from ``cfg.z_stack.autofocus_intensity_weighted``. Default
+        False (legacy parity). Applied to the per-slice score BEFORE the
+        min-intensity pre-filter overwrite and BEFORE peak search, so it
+        composes with ``min_intensity_frac_of_peak``.
+    central_fraction : float
+        Robustness guard. When in ``(0, 1]``, the focus-PEAK search is
+        additionally restricted to the central ``central_fraction`` of the
+        (outer-bounded) stack — e.g. 0.6 keeps only the middle 60% of
+        slices eligible to WIN the peak. This prevents the objective window
+        from anchoring on a true stack-edge plane even if (after weighting)
+        an edge plane still scores highest. The peak is constrained, but the
+        fixed-N / FWHM window may still extend toward the edge from a central
+        peak. 0.0 (default) = disabled (whole [lo, hi] range eligible).
 
     Returns
     -------
@@ -343,9 +379,22 @@ def compute_focus_window(
     # Compute per-slice focus scores. We compute over the FULL stack so
     # diagnostics include the whole profile (useful for inspection),
     # but the peak / window expansion is restricted to [lo, hi].
+    #
+    # Slice means are needed both for the min-intensity pre-filter and for
+    # intensity-weighting; compute them once.
+    slice_means = np.asarray(
+        [float(dapi_zstack[z].mean()) for z in range(nz)], dtype=float
+    )
     focus_scores: list[float] = []
     for z in range(nz):
-        focus_scores.append(float(score_fn(dapi_zstack[z])))
+        s = float(score_fn(dapi_zstack[z]))
+        if intensity_weighted:
+            # var(laplace(plane/mean)) * mean — weight sharpness by plane
+            # brightness so the peak favors the bright + sharp nuclear plane
+            # over a noise-driven dim edge plane. Mirrors the single-plane
+            # autofocus metric (_autofocus_plane_with_idx). mean>=0 always.
+            s *= slice_means[z]
+        focus_scores.append(s)
 
     # 2026-05-24 v7 Brian: min-intensity pre-filter. Disqualify slices whose
     # mean DAPI intensity is below ``min_intensity_frac_of_peak * max_slice_mean``
@@ -354,9 +403,6 @@ def compute_focus_window(
     # spuriously high on variance_of_laplacian or normalized_variance.
     excluded_by_intensity = []
     if min_intensity_frac_of_peak and min_intensity_frac_of_peak > 0.0:
-        slice_means = np.asarray(
-            [float(dapi_zstack[z].mean()) for z in range(nz)], dtype=float
-        )
         max_mean = float(slice_means.max()) if slice_means.size else 0.0
         cutoff = max_mean * float(min_intensity_frac_of_peak)
         for z in range(nz):
@@ -364,10 +410,26 @@ def compute_focus_window(
                 focus_scores[z] = float("-inf")
                 excluded_by_intensity.append(z)
 
-    # Find peak within [lo, hi]
-    sub_scores = focus_scores[lo : hi + 1]
+    # Determine the slice range eligible to WIN the focus peak. Default is the
+    # full outer-bounded range [lo, hi]. The central_fraction guard shrinks
+    # this to the middle fraction of [lo, hi] so a true stack-edge plane can
+    # never anchor the window even if it scores highest (robustness against
+    # near-flat / noisy edge-heavy focus profiles). The window itself (fixed-N
+    # or FWHM) may still extend toward an edge from a central peak.
+    peak_lo, peak_hi = lo, hi
+    if central_fraction and 0.0 < float(central_fraction) < 1.0:
+        span = hi - lo + 1
+        keep = max(1, int(round(span * float(central_fraction))))
+        margin = (span - keep) // 2
+        peak_lo = lo + margin
+        peak_hi = hi - (span - keep - margin)
+        if peak_lo > peak_hi:  # degenerate — fall back to full range
+            peak_lo, peak_hi = lo, hi
+
+    # Find peak within the (possibly central-restricted) [peak_lo, peak_hi]
+    sub_scores = focus_scores[peak_lo : peak_hi + 1]
     peak_offset = int(np.argmax(sub_scores))
-    peak_z = lo + peak_offset
+    peak_z = peak_lo + peak_offset
     peak_score = float(focus_scores[peak_z])
 
     # ─── Branch: fixed-N centered window ──────────────────────────────────
@@ -426,6 +488,10 @@ def compute_focus_window(
             "actual_n": int(actual_n),
             "shifted_for_bounds": bool(shifted),
             "shrunk_by_bounds": bool(shrunk),
+            "intensity_weighted": bool(intensity_weighted),
+            "central_fraction": float(central_fraction),
+            "peak_search_lo": int(peak_lo),
+            "peak_search_hi": int(peak_hi),
         }
         return (int(ws), int(we)), diagnostics
 
@@ -493,11 +559,17 @@ def compute_focus_window(
         "expanded_to_min": bool(expanded_to_min),
         "clipped_to_max": bool(clipped_to_max),
         "fixed_n": False,
+        "intensity_weighted": bool(intensity_weighted),
+        "central_fraction": float(central_fraction),
+        "peak_search_lo": int(peak_lo),
+        "peak_search_hi": int(peak_hi),
     }
     return (int(ws), int(we)), diagnostics
 
 
-def _autofocus_plane_with_idx(stack: np.ndarray) -> "tuple[int, np.ndarray]":
+def _autofocus_plane_with_idx(
+    stack: np.ndarray, *, intensity_weighted: bool = False
+) -> "tuple[int, np.ndarray]":
     """Like ``_autofocus_plane`` but also returns the picked 0-indexed slice.
 
     Callers that need to lock other channels to the same focal plane (e.g.
@@ -505,6 +577,20 @@ def _autofocus_plane_with_idx(stack: np.ndarray) -> "tuple[int, np.ndarray]":
     nuclear mask + spot xy come from the SAME physical plane) use this to
     grab the index, then re-extract the other channels in 'single' mode at
     that absolute z.
+
+    Per-plane score:
+      * default (``intensity_weighted=False``): ``var(laplace(plane/mean))`` —
+        the legacy mean-normalized Laplacian variance (Pertuz et al. 2013).
+      * ``intensity_weighted=True``: ``var(laplace(plane/mean)) * mean`` — the
+        same sharpness term WEIGHTED by the plane mean intensity. 2026-05-28
+        Brian: on thick (~16µm, nz≈79) d8 cMyo stacks the focus profile is
+        near-flat across the cell-containing depth, so the unweighted score at
+        a badly out-of-focus HIGH plane is only ~1.0–1.2× the in-focus score —
+        noise then tips the pick to garbage upper planes (measured DAPI picks
+        z=42–67 when the true in-focus nuclear plane is z≈20–24). Multiplying
+        by the plane mean pulls the pick toward the bright AND sharp nuclear
+        plane (validated: picks z≈18–22 on all 8 Dataset A images). The
+        ``mean <= 0`` guard is preserved (score 0).
     """
     from scipy import ndimage as ndi
     if stack.ndim != 3:
@@ -515,13 +601,17 @@ def _autofocus_plane_with_idx(stack: np.ndarray) -> "tuple[int, np.ndarray]":
     best_score = -np.inf
     for z in range(stack.shape[0]):
         plane = stack[z].astype(np.float32)
-        # Normalize by mean to make the score insensitive to brightness
-        mean = plane.mean()
+        # Normalize by mean to make the sharpness term insensitive to brightness
+        mean = float(plane.mean())
         if mean <= 0:
             score = 0.0
         else:
             lap = ndi.laplace(plane / mean)
             score = float(np.var(lap))
+            if intensity_weighted:
+                # Weight sharpness by plane brightness so the pick favors the
+                # bright in-focus nuclear plane over noise-driven upper planes.
+                score *= mean
         if score > best_score:
             best_score = score
             best_idx = z
@@ -533,12 +623,18 @@ def extract_channel_autofocus_with_idx(
     channel_idx: int,
     z_start: Optional[int] = None,
     z_end: Optional[int] = None,
+    *,
+    intensity_weighted: bool = False,
 ) -> "tuple[int, np.ndarray]":
     """Autofocus a single channel; return (absolute_z_1indexed, 2D plane).
 
     The returned z is 1-indexed against the full stack (so it can be passed
     back into ``extract_channel(z_mode='single', z_start=z, z_end=z)`` to
     lock other channels to the same physical plane).
+
+    ``intensity_weighted`` (default False) selects the per-plane focus score —
+    see ``_autofocus_plane_with_idx``. Wired to ``z_stack.autofocus_intensity_weighted``
+    at the mode/runner call sites for the single-plane ``autofocus`` z-mode.
     """
     if channel_idx < 0 or channel_idx >= img.n_channels:
         raise IndexError(
@@ -553,7 +649,9 @@ def extract_channel_autofocus_with_idx(
     if zs0 >= ze0:
         zs0, ze0 = 0, nz
     sub = zyx[zs0:ze0]
-    local_idx, plane = _autofocus_plane_with_idx(sub)
+    local_idx, plane = _autofocus_plane_with_idx(
+        sub, intensity_weighted=intensity_weighted
+    )
     # local_idx is 0-indexed within the windowed substack; convert to
     # 1-indexed absolute z against the full stack.
     abs_z_1indexed = zs0 + local_idx + 1
@@ -572,6 +670,8 @@ def extract_dapi_focus_window(
     z_end: Optional[int] = None,
     fixed_n_slices: int = 0,
     min_intensity_frac_of_peak: float = 0.0,
+    intensity_weighted: bool = False,
+    central_fraction: float = 0.0,
 ) -> "tuple[Tuple[int, int], dict, np.ndarray]":
     """Compute the per-image in-focus DAPI z-window and return its MIP.
 
@@ -611,6 +711,8 @@ def extract_dapi_focus_window(
         outer_end=outer_end_0,
         fixed_n_slices=fixed_n_slices,
         min_intensity_frac_of_peak=min_intensity_frac_of_peak,
+        intensity_weighted=intensity_weighted,
+        central_fraction=central_fraction,
     )
     dapi_mip = zyx[ws0 : we0 + 1].max(axis=0)
     # Convert window to 1-indexed inclusive for the caller (parity with the
@@ -761,6 +863,7 @@ def discover_inputs(
     subfolder_conditions: Optional[dict] = None,
     sec_only_folders: Optional[List[str]] = None,
     sec_only_files: Optional[List[str]] = None,
+    filename_conditions: Optional[List[List[str]]] = None,
     extensions: Tuple[str, ...] = (".vsi", ".czi", ".lif", ".nd2", ".tif", ".tiff"),
 ) -> List[DiscoveredImage]:
     """Walk an input dir and return image paths labelled by condition.
@@ -774,12 +877,29 @@ def discover_inputs(
     sec_only_folders : list of subfolder names whose images are flagged
         ``sec_only=True``.
     sec_only_files : list of filename substrings flagged ``sec_only=True``.
+    filename_conditions : optional ORDERED list of ``[substring, condition]``
+        pairs (2026-05-31 Brian). For FLAT folders whose CONDITION is encoded
+        in the FILENAME (e.g. ``..._NT_02.vsi`` vs ``..._MIAT-KD_05.vsi``)
+        there is otherwise no way to assign distinct non-sec conditions
+        (flat-mode gives every file the single ``subfolder_conditions[""]``
+        label). When set, the FIRST pair whose (case-insensitive) substring
+        is found in the filename sets that file's condition. Evaluated AFTER
+        the ``sec_only_*`` test: sec-only files keep their forced "Sec-Only"
+        label and are NOT relabelled by this map (so a ``-NT_`` substring on a
+        sec-only file can't steal it back). Default ``None`` / empty =
+        legacy behaviour (no filename-based condition assignment).
     extensions : tuple of accepted file extensions (lowercase).
     """
     input_dir = Path(input_dir)
     sec_only_folders = set(sec_only_folders or [])
     sec_only_files = [s.lower() for s in (sec_only_files or [])]
     subfolder_conditions = subfolder_conditions or {}
+    # Normalise filename_conditions to a list of (lower-substring, label) in
+    # the user-supplied order (first match wins).
+    fname_conds: List[Tuple[str, str]] = []
+    for pair in (filename_conditions or []):
+        if pair and len(pair) >= 2 and str(pair[0]).strip():
+            fname_conds.append((str(pair[0]).lower(), str(pair[1])))
 
     out: List[DiscoveredImage] = []
 
@@ -794,6 +914,13 @@ def discover_inputs(
             # Force the "Sec-Only" label when the file/folder is sec-only,
             # so downstream stats grouping is consistent.
             condition = subfolder_conditions.get(subfolder, "Sec-Only")
+        elif fname_conds:
+            # Filename-substring condition assignment (flat folders with the
+            # condition encoded in the file name). First matching pair wins.
+            for sub_l, label in fname_conds:
+                if sub_l in name_l:
+                    condition = label
+                    break
         out.append(DiscoveredImage(
             path=p,
             condition=condition,

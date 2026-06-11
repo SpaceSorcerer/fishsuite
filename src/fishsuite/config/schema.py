@@ -25,6 +25,21 @@ class ConditionsCfg(BaseModel):
     subfolder_conditions: Dict[str, str] = Field(default_factory=dict)
     sec_only_folders: List[str] = Field(default_factory=list)
     sec_only_files: List[str] = Field(default_factory=list)
+    # 2026-05-31 Brian: FLAT-folder, filename-encoded condition assignment.
+    # An ORDERED list of ``[substring, condition_label]`` pairs. For datasets
+    # acquired into a single flat folder where the condition lives in the file
+    # NAME (e.g. ``H9-...-NT_02.vsi`` vs ``H9-...-MIAT-KD_05.vsi``) — flat-mode
+    # discovery otherwise assigns every file the single ``subfolder_conditions[""]``
+    # label, so NT vs KD can't be split. When non-empty, the FIRST pair whose
+    # (case-insensitive) substring is found in a NON-sec-only file's name sets
+    # that file's condition. Evaluated AFTER the sec_only_* test, so sec-only
+    # files keep their forced "Sec-Only" label regardless. Default empty =
+    # legacy behaviour (no filename-based assignment). Pairs are written as
+    # 2-element lists in YAML, e.g.
+    #   filename_conditions:
+    #     - ["-NT_", "NT ASO"]
+    #     - ["-MIAT-KD_", "KD ASO"]
+    filename_conditions: List[List[str]] = Field(default_factory=list)
     condition_order: List[str] = Field(default_factory=list)
     min_nuclei_for_stats: int = 6
 
@@ -115,6 +130,26 @@ class ZStackCfg(BaseModel):
     #       rna_end_slice: 20
     file_overrides: Dict[str, Dict[str, Any]] = Field(default_factory=dict)
 
+    # ─── single-plane "autofocus" mode metric (2026-05-28 Brian) ───────────
+    # ONLY affects ``mode == "autofocus"`` (the single-plane pick used by
+    # rna_only / rna_rna / rna_protein for the DAPI z-lock). Does NOT touch
+    # autofocus_maxproj (which uses ``focus_metric`` above + a window walk).
+    #
+    # Default per-plane focus score is the mean-normalized Laplacian variance
+    # ``var(laplace(plane/mean))``. On THICK stacks (~16µm, nz≈79; e.g. d8 cMyo
+    # BIN1 datasets) the focus profile is near-flat across the cell-containing
+    # depth, so a badly out-of-focus HIGH plane scores only ~1.0–1.2× the true
+    # in-focus plane — noise then tips the pick to garbage upper planes
+    # (measured DAPI picks z=42–67 when the in-focus nuclear plane is z≈20–24).
+    #
+    # When ``autofocus_intensity_weighted`` is True the score becomes
+    # ``var(laplace(plane/mean)) * mean`` — the same sharpness term weighted by
+    # plane brightness, which pulls the pick to the bright AND sharp nuclear
+    # plane (validated: z≈18–22 on all 8 d8 cMyo Dataset A images, matching the
+    # DAPI intensity peak). Leave False for thin stacks / legacy parity; set
+    # True for thick stacks (the BIN1 d8 cMyo presets do).
+    autofocus_intensity_weighted: bool = False
+
     # ─── autofocus_maxproj mode parameters (2026-05-24 Brian) ──────────────
     # When ``mode == "autofocus_maxproj"`` the runner computes a per-image
     # in-focus DAPI z-window using ``focus_metric`` on the DAPI channel,
@@ -187,6 +222,19 @@ class ZStackCfg(BaseModel):
     # brightest slice in the stack to be considered for focus scoring".
     focus_min_intensity_frac_of_peak: float = 0.0
 
+    # ─── Central-fraction peak guard (2026-05-31 Brian) ───────────────────
+    # autofocus_maxproj robustness guard. When in (0, 1], the focus-PEAK
+    # search is restricted to the central this-fraction of the (outer-
+    # bounded) stack — e.g. 0.6 keeps only the middle 60% of slices eligible
+    # to WIN the peak. The fixed-N / FWHM window can still extend toward an
+    # edge from a central peak, but the ANCHOR can never be a true stack-edge
+    # plane. Composes with autofocus_intensity_weighted: on the H9 33-plane
+    # DAPI stacks, intensity-weighting fixed 9/10 windows, and 0.6 here pulled
+    # the last one (_12, peak z=5 → window [1,10]) off the bottom edge to a
+    # mid-stack peak z=7 → window [2,11]. Default 0.0 = disabled (whole
+    # outer-bounded range eligible; full backward compat).
+    focus_central_fraction: float = 0.0
+
 
 class NucleiCfg(BaseModel):
     backend: Literal["stardist", "cellpose", "otsu"] = "stardist"
@@ -230,6 +278,22 @@ class NucleiCfg(BaseModel):
     cellpose_device: Literal["cpu", "directml"] = "cpu"
     exclude_border: bool = True
     border_margin_px: int = 5
+    # 2026-05-29: OPT-IN ghost-nucleus rejection. DEFAULT False keeps every
+    # other dataset/preset byte-for-byte unchanged. When True, a POST-spot-
+    # detection composite rule drops empty 'ghost' shells — segmented objects
+    # that are simultaneously (a) carry ZERO detected RNA spots, (b) are large
+    # (area >= reject_ghost_min_area_px) and (c) flat / low-texture
+    # (dapi_cv <= reject_ghost_max_dapi_cv). These are out-of-focus debris /
+    # coverslip-edge ovals that cellpose segments off the aberrant border band
+    # seen in some SINGLE-PLANE snaps (BIN1 d8cMyo RNase WELLS12 audit, 2026-05-29).
+    # All three conditions are required — each alone is insufficient (the ghost
+    # DAPI-CV band is embedded inside the real-nucleus distribution on these
+    # low-contrast KO images; only the conjunction separates them with a safety
+    # margin and ZERO real-nucleus loss in WT / z-stacks). See
+    # core.segmentation.identify_ghost_nuclei.
+    reject_ghost_nuclei: bool = False
+    reject_ghost_max_dapi_cv: float = 0.12
+    reject_ghost_min_area_px: int = 6000
 
 
 class PixelColocCfg(BaseModel):
@@ -312,8 +376,107 @@ class FociCfg(BaseModel):
     # applies to ``channels.rna2``.
     rna_overrides: FociChannelOverrideCfg = Field(default_factory=FociChannelOverrideCfg)
     rna2_overrides: FociChannelOverrideCfg = Field(default_factory=FociChannelOverrideCfg)
+    # 2026-05-28 Brian: per-channel overrides for the PROTEIN/antibody channel
+    # (used by rna_protein mode, which now spot-detects the antibody channel at
+    # the same depth rna_rna gives rna2). When a field is None the shared
+    # FociCfg value is used — so legacy rna_protein presets without this block
+    # behave identically. rna_protein maps the antibody channel into rna_rna's
+    # rna2 slot internally; this override is copied into rna2_overrides on the
+    # config shim, so the antibody channel can carry its own spot params (e.g. a
+    # larger spot radius for diffuse XRN2 puncta) without touching rna2 in any
+    # rna_rna preset.
+    antibody_overrides: FociChannelOverrideCfg = Field(default_factory=FociChannelOverrideCfg)
+    # 2026-05-29 Brian: intensity-based, spot-centric, FLOOR-ROBUST coloc.
+    # When True, the two-channel (rna_rna / rna_protein) pipeline samples each
+    # spot's RAW partner-channel local intensity (column
+    # ``partner_local_mean_intensity``) and emits the per-nucleus
+    # ``*_local_mean_at_*_spots`` / ``*_enrichment_at_*_spots`` columns plus the
+    # per-image means (and figures 74_/75_). DEFAULT FALSE: this code path
+    # currently HANGS the parallel per-image worker pool (works single-process
+    # only), so it is GATED OFF until the hang is fixed. With it False the
+    # two-channel analysis is byte-equivalent to the pre-feature path (binary
+    # Manders/Pearson/pairing coloc only); figures 74_/75_ self-skip on the
+    # absent columns while 70-73 still generate.
+    compute_partner_intensity: bool = False
+    # 2026-06-05 Brian: spot-detect the antibody/protein channel? RNA_PROTEIN
+    # MODE ONLY. DEFAULT TRUE = existing behavior, completely unchanged: the
+    # antibody channel (mapped into the rna_rna ``rna2`` slot) is BigFISH
+    # spot-detected exactly as before. Set FALSE to treat the antibody channel
+    # as a DIFFUSE INTENSITY channel: rna2/antibody spot detection is SKIPPED
+    # (an empty spot set is produced), so a diffuse antibody stain (e.g. the
+    # QKI IF, which otherwise carpets the field with meaningless "spots") is
+    # NOT spotted. The INTENSITY-based colocalization is UNAFFECTED:
+    # ``compute_partner_intensity`` samples the antibody-channel PIXELS at the
+    # rna1 (MIAT) spots — it never reads the antibody SPOTS — so QKI-intensity-
+    # at-MIAT-spots coloc, pixel-coloc (Pearson/Manders/Li), and all per-nucleus
+    # antibody PIXEL metrics still compute. Consulted ONLY for the antibody
+    # (rna2) channel of an rna_protein run: plain ``rna_rna`` (two real FISH
+    # targets) ALWAYS spot-detects both channels regardless of this value, and
+    # the rna1 channel is never affected.
+    detect_antibody_spots: bool = True
+    # 2026-06-05 Brian: PIPELINE-NATIVE proper colocalization statistic — the
+    # per-nucleus RANDOM-POSITION NULL for "partner intensity at rna1 spots".
+    # The existing ``compute_partner_intensity`` enrichment (observed / whole-
+    # nucleus mean) has NO null model and NO error bar — washed out (~1.0) for a
+    # dense-nuclear partner like the QKI IF. When True (requires
+    # ``compute_partner_intensity: true``), for EACH nucleus the pipeline:
+    #   observed   = mean over rna1 (MIAT) spots of [mean partner (QKI) intensity
+    #                in a disk of radius ``partner_null_disk_px`` centered on the
+    #                spot] — same disk-sample as the observed coloc;
+    #   null       = the SAME number of spots placed at random IN-NUCLEUS
+    #                positions, disk-sampled, repeated ``partner_null_n`` times
+    #                (numpy-batched, deterministic via ``partner_null_seed``);
+    #   enrichment = observed / null_mean ; z = (observed - null_mean) / null_sd.
+    # Emits per nucleus ``rna2_enrichment_vs_null_at_rna1_spots`` +
+    # ``rna2_null_z_at_rna1_spots`` (rna_protein relabels rna2->protein), and a
+    # PER-IMAGE spot-count-weighted pooled rollup (pooled enrichment, pooled z,
+    # empirical p) in per_image_summary. Reproduces the validated external script
+    # ``qki_at_miat_null_ALLARMS_tm1.0.py`` (DISK_R=3 px, N_NULL=1000). DEFAULT
+    # FALSE -> the columns are never emitted and the two-channel output is byte-
+    # equivalent to the pre-feature path (back-compat: BIN1 / H9 unaffected).
+    compute_partner_null_enrichment: bool = False
+    # Number of random-position null draws per nucleus (reference scripts: 1000).
+    partner_null_n: int = 1000
+    # Disk radius (px) for BOTH the observed and the null partner-intensity
+    # sample. CANONICAL = 3.0 px (~0.39 µm at 0.13 µm/px) — the value used by the
+    # two validated reference scripts. This is INTENTIONALLY decoupled from the
+    # tiny ``compute_partner_intensity`` radius (bigfish_spot_radius / voxel ≈ 1
+    # px at the MIAT-QKI preset's 100 nm radius / 0.13 µm voxel), which would not
+    # reproduce the validated method; pin it here so the null is reproducible.
+    partner_null_disk_px: float = 3.0
+    # Fixed RNG seed for the null draws -> deterministic across runs/processes.
+    partner_null_seed: int = 0
+    # When True AND ``nucleolus.enabled`` is True, EXCLUDE nucleolar pixels
+    # (DAPI-poor voids the partner channel also avoids) from the random-null
+    # sampling positions, AND drop rna1 spots whose center falls inside a
+    # nucleolus before the observed/null stats. Tests whether the enrichment is
+    # genuine partner-at-rna1 association rather than mutual nucleolar avoidance.
+    # When nucleolus is NOT enabled this is a no-op and the null uses the whole
+    # nucleus (current/legacy behavior). DEFAULT FALSE.
+    exclude_nucleolus_from_partner_null: bool = False
+    # 2026-06-06 Brian: PIPELINE-NATIVE coloc-figure outputs (downstream "make
+    # coloc clear" null-overlay + radial QKI profile). All DEFAULT FALSE/empty
+    # carrier -> emitted ONLY via the empty-default ImageResult.extra dict, so
+    # the per_image / nuclei / spots tables stay byte-identical (BIN1 / H9
+    # unaffected). save_partner_null_draws surfaces the per-image pooled
+    # null vector (the 1000 draws the pooling block already computes then
+    # discards) as ``extra["coloc_null_draws"]`` for the null-distribution
+    # overlay; requires compute_partner_null_enrichment.
+    save_partner_null_draws: bool = False
+    # When True (requires compute_partner_intensity), sweep CONCENTRIC ANNULI of
+    # increasing radius around each rna1 (MIAT) spot and compare the partner
+    # (QKI) intensity in each ring to the SAME-ring intensity at random
+    # in-nucleus positions (per-ring null, same seed / n as the disk null),
+    # emitting a spot-count-weighted per-(image, ring) profile as
+    # ``extra["coloc_radial_profile"]``. DEFAULT FALSE.
+    compute_partner_radial_profile: bool = False
+    # Outer-edge radii (µm) of the concentric annuli for the radial profile.
+    # Ring 0 = inner disk [0, bins[0]]; ring i = (bins[i-1], bins[i]].
+    partner_radial_bins_um: List[float] = Field(
+        default_factory=lambda: [0.25, 0.5, 0.75, 1.0]
+    )
 
-    def resolved_for(self, channel: Literal["rna", "rna2"]) -> Dict[str, Any]:
+    def resolved_for(self, channel: Literal["rna", "rna2", "antibody"]) -> Dict[str, Any]:
         """Return a dict of effective spot-detection params for ``channel``.
 
         Applies the matching per-channel override on top of the shared
@@ -323,15 +486,18 @@ class FociCfg(BaseModel):
         ``only_nuclear_spots``, ``min_sep_px``.
 
         Unknown channel names raise ``ValueError`` (callers should pass only
-        ``"rna"`` or ``"rna2"``).
+        ``"rna"``, ``"rna2"``, or ``"antibody"``).
         """
         if channel == "rna":
             ov = self.rna_overrides
         elif channel == "rna2":
             ov = self.rna2_overrides
+        elif channel == "antibody":
+            ov = self.antibody_overrides
         else:
             raise ValueError(
-                f"FociCfg.resolved_for: channel must be 'rna' or 'rna2', got {channel!r}"
+                f"FociCfg.resolved_for: channel must be 'rna', 'rna2', or "
+                f"'antibody', got {channel!r}"
             )
         return {
             "bigfish_spot_radius_nm": (
@@ -526,6 +692,43 @@ class OutputCfg(BaseModel):
     # trusted "signal vs noise" cutoff and they want spot counts to reflect
     # the same cut.
     apply_pub_contrast_floor_to_spots: bool = False
+
+    # ─── Thresholded RNA intensity in compartments (2026-06-02 Brian) ──────
+    # A THIRD intensity measurement, distinct from spot-based intensities
+    # (rna_spot_total_intensity_fit) AND from the raw whole-nucleus pixel sum
+    # (sum_rna_intensity, which has NO floor). For each nucleus, integrate the
+    # RNA-channel intensity of ALL pixels whose RAW value >= this floor —
+    # measured SEPARATELY within the nucleus and within the Voronoi cytoplasm.
+    # This is PIXEL-thresholding (not spot detection): it captures all
+    # above-floor signal (diffuse + punctate), independent of the spot-caller.
+    # Mirrors a protein "threshold-and-integrate" approach. Emits, per nucleus,
+    # for EACH compartment (nuclear / cyto):
+    #   rna_thresh_total_intensity_*   sum of RAW intensities of >=floor pixels
+    #   rna_thresh_mean_intensity_*    mean intensity of the >=floor pixels
+    #   rna_thresh_pos_area_px_*       count of >=floor pixels
+    #   rna_thresh_pos_fraction_*      >=floor pixel count / compartment area
+    # (and the rna2_thresh_*_* equivalents in rna_rna / rna_protein modes).
+    #
+    # The floor is applied to the SAME RNA image plane used for spot detection
+    # (the objective-window MIP). It is a SEPARATE knob from the pub-contrast
+    # floor: the threshold-integrate columns are ALWAYS emitted regardless of
+    # apply_pub_contrast_floor_to_* — they are NaN only when no floor can be
+    # resolved at all.
+    #
+    # Default resolution when this field is None or <= 0:
+    #   1. the resolved spot floor forwarded by the runner (the pub-contrast
+    #      RNA floor — i.e. manual_rna_min when apply_pub_contrast_floor_to_spots
+    #      is on), else
+    #   2. manual_rna_min read directly from this config, else
+    #   3. NaN (columns present but empty; schema stays stable).
+    # Set this field to a positive number to pin the threshold explicitly,
+    # independent of the spot floor.
+    rna_intensity_threshold: Optional[float] = None
+    # Second-channel (rna2 / antibody) floor for the same measurement, used by
+    # rna_rna + rna_protein modes. Same None/<=0 default semantics, but the
+    # default spot-floor source is the rna2 / antibody channel
+    # (manual_rna2_min / manual_antibody_min).
+    rna2_intensity_threshold: Optional[float] = None
 
     # 2026-05-25 Brian: configurable publication / QC scale bar. These flow
     # into the output module's render globals at run start (runner.run_batch

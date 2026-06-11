@@ -84,6 +84,14 @@ SCALEBAR_FONT_PX = 32
 NUC_OUTLINE_WIDTH_PX = 2
 SPOT_MARKER_RADIUS_PX = 3  # base size; scales by spot_diameter when available
 
+# 2026-06-02 Brian: called-spot markers drawn OVER the RNA signal (walkthrough
+# step07 spots-on-DAPI + step08 spots-on-RNA-threshold) use CYAN so they are
+# clearly distinct from the yellow MIAT-640 RNA threshold/signal and from every
+# channel LUT in use (MIAT-640=yellow, DAPI=blue, 561=magenta, 488=green).
+# Cyan is high-contrast on the black/dim-yellow backgrounds and is not a channel
+# color. Display-only — does not affect spot detection or any quantitative output.
+WALKTHROUGH_SPOT_MARKER_COLOR = (0, 255, 255)  # cyan (#00FFFF)
+
 
 def sanitize_condition_for_filename(condition: Optional[str]) -> str:
     """Make a condition label safe to embed in an output filename.
@@ -560,6 +568,52 @@ def burn_channel_legend(
     return np.asarray(img)
 
 
+def burn_corner_title(
+    rgb_u8: np.ndarray,
+    text: str,
+    *,
+    margin_px: int = 20,
+    font_px: int = 22,
+    text_color: Tuple[int, int, int] = (255, 255, 255),
+    text_outline_px: int = 2,
+    text_outline_color: Tuple[int, int, int] = (0, 0, 0),
+) -> np.ndarray:
+    """Burn a single bold title line into the top-left corner of an RGB image.
+
+    Used by the walkthrough threshold panels to state the exact gate the
+    panel is showing (e.g. ``"MIAT ≥ spot floor 800"``) so the displayed
+    threshold is never mistaken for a different (lower) value. Returns a new
+    image; if PIL is unavailable the title is silently skipped (panel still
+    renders).
+    """
+    if rgb_u8.ndim != 3 or rgb_u8.shape[2] != 3 or not text:
+        return rgb_u8.copy()
+    try:
+        from PIL import Image, ImageDraw
+    except Exception:
+        return rgb_u8.copy()
+    img = Image.fromarray(rgb_u8)
+    draw = ImageDraw.Draw(img)
+    font = _load_bold_font(font_px)
+    tx, ty = margin_px, margin_px
+    try:
+        draw.text(
+            (tx, ty), text, fill=text_color, font=font,
+            stroke_width=int(text_outline_px),
+            stroke_fill=text_outline_color,
+        )
+    except TypeError:
+        ox = int(text_outline_px)
+        for dx in range(-ox, ox + 1):
+            for dy in range(-ox, ox + 1):
+                if dx == 0 and dy == 0:
+                    continue
+                draw.text((tx + dx, ty + dy), text,
+                          fill=text_outline_color, font=font)
+        draw.text((tx, ty), text, fill=text_color, font=font)
+    return np.asarray(img)
+
+
 # ---------------------------------------------------------------------------
 # Overlay rendering: nuclei outlines, spots
 # ---------------------------------------------------------------------------
@@ -984,6 +1038,19 @@ def save_walkthrough_bundle_rna_rna(
     rna_ceil_override: Optional[float] = None,
     rna2_floor_override: Optional[float] = None,
     rna2_ceil_override: Optional[float] = None,
+    # 2026-06-05 Brian: whether the display floor (rna*_floor_override) is the
+    # ACTUAL spot-detection gate. True (legacy default) ⇒ the floor IS the gate
+    # (apply_pub_contrast_floor_to_spots=True, e.g. BIN1/H9 v3 presets): the
+    # step05/06 floor-mask panels are meaningful and rendered exactly as before.
+    # False ⇒ the floor is a purely cosmetic display floor (e.g. MIAT-QKI, where
+    # spots come from BigFISH LoG and the low display floor would flood each
+    # nucleus into a solid mass): for any channel WITH detected spots the
+    # step05/06 panels instead show the actual called spots (titled "… detected
+    # spots (BigFISH LoG)"), so the panel honestly reflects what feeds the
+    # analysis. A channel WITHOUT spots (e.g. the diffuse QKI antibody under
+    # detect_antibody_spots=false) keeps the floor-fill, which is representative
+    # for a diffuse intensity channel.
+    floor_is_spot_gate: bool = True,
 ) -> List[Path]:
     """Walkthrough bundle for rna_rna mode.
 
@@ -1079,7 +1146,8 @@ def save_walkthrough_bundle_rna_rna(
     # looked nothing like the published image. The pixel-coloc threshold
     # is still computed + used internally for Pearson/Costes (see
     # thresholds.csv).
-    def _channel_steps(rna, mask, suffix, r_w, g_w, b_w, color_tuple, rf, rc):
+    def _channel_steps(rna, mask, suffix, r_w, g_w, b_w, color_tuple, rf, rc,
+                       chan_spots=None):
         s04 = _to_uint8(apply_lut(rna, r_w, g_w, b_w, floor=rf, ceil=rc))
         s04 = burn_scale_bar(
             s04, voxel_xy_nm, bar_um=SCALEBAR_UM,
@@ -1088,12 +1156,61 @@ def save_walkthrough_bundle_rna_rna(
         p4 = walk_dir / f"{stem}__step04_{suffix}_raw.png"
         save_png(s04, p4); out.append(p4)
 
-        # Threshold mask = pixels at or above the analysis floor (rf).
-        # Same cut used to render the pub image, so the walkthrough mirrors
-        # what the PI sees.
+        # 2026-06-05 Brian: HONEST detection panel. When the display floor is
+        # NOT the spot-detection gate (floor_is_spot_gate=False, e.g. MIAT-QKI
+        # where apply_pub_contrast_floor_to_spots=false and spots come from
+        # BigFISH LoG), thresholding the channel at the low cosmetic display
+        # floor (rf, e.g. 525) floods each nucleus into a solid mass that looks
+        # nothing like the discrete called puncta — it misrepresents the
+        # analysis. For a channel WITH detected spots, show the actual called
+        # spots instead. A channel WITHOUT spots (diffuse antibody under
+        # detect_antibody_spots=false) keeps the floor-fill (representative for
+        # a diffuse intensity channel). Filenames are unchanged in both
+        # branches so downstream QC scripts find the same panels.
+        _has_spots = (chan_spots is not None and len(chan_spots) > 0)
+        _detection_panel = (not floor_is_spot_gate) and _has_spots
+
+        if _detection_panel:
+            _thr_title = f"{suffix.replace('_', ' ')} detected spots (BigFISH LoG)"
+            # Step05: called spots (open markers) on black — the analysis input.
+            s05 = np.zeros((rna.shape[0], rna.shape[1], 3), dtype=np.uint8)
+            s05 = draw_spot_markers(
+                s05, chan_spots, color=color_tuple, radius=4, thickness=2,
+                size_mode="auto", voxel_xy_nm=voxel_xy_nm,
+            )
+            s05 = burn_corner_title(s05, _thr_title)
+            p5 = walk_dir / f"{stem}__step05_{suffix}_threshold.png"
+            save_png(s05, p5); out.append(p5)
+
+            # Step06: called spots over the grayscale channel (display contrast)
+            # so the reader can confirm each call sits on real signal.
+            base = _to_uint8(apply_lut(rna, 1.0, 1.0, 1.0, floor=rf * 0.75, ceil=rc))
+            s06 = draw_spot_markers(
+                base.copy(), chan_spots, color=color_tuple, radius=4, thickness=2,
+                size_mode="auto", voxel_xy_nm=voxel_xy_nm,
+            )
+            s06 = burn_corner_title(s06, _thr_title)
+            s06 = burn_scale_bar(
+                s06, voxel_xy_nm, bar_um=SCALEBAR_UM,
+                height_px=SCALEBAR_HEIGHT_PX, font_px=SCALEBAR_FONT_PX,
+            )
+            p6 = walk_dir / f"{stem}__step06_{suffix}_threshold_on_signal.png"
+            save_png(s06, p6); out.append(p6)
+            return
+
+        # Floor-mask panel (legacy). Threshold mask = pixels at or above the
+        # analysis floor (rf) — the same cut used to render the pub image, so
+        # the walkthrough mirrors what the PI sees. Correct when the floor IS
+        # the spot gate, or for a diffuse channel with no spots.
         pos = np.asarray(rna) >= float(rf)
+        # 2026-06-03 Brian: burn the gate onto the threshold panels (mirrors the
+        # rna_only path's _thr_title). Without it a legitimately-filled diffuse
+        # channel (e.g. the XRN2 protein, abundant nucleoplasmic) reads as
+        # "un-thresholded" even though it IS gated at rf. Display-only label.
+        _thr_title = f"{suffix.replace('_', ' ')} ≥ floor {float(rf):g}"
         s05 = np.zeros((rna.shape[0], rna.shape[1], 3), dtype=np.uint8)
         s05[pos] = color_tuple
+        s05 = burn_corner_title(s05, _thr_title)
         p5 = walk_dir / f"{stem}__step05_{suffix}_threshold.png"
         save_png(s05, p5); out.append(p5)
 
@@ -1102,6 +1219,7 @@ def save_walkthrough_bundle_rna_rna(
         s06[pos] = (
             0.5 * np.array(color_tuple, dtype=np.float32) + 0.5 * base[pos].astype(np.float32)
         ).astype(np.uint8)
+        s06 = burn_corner_title(s06, _thr_title)
         s06 = burn_scale_bar(
             s06, voxel_xy_nm, bar_um=SCALEBAR_UM,
             height_px=SCALEBAR_HEIGHT_PX, font_px=SCALEBAR_FONT_PX,
@@ -1113,11 +1231,13 @@ def save_walkthrough_bundle_rna_rna(
         rna1, rna1_pos_mask, _rna_fn,
         rna_lut_weights[0], rna_lut_weights[1], rna_lut_weights[2],
         rna_color, rna1_f, rna1_c,
+        chan_spots=spots1,
     )
     _channel_steps(
         rna2, rna2_pos_mask, _rna2_fn,
         rna2_lut_weights[0], rna2_lut_weights[1], rna2_lut_weights[2],
         rna2_color, rna2_f, rna2_c,
+        chan_spots=spots2,
     )
 
     def _has_paired_col(df: Optional[pd.DataFrame]) -> Optional[str]:
@@ -1175,7 +1295,14 @@ def save_walkthrough_bundle_rna_rna(
     # without the white ring.
     if (spots1 is not None and len(spots1) > 0) or (spots2 is not None and len(spots2) > 0):
         dapi_b = apply_lut(dapi, 0.0, 0.3, 1.0, floor=df, ceil=dc)
-        rna1_y = apply_lut(rna1, 1.0, 1.0, 0.0, floor=rna1_f, ceil=rna1_c)
+        # 2026-05-28 Brian: honor rna_lut_weights for the RNA1 layer (was
+        # hardcoded yellow, dropping the configured color from the composite —
+        # e.g. magenta BIN1-introns vanished in rna_protein/rna_rna merges).
+        # Byte-identical for the default rna_lut=yellow case (weights (1,1,0)).
+        rna1_y = apply_lut(
+            rna1, rna_lut_weights[0], rna_lut_weights[1], rna_lut_weights[2],
+            floor=rna1_f, ceil=rna1_c,
+        )
         rna2_l = apply_lut(
             rna2, rna2_lut_weights[0], rna2_lut_weights[1], rna2_lut_weights[2],
             floor=rna2_f, ceil=rna2_c,
@@ -1247,7 +1374,7 @@ def save_walkthrough_bundle_rna_rna(
                 s09, voxel_xy_nm, bar_um=SCALEBAR_UM,
                 height_px=SCALEBAR_HEIGHT_PX, font_px=SCALEBAR_FONT_PX,
             )
-            p = walk_dir / f"{stem}__step09_nuclear_overlap_spots.png"
+            p = walk_dir / f"{stem}__step09_active_TSS.png"
             save_png(s09, p); out.append(p)
 
     # Step 10: Cytoplasm / cell mask overlay on DAPI. Green = cytoplasm
@@ -1276,7 +1403,14 @@ def save_walkthrough_bundle_rna_rna(
     # emitted (last panel of the walkthrough; mirrors Fiji's
     # save_publication_images_rna_rna __merge_all_DAPI_RNA1_RNA2 visual).
     dapi_b = apply_lut(dapi, 0.0, 0.3, 1.0, floor=df, ceil=dc)
-    rna1_y = apply_lut(rna1, 1.0, 1.0, 0.0, floor=rna1_f, ceil=rna1_c)
+    # 2026-05-28 Brian: honor rna_lut_weights for RNA1 (was hardcoded yellow,
+    # so step11_merge_all dropped the configured RNA1 color — magenta
+    # BIN1-introns disappeared from the all-channel merge). Byte-identical for
+    # the default rna_lut=yellow case (weights (1,1,0)).
+    rna1_y = apply_lut(
+        rna1, rna_lut_weights[0], rna_lut_weights[1], rna_lut_weights[2],
+        floor=rna1_f, ceil=rna1_c,
+    )
     rna2_l = apply_lut(
         rna2, rna2_lut_weights[0], rna2_lut_weights[1], rna2_lut_weights[2],
         floor=rna2_f, ceil=rna2_c,
@@ -1585,6 +1719,17 @@ def save_walkthrough_bundle(
     # filenames as before.
     rna_label: Optional[str] = None,
     dapi_label: Optional[str] = None,
+    # 2026-06-02 Brian: when the RNA spot floor is active
+    # (output.apply_pub_contrast_floor_to_spots=True), the *actual* gate that
+    # decides which detected spots survive is ``output.manual_rna_min`` — NOT
+    # the pixel-coloc MAD threshold encoded in ``rna_pos_mask``. The MAD
+    # threshold is much lower (e.g. 290 vs the 800 spot floor), so rendering
+    # it in the step05/06/08 "threshold" panels looked wildly over-exposed and
+    # misrepresented the spot gate. When ``spot_floor`` is supplied we render
+    # those panels at pixels >= spot_floor and label them explicitly. When it
+    # is None the panels fall back to the legacy ``rna_pos_mask`` behaviour
+    # (backward compatible — no spot floor in effect).
+    spot_floor: Optional[float] = None,
 ) -> List[Path]:
     """Save the pipeline-walkthrough PNGs (matches Fiji step01-step09).
 
@@ -1598,6 +1743,13 @@ def save_walkthrough_bundle(
     Step 08: Detected spots on RNA threshold mask (spots overlaid on the
              yellow threshold map so the reader can see which spots were
              called inside vs outside the thresholded signal)
+
+    Threshold panels (05/06/08): when ``spot_floor`` is supplied the
+    "threshold" rendered is the effective spot gate (pixels >= spot_floor,
+    titled e.g. "MIAT ≥ spot floor 800") rather than the pixel-coloc MAD
+    mask in ``rna_pos_mask``. The MAD mask is the internal coloc threshold,
+    not the spot gate, and is much lower — rendering it misrepresented the
+    gate. When ``spot_floor`` is None the legacy ``rna_pos_mask`` is used.
     Step 09: Cytoplasm / cell mask overlay on DAPI (only emitted when
              ``cyt_labels`` is supplied; cytoplasm boundaries drawn in
              green, nucleus boundaries in white — mirrors Fiji's
@@ -1653,10 +1805,22 @@ def save_walkthrough_bundle(
     p = walk_dir / f"{stem}__step04_{_rna_fn}_raw_yellow.png"
     save_png(s04, p); out.append(p)
 
+    # Threshold-panel mask + title. When the spot floor is active the
+    # "threshold" the reader should see is the EFFECTIVE spot gate
+    # (pixels >= spot_floor), not the pixel-coloc MAD mask in rna_pos_mask.
+    # Title states the gate explicitly so it can't be misread.
+    if spot_floor is not None:
+        rna_pos = np.asarray(rna) >= float(spot_floor)
+        _thr_title = f"{_rna_fn} ≥ spot floor {float(spot_floor):g}"
+    else:
+        rna_pos = np.asarray(rna_pos_mask) > 0
+        _thr_title = None
+
     # Step 05: RNA threshold mask in yellow on black
-    rna_pos = np.asarray(rna_pos_mask) > 0
     s05 = np.zeros((rna.shape[0], rna.shape[1], 3), dtype=np.uint8)
     s05[rna_pos] = (255, 255, 0)
+    if _thr_title is not None:
+        s05 = burn_corner_title(s05, _thr_title)
     p = walk_dir / f"{stem}__step05_{_rna_fn}_threshold_yellow.png"
     save_png(s05, p); out.append(p)
 
@@ -1664,12 +1828,17 @@ def save_walkthrough_bundle(
     # Fiji uses overlay_mask_on_gray(rna2d, rna_pos, 1.0, 1.0, 0.0, 0.5,
     # disp_floor=r_thr_img * 0.75) — i.e. the GRAY base contrast floor is
     # tied to the RNA threshold itself (0.75x), not the publication
-    # percentile floor. Mirrors Fiji exactly.
-    base = _to_uint8(apply_lut(rna, 1.0, 1.0, 1.0, floor=rf * 0.75, ceil=rc))
+    # percentile floor. Mirrors Fiji exactly. When a spot floor is active the
+    # gray base is anchored to it (spot_floor * 0.75) so the overlaid mask
+    # and the underlying signal read at the same scale.
+    _base_floor = (float(spot_floor) * 0.75) if spot_floor is not None else (rf * 0.75)
+    base = _to_uint8(apply_lut(rna, 1.0, 1.0, 1.0, floor=_base_floor, ceil=rc))
     s06 = base.copy()
     s06[rna_pos] = (
         0.5 * np.array([255, 255, 0], dtype=np.float32) + 0.5 * base[rna_pos].astype(np.float32)
     ).astype(np.uint8)
+    if _thr_title is not None:
+        s06 = burn_corner_title(s06, _thr_title)
     s06 = burn_scale_bar(
         s06, voxel_xy_nm, bar_um=SCALEBAR_UM,
         height_px=SCALEBAR_HEIGHT_PX, font_px=SCALEBAR_FONT_PX,
@@ -1689,7 +1858,7 @@ def save_walkthrough_bundle(
             s07, labels, color=(255, 255, 255), width_px=NUC_OUTLINE_WIDTH_PX,
         )
         s07 = draw_spot_markers(
-            s07, spots, color=(255, 255, 0), radius=4, thickness=2,
+            s07, spots, color=WALKTHROUGH_SPOT_MARKER_COLOR, radius=4, thickness=2,
             size_mode="auto", voxel_xy_nm=voxel_xy_nm,
         )
         s07 = burn_scale_bar(
@@ -1706,9 +1875,11 @@ def save_walkthrough_bundle(
         s08 = np.zeros((rna.shape[0], rna.shape[1], 3), dtype=np.uint8)
         s08[rna_pos] = (200, 200, 0)  # dim yellow base
         s08 = draw_spot_markers(
-            s08, spots, color=(255, 255, 255), radius=4, thickness=2,
+            s08, spots, color=WALKTHROUGH_SPOT_MARKER_COLOR, radius=4, thickness=2,
             size_mode="auto", voxel_xy_nm=voxel_xy_nm,
         )
+        if _thr_title is not None:
+            s08 = burn_corner_title(s08, _thr_title)
         s08 = burn_scale_bar(
             s08, voxel_xy_nm, bar_um=SCALEBAR_UM,
             height_px=SCALEBAR_HEIGHT_PX, font_px=SCALEBAR_FONT_PX,

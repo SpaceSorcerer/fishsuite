@@ -23,6 +23,49 @@ from .. import segmentation as _seg
 from .. import spots as _spots
 from .. import morphology as _morph
 from .. import thresholds as _thr
+from .. import metrics as _metrics
+
+
+def _resolve_thresh_intensity_floor(cfg, analysis_floors, channel: str) -> float:
+    """Resolve the thresholded-intensity floor for ``channel`` ('rna'|'rna2').
+
+    Precedence (2026-06-02 Brian — see OutputCfg.rna_intensity_threshold):
+      1. cfg.output.<channel>_intensity_threshold when set and > 0 (explicit pin).
+      2. the spot floor the runner forwarded via analysis_floors[channel]
+         (the resolved pub-contrast floor / manual_<channel>_min).
+      3. cfg.output.manual_<channel>_min read directly (so the feature still
+         works without the runner, e.g. in unit tests).
+      4. NaN -> the thresholded columns are emitted but empty (schema stable).
+
+    Returns a float (NaN when no floor is resolvable).
+    """
+    out = getattr(cfg, "output", None)
+    # 1) explicit per-channel pin
+    pin_attr = "rna_intensity_threshold" if channel == "rna" else "rna2_intensity_threshold"
+    pin = getattr(out, pin_attr, None) if out is not None else None
+    try:
+        if pin is not None and float(pin) > 0:
+            return float(pin)
+    except (TypeError, ValueError):
+        pass
+    # 2) runner-forwarded spot floor
+    if analysis_floors:
+        v = analysis_floors.get(channel)
+        try:
+            if v is not None and float(v) > 0:
+                return float(v)
+        except (TypeError, ValueError):
+            pass
+    # 3) manual_<channel>_min read directly from config
+    man_attr = "manual_rna_min" if channel == "rna" else "manual_rna2_min"
+    man = getattr(out, man_attr, None) if out is not None else None
+    try:
+        if man is not None and float(man) > 0:
+            return float(man)
+    except (TypeError, ValueError):
+        pass
+    # 4) no floor resolvable
+    return float("nan")
 
 
 @dataclass
@@ -213,6 +256,10 @@ def run_one(
     # detection, then MIP that window for all channels. Replaces the need
     # for per-image file_overrides on datasets with field-to-field focus
     # drift (e.g. BIN1 KO_100x02 needed 15-49 vs default 9-78).
+    # 2026-05-28 Brian: dapi_autofocus_z holds DAPI's picked plane in
+    # z_mode == "autofocus" so RNA (here) and the antibody channel (in the
+    # rna_protein wrapper, via qc) can be locked to that SAME plane.
+    dapi_autofocus_z: Optional[int] = None
     if z_mode == "autofocus_maxproj":
         (afm_zs, afm_ze), afm_diag, dapi_2d = _io.extract_dapi_focus_window(
             img, dapi_idx,
@@ -223,6 +270,8 @@ def run_one(
             z_start=z_start, z_end=z_end,
             fixed_n_slices=int(getattr(cfg.z_stack, "focus_window_fixed_n_slices", 0)),
             min_intensity_frac_of_peak=float(getattr(cfg.z_stack, "focus_min_intensity_frac_of_peak", 0.0)),
+            intensity_weighted=bool(getattr(cfg.z_stack, "autofocus_intensity_weighted", False)),
+            central_fraction=float(getattr(cfg.z_stack, "focus_central_fraction", 0.0)),
         )
         if rna_per_channel_z:
             rna_2d = _io.extract_channel(
@@ -245,6 +294,35 @@ def run_one(
                 f"window=[{afm_zs},{afm_ze}] "
                 f"({afm_ze - afm_zs + 1} slices)[/dim]"
             )
+        except Exception:
+            pass
+    elif z_mode == "autofocus":
+        # 2026-05-28 Brian: autofocus now LOCKS the RNA channel to DAPI's
+        # picked focal plane. Previously DAPI and RNA were autofocused
+        # INDEPENDENTLY (each calling extract_channel(z_mode="autofocus")),
+        # so they could land on different physical planes — spot xy then came
+        # from a different plane than the nuclear mask. We autofocus DAPI once
+        # (bounded by the z_start/z_end window, including per-image
+        # file_overrides), then read RNA at that exact plane. The DAPI-lock
+        # takes precedence over rna_per_channel_z in this mode.
+        dapi_autofocus_z, dapi_2d = _io.extract_channel_autofocus_with_idx(
+            img, dapi_idx, z_start=z_start, z_end=z_end,
+            intensity_weighted=bool(getattr(cfg.z_stack, "autofocus_intensity_weighted", False)),
+        )
+        rna_2d = _io.extract_channel_at_z(img, rna_idx, z_1indexed=dapi_autofocus_z)
+        try:
+            from rich.console import Console as _C
+            if rna_per_channel_z:
+                _C().print(
+                    f"  [dim]z-lock: {Path(path).name} → RNA locked to DAPI plane "
+                    f"z={dapi_autofocus_z} (per-channel RNA maxproj override IGNORED "
+                    f"under autofocus)[/dim]"
+                )
+            else:
+                _C().print(
+                    f"  [dim]z-lock: {Path(path).name} → all channels @ DAPI plane "
+                    f"z={dapi_autofocus_z}[/dim]"
+                )
         except Exception:
             pass
     else:
@@ -495,6 +573,14 @@ def run_one(
         rp_df = pd.DataFrame(columns=["label"])
     rp_by_id = {int(r["label"]): r for r in rp_df.to_dict(orient="records")}
 
+    # ---- Thresholded RNA intensity in compartments (2026-06-02 Brian) ------
+    # Resolve the settable floor for this measurement ONCE per image (defaults
+    # to the spot floor when unset/0). Applied to the SAME RNA plane used for
+    # spot detection (rna_2d, the objective-window MIP). Per-nucleus values are
+    # computed inside the loop below via
+    # _metrics.compute_thresholded_compartment_intensity for BOTH compartments.
+    rna_thresh_floor = _resolve_thresh_intensity_floor(cfg, analysis_floors, "rna")
+
     # spot-id offsets so global ids are unique per image (incremented across all)
     spot_global_id = 0
 
@@ -538,12 +624,34 @@ def run_one(
                 rna_cytoplasmic_mean = float("nan")
                 cyto_area_px = 0
         else:
+            cyt_mask = None
             rna_cytoplasmic_mean = float("nan")
             cyto_area_px = 0
 
         rna_nc_ratio = (rna_mean_in_nucleus / rna_cytoplasmic_mean) \
             if (rna_cytoplasmic_mean and rna_cytoplasmic_mean > 0
                 and not math.isnan(rna_cytoplasmic_mean)) else float("nan")
+
+        # ---- Thresholded RNA intensity, per compartment (2026-06-02 Brian) --
+        # Threshold-and-integrate: sum/mean/area/fraction of pixels whose RAW
+        # RNA value >= rna_thresh_floor, computed SEPARATELY for nucleus and
+        # cytoplasm. Pixel-thresholding (diffuse + punctate), independent of
+        # the spot-caller. Cyto values are all-NaN (area 0) when no cytoplasm
+        # mask exists for this nucleus.
+        _tn = _metrics.compute_thresholded_compartment_intensity(
+            rna_2d, nuc_mask, rna_thresh_floor
+        )
+        if cyt_mask is not None:
+            _tc = _metrics.compute_thresholded_compartment_intensity(
+                rna_2d, cyt_mask, rna_thresh_floor
+            )
+        else:
+            _tc = dict(
+                thresh_total_intensity=float("nan"),
+                thresh_mean_intensity=float("nan"),
+                thresh_pos_area_px=0,
+                thresh_pos_fraction=float("nan"),
+            )
 
         # Per-nucleus spots
         sub = spots_by_nid.get(nid, pd.DataFrame())
@@ -661,6 +769,18 @@ def run_one(
             "spot_fit_success_count": int(spot_fit_success_count),
             "spot_fit_success_fraction": spot_fit_success_fraction,
             "sum_rna_intensity": sum_rna_intensity,
+            # ---- Thresholded RNA intensity per compartment (2026-06-02) ----
+            # Third intensity measurement: pixels with RAW value >=
+            # rna_thresh_floor, integrated separately in nucleus and cytoplasm.
+            "rna_thresh_total_intensity_nuclear": _tn["thresh_total_intensity"],
+            "rna_thresh_mean_intensity_nuclear": _tn["thresh_mean_intensity"],
+            "rna_thresh_pos_area_px_nuclear": int(_tn["thresh_pos_area_px"]),
+            "rna_thresh_pos_fraction_nuclear": _tn["thresh_pos_fraction"],
+            "rna_thresh_total_intensity_cyto": _tc["thresh_total_intensity"],
+            "rna_thresh_mean_intensity_cyto": _tc["thresh_mean_intensity"],
+            "rna_thresh_pos_area_px_cyto": int(_tc["thresh_pos_area_px"]),
+            "rna_thresh_pos_fraction_cyto": _tc["thresh_pos_fraction"],
+            "rna_thresh_floor": rna_thresh_floor,
             "cyto_area_px": int(cyto_area_px),
             "cyto_estimation_method": "voronoi" if cyt_labels is not None else "",
             "n_voxels": int(nucleus_area_px),
@@ -852,6 +972,50 @@ def run_one(
                 f"{_tb.format_exc()}"
             )
 
+    # ---- OPT-IN ghost-nucleus rejection ------------------------------------
+    # 2026-05-29: drop empty 'ghost' shells (out-of-focus border debris that
+    # cellpose segments off the aberrant single-plane border band). DEFAULT
+    # OFF (cfg.nuclei.reject_ghost_nuclei) => this whole block is skipped and
+    # behavior is byte-for-byte unchanged for every other dataset/preset. The
+    # rule is POST-spot-detection: it needs rna_spot_count + dapi_cv (both
+    # already on nuclei_df by here). See core.segmentation.identify_ghost_nuclei.
+    if getattr(cfg.nuclei, "reject_ghost_nuclei", False) and len(nuclei_df) > 0:
+        # dapi_cv is normally merged in the nucleolus block above; if nucleolus
+        # is disabled, compute the per-nucleus chromatin metrics on the fly so
+        # the filter still has its texture column.
+        if "dapi_cv" not in nuclei_df.columns:
+            try:
+                from ..nucleolus import chromatin_metrics_per_nucleus as _chrom
+                _cdf = _chrom(labels, dapi_2d, None)
+                if len(_cdf) and "nucleus_id" in nuclei_df.columns:
+                    _keep = [c for c in ["nucleus_id", "dapi_cv"] if c in _cdf.columns]
+                    nuclei_df = nuclei_df.merge(_cdf[_keep], on="nucleus_id", how="left")
+            except Exception as _gexc:
+                print(f"  WARN: ghost-filter dapi_cv compute failed on {img_name} "
+                      f"({type(_gexc).__name__}: {_gexc}); skipping ghost filter.")
+        if "dapi_cv" in nuclei_df.columns:
+            _ghost_ids = _seg.identify_ghost_nuclei(
+                nuclei_df,
+                max_dapi_cv=float(getattr(cfg.nuclei, "reject_ghost_max_dapi_cv", 0.12)),
+                min_area_px=int(getattr(cfg.nuclei, "reject_ghost_min_area_px", 6000)),
+            )
+            if _ghost_ids:
+                _gset = set(int(g) for g in _ghost_ids)
+                # 1) drop from per-nucleus table
+                nuclei_df = nuclei_df[~nuclei_df["nucleus_id"].isin(_gset)].reset_index(drop=True)
+                # 2) zero those labels so saved masks / QC overlays / popouts /
+                #    nuc_mask and downstream counts are all consistent.
+                if labels is not None and labels.size:
+                    labels = labels.copy()
+                    labels[np.isin(labels, list(_gset))] = 0
+                # 3) drop those nuclei's spots (if any) from the spot table.
+                if len(spots_out_df) and "nucleus_id" in spots_out_df.columns:
+                    spots_out_df = spots_out_df[
+                        ~spots_out_df["nucleus_id"].isin(_gset)
+                    ].reset_index(drop=True)
+                print(f"  ghost-filter: dropped {len(_gset)} empty nucleus shell(s) "
+                      f"on {img_name} (ids={sorted(_gset)})")
+
     # Per-image summary row (Fiji-compatible columns)
     if len(nuclei_df) > 0:
         spot_counts = nuclei_df["rna_spot_count"].astype(int).tolist()
@@ -881,6 +1045,16 @@ def run_one(
             tcv = (math.sqrt(tv) / tm) if tm > 0 else float("nan")
         else:
             tcv = float("nan")
+
+        # Per-image mean of the per-nucleus thresholded-intensity values
+        # (2026-06-02 Brian). Plain mean over finite per-nucleus values.
+        def _col_mean(col: str) -> float:
+            if col not in nuclei_df.columns:
+                return float("nan")
+            v = pd.to_numeric(nuclei_df[col], errors="coerce").to_numpy()
+            v = v[np.isfinite(v)]
+            return float(v.mean()) if v.size else float("nan")
+
         per_image = {
             "image": img_name,
             "condition": condition,
@@ -907,6 +1081,16 @@ def run_one(
             "n_nuclei_border_excluded": int(n_border_excluded),
             "total_spots": int(len(spots_out_df)),
             "spots_in_nuclei": int((spots_out_df.get("nucleus_id", pd.Series(dtype=int)) > 0).sum()) if len(spots_out_df) else 0,
+            # ---- Per-image means of thresholded RNA intensity (2026-06-02) --
+            "rna_thresh_floor": rna_thresh_floor,
+            "mean_rna_thresh_total_intensity_nuclear": _col_mean("rna_thresh_total_intensity_nuclear"),
+            "mean_rna_thresh_mean_intensity_nuclear": _col_mean("rna_thresh_mean_intensity_nuclear"),
+            "mean_rna_thresh_pos_area_px_nuclear": _col_mean("rna_thresh_pos_area_px_nuclear"),
+            "mean_rna_thresh_pos_fraction_nuclear": _col_mean("rna_thresh_pos_fraction_nuclear"),
+            "mean_rna_thresh_total_intensity_cyto": _col_mean("rna_thresh_total_intensity_cyto"),
+            "mean_rna_thresh_mean_intensity_cyto": _col_mean("rna_thresh_mean_intensity_cyto"),
+            "mean_rna_thresh_pos_area_px_cyto": _col_mean("rna_thresh_pos_area_px_cyto"),
+            "mean_rna_thresh_pos_fraction_cyto": _col_mean("rna_thresh_pos_fraction_cyto"),
             "runtime_s": round(time.time() - t0, 3),
             "dapi_channel": int(dapi_idx),
             "rna_channel": int(rna_idx),
@@ -939,6 +1123,8 @@ def run_one(
             "n_nuclei_border_excluded": int(n_border_excluded),
             "total_spots": 0,
             "spots_in_nuclei": 0,
+            # Thresholded RNA intensity provenance (no nuclei -> NaN means).
+            "rna_thresh_floor": rna_thresh_floor,
             "runtime_s": round(time.time() - t0, 3),
             "dapi_channel": int(dapi_idx),
             "rna_channel": int(rna_idx),
@@ -992,6 +1178,10 @@ def run_one(
         # <prefix><stem>__nucleolus_overlay.png into the nucleolus_overlay/ dir.
         # None when cfg.nucleolus.enabled is False (overlay step is skipped).
         nucleolus_labels=nucleolus_labels_for_qc,
+        # 2026-05-28 Brian: DAPI's autofocus-picked 1-indexed plane (only set
+        # when z_mode == "autofocus"; None otherwise). The rna_protein wrapper
+        # reads this to lock the antibody channel to the SAME plane.
+        dapi_autofocus_z=dapi_autofocus_z,
     )
 
     return ImageResult(
@@ -1102,6 +1292,8 @@ def collect_nuclear_rna_pixels(path, *, cfg) -> Tuple[np.ndarray, np.ndarray]:
             z_start=z_start, z_end=z_end,
             fixed_n_slices=int(getattr(cfg.z_stack, "focus_window_fixed_n_slices", 0)),
             min_intensity_frac_of_peak=float(getattr(cfg.z_stack, "focus_min_intensity_frac_of_peak", 0.0)),
+            intensity_weighted=bool(getattr(cfg.z_stack, "autofocus_intensity_weighted", False)),
+            central_fraction=float(getattr(cfg.z_stack, "focus_central_fraction", 0.0)),
         )
         if rna_per_channel_z:
             rna_2d = _io.extract_channel(
@@ -1124,6 +1316,33 @@ def collect_nuclear_rna_pixels(path, *, cfg) -> Tuple[np.ndarray, np.ndarray]:
                 f"window=[{afm_zs},{afm_ze}] "
                 f"({afm_ze - afm_zs + 1} slices)[/dim]"
             )
+        except Exception:
+            pass
+    elif z_mode == "autofocus":
+        # 2026-05-28 Brian: IDENTICAL z-lock logic to run_one (above). The
+        # batch pre-pass pools threshold pixels and caches the nuclei labels;
+        # locking RNA to DAPI's autofocus plane here keeps the pooled pixels
+        # and the cached segmentation on the SAME plane the spots are detected
+        # on in run_one (which uses the same window deterministically). The
+        # DAPI-lock takes precedence over rna_per_channel_z under autofocus.
+        dapi_autofocus_z, dapi_2d = _io.extract_channel_autofocus_with_idx(
+            img, dapi_idx, z_start=z_start, z_end=z_end,
+            intensity_weighted=bool(getattr(cfg.z_stack, "autofocus_intensity_weighted", False)),
+        )
+        rna_2d = _io.extract_channel_at_z(img, rna_idx, z_1indexed=dapi_autofocus_z)
+        try:
+            from rich.console import Console as _C
+            if rna_per_channel_z:
+                _C().print(
+                    f"  [dim]z-lock (prescan): {Path(path).name} → RNA locked to DAPI "
+                    f"plane z={dapi_autofocus_z} (per-channel RNA maxproj override "
+                    f"IGNORED under autofocus)[/dim]"
+                )
+            else:
+                _C().print(
+                    f"  [dim]z-lock (prescan): {Path(path).name} → all channels @ DAPI "
+                    f"plane z={dapi_autofocus_z}[/dim]"
+                )
         except Exception:
             pass
     else:

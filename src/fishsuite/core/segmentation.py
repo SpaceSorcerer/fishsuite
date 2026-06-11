@@ -224,3 +224,73 @@ def exclude_border_labels(labels: np.ndarray, margin_px: int = 5) -> np.ndarray:
         new_id += 1
         out[labels == region.label] = new_id
     return out.astype(np.uint16)
+
+
+def identify_ghost_nuclei(
+    nuclei_df,
+    *,
+    max_dapi_cv: float = 0.12,
+    min_area_px: int = 6000,
+    spot_count_col: str = "rna_spot_count",
+    dapi_cv_col: str = "dapi_cv",
+    area_col: str = "nucleus_area_px",
+):
+    """Identify empty 'ghost' nucleus shells via a POST-detection composite rule.
+
+    Returns the list of ``nucleus_id`` values judged to be ghosts: segmented
+    objects that are large, flat (low DAPI texture) AND carry zero detected RNA
+    spots — i.e. out-of-focus debris / coverslip-edge ovals that cellpose
+    segments off the aberrant border band seen in some SINGLE-PLANE snaps.
+
+    OPT-IN. The caller only invokes this when ``cfg.nuclei.reject_ghost_nuclei``
+    is True; default-off means every other dataset/preset is byte-for-byte
+    unchanged.
+
+    Rationale (2026-05-29 audit, BIN1 d8cMyo RNase WELLS12 run): on the
+    low-contrast KO single planes NO single interior-DAPI metric separates the
+    18 ghost shells from real nuclei — their DAPI CV / heterochromatin fraction
+    / Laplacian variance are all embedded inside the real-KO distribution. The
+    ONLY clean signal is 0 detected spots, but a real spotless nucleus can exist
+    (one real KO z-stack nucleus had 0 spots). The composite rule
+    ``spots==0 AND area>=min_area_px AND dapi_cv<=max_dapi_cv`` separates all 18
+    ghosts (area 6908-8040 px, cv 0.072-0.100) from every real nucleus
+    (the real 0-spot nucleus is only 3776 px; WT nuclei have cv>=0.144) with a
+    safety margin and ZERO false drops in WT / z-stacks. A nucleus is required to
+    satisfy ALL THREE conditions — each alone is intentionally insufficient.
+
+    Parameters
+    ----------
+    nuclei_df : pandas.DataFrame with per-nucleus rows including the spot-count,
+        DAPI-CV and area columns named below. Rows missing a required column or
+        carrying NaN in ``dapi_cv`` are treated as NON-ghost (conservative).
+    max_dapi_cv : ghost iff dapi_cv <= this (flat shell). Default 0.12.
+    min_area_px : ghost iff area >= this (large oval). Default 6000.
+    spot_count_col / dapi_cv_col / area_col : column names.
+
+    Returns
+    -------
+    list[int] : nucleus_id values flagged as ghosts (possibly empty).
+    """
+    import math as _math
+    if nuclei_df is None or len(nuclei_df) == 0:
+        return []
+    needed = [spot_count_col, dapi_cv_col, area_col, "nucleus_id"]
+    if any(c not in nuclei_df.columns for c in needed):
+        return []
+    ghost_ids = []
+    for _, row in nuclei_df.iterrows():
+        cv = row.get(dapi_cv_col)
+        try:
+            cv = float(cv)
+        except Exception:
+            continue
+        if cv != cv:  # NaN -> conservative keep
+            continue
+        try:
+            spots = float(row.get(spot_count_col))
+            area = float(row.get(area_col))
+        except Exception:
+            continue
+        if spots == 0 and area >= float(min_area_px) and cv <= float(max_dapi_cv):
+            ghost_ids.append(int(row["nucleus_id"]))
+    return ghost_ids

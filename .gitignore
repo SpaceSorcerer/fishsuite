@@ -65,3 +65,12 @@ results/
 *.key
 _archive_2026-05-27/
 _commit_msg.txt
+
+# Staging junction directories (local symlinks to raw image data — never push)
+_staging*/
+_staging_UD_ALLARMS/
+
+# Raw microscopy image formats (never push)
+*.vsi
+*.ets
+*.oex

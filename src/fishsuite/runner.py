@@ -155,8 +155,16 @@ def _prescan_one(args):
     serial collectors — same functions, just invoked in a subprocess.
     """
     path, cfg, is_rna_rna = args
+    # ``is_rna_rna`` selects the TWO-channel collector. For rna_protein the
+    # 2nd channel is the PROTEIN/antibody channel (rna_protein's collector
+    # maps it into the rna2 slot internally), so it uses the two-channel path.
+    _mode = getattr(cfg.channels, "analysis_mode", "")
     try:
-        if is_rna_rna:
+        if is_rna_rna and _mode == "rna_protein":
+            from .core.modes.rna_protein import collect_nuclear_rna_pixels as _c2
+            v1, v2, labels = _c2(path, cfg=cfg)
+            return (str(path), v1, v2, labels, None)
+        elif is_rna_rna:
             from .core.modes.rna_rna import collect_nuclear_rna_pixels as _c2
             v1, v2, labels = _c2(path, cfg=cfg)
             return (str(path), v1, v2, labels, None)
@@ -211,6 +219,7 @@ def run_batch(
         subfolder_conditions=cfg.conditions.subfolder_conditions,
         sec_only_folders=cfg.conditions.sec_only_folders,
         sec_only_files=cfg.conditions.sec_only_files,
+        filename_conditions=cfg.conditions.filename_conditions,
     )
     if not images:
         raise RuntimeError(f"No images discovered under {input_dir}")
@@ -299,11 +308,19 @@ def run_batch(
     # path's behavior is byte-identical to before (dict.get -> None).
     precomputed_labels_by_path: Dict[str, np.ndarray] = {}
     pc_cfg = getattr(cfg, "pixel_coloc", None)
-    is_rna_rna = (cfg.channels.analysis_mode == "rna_rna")
+    # 2026-05-28 Brian: rna_protein is a TWO-channel mode (RNA + protein) and
+    # pools BOTH channels in the batch pre-scan, exactly like rna_rna pools
+    # rna + rna2. ``is_rna_rna`` here means "two-channel batch pre-scan".
+    is_rna_rna = (cfg.channels.analysis_mode in ("rna_rna", "rna_protein"))
     if pc_cfg is not None and getattr(pc_cfg, "threshold_scope", "per_image") == "batch":
         try:
             from .core import thresholds as _thr
-            if is_rna_rna:
+            if cfg.channels.analysis_mode == "rna_protein":
+                from .core.modes.rna_protein import (
+                    collect_nuclear_rna_pixels as _collect_two,
+                )
+                collect_nuclear_rna_pixels = None  # type: ignore[assignment]
+            elif is_rna_rna:
                 from .core.modes.rna_rna import (
                     collect_nuclear_rna_pixels as _collect_two,
                 )
@@ -611,6 +628,8 @@ def run_batch(
                         if _z_mode == "autofocus":
                             dapi_z_lock, d2 = _io.extract_channel_autofocus_with_idx(
                                 img_h, di, z_start=_z_start, z_end=_z_end,
+                                intensity_weighted=bool(getattr(
+                                    cfg.z_stack, "autofocus_intensity_weighted", False)),
                             )
                         elif _z_mode == "autofocus_maxproj":
                             (afm_zs_1, afm_ze_1), _afm_diag, d2 = _io.extract_dapi_focus_window(
@@ -622,6 +641,8 @@ def run_batch(
                                 z_start=_z_start, z_end=_z_end,
                                 fixed_n_slices=int(getattr(cfg.z_stack, "focus_window_fixed_n_slices", 0)),
                                 min_intensity_frac_of_peak=float(getattr(cfg.z_stack, "focus_min_intensity_frac_of_peak", 0.0)),
+                                intensity_weighted=bool(getattr(cfg.z_stack, "autofocus_intensity_weighted", False)),
+                                central_fraction=float(getattr(cfg.z_stack, "focus_central_fraction", 0.0)),
                             )
                         else:
                             d2 = _io.extract_channel(
@@ -852,6 +873,8 @@ def run_batch(
                     if _z_mode == "autofocus":
                         dapi_z, dapi_2d = _io.extract_channel_autofocus_with_idx(
                             img_h, di, z_start=_z_start, z_end=_z_end,
+                            intensity_weighted=bool(getattr(
+                                cfg.z_stack, "autofocus_intensity_weighted", False)),
                         )
                         rna_2d = _io.extract_channel_at_z(
                             img_h, ri, z_1indexed=dapi_z,
@@ -1138,6 +1161,10 @@ def run_batch(
     spots_dfs: List[pd.DataFrame] = []
     morph_dfs: List[pd.DataFrame] = []
     threshold_rows: List[dict] = []
+    # 2026-06-06 Brian: optional NATIVE coloc-figure carriers (default OFF ->
+    # these stay empty -> no extra CSV written -> byte-identical output).
+    coloc_null_draws_dfs: List[pd.DataFrame] = []
+    coloc_radial_dfs: List[pd.DataFrame] = []
     failures: List[tuple] = []
     t_start = time.time()
 
@@ -1184,26 +1211,28 @@ def run_batch(
                     cfg=cfg,
                 )
                 # Only forward the batch threshold to modes whose run()
-                # signature accepts it (currently rna_only + rna_rna). Other
-                # modes delegate to rna_only internally; the kwarg will reach
-                # run_one through that path only if needed in the future.
+                # signature accepts it (rna_only + rna_rna + rna_protein).
+                # rna_protein delegates to rna_rna's run_one with the antibody
+                # channel mapped into the rna2 slot, so it accepts the SAME
+                # precomputed_rna_threshold / precomputed_rna2_threshold (the
+                # rna2 threshold here is the pooled PROTEIN-channel threshold).
                 if (
                     batch_rna_threshold is not None
-                    and cfg.channels.analysis_mode in ("rna_only", "rna_rna")
+                    and cfg.channels.analysis_mode in ("rna_only", "rna_rna", "rna_protein")
                 ):
                     _mode_kwargs["precomputed_rna_threshold"] = batch_rna_threshold
                 if (
                     batch_rna2_threshold is not None
-                    and cfg.channels.analysis_mode == "rna_rna"
+                    and cfg.channels.analysis_mode in ("rna_rna", "rna_protein")
                 ):
                     _mode_kwargs["precomputed_rna2_threshold"] = batch_rna2_threshold
                 # Reuse the nuclei labels the batch threshold pre-scan already
                 # computed for this image so it is segmented exactly once per
-                # run. Only rna_only / rna_rna run_one accept this kwarg; the
-                # dict is empty unless threshold_scope == 'batch', so per-image
-                # runs pass nothing and behavior is unchanged. Gate on a cached
-                # entry actually existing so other modes never receive it.
-                if cfg.channels.analysis_mode in ("rna_only", "rna_rna"):
+                # run. rna_only / rna_rna / rna_protein run_one accept this
+                # kwarg; the dict is empty unless threshold_scope == 'batch', so
+                # per-image runs pass nothing and behavior is unchanged. Gate on
+                # a cached entry actually existing so other modes never get it.
+                if cfg.channels.analysis_mode in ("rna_only", "rna_rna", "rna_protein"):
                     _cached_labels = precomputed_labels_by_path.get(str(dimg.path))
                     if _cached_labels is not None:
                         _mode_kwargs["precomputed_labels"] = _cached_labels
@@ -1218,25 +1247,42 @@ def run_batch(
                 # ALSO forward when apply_pub_contrast_floor_to_spots is True
                 # — same dict, separate downstream effect (filters detected
                 # spots whose peak intensity falls below the channel's floor).
+                # 2026-06-02 Brian: ALWAYS forward for the supported modes so the
+                # thresholded-intensity feature can DEFAULT its floor to the
+                # resolved spot floor (the pub-contrast RNA floor) even when both
+                # apply_pub_contrast_floor_to_* toggles are OFF. The modes treat
+                # a missing/None floor as NaN columns, so always forwarding is
+                # schema-stable and harmless for the legacy code paths.
                 if (
-                    cfg.channels.analysis_mode in ("rna_rna", "rna_only")
-                    and (
-                        bool(getattr(cfg.output, "apply_pub_contrast_floor_to_analysis", False))
-                        or bool(getattr(cfg.output, "apply_pub_contrast_floor_to_spots", False))
-                    )
+                    cfg.channels.analysis_mode in ("rna_rna", "rna_only", "rna_protein")
                 ):
                     _rna_floor_pair = batch_contrast.get("rna")
-                    _rna2_floor_pair = batch_contrast.get("rna2")
-                    _mode_kwargs["analysis_floors"] = {
-                        "rna": (
-                            float(_rna_floor_pair[0])
-                            if _rna_floor_pair is not None else None
-                        ),
-                        "rna2": (
-                            float(_rna2_floor_pair[0])
-                            if _rna2_floor_pair is not None else None
-                        ),
-                    }
+                    # rna_protein: the 2nd-channel floor is the PROTEIN/antibody
+                    # contrast (batch_contrast["antibody"]); rna_rna uses rna2.
+                    if cfg.channels.analysis_mode == "rna_protein":
+                        _ab_floor_pair = batch_contrast.get("antibody")
+                        _mode_kwargs["analysis_floors"] = {
+                            "rna": (
+                                float(_rna_floor_pair[0])
+                                if _rna_floor_pair is not None else None
+                            ),
+                            "antibody": (
+                                float(_ab_floor_pair[0])
+                                if _ab_floor_pair is not None else None
+                            ),
+                        }
+                    else:
+                        _rna2_floor_pair = batch_contrast.get("rna2")
+                        _mode_kwargs["analysis_floors"] = {
+                            "rna": (
+                                float(_rna_floor_pair[0])
+                                if _rna_floor_pair is not None else None
+                            ),
+                            "rna2": (
+                                float(_rna2_floor_pair[0])
+                                if _rna2_floor_pair is not None else None
+                            ),
+                        }
                 res = mode_fn(
                     dimg.path,
                     **_mode_kwargs,
@@ -1250,6 +1296,14 @@ def run_batch(
                     spots_dfs.append(res.spots)
                 if len(getattr(res, "morphology", pd.DataFrame())):
                     morph_dfs.append(res.morphology)
+                # NATIVE coloc-figure carriers (present only when the gating
+                # flags are on; absent by default -> nothing accumulated).
+                _cnd = res.extra.get("coloc_null_draws") if isinstance(res.extra, dict) else None
+                if isinstance(_cnd, pd.DataFrame) and len(_cnd):
+                    coloc_null_draws_dfs.append(_cnd)
+                _crp = res.extra.get("coloc_radial_profile") if isinstance(res.extra, dict) else None
+                if isinstance(_crp, pd.DataFrame) and len(_crp):
+                    coloc_radial_dfs.append(_crp)
                 # Inject user-typed channel labels into the per-image
                 # threshold record so the human name flows into both
                 # thresholds.csv and the per-image masks/<stem>__thresholds.csv.
@@ -1286,16 +1340,23 @@ def run_batch(
                         dirs["per_image_csv"], stem,
                         res.nuclei, res.spots, prefix=prefix,
                     )
-                    # rna_rna: also write per-channel spot CSVs for
-                    # convenience (the master spot_metrics.csv already has
-                    # a `channel` column to disambiguate).
+                    # rna_rna / rna_protein: also write per-channel spot CSVs
+                    # for convenience (the master spot_metrics.csv already has
+                    # a `channel` column to disambiguate). rna_protein labels
+                    # its 2nd channel 'protein' (not 'rna2'), so the suffix is
+                    # spot_metrics_protein for protein-correct output.
                     if (
-                        cfg.channels.analysis_mode == "rna_rna"
+                        cfg.channels.analysis_mode in ("rna_rna", "rna_protein")
                         and len(res.spots) > 0
                         and "channel" in res.spots.columns
                     ):
-                        for label, suffix in (("rna1", "spot_metrics_rna1"),
-                                              ("rna2", "spot_metrics_rna2")):
+                        if cfg.channels.analysis_mode == "rna_protein":
+                            _ch_csv_split = (("rna1", "spot_metrics_rna1"),
+                                             ("protein", "spot_metrics_protein"))
+                        else:
+                            _ch_csv_split = (("rna1", "spot_metrics_rna1"),
+                                             ("rna2", "spot_metrics_rna2"))
+                        for label, suffix in _ch_csv_split:
                             sub = res.spots[res.spots["channel"] == label]
                             if len(sub) > 0:
                                 sub.to_csv(
@@ -1338,9 +1399,17 @@ def run_batch(
                     # Resolve channel labels (display only — defaults match
                     # the legacy generic role names so back-compat is preserved).
                     _ch = cfg.channels
+                    # 2026-05-28 Brian: rna_protein labels its 2nd channel as
+                    # the PROTEIN (antibody) — drive the QC overlay's 2nd-channel
+                    # label + LUT from antibody_label / antibody_lut so the
+                    # overlay reads e.g. "XRN2", not "RNA2".
+                    _is_rna_protein = (cfg.channels.analysis_mode == "rna_protein")
                     _dapi_lbl = getattr(_ch, "dapi_label", "DAPI") or "DAPI"
                     _rna_lbl = getattr(_ch, "rna_label", "RNA1") or "RNA1"
-                    _rna2_lbl = getattr(_ch, "rna2_label", "RNA2") or "RNA2"
+                    if _is_rna_protein:
+                        _rna2_lbl = getattr(_ch, "antibody_label", "Protein") or "Protein"
+                    else:
+                        _rna2_lbl = getattr(_ch, "rna2_label", "RNA2") or "RNA2"
                     if dapi is not None and rna is not None and labels is not None:
                         if rna2 is not None:
                             spots1 = qc.get("spots1", pd.DataFrame())
@@ -1361,7 +1430,9 @@ def run_batch(
                                 int(_rna_w[2] * 255),
                             )
                             _rna2_lut_name = (
-                                getattr(_ch, "rna2_lut", None) or "magenta"
+                                (getattr(_ch, "antibody_lut", None) or "green")
+                                if _is_rna_protein
+                                else (getattr(_ch, "rna2_lut", None) or "magenta")
                             )
                             _rna2_w = _out.lut_name_to_weights(
                                 _rna2_lut_name, (1.0, 0.0, 1.0),
@@ -1387,7 +1458,11 @@ def run_batch(
                             # comparability.
                             _qc_df, _qc_dc = None, None  # per-image auto
                             _qc_rf, _qc_rc = batch_contrast.get("rna", (None, None))
-                            _qc_r2f, _qc_r2c = batch_contrast.get("rna2", (None, None))
+                            # 2026-05-28 Brian: rna_protein's 2nd-channel QC
+                            # contrast is the antibody channel's.
+                            _qc_r2f, _qc_r2c = batch_contrast.get(
+                                "antibody" if _is_rna_protein else "rna2", (None, None)
+                            )
                             all_in_one = _out.render_all_in_one_qc_rna_rna(
                                 dapi, rna, rna2, labels, spots1, spots2, vx,
                                 sec_only=bool(dimg.sec_only),
@@ -1438,12 +1513,20 @@ def run_batch(
                     rna2 = qc.get("rna2_2d")
                     # Antibody/protein channel 2D — keyed by either name
                     # depending on the mode that produced this qc dict.
-                    # rna_protein currently does not stash the AB channel in
-                    # qc (it consumes it inline), so this is usually None;
-                    # future modes can wire it up by adding the key to qc.
                     protein_2d = qc.get("antibody_2d")
                     if protein_2d is None:
                         protein_2d = qc.get("protein_2d")
+                    # 2026-05-28 Brian: rna_protein loads the antibody channel
+                    # into rna_rna's rna2 slot, so qc carries it under BOTH
+                    # rna2_2d AND antibody_2d. The PROTEIN render path
+                    # (protein=, antibody_label/lut) is canonical for the 2nd
+                    # channel — suppress the rna2 slot so it is NOT rendered a
+                    # second time as "RNA2" (dedup) and no RNA2 merges appear.
+                    # The canonical rna_protein render set is exactly:
+                    # DAPI + rna1 (BIN1 introns, rna_lut) + protein (XRN2,
+                    # antibody_lut). rna_rna / rna_only are unaffected.
+                    if cfg.channels.analysis_mode == "rna_protein":
+                        rna2 = None
                     vx = float(qc.get("voxel_xy_nm", 65.0))
                     if dapi is not None and rna is not None:
                         _ch = cfg.channels
@@ -1576,8 +1659,13 @@ def run_batch(
                             int(_rna_w_wk[1] * 255),
                             int(_rna_w_wk[2] * 255),
                         )
+                        # 2026-05-28 Brian: rna_protein → 2nd-channel walkthrough
+                        # panel uses the antibody LUT (e.g. green for XRN2).
+                        _is_rp_wk = (cfg.channels.analysis_mode == "rna_protein")
                         _rna2_lut_wk = (
-                            getattr(_ch_wk, "rna2_lut", None) or "magenta"
+                            (getattr(_ch_wk, "antibody_lut", None) or "green")
+                            if _is_rp_wk
+                            else (getattr(_ch_wk, "rna2_lut", None) or "magenta")
                         )
                         _rna2_w_wk = _out.lut_name_to_weights(
                             _rna2_lut_wk, (1.0, 0.0, 1.0),
@@ -1592,19 +1680,38 @@ def run_batch(
                         _wk_df = _wk_dc = _wk_rf = _wk_rc = _wk_r2f = _wk_r2c = None
                         try:
                             _wk_pm = getattr(cfg.output, "pub_contrast_mode", "auto_batch")
+                            # 2026-05-28 Brian: rna_protein's 2nd-channel contrast
+                            # is the antibody channel's (manual_antibody_* /
+                            # batch_contrast["antibody"]), not rna2's.
                             if _wk_pm == "manual":
                                 _wk_df = cfg.output.manual_dapi_min
                                 _wk_dc = cfg.output.manual_dapi_max
                                 _wk_rf = cfg.output.manual_rna_min
                                 _wk_rc = cfg.output.manual_rna_max
-                                _wk_r2f = cfg.output.manual_rna2_min
-                                _wk_r2c = cfg.output.manual_rna2_max
+                                if _is_rp_wk:
+                                    _wk_r2f = cfg.output.manual_antibody_min
+                                    _wk_r2c = cfg.output.manual_antibody_max
+                                else:
+                                    _wk_r2f = cfg.output.manual_rna2_min
+                                    _wk_r2c = cfg.output.manual_rna2_max
                             else:
                                 _wk_df, _wk_dc = batch_contrast.get("dapi", (None, None))
                                 _wk_rf, _wk_rc = batch_contrast.get("rna", (None, None))
-                                _wk_r2f, _wk_r2c = batch_contrast.get("rna2", (None, None))
+                                _wk_r2f, _wk_r2c = batch_contrast.get(
+                                    "antibody" if _is_rp_wk else "rna2", (None, None)
+                                )
                         except Exception:
                             pass
+                        # 2026-06-05 Brian: is the display floor (rna*_floor_override)
+                        # the ACTUAL spot-detection gate? Only when
+                        # apply_pub_contrast_floor_to_spots is on. When off (e.g.
+                        # MIAT-QKI: low cosmetic MIAT floor, spots from BigFISH
+                        # LoG), the step05/06 floor-mask would flood each nucleus
+                        # into a solid mass; pass False so channels WITH spots
+                        # render the actual called spots instead.
+                        _wk_floor_is_gate = bool(
+                            getattr(cfg.output, "apply_pub_contrast_floor_to_spots", False)
+                        )
                         _out.save_walkthrough_bundle_rna_rna(
                             dirs["pipeline_walkthrough"], f"{prefix}{stem}",
                             dapi=dapi, rna1=rna, rna2=rna2,
@@ -1620,8 +1727,14 @@ def run_batch(
                             rna2_lut_weights=_rna2_w_wk,
                             # 2026-05-19 Brian: filename-embedded labels so
                             # step04_<rna_label>_raw.png reflects the preset.
+                            # 2026-05-28: rna_protein → 2nd-channel label is the
+                            # antibody label (e.g. XRN2), not "RNA2".
                             rna_label=getattr(_ch_wk, "rna_label", None),
-                            rna2_label=getattr(_ch_wk, "rna2_label", None),
+                            rna2_label=(
+                                getattr(_ch_wk, "antibody_label", None)
+                                if _is_rp_wk
+                                else getattr(_ch_wk, "rna2_label", None)
+                            ),
                             dapi_label=getattr(_ch_wk, "dapi_label", None),
                             dapi_floor_override=_wk_df,
                             dapi_ceil_override=_wk_dc,
@@ -1629,9 +1742,26 @@ def run_batch(
                             rna_ceil_override=_wk_rc,
                             rna2_floor_override=_wk_r2f,
                             rna2_ceil_override=_wk_r2c,
+                            floor_is_spot_gate=_wk_floor_is_gate,
                         )
                     else:
                         _ch_wk2 = cfg.channels
+                        # 2026-06-02 Brian: when the RNA spot floor is the
+                        # active spot gate (apply_pub_contrast_floor_to_spots),
+                        # render the step05/06/08 threshold panels at the floor
+                        # (manual_rna_min) — not the pixel-coloc MAD mask, which
+                        # is much lower and looked over-exposed. None => legacy
+                        # rna_pos_mask behaviour.
+                        _wk_spot_floor = None
+                        try:
+                            if (
+                                bool(getattr(cfg.output, "apply_pub_contrast_floor_to_spots", False))
+                                and getattr(cfg.output, "manual_rna_min", None) is not None
+                                and float(cfg.output.manual_rna_min) > 0.0
+                            ):
+                                _wk_spot_floor = float(cfg.output.manual_rna_min)
+                        except Exception:
+                            _wk_spot_floor = None
                         _out.save_walkthrough_bundle(
                             dirs["pipeline_walkthrough"], f"{prefix}{stem}",
                             dapi=dapi, rna=rna, dapi_mask=dmask,
@@ -1645,6 +1775,7 @@ def run_batch(
                             # threads labels through).
                             rna_label=getattr(_ch_wk2, "rna_label", None),
                             dapi_label=getattr(_ch_wk2, "dapi_label", None),
+                            spot_floor=_wk_spot_floor,
                         )
 
                 # Per-nucleus popouts — skip sec_only
@@ -1665,17 +1796,26 @@ def run_batch(
                         _pop_df = _pop_dc = _pop_rf = _pop_rc = _pop_r2f = _pop_r2c = None
                         try:
                             _pop_pm = getattr(cfg.output, "pub_contrast_mode", "auto_batch")
+                            # 2026-05-28 Brian: rna_protein → 2nd-channel popout
+                            # contrast is the antibody channel's.
+                            _is_rp_pop = (cfg.channels.analysis_mode == "rna_protein")
                             if _pop_pm == "manual":
                                 _pop_df = cfg.output.manual_dapi_min
                                 _pop_dc = cfg.output.manual_dapi_max
                                 _pop_rf = cfg.output.manual_rna_min
                                 _pop_rc = cfg.output.manual_rna_max
-                                _pop_r2f = cfg.output.manual_rna2_min
-                                _pop_r2c = cfg.output.manual_rna2_max
+                                if _is_rp_pop:
+                                    _pop_r2f = cfg.output.manual_antibody_min
+                                    _pop_r2c = cfg.output.manual_antibody_max
+                                else:
+                                    _pop_r2f = cfg.output.manual_rna2_min
+                                    _pop_r2c = cfg.output.manual_rna2_max
                             else:
                                 _pop_df, _pop_dc = batch_contrast.get("dapi", (None, None))
                                 _pop_rf, _pop_rc = batch_contrast.get("rna", (None, None))
-                                _pop_r2f, _pop_r2c = batch_contrast.get("rna2", (None, None))
+                                _pop_r2f, _pop_r2c = batch_contrast.get(
+                                    "antibody" if _is_rp_pop else "rna2", (None, None)
+                                )
                         except Exception:
                             pass
                         _out.save_nuclei_popouts(
@@ -1703,12 +1843,18 @@ def run_batch(
                                 _cb_dc = cfg.output.manual_dapi_max
                                 _cb_rf = cfg.output.manual_rna_min
                                 _cb_rc = cfg.output.manual_rna_max
-                                _cb_r2f = cfg.output.manual_rna2_min
-                                _cb_r2c = cfg.output.manual_rna2_max
+                                if _is_rp_pop:
+                                    _cb_r2f = cfg.output.manual_antibody_min
+                                    _cb_r2c = cfg.output.manual_antibody_max
+                                else:
+                                    _cb_r2f = cfg.output.manual_rna2_min
+                                    _cb_r2c = cfg.output.manual_rna2_max
                             else:
                                 _cb_df, _cb_dc = batch_contrast.get("dapi", (None, None))
                                 _cb_rf, _cb_rc = batch_contrast.get("rna", (None, None))
-                                _cb_r2f, _cb_r2c = batch_contrast.get("rna2", (None, None))
+                                _cb_r2f, _cb_r2c = batch_contrast.get(
+                                    "antibody" if _is_rp_pop else "rna2", (None, None)
+                                )
                         except Exception:
                             pass
                         try:
@@ -1782,6 +1928,17 @@ def run_batch(
 
     morph_df = pd.concat(morph_dfs, ignore_index=True) if morph_dfs else pd.DataFrame()
     morph_df.to_csv(output_dir / f"{prefix}cell_morphology.csv", index=False)
+
+    # NATIVE coloc-figure CSVs — written ONLY when the gating flags produced
+    # carriers (default OFF -> no file -> byte-identical to legacy runs).
+    if coloc_null_draws_dfs:
+        pd.concat(coloc_null_draws_dfs, ignore_index=True).to_csv(
+            output_dir / f"{prefix}coloc_null_draws.csv", index=False
+        )
+    if coloc_radial_dfs:
+        pd.concat(coloc_radial_dfs, ignore_index=True).to_csv(
+            output_dir / f"{prefix}coloc_radial_profile.csv", index=False
+        )
 
     thr_df = pd.DataFrame(threshold_rows)
     thr_df.to_csv(output_dir / f"{prefix}thresholds.csv", index=False)

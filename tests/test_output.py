@@ -184,6 +184,75 @@ def test_save_walkthrough_bundle_rna_rna_emits_extended_steps(tmp_path):
         assert any(needle in n for n in names), f"missing {needle} in {names}"
 
 
+def test_rna_rna_walkthrough_floor_not_spot_gate_shows_detection(tmp_path):
+    """When the display floor is NOT the spot gate (floor_is_spot_gate=False,
+    e.g. MIAT-QKI: low cosmetic display floor, spots from BigFISH LoG), the
+    step05/06 panels for a channel WITH spots must show the discrete called
+    spots — NOT a solid floor-flooded mass — and be titled as detected spots.
+    A channel WITHOUT spots (diffuse antibody) keeps the floor-fill. Filenames
+    are unchanged in both branches. This locks the misleading-panel fix.
+    """
+    import imageio.v3 as iio
+    from fishsuite.core.output import save_walkthrough_bundle_rna_rna
+
+    dapi, rna, labels = _make_dummy_image()
+    _, rna2, _ = _make_dummy_image(seed=2)
+    dapi_mask = (dapi > dapi.mean()).astype(np.uint8) * 255
+    rna_mask = (rna > rna.mean() * 1.5).astype(np.uint8) * 255
+    rna2_mask = (rna2 > rna2.mean() * 1.5).astype(np.uint8) * 255
+    # rna1 (MIAT) has detected spots; rna2 (antibody) has NONE (diffuse).
+    spots1 = pd.DataFrame([
+        {"x_px": 40, "y_px": 40, "in_nucleus": 1},
+        {"x_px": 60, "y_px": 80, "in_nucleus": 0},
+        {"x_px": 100, "y_px": 90, "in_nucleus": 1},
+    ])
+    spots2 = pd.DataFrame()  # detect_antibody_spots=False -> empty set
+
+    common = dict(
+        dapi=dapi, rna1=rna, rna2=rna2, dapi_mask=dapi_mask, labels=labels,
+        rna1_pos_mask=rna_mask, rna2_pos_mask=rna2_mask, voxel_xy_nm=65.0,
+        spots1=spots1, spots2=spots2,
+        # A LOW display floor that, under the legacy floor-mask branch, floods
+        # most of the field — the exact MIAT-QKI failure mode.
+        rna_floor_override=80.0, rna_ceil_override=4000.0,
+        rna2_floor_override=80.0, rna2_ceil_override=4000.0,
+    )
+
+    def _colored_px(p):
+        img = iio.imread(p)
+        return int(np.count_nonzero(img.any(axis=-1)))
+
+    # Legacy branch (floor IS the spot gate) -> floor-flood mass.
+    legacy_dir = tmp_path / "gate_true"
+    legacy = save_walkthrough_bundle_rna_rna(
+        legacy_dir, "img01", floor_is_spot_gate=True, **common)
+    # Honest branch (floor is NOT the spot gate) -> discrete called spots.
+    honest_dir = tmp_path / "gate_false"
+    honest = save_walkthrough_bundle_rna_rna(
+        honest_dir, "img01", floor_is_spot_gate=False, **common)
+
+    def _step05(paths, needle):
+        return next(p for p in paths if needle in p.name)
+
+    rna1_05_legacy = _step05(legacy, "__step05_RNA1_threshold")
+    rna1_05_honest = _step05(honest, "__step05_RNA1_threshold")
+    # The honest detection panel (3 small spot rings) must have FAR fewer
+    # colored pixels than the legacy floor-flood mass.
+    assert _colored_px(rna1_05_honest) < 0.25 * _colored_px(rna1_05_legacy)
+
+    # Filenames unchanged in both branches (downstream QC scripts unaffected).
+    for needle in ("__step05_RNA1_threshold", "__step06_RNA1_threshold_on_signal",
+                   "__step05_RNA2_threshold", "__step06_RNA2_threshold_on_signal"):
+        assert any(needle in p.name for p in honest)
+        assert any(needle in p.name for p in legacy)
+
+    # The diffuse rna2 channel (no spots) keeps the floor-fill in BOTH branches
+    # — same panel content, so colored-pixel counts match.
+    rna2_05_legacy = _step05(legacy, "__step05_RNA2_threshold")
+    rna2_05_honest = _step05(honest, "__step05_RNA2_threshold")
+    assert _colored_px(rna2_05_honest) == _colored_px(rna2_05_legacy)
+
+
 def test_save_publication_images_bundle_writes_six(tmp_path):
     from fishsuite.core.output import save_publication_images_bundle
     dapi, rna, _ = _make_dummy_image()
@@ -195,6 +264,59 @@ def test_save_publication_images_bundle_writes_six(tmp_path):
     suffixes = sorted(p.suffix for p in paths)
     assert suffixes.count(".png") == 3
     assert suffixes.count(".tif") == 3
+
+
+def test_rna_protein_pub_bundle_no_rna2_files_and_merge_all_has_three_channels(tmp_path):
+    """rna_protein render dedup (Brian 2026-05-28).
+
+    The runner passes rna2=None + protein=<antibody> for rna_protein so the 2nd
+    channel is rendered ONLY as the protein (antibody label/LUT). Assert: no
+    'RNA2'/'rna2' filenames, the protein single-render exists with the antibody
+    label/LUT, and merge_all composites all THREE channels (DAPI blue +
+    rna1/BIN1-introns magenta + protein/XRN2 yellow) — magenta NOT dropped.
+    """
+    import imageio.v3 as iio
+    from fishsuite.core.output import save_publication_images_bundle
+
+    dapi, rna, _ = _make_dummy_image(seed=1)
+    # Distinct protein spot field so the channel is non-degenerate.
+    _, prot, _ = _make_dummy_image(seed=2)
+
+    paths = save_publication_images_bundle(
+        tmp_path, "02_KO_well3", dapi, rna, voxel_xy_nm=65.0,
+        rna2=None,                      # <- runner now suppresses rna2 slot
+        protein=prot,
+        rna_label="BIN1_Introns", rna_lut="magenta",       # ch1/561
+        antibody_label="XRN2", antibody_lut="yellow",      # ch0/640
+        dapi_label="DAPI", dapi_lut="blue",
+        save_tifs=False,
+    )
+    names = [p.name for p in paths]
+
+    # BUG 1: no RNA2 single-render, no RNA2 merges, no leftover rna2 anywhere.
+    assert not any("RNA2" in n or "rna2" in n for n in names), names
+    # Protein single-render present with antibody label + LUT.
+    assert any(n == "02_KO_well3__XRN2_yellow.png" for n in names), names
+    # BIN1 introns (rna1) present with its magenta LUT.
+    assert any(n == "02_KO_well3__BIN1_Introns_magenta.png" for n in names), names
+    # merge_all present.
+    merge_all = tmp_path / "02_KO_well3__merge_all.png"
+    assert merge_all.exists()
+
+    # BUG 2: merge_all composites all three channels. magenta=(R,B), yellow=(R,G),
+    # blue=(B). Assert the merge has signal in R, G, AND B — and specifically
+    # that the magenta-only contribution (B with little/no G) is present so the
+    # rna1/BIN1-introns channel was NOT dropped.
+    img = iio.imread(merge_all)[..., :3].astype(np.float32)
+    r_max = float(img[..., 0].max())
+    g_max = float(img[..., 1].max())
+    b_max = float(img[..., 2].max())
+    assert r_max > 0 and g_max > 0 and b_max > 0, (r_max, g_max, b_max)
+    # The magenta (BIN1 introns) layer is the ONLY non-DAPI source of blue
+    # (yellow has zero blue; DAPI blue is diffuse-low). A bright blue pixel that
+    # is NOT also bright-green proves the magenta channel survived the merge.
+    bright_blue_low_green = ((img[..., 2] > 180) & (img[..., 1] < 120))
+    assert bool(bright_blue_low_green.any()), "magenta (rna1) channel dropped from merge_all"
 
 
 def test_sanitize_condition_for_filename():
