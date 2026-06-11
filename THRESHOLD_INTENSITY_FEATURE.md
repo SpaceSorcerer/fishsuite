@@ -15,7 +15,7 @@ spot-caller.
 
 | Metric family | Column(s) | What it measures | Floor? |
 |---|---|---|---|
-| **Spot-based** | `rna_spot_total_intensity_fit`, `rna_spot_mean_intensity_bgc_blend`, … | Sum/mean of **called-spot** peak intensities (BigFISH/LoG detections only) | spot-detection floor, but only counts *detected spots* |
+| **Spot-based** | `rna_spot_total_peak_intensity`, `rna_spot_mean_intensity_bgc_blend`, … | Sum/mean of **called-spot** peak-pixel intensities (BigFISH/LoG detections only; a consistent intensity proxy, NOT a Gaussian-integrated value) | spot-detection floor, but only counts *detected spots* |
 | **Raw pixel sum** | `sum_rna_intensity` (nucleus), `sum_rna_intensity_cyto` (cyto) | Sum of **every** pixel in the compartment, no threshold | **none** — includes background |
 | **Thresholded (NEW)** | `rna_thresh_*` (and `rna2_thresh_*`) | Sum/mean/area/fraction of **all pixels ≥ floor** in the compartment | **settable floor** (default = spot floor) |
 

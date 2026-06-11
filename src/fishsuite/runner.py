@@ -196,6 +196,21 @@ def run_batch(
     Returns a dict with summary stats.
     """
     cfg = FishsuiteConfig.from_yaml(config_path)
+    # 2026-06-10: ADDITIVE reproducibility — lock the broad global RNG state at
+    # the VERY START (before any discovery/stochastic step) and log what was
+    # seeded. Wrapped so a seeding failure can never abort the run. cfg.seed
+    # defaults to 0; this is complementary to foci.partner_null_seed.
+    try:
+        from .core.repro import set_global_seeds as _set_global_seeds
+        _seeded = _set_global_seeds(int(getattr(cfg, "seed", 0)))
+        _console.print(
+            f"[dim]Global seeds set (seed={getattr(cfg, 'seed', 0)}): "
+            f"{_seeded}[/dim]"
+        )
+    except Exception as _seed_err:  # pragma: no cover - defensive
+        _console.print(
+            f"[yellow]Global seed lock skipped ({_seed_err})[/yellow]"
+        )
     # 2026-05-25 Brian: per-preset scale-bar length + label font. The render
     # functions read these as output-module constants; the per-image pass is
     # serial single-process so setting them once here is safe and propagates
@@ -211,6 +226,27 @@ def run_batch(
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     dirs = _make_output_dirs(output_dir, cfg)
+
+    # 2026-06-10: ADDITIVE provenance — emit versions.txt + command.log near the
+    # START so they exist even if the run later fails. Crash-proof: any failure
+    # is logged and the run continues unaffected.
+    try:
+        from .core.repro import write_run_metadata as _write_run_metadata
+        _meta_extra = {
+            "analysis_mode": getattr(cfg.channels, "analysis_mode", "?"),
+            "z_mode": getattr(cfg.z_stack, "mode", "?"),
+        }
+        _write_run_metadata(
+            output_dir,
+            config_path,
+            output_dir,
+            int(getattr(cfg, "seed", 0)),
+            extra=_meta_extra,
+        )
+    except Exception as _meta_err:  # pragma: no cover - defensive
+        _console.print(
+            f"[yellow]Run-metadata write skipped ({_meta_err})[/yellow]"
+        )
 
     prefix = cfg.output.prefix or ""
 
@@ -1287,6 +1323,21 @@ def run_batch(
                     dimg.path,
                     **_mode_kwargs,
                 )
+
+                # 2026-06-10: ADDITIVE per-image QC flags. Computed in the
+                # runner (one place) so every mode gets a consistent qc_*
+                # column set without touching any mode's per_image keys. Merged
+                # via dict.update() -> purely additive. Crash-proof: a QC
+                # failure must never drop the image or abort the run.
+                try:
+                    from .core.qc import compute_qc_flags as _compute_qc_flags
+                    if isinstance(res.per_image, dict):
+                        res.per_image.update(_compute_qc_flags(res, cfg))
+                except Exception as _qc_err:
+                    _console.print(
+                        f"[yellow]QC-flag computation skipped for "
+                        f"{dimg.path.name} ({_qc_err})[/yellow]"
+                    )
 
                 # Accumulate master tables
                 per_image_rows.append(res.per_image)

@@ -709,7 +709,7 @@ def draw_spot_markers(
 
     def _try_intensity() -> Optional[np.ndarray]:
         col = None
-        for cand in ("spot_peak_intensity", "integrated_intensity_fit", "quality"):
+        for cand in ("spot_peak_intensity", "peak_intensity", "integrated_intensity_fit", "quality"):
             if cand in spots.columns:
                 col = cand
                 break

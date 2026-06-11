@@ -57,6 +57,27 @@ def read_image(path: Path, scene: int = 0) -> ImageWrapper:
     from bioio import BioImage
 
     p = Path(path)
+    # 2026-06-10: cheap pre-flight sanity check BEFORE handing the file to
+    # bioio/BioFormats. Malformed or truncated/0-byte files (e.g. a stub .vsi)
+    # otherwise reach the BioFormats JVM probe and trigger a hard native
+    # "Windows fatal exception: access violation" that no Python try/except can
+    # catch — corrupting JVM state for the rest of the process. Raising a normal
+    # ValueError here keeps such files on the ordinary per-image failure path
+    # (logged + excluded) instead of crashing the JVM. Real microscopy files
+    # are far larger than this floor, so this never rejects a valid image.
+    try:
+        _sz = p.stat().st_size
+    except OSError as _e:
+        raise ValueError(f"Cannot stat image file {p.name}: {_e}") from _e
+    # 512 bytes is below the header size of every real microscopy/TIFF format
+    # but well above stub/placeholder files used in tests and corrupt 0-byte
+    # acquisitions. Container formats (VSI/CZI/LIF/ND2) and TIFFs all exceed it.
+    if _sz < 512:
+        raise ValueError(
+            f"Image file {p.name} is too small ({_sz} bytes) to be a valid "
+            f"microscopy image — refusing to hand it to BioFormats."
+        )
+
     bio = BioImage(p)
     scenes = list(bio.scenes)
     if scene >= len(scenes):

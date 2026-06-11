@@ -672,25 +672,24 @@ def run_one(
             rna_spot_mean_intensity_bgc_blend = float(ipeaks.mean())
             rna_spot_total_intensity_bgc_blend = float(ipeaks.sum())
             rna_spot_median_intensity_bgc_blend = float(ipeaks.median())
-            # Approximate "fit" total = same series (BigFISH peak is fit-like).
-            rna_spot_mean_intensity_fit = float(ipeaks.mean())
-            rna_spot_total_intensity_fit = float(ipeaks.sum())
-            rna_spot_median_intensity_fit = float(ipeaks.median())
-            rna_spot_intensity_cv_fit = (
+            # Peak-intensity aggregates: mean/sum/median/CV of the per-spot
+            # PEAK-pixel intensities (single brightest voxel at each spot
+            # centroid). This is summed per-spot peak intensity, NOT a Gaussian
+            # fit and NOT background-corrected — a consistent intensity proxy.
+            rna_spot_mean_peak_intensity = float(ipeaks.mean())
+            rna_spot_total_peak_intensity = float(ipeaks.sum())
+            rna_spot_median_peak_intensity = float(ipeaks.median())
+            rna_spot_peak_intensity_cv = (
                 float(ipeaks.std()) / float(ipeaks.mean()) if float(ipeaks.mean()) > 0 else float("nan")
             )
-            spot_fit_success_count = rna_spot_count  # all succeeded (BigFISH model)
-            spot_fit_success_fraction = 1.0
         else:
             rna_spot_mean_intensity_bgc_blend = float("nan")
             rna_spot_total_intensity_bgc_blend = float("nan")
             rna_spot_median_intensity_bgc_blend = float("nan")
-            rna_spot_mean_intensity_fit = float("nan")
-            rna_spot_total_intensity_fit = float("nan")
-            rna_spot_median_intensity_fit = float("nan")
-            rna_spot_intensity_cv_fit = float("nan")
-            spot_fit_success_count = 0
-            spot_fit_success_fraction = float("nan")
+            rna_spot_mean_peak_intensity = float("nan")
+            rna_spot_total_peak_intensity = float("nan")
+            rna_spot_median_peak_intensity = float("nan")
+            rna_spot_peak_intensity_cv = float("nan")
 
         # Spot size aggregates — now computed from MEASURED per-spot diameters
         # (column added to spots_df above). Falls back to the BigFISH-nominal
@@ -762,12 +761,10 @@ def run_one(
             "rna_spot_mean_intensity_bgc_blend": rna_spot_mean_intensity_bgc_blend,
             "rna_spot_total_intensity_bgc_blend": rna_spot_total_intensity_bgc_blend,
             "rna_spot_median_intensity_bgc_blend": rna_spot_median_intensity_bgc_blend,
-            "rna_spot_mean_intensity_fit": rna_spot_mean_intensity_fit,
-            "rna_spot_total_intensity_fit": rna_spot_total_intensity_fit,
-            "rna_spot_median_intensity_fit": rna_spot_median_intensity_fit,
-            "rna_spot_intensity_cv_fit": rna_spot_intensity_cv_fit,
-            "spot_fit_success_count": int(spot_fit_success_count),
-            "spot_fit_success_fraction": spot_fit_success_fraction,
+            "rna_spot_mean_peak_intensity": rna_spot_mean_peak_intensity,
+            "rna_spot_total_peak_intensity": rna_spot_total_peak_intensity,
+            "rna_spot_median_peak_intensity": rna_spot_median_peak_intensity,
+            "rna_spot_peak_intensity_cv": rna_spot_peak_intensity_cv,
             "sum_rna_intensity": sum_rna_intensity,
             # ---- Thresholded RNA intensity per compartment (2026-06-02) ----
             # Third intensity measurement: pixels with RAW value >=
@@ -883,7 +880,7 @@ def run_one(
                 "spot_anisotropy": (
                     cfg.foci.bigfish_spot_radius_z_nm / cfg.foci.bigfish_spot_radius_nm
                 ),
-                "integrated_intensity_fit": ipeak,
+                "peak_intensity": ipeak,
                 "rna_mean_raw_disk": ipeak,
                 "rna_mean_bgc_blend": ipeak,
                 "rna_sum_bgc_blend": ipeak * spot_area_px_val,
@@ -1035,7 +1032,7 @@ def run_one(
         ]
         cell_total_int_fit = [
             float(r) for r, c in zip(
-                nuclei_df["rna_spot_total_intensity_fit"].tolist(),
+                nuclei_df["rna_spot_total_peak_intensity"].tolist(),
                 nuclei_df["rna_spot_count"].tolist())
             if c > 0 and r == r
         ]
@@ -1071,9 +1068,9 @@ def run_one(
             "mean_nuclear_spot_density_per_um2": round(sum(densities) / float(len(densities)), 6) if densities else float("nan"),
             "mean_cell_intensity_blend": round(sum(cell_mean_int_blend) / float(len(cell_mean_int_blend)), 3) if cell_mean_int_blend else float("nan"),
             "median_cell_intensity_blend": round(_median(cell_mean_int_blend), 3) if cell_mean_int_blend else float("nan"),
-            "mean_cell_total_intensity_fit": round(sum(cell_total_int_fit) / float(len(cell_total_int_fit)), 2) if cell_total_int_fit else float("nan"),
-            "median_cell_total_intensity_fit": round(_median(cell_total_int_fit), 2) if cell_total_int_fit else float("nan"),
-            "cv_cell_total_intensity_fit": round(tcv, 4) if tcv == tcv else float("nan"),
+            "mean_cell_total_peak_intensity": round(sum(cell_total_int_fit) / float(len(cell_total_int_fit)), 2) if cell_total_int_fit else float("nan"),
+            "median_cell_total_peak_intensity": round(_median(cell_total_int_fit), 2) if cell_total_int_fit else float("nan"),
+            "cv_cell_total_peak_intensity": round(tcv, 4) if tcv == tcv else float("nan"),
             "mean_spot_volume_um3": round(default_spot_diameter_um, 5) if cell_total_int_fit else float("nan"),
             "mean_spot_anisotropy": round(
                 cfg.foci.bigfish_spot_radius_z_nm / cfg.foci.bigfish_spot_radius_nm, 3
@@ -1115,9 +1112,9 @@ def run_one(
             "mean_nuclear_spot_density_per_um2": float("nan"),
             "mean_cell_intensity_blend": float("nan"),
             "median_cell_intensity_blend": float("nan"),
-            "mean_cell_total_intensity_fit": float("nan"),
-            "median_cell_total_intensity_fit": float("nan"),
-            "cv_cell_total_intensity_fit": float("nan"),
+            "mean_cell_total_peak_intensity": float("nan"),
+            "median_cell_total_peak_intensity": float("nan"),
+            "cv_cell_total_peak_intensity": float("nan"),
             "mean_spot_volume_um3": float("nan"),
             "mean_spot_anisotropy": float("nan"),
             "n_nuclei_border_excluded": int(n_border_excluded),

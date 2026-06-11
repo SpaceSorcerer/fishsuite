@@ -1306,7 +1306,7 @@ def run_one(
         )
 
         # "Cell" = nucleus + cytoplasm (matches rna_only semantics for the
-        # mean_cell_total_intensity_fit metric Brian wants for both channels).
+        # mean_cell_total_peak_intensity metric Brian wants for both channels).
         cell_area_px = int(nucleus_area_px) + int(cyto_area_px)
         cell_total_intensity_rna1 = sum_rna_intensity + sum_rna_intensity_cyto
         cell_total_intensity_rna2 = sum_rna2_intensity + sum_rna2_intensity_cyto
@@ -1545,10 +1545,10 @@ def run_one(
             "rna_spot_mean_intensity_bgc_blend": a1["mean_int"],
             "rna_spot_total_intensity_bgc_blend": a1["total_int"],
             "rna_spot_median_intensity_bgc_blend": a1["median_int"],
-            "rna_spot_mean_intensity_fit": a1["mean_int"],
-            "rna_spot_total_intensity_fit": a1["total_int"],
-            "rna_spot_median_intensity_fit": a1["median_int"],
-            "rna_spot_intensity_cv_fit": a1["int_cv"],
+            "rna_spot_mean_peak_intensity": a1["mean_int"],
+            "rna_spot_total_peak_intensity": a1["total_int"],
+            "rna_spot_median_peak_intensity": a1["median_int"],
+            "rna_spot_peak_intensity_cv": a1["int_cv"],
             "sum_rna_intensity": sum_rna_intensity,
             # ---- RNA2 per-nucleus block (rna_rna additions) --------------
             "rna2_mean_in_nucleus": rna2_mean,
@@ -1561,10 +1561,10 @@ def run_one(
             "cyto_spot_count_rna2": int(a2["cyto_spot_count"]),
             "nuclear_spot_fraction_rna2": a2["nuclear_spot_fraction"],
             "nuclear_spot_density_per_um2_rna2": a2["nuclear_spot_density_per_um2"],
-            "rna2_spot_mean_intensity_fit": a2["mean_int"],
-            "rna2_spot_total_intensity_fit": a2["total_int"],
-            "rna2_spot_median_intensity_fit": a2["median_int"],
-            "rna2_spot_intensity_cv_fit": a2["int_cv"],
+            "rna2_spot_mean_peak_intensity": a2["mean_int"],
+            "rna2_spot_total_peak_intensity": a2["total_int"],
+            "rna2_spot_median_peak_intensity": a2["median_int"],
+            "rna2_spot_peak_intensity_cv": a2["int_cv"],
             "sum_rna2_intensity": sum_rna2_intensity,
             # ---- Thresholded RNA intensity per compartment (2026-06-02) ----
             # Third intensity measurement (pixels with RAW value >= floor),
@@ -1855,7 +1855,7 @@ def run_one(
                 "spot_fwhm_px": spot_fwhm_px_val,
                 "spot_diameter_um": spot_diam_um,
                 "spot_area_px": spot_area_px_val,
-                "integrated_intensity_fit": ipeak,
+                "peak_intensity": ipeak,
                 "nn_distance_um": float(r.get("nn_distance_um", float("nan"))),
                 f"paired_at_{pair_suffix}": int(r.get(f"paired_at_{pair_suffix}", 0)),
             }
@@ -2082,9 +2082,9 @@ def run_one(
 
         # Per-channel intensity stats — spot total per cell (only-expressing)
         mean_tot_fit_1, med_tot_fit_1, cv_tot_fit_1 = _img_stats(
-            "rna_spot_total_intensity_fit", "rna_spot_count")
+            "rna_spot_total_peak_intensity", "rna_spot_count")
         mean_tot_fit_2, med_tot_fit_2, cv_tot_fit_2 = _img_stats(
-            "rna2_spot_total_intensity_fit", "n_spots_rna2")
+            "rna2_spot_total_peak_intensity", "n_spots_rna2")
 
         # Per-cell TOTAL RNA intensity (raw pixel sum, nucleus+cyto, BOTH
         # channels) — NOT spot-only. Always defined (no expressing-only
@@ -2197,24 +2197,24 @@ def run_one(
             # ---- Per-CELL (nucleus + cytoplasm) total RNA intensity ------
             # These are the columns Brian explicitly asked for: total RNA
             # intensity per cell for BOTH channels, with mean/median/CV.
-            "mean_cell_total_intensity_fit_rna1": round(mean_cell_int_1, 2) if mean_cell_int_1 == mean_cell_int_1 else float("nan"),
-            "median_cell_total_intensity_fit_rna1": round(med_cell_int_1, 2) if med_cell_int_1 == med_cell_int_1 else float("nan"),
-            "cv_cell_total_intensity_fit_rna1": round(cv_cell_int_1, 4) if cv_cell_int_1 == cv_cell_int_1 else float("nan"),
-            "mean_cell_total_intensity_fit_rna2": round(mean_cell_int_2, 2) if mean_cell_int_2 == mean_cell_int_2 else float("nan"),
-            "median_cell_total_intensity_fit_rna2": round(med_cell_int_2, 2) if med_cell_int_2 == med_cell_int_2 else float("nan"),
-            "cv_cell_total_intensity_fit_rna2": round(cv_cell_int_2, 4) if cv_cell_int_2 == cv_cell_int_2 else float("nan"),
+            "mean_cell_total_peak_intensity_rna1": round(mean_cell_int_1, 2) if mean_cell_int_1 == mean_cell_int_1 else float("nan"),
+            "median_cell_total_peak_intensity_rna1": round(med_cell_int_1, 2) if med_cell_int_1 == med_cell_int_1 else float("nan"),
+            "cv_cell_total_peak_intensity_rna1": round(cv_cell_int_1, 4) if cv_cell_int_1 == cv_cell_int_1 else float("nan"),
+            "mean_cell_total_peak_intensity_rna2": round(mean_cell_int_2, 2) if mean_cell_int_2 == mean_cell_int_2 else float("nan"),
+            "median_cell_total_peak_intensity_rna2": round(med_cell_int_2, 2) if med_cell_int_2 == med_cell_int_2 else float("nan"),
+            "cv_cell_total_peak_intensity_rna2": round(cv_cell_int_2, 4) if cv_cell_int_2 == cv_cell_int_2 else float("nan"),
             # Per-nucleus (nucleus-only) total RNA intensity, both channels
             "mean_nuc_total_intensity_rna1": round(mean_nuc_int_1, 2) if mean_nuc_int_1 == mean_nuc_int_1 else float("nan"),
             "median_nuc_total_intensity_rna1": round(med_nuc_int_1, 2) if med_nuc_int_1 == med_nuc_int_1 else float("nan"),
             "mean_nuc_total_intensity_rna2": round(mean_nuc_int_2, 2) if mean_nuc_int_2 == mean_nuc_int_2 else float("nan"),
             "median_nuc_total_intensity_rna2": round(med_nuc_int_2, 2) if med_nuc_int_2 == med_nuc_int_2 else float("nan"),
             # Spot-detected total intensity per cell (only-expressing cells)
-            "mean_cell_total_spot_intensity_fit_rna1": round(mean_tot_fit_1, 2) if mean_tot_fit_1 == mean_tot_fit_1 else float("nan"),
-            "median_cell_total_spot_intensity_fit_rna1": round(med_tot_fit_1, 2) if med_tot_fit_1 == med_tot_fit_1 else float("nan"),
-            "cv_cell_total_spot_intensity_fit_rna1": round(cv_tot_fit_1, 4) if cv_tot_fit_1 == cv_tot_fit_1 else float("nan"),
-            "mean_cell_total_spot_intensity_fit_rna2": round(mean_tot_fit_2, 2) if mean_tot_fit_2 == mean_tot_fit_2 else float("nan"),
-            "median_cell_total_spot_intensity_fit_rna2": round(med_tot_fit_2, 2) if med_tot_fit_2 == med_tot_fit_2 else float("nan"),
-            "cv_cell_total_spot_intensity_fit_rna2": round(cv_tot_fit_2, 4) if cv_tot_fit_2 == cv_tot_fit_2 else float("nan"),
+            "mean_cell_total_spot_peak_intensity_rna1": round(mean_tot_fit_1, 2) if mean_tot_fit_1 == mean_tot_fit_1 else float("nan"),
+            "median_cell_total_spot_peak_intensity_rna1": round(med_tot_fit_1, 2) if med_tot_fit_1 == med_tot_fit_1 else float("nan"),
+            "cv_cell_total_spot_peak_intensity_rna1": round(cv_tot_fit_1, 4) if cv_tot_fit_1 == cv_tot_fit_1 else float("nan"),
+            "mean_cell_total_spot_peak_intensity_rna2": round(mean_tot_fit_2, 2) if mean_tot_fit_2 == mean_tot_fit_2 else float("nan"),
+            "median_cell_total_spot_peak_intensity_rna2": round(med_tot_fit_2, 2) if med_tot_fit_2 == med_tot_fit_2 else float("nan"),
+            "cv_cell_total_spot_peak_intensity_rna2": round(cv_tot_fit_2, 4) if cv_tot_fit_2 == cv_tot_fit_2 else float("nan"),
             # ---- N/C ratio rollups (image-level mean/median) --------------
             "mean_nc_ratio_total_intensity_rna1": round(mean_nc_total_1, 4) if mean_nc_total_1 == mean_nc_total_1 else float("nan"),
             "median_nc_ratio_total_intensity_rna1": round(med_nc_total_1, 4) if med_nc_total_1 == med_nc_total_1 else float("nan"),
@@ -2353,22 +2353,22 @@ def run_one(
             "cytoplasmic_spots_rna2": 0,
             "frac_nuclear_rna1": float("nan"),
             "frac_nuclear_rna2": float("nan"),
-            "mean_cell_total_intensity_fit_rna1": float("nan"),
-            "median_cell_total_intensity_fit_rna1": float("nan"),
-            "cv_cell_total_intensity_fit_rna1": float("nan"),
-            "mean_cell_total_intensity_fit_rna2": float("nan"),
-            "median_cell_total_intensity_fit_rna2": float("nan"),
-            "cv_cell_total_intensity_fit_rna2": float("nan"),
+            "mean_cell_total_peak_intensity_rna1": float("nan"),
+            "median_cell_total_peak_intensity_rna1": float("nan"),
+            "cv_cell_total_peak_intensity_rna1": float("nan"),
+            "mean_cell_total_peak_intensity_rna2": float("nan"),
+            "median_cell_total_peak_intensity_rna2": float("nan"),
+            "cv_cell_total_peak_intensity_rna2": float("nan"),
             "mean_nuc_total_intensity_rna1": float("nan"),
             "median_nuc_total_intensity_rna1": float("nan"),
             "mean_nuc_total_intensity_rna2": float("nan"),
             "median_nuc_total_intensity_rna2": float("nan"),
-            "mean_cell_total_spot_intensity_fit_rna1": float("nan"),
-            "median_cell_total_spot_intensity_fit_rna1": float("nan"),
-            "cv_cell_total_spot_intensity_fit_rna1": float("nan"),
-            "mean_cell_total_spot_intensity_fit_rna2": float("nan"),
-            "median_cell_total_spot_intensity_fit_rna2": float("nan"),
-            "cv_cell_total_spot_intensity_fit_rna2": float("nan"),
+            "mean_cell_total_spot_peak_intensity_rna1": float("nan"),
+            "median_cell_total_spot_peak_intensity_rna1": float("nan"),
+            "cv_cell_total_spot_peak_intensity_rna1": float("nan"),
+            "mean_cell_total_spot_peak_intensity_rna2": float("nan"),
+            "median_cell_total_spot_peak_intensity_rna2": float("nan"),
+            "cv_cell_total_spot_peak_intensity_rna2": float("nan"),
             "mean_nc_ratio_total_intensity_rna1": float("nan"),
             "median_nc_ratio_total_intensity_rna1": float("nan"),
             "mean_nc_ratio_total_intensity_rna2": float("nan"),

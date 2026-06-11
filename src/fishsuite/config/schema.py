@@ -695,7 +695,7 @@ class OutputCfg(BaseModel):
 
     # ─── Thresholded RNA intensity in compartments (2026-06-02 Brian) ──────
     # A THIRD intensity measurement, distinct from spot-based intensities
-    # (rna_spot_total_intensity_fit) AND from the raw whole-nucleus pixel sum
+    # (rna_spot_total_peak_intensity) AND from the raw whole-nucleus pixel sum
     # (sum_rna_intensity, which has NO floor). For each nucleus, integrate the
     # RNA-channel intensity of ALL pixels whose RAW value >= this floor —
     # measured SEPARATELY within the nucleus and within the Voronoi cytoplasm.
@@ -773,6 +773,25 @@ class ParallelCfg(BaseModel):
     threads_per_worker: int = 4
 
 
+class QcCfg(BaseModel):
+    """Per-image QC-flag thresholds (ADDITIVE, 2026-06-10).
+
+    These drive the INFORMATIONAL ``qc_*`` columns the runner merges into
+    ``per_image_summary.csv``. They never drop or alter an image — they only
+    decide which advisory flags fire. Defaults are neutral so legacy output is
+    unaffected except for the added (advisory) columns.
+    """
+    # An image is flagged ``qc_low_nuclei`` when its nucleus count is below
+    # this. Advisory only; the image is still analysed and reported.
+    qc_min_nuclei: int = 5
+    # A channel is flagged ``saturated_<role>`` when the fraction of pixels at
+    # or above near-full-scale (0.999 * dtype_max) exceeds this fraction.
+    qc_saturated_frac: float = 0.01
+    # Minimum DAPI focus score (variance-of-Laplacian) below which an image is
+    # flagged ``low_focus``. Default 0.0 -> focus NEVER flags (opt-in).
+    qc_min_focus_score: float = 0.0
+
+
 class FishsuiteConfig(BaseModel):
     experiment: ExperimentCfg = Field(default_factory=ExperimentCfg)
     conditions: ConditionsCfg = Field(default_factory=ConditionsCfg)
@@ -786,6 +805,15 @@ class FishsuiteConfig(BaseModel):
     nucleolus: NucleolusCfg = Field(default_factory=NucleolusCfg)
     output: OutputCfg = Field(default_factory=OutputCfg)
     parallel: ParallelCfg = Field(default_factory=ParallelCfg)
+    qc: QcCfg = Field(default_factory=QcCfg)
+
+    # Broad GLOBAL reproducibility seed (ADDITIVE, 2026-06-10). Seeds Python's
+    # ``random``, NumPy, PYTHONHASHSEED, and (if present) torch at the very
+    # start of each run via ``core.repro.set_global_seeds``. This is the broad
+    # run-wide seed; it is COMPLEMENTARY to — and does NOT replace —
+    # ``foci.partner_null_seed`` (the focused per-image partner-null
+    # permutation seed). Default 0 is a valid, deterministic seed.
+    seed: int = 0
 
     # Optional per-file selection subset. When non-empty, the batch runner
     # filters the discovered input list to only files whose ``Path.name`` (or

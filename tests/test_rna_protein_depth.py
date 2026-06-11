@@ -182,7 +182,7 @@ def test_protein_channel_has_rna2_metric_family(fake_img, monkeypatch):
     assert "protein_nuclear_mean" in nuc_cols          # mean nuclear intensity
     assert "sum_protein_intensity" in nuc_cols          # total nuclear intensity
     assert "protein_nc_ratio" in nuc_cols
-    assert "protein_spot_total_intensity_fit" in nuc_cols
+    assert "protein_spot_total_peak_intensity" in nuc_cols
     # --- RNA x protein colocalization (spot-level NN + pairing) ---
     paired_cols = [c for c in nuc_cols if c.startswith("paired_fraction_protein_at_")]
     assert paired_cols, f"no protein paired_fraction col in {sorted(nuc_cols)}"
@@ -264,7 +264,7 @@ def test_protein_values_match_rna2_reference(fake_img, monkeypatch):
         ("rna2_nuclear_mean", "protein_nuclear_mean"),
         ("sum_rna2_intensity", "sum_protein_intensity"),
         ("rna2_nc_ratio", "protein_nc_ratio"),
-        ("rna2_spot_total_intensity_fit", "protein_spot_total_intensity_fit"),
+        ("rna2_spot_total_peak_intensity", "protein_spot_total_peak_intensity"),
         ("median_nn_distance_rna2_um", "median_nn_distance_protein_um"),
         # MASK (Manders-style) coloc — shared core, relabeled to protein.
         ("manders_rna1_in_rna2", "manders_rna1_in_protein"),

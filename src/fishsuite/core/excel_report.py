@@ -96,7 +96,7 @@ INT_COLUMNS = {
     "paired_spot_count_rna1_at_0p3um", "paired_spot_count_rna2_at_0p3um",
     "spot_id", "x_px", "y_px", "z_slice", "z_position_um",
     "spot_peak_intensity", "quality", "spot_fwhm_px",
-    "integrated_intensity_fit", "in_nucleus", "in_cytoplasm",
+    "peak_intensity", "in_nucleus", "in_cytoplasm",
     "paired_at_0p3um", "cell_id",
 }
 
@@ -252,18 +252,18 @@ PER_IMAGE_GLOSSARY: Dict[str, Tuple[str, str, str]] = {
     "frac_nuclear_rna2": ("fraction 0-1", "—",
                           "Of all RNA2 spots in the image, the fraction whose xy center "
                           "falls inside a nuclear mask."),
-    "mean_cell_total_intensity_fit_rna1": (
+    "mean_cell_total_peak_intensity_rna1": (
         "float", "AU",
         "Mean per-cell summed RNA1 raw intensity over (nucleus + Voronoi cytoplasm)."),
-    "median_cell_total_intensity_fit_rna1": (
+    "median_cell_total_peak_intensity_rna1": (
         "float", "AU", "Median per-cell summed RNA1 raw intensity."),
-    "cv_cell_total_intensity_fit_rna1": (
+    "cv_cell_total_peak_intensity_rna1": (
         "float", "—", "CV of per-cell summed RNA1 raw intensity."),
-    "mean_cell_total_intensity_fit_rna2": (
+    "mean_cell_total_peak_intensity_rna2": (
         "float", "AU", "Mean per-cell summed RNA2 raw intensity."),
-    "median_cell_total_intensity_fit_rna2": (
+    "median_cell_total_peak_intensity_rna2": (
         "float", "AU", "Median per-cell summed RNA2 raw intensity."),
-    "cv_cell_total_intensity_fit_rna2": (
+    "cv_cell_total_peak_intensity_rna2": (
         "float", "—", "CV of per-cell summed RNA2 raw intensity."),
     "mean_nuc_total_intensity_rna1": (
         "float", "AU", "Mean per-nucleus summed RNA1 raw intensity."),
@@ -273,20 +273,21 @@ PER_IMAGE_GLOSSARY: Dict[str, Tuple[str, str, str]] = {
         "float", "AU", "Mean per-nucleus summed RNA2 raw intensity."),
     "median_nuc_total_intensity_rna2": (
         "float", "AU", "Median per-nucleus summed RNA2 raw intensity."),
-    "mean_cell_total_spot_intensity_fit_rna1": (
+    "mean_cell_total_spot_peak_intensity_rna1": (
         "float", "AU",
-        "Mean per-cell summed RNA1 SPOT (BigFISH-fit) intensity. Sum of "
-        "integrated_intensity_fit across all RNA1 spots in that cell."),
-    "median_cell_total_spot_intensity_fit_rna1": (
-        "float", "AU", "Median per-cell summed RNA1 spot intensity."),
-    "cv_cell_total_spot_intensity_fit_rna1": (
-        "float", "—", "CV of per-cell summed RNA1 spot intensity."),
-    "mean_cell_total_spot_intensity_fit_rna2": (
-        "float", "AU", "Mean per-cell summed RNA2 spot intensity."),
-    "median_cell_total_spot_intensity_fit_rna2": (
-        "float", "AU", "Median per-cell summed RNA2 spot intensity."),
-    "cv_cell_total_spot_intensity_fit_rna2": (
-        "float", "—", "CV of per-cell summed RNA2 spot intensity."),
+        "Mean per-cell summed RNA1 SPOT peak-pixel intensity. Sum of per-spot "
+        "peak_intensity (single brightest voxel at each spot centroid; NOT a "
+        "Gaussian-integrated value) across all RNA1 spots in that cell."),
+    "median_cell_total_spot_peak_intensity_rna1": (
+        "float", "AU", "Median per-cell summed RNA1 spot peak intensity."),
+    "cv_cell_total_spot_peak_intensity_rna1": (
+        "float", "—", "CV of per-cell summed RNA1 spot peak intensity."),
+    "mean_cell_total_spot_peak_intensity_rna2": (
+        "float", "AU", "Mean per-cell summed RNA2 spot peak intensity."),
+    "median_cell_total_spot_peak_intensity_rna2": (
+        "float", "AU", "Median per-cell summed RNA2 spot peak intensity."),
+    "cv_cell_total_spot_peak_intensity_rna2": (
+        "float", "—", "CV of per-cell summed RNA2 spot peak intensity."),
     "mean_nc_ratio_total_intensity_rna1": (
         "float", "—",
         "Mean per-cell nucleus/cytoplasm intensity ratio for RNA1 raw signal."),
@@ -466,14 +467,14 @@ PER_NUCLEUS_GLOSSARY: Dict[str, Tuple[str, str, str]] = {
                                           "Summed RNA1 spot intensity (background-corrected, blend method)."),
     "rna_spot_median_intensity_bgc_blend": ("float", "AU",
                                            "Median RNA1 spot intensity (background-corrected, blend method)."),
-    "rna_spot_mean_intensity_fit": ("float", "AU",
-                                   "Mean RNA1 spot intensity (BigFISH 2D Gaussian fit method)."),
-    "rna_spot_total_intensity_fit": ("float", "AU",
-                                    "Summed RNA1 spot intensity (BigFISH fit method)."),
-    "rna_spot_median_intensity_fit": ("float", "AU",
-                                     "Median RNA1 spot intensity (fit method)."),
-    "rna_spot_intensity_cv_fit": ("float", "—",
-                                 "CV of RNA1 spot intensities (fit method) within this nucleus."),
+    "rna_spot_mean_peak_intensity": ("float", "AU",
+                                   "Mean RNA1 spot peak-pixel intensity (a consistent intensity proxy, NOT a Gaussian-integrated or background-corrected value)."),
+    "rna_spot_total_peak_intensity": ("float", "AU",
+                                    "Summed per-spot peak-pixel intensity across this nucleus's RNA1 spots (a consistent intensity proxy, NOT a Gaussian-integrated or background-corrected value)."),
+    "rna_spot_median_peak_intensity": ("float", "AU",
+                                     "Median RNA1 spot peak-pixel intensity (a consistent intensity proxy, NOT a Gaussian-integrated or background-corrected value)."),
+    "rna_spot_peak_intensity_cv": ("float", "—",
+                                 "CV of RNA1 spot peak-pixel intensities within this nucleus."),
     "sum_rna_intensity": ("int", "AU",
                          "Total RNA1 raw pixel intensity summed over the nuclear mask."),
     "rna2_mean_in_nucleus": ("float", "AU",
@@ -494,14 +495,14 @@ PER_NUCLEUS_GLOSSARY: Dict[str, Tuple[str, str, str]] = {
                                   "nuclear mask."),
     "nuclear_spot_density_per_um2_rna2": ("float", "count/um^2",
                                          "RNA2 nuclear spots / nucleus area in um^2."),
-    "rna2_spot_mean_intensity_fit": ("float", "AU",
-                                    "Mean RNA2 spot intensity (BigFISH fit method)."),
-    "rna2_spot_total_intensity_fit": ("float", "AU",
-                                     "Summed RNA2 spot intensity (fit method)."),
-    "rna2_spot_median_intensity_fit": ("float", "AU",
-                                      "Median RNA2 spot intensity (fit method)."),
-    "rna2_spot_intensity_cv_fit": ("float", "—",
-                                  "CV of RNA2 spot intensities (fit method) within this nucleus."),
+    "rna2_spot_mean_peak_intensity": ("float", "AU",
+                                    "Mean RNA2 spot peak-pixel intensity (a consistent intensity proxy, NOT a Gaussian-integrated or background-corrected value)."),
+    "rna2_spot_total_peak_intensity": ("float", "AU",
+                                     "Summed per-spot peak-pixel intensity across this nucleus's RNA2 spots (a consistent intensity proxy, NOT a Gaussian-integrated or background-corrected value)."),
+    "rna2_spot_median_peak_intensity": ("float", "AU",
+                                      "Median RNA2 spot peak-pixel intensity (a consistent intensity proxy, NOT a Gaussian-integrated or background-corrected value)."),
+    "rna2_spot_peak_intensity_cv": ("float", "—",
+                                  "CV of RNA2 spot peak-pixel intensities within this nucleus."),
     "sum_rna2_intensity": ("int", "AU",
                           "Total RNA2 raw pixel intensity summed over the nuclear mask."),
     "median_nn_distance_rna1_um": ("float", "um",
@@ -657,8 +658,8 @@ PER_SPOT_GLOSSARY: Dict[str, Tuple[str, str, str]] = {
                         "Spot diameter in um (FWHM x voxel_xy_um)."),
     "spot_area_px": ("float", "px^2",
                     "Spot area in pixels (pi x (FWHM/2)^2)."),
-    "integrated_intensity_fit": ("int", "AU",
-                                "BigFISH 2D Gaussian fit integrated intensity for this spot."),
+    "peak_intensity": ("int", "AU",
+                                "Per-spot PEAK-pixel intensity (single brightest voxel at the spot centroid); a consistent intensity proxy, NOT a Gaussian-integrated value."),
     "nn_distance_um": ("float", "um",
                       "Nearest-neighbor distance from this spot to the next closest spot in the "
                       "SAME channel (xy plane)."),
@@ -1646,10 +1647,10 @@ COMPARISON_METRICS: List[Tuple[str, str, Optional[str], str]] = [
      "n_cytoplasmic_rna1_spots_per_cell", "Counts"),
     ("Mean cytoplasmic RNA2 spots per cell", "mean_n_cytoplasmic_rna2_spots_per_cell",
      "n_cytoplasmic_rna2_spots_per_cell", "Counts"),
-    ("Mean RNA1 per-cell summed spot intensity (BigFISH fit)",
-     "mean_cell_total_spot_intensity_fit_rna1", "rna_spot_total_intensity_fit", "Intensities"),
-    ("Mean RNA2 per-cell summed spot intensity (BigFISH fit)",
-     "mean_cell_total_spot_intensity_fit_rna2", "rna2_spot_total_intensity_fit", "Intensities"),
+    ("Mean RNA1 per-cell summed spot peak intensity",
+     "mean_cell_total_spot_peak_intensity_rna1", "rna_spot_total_peak_intensity", "Intensities"),
+    ("Mean RNA2 per-cell summed spot peak intensity",
+     "mean_cell_total_spot_peak_intensity_rna2", "rna2_spot_total_peak_intensity", "Intensities"),
     ("Mean N/C ratio RNA1 (raw intensity)", "mean_nc_ratio_total_intensity_rna1",
      "nc_ratio_total_intensity_rna1", "Intensities"),
     ("Mean N/C ratio RNA2 (raw intensity)", "mean_nc_ratio_total_intensity_rna2",
@@ -2428,13 +2429,14 @@ def _build_pi_focus(
         ko_v = per_nuc_spot_vals(ch, comp, val_col, ko_cond)
         write_metric_row(label, wt_v, ko_v, sec_F)
 
-    # Total integrated spot intensity per cell — the combined "count x brightness"
-    # headline. Already in nuclei_metrics as rna_spot_total_intensity_fit.
+    # Total summed per-spot peak intensity per cell — the combined
+    # "count x brightness" headline. Already in nuclei_metrics as
+    # rna_spot_total_peak_intensity.
     f_specs_totals = [
         ("Total Introns spot intensity per cell (count x peak combined)",
-         "rna_spot_total_intensity_fit"),
+         "rna_spot_total_peak_intensity"),
         ("Total Exons spot intensity per cell (count x peak combined)",
-         "rna2_spot_total_intensity_fit"),
+         "rna2_spot_total_peak_intensity"),
     ]
     for label, col in f_specs_totals:
         write_metric_row(label, get_nuc_vals(col, wt_cond), get_nuc_vals(col, ko_cond), sec_F)

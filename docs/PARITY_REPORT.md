@@ -53,8 +53,8 @@ frac_nuclei_with_ge_1_spot, frac_nuclei_with_ge_5_spots, frac_nuclei_with_ge_10_
 mean_spot_diameter_um, median_spot_diameter_um,
 mean_nuclear_spot_density_per_um2,
 mean_cell_intensity_blend, median_cell_intensity_blend,
-mean_cell_total_intensity_fit, median_cell_total_intensity_fit,
-cv_cell_total_intensity_fit,
+mean_cell_total_peak_intensity, median_cell_total_peak_intensity,
+cv_cell_total_peak_intensity,
 mean_spot_volume_um3, mean_spot_anisotropy
 ```
 
@@ -91,8 +91,7 @@ dapi_channel, rna_channel, voxel_xy_nm, voxel_z_nm, n_z
 | mean_spot_volume_um3 / mean_spot_volume_vox | x | x | constant per image |
 | mean_spot_anisotropy | x | x | constant per image (z_radius/xy_radius) |
 | rna_spot_mean_intensity_bgc_blend / rna_spot_total_intensity_bgc_blend / rna_spot_median_intensity_bgc_blend | x | x | from spot peak intensity (BigFISH) |
-| rna_spot_mean_intensity_fit / rna_spot_total_intensity_fit / rna_spot_median_intensity_fit / rna_spot_intensity_cv_fit | x | x | BigFISH peak = fit-like |
-| spot_fit_success_count / spot_fit_success_fraction | x | x | BigFISH always succeeds → 1.0 |
+| rna_spot_mean_peak_intensity / rna_spot_total_peak_intensity / rna_spot_median_peak_intensity / rna_spot_peak_intensity_cv | x | x | summed per-spot PEAK-pixel intensity (consistent proxy, NOT a Gaussian fit) |
 | sum_rna_intensity | x | x | |
 | cyto_area_px | x | x | |
 | cyto_estimation_method | x | x | "voronoi" |
@@ -112,7 +111,7 @@ image, condition, secondary_only, experiment_id, spot_id, nucleus_id,
 x_px, y_px, z_slice, z_position_um, spot_peak_intensity, quality,
 spot_fwhm_px, fwhm_xy_px_fit, fwhm_z_px_fit, sigma_xy_px_fit, sigma_z_px_fit,
 spot_diameter_um, spot_area_px, spot_volume_vox, spot_volume_um3, spot_anisotropy,
-integrated_intensity_fit, rna_mean_raw_disk, rna_mean_bgc_blend,
+peak_intensity, rna_mean_raw_disk, rna_mean_bgc_blend,
 rna_sum_bgc_blend, rna_sum_raw_disk, rna_bg_blend, rna_contrast_blend,
 spot_bg_estimate, spot_to_nuc_edge_um, spot_to_nuc_centroid_um,
 spot_to_nuc_edge_px, spot_to_nuc_centroid_px,
@@ -260,7 +259,7 @@ adds the derived analytical sheets.
 
 | Item | Fiji | fishsuite | Why |
 |---|---|---|---|
-| Spot diameter / FWHM / volume | Per-spot Gaussian fit (`integrated_intensity_fit`, `sigma_xy_px_fit`, etc.) | Constant per image from BigFISH spot model | BigFISH does not produce a per-spot Gaussian fit; the spot model assumes a fixed radius. Per-image constant is the correct expression of this. |
+| Spot diameter / FWHM / volume | Per-spot geometry (`peak_intensity`, `sigma_xy_px_fit`, etc.) | Constant per image from BigFISH spot model | BigFISH does not produce a per-spot Gaussian fit; the spot model assumes a fixed radius. Per-image constant is the correct expression of this. |
 | RNA spot intensity columns | Disk-sum + background blend | BigFISH peak intensity copied to all per-spot intensity slots | BigFISH does not expose disk-sum/bg-blend internally; peak is the available signal. Downstream relative comparisons across cells/conditions are preserved. |
 | ab_* / coloc_* columns | Present in nuclei_metrics in rna_protein mode | Filled with NaN/absent in rna_only mode | The standalone runs rna_only here; rna_protein mode would populate these. |
 | frac_spots_nuc_edge | Computed from spot-to-ROI-edge distances | NaN | Not yet wired into fishsuite. Cosmetic — does not affect counts/intensities. |
