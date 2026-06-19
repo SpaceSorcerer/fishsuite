@@ -23,6 +23,19 @@ fishsuite presets list
 fishsuite preview "F:\Raw Images\H9-MIAT-KD-ASO\H9-MIAT-KD-05-08-2026\Folder_NT\H9-MIAT-ASOs-_01.vsi"
 ```
 
+## Post-run figures & tables (after a run)
+
+Make the extra colocalization tables + figures from a **finished** run folder.
+These are CPU-only (no GPU) and reuse the run's saved masks + spots:
+
+```powershell
+fishsuite postrun     --run "<run output folder>"   # one-shot: backfill + walkthrough
+fishsuite backfill    --run "<run output folder>"   # coloc null draws + radial + QKI montage (CPU)
+fishsuite walkthrough --run "<run output folder>"   # the 8-panel pipeline-walkthrough figure
+```
+
+See **[POSTRUN_UTILITIES.md](POSTRUN_UTILITIES.md)** for a beginner-friendly walkthrough.
+
 ## Modes
 
 - `rna_only` — per-nucleus FISH spot count, intensity, N/C ratio
