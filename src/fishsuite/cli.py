@@ -248,7 +248,12 @@ Examples:
               help="Skip writing coloc_radial_profile.csv.")
 @click.option("--no-montage", is_flag=True,
               help="Skip rendering the QKI enrichment montage PNG.")
-def backfill(run_dir, staging, input_dir, seed, no_null_draws, no_radial, no_montage):
+@click.option("--rotation", is_flag=True,
+              help="ALSO compute the rotation 'proper background' null (keep-N "
+                   "constellation redraw) -> coloc_rotation_null_summary.csv + "
+                   "coloc_rotation_null_draws.csv. OFF by default (opt-in).")
+def backfill(run_dir, staging, input_dir, seed, no_null_draws, no_radial,
+             no_montage, rotation):
     run = Path(run_dir)
     click.echo(f"[backfill] CPU-only - reusing saved masks + MIAT spots in {run}")
     try:
@@ -259,6 +264,7 @@ def backfill(run_dir, staging, input_dir, seed, no_null_draws, no_radial, no_mon
             do_null_draws=not no_null_draws,
             do_radial=not no_radial,
             do_montage=not no_montage,
+            do_rotation=rotation,
             seed=seed,
         )
     except (FileNotFoundError, ValueError) as exc:

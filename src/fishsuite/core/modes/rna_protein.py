@@ -217,7 +217,7 @@ def run_one(
     # consistent with per_image_summary (protein_*). Their current column sets
     # carry no rna2 token (this is a defensive no-op), but it future-proofs the
     # schema and keeps the relabel contract uniform.
-    for _ck in ("coloc_null_draws", "coloc_radial_profile"):
+    for _ck in ("coloc_null_draws", "coloc_radial_profile", "coloc_rotation_null"):
         _cv = res.extra.get(_ck)
         if isinstance(_cv, pd.DataFrame):
             res.extra[_ck] = _relabel_df_columns(_cv)

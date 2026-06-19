@@ -734,3 +734,96 @@ def test_print_gate_writes_to_cp1252_stream_without_error():
     text = buf.getvalue().decode("cp1252")
     assert "SELF-VALIDATION GATE" in text
     assert "WARNING" in text  # the FAIL row triggers the warning banner
+
+
+# ===========================================================================
+# ROTATION-NULL backfill retrofit (Brian, 2026-06-19)
+# The pure core also computes the rotation "proper background" when
+# ``do_rotation=True`` (keep-N redraw, constellation centroid, seeded). Default
+# OFF -> no rotation keys (byte-equivalent to the pre-feature core output).
+# ===========================================================================
+def _bigger_two_nuclei_labels(h=120, w=120):
+    """Two larger disk nuclei so a rotated constellation has room to move."""
+    from skimage.draw import disk
+    labels = np.zeros((h, w), dtype=np.int32)
+    rr, cc = disk((40, 35), 26, shape=labels.shape)
+    labels[rr, cc] = 1
+    rr, cc = disk((40, 85), 26, shape=labels.shape)
+    labels[rr, cc] = 2
+    return labels
+
+
+def _ring_spots(labels):
+    """A ring constellation per nucleus (so rotation samples different pixels)."""
+    out = {}
+    centers = {1: (40, 35), 2: (40, 85)}
+    for nid, (cy, cx) in centers.items():
+        pts = []
+        for k in range(10):
+            ang = 2 * np.pi * k / 10
+            pts.append((cx + 14 * np.cos(ang), cy + 14 * np.sin(ang)))  # (x, y)
+        out[nid] = np.asarray(pts, dtype=float)
+    return out
+
+
+def test_pure_core_rotation_bright_at_spots_is_enriched():
+    labels = _bigger_two_nuclei_labels()
+    spots = _ring_spots(labels)
+    qki = _qki_bright_at_spots(labels, spots, base=100.0, bump=600.0, r=3)
+    out = _compute_coloc_extras_for_image(
+        qki, labels, spots, None,
+        disk_px=3.0, n_null=400, seed=0,
+        do_null_draws=False, do_radial=False, do_montage=False,
+        do_rotation=True,
+    )
+    s = out["rotation_summary"]
+    assert s is not None
+    assert s["pooled_rotation_enrichment"] > 1.10
+    assert s["pooled_rotation_p_empirical"] < 0.05
+    assert s["n_nuclei_used"] >= 1
+
+
+def test_pure_core_rotation_uniform_is_one():
+    labels = _bigger_two_nuclei_labels()
+    spots = _ring_spots(labels)
+    qki = np.full(labels.shape, 50.0, dtype=np.float64)
+    out = _compute_coloc_extras_for_image(
+        qki, labels, spots, None,
+        disk_px=3.0, n_null=400, seed=0,
+        do_null_draws=False, do_radial=False, do_montage=False,
+        do_rotation=True,
+    )
+    s = out["rotation_summary"]
+    assert s["pooled_rotation_enrichment"] == pytest.approx(1.0, abs=1e-9)
+
+
+def test_pure_core_rotation_deterministic_seed():
+    labels = _bigger_two_nuclei_labels()
+    spots = _ring_spots(labels)
+    qki = _qki_bright_at_spots(labels, spots)
+    o1 = _compute_coloc_extras_for_image(
+        qki, labels, spots, None, disk_px=3.0, n_null=300, seed=0,
+        do_null_draws=False, do_rotation=True,
+    )
+    o2 = _compute_coloc_extras_for_image(
+        qki, labels, spots, None, disk_px=3.0, n_null=300, seed=0,
+        do_null_draws=False, do_rotation=True,
+    )
+    np.testing.assert_array_equal(
+        o1["rotation_draws_rows"]["pooled_null_value"].to_numpy(),
+        o2["rotation_draws_rows"]["pooled_null_value"].to_numpy(),
+    )
+    assert o1["rotation_summary"]["pooled_obs"] == o2["rotation_summary"]["pooled_obs"]
+
+
+def test_pure_core_rotation_default_off_absent():
+    """do_rotation defaults OFF -> no rotation_summary / rotation_draws_rows."""
+    labels = _bigger_two_nuclei_labels()
+    spots = _ring_spots(labels)
+    qki = _qki_bright_at_spots(labels, spots)
+    out = _compute_coloc_extras_for_image(
+        qki, labels, spots, None, disk_px=3.0, n_null=200, seed=0,
+        do_null_draws=True, do_radial=False, do_montage=False,
+    )
+    assert out.get("rotation_summary") is None
+    assert out.get("rotation_draws_rows") is None

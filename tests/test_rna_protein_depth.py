@@ -463,3 +463,42 @@ def test_rna_only_regression_smoke(fake_img, monkeypatch):
     assert "sum_rna_intensity" in res.nuclei.columns
     # No 2nd-channel columns in single-channel mode.
     assert not any("rna2" in c or "protein" in c for c in res.nuclei.columns)
+
+
+# ---------------------------------------------------------------------------
+# Rotation "proper background" null relabels rna2 -> protein (2026-06-19).
+# The native rotation feature emits rna2_rotation_* per-nucleus + per-image
+# columns + (optionally) an extra["coloc_rotation_null"] DataFrame; in
+# rna_protein mode those MUST surface under protein-* names with no rna2 leak.
+# ---------------------------------------------------------------------------
+def test_rotation_null_relabels_rna2_to_protein(fake_img, monkeypatch):
+    cfg = _base_cfg()
+    cfg.channels.analysis_mode = "rna_protein"
+    cfg.channels.antibody = PROT_C
+    cfg.channels.antibody_label = "QKI"
+    cfg.foci.compute_partner_intensity = True
+    cfg.foci.compute_partner_rotation_null = True
+    cfg.foci.partner_rotation_n = 150
+    cfg.foci.save_partner_rotation_null_draws = True
+    res = _run(cfg, _rna_protein, fake_img.path, monkeypatch, fake_img)
+
+    nuc_cols = set(res.nuclei.columns)
+    # protein-* rotation per-nucleus columns present; no rna2-* leak.
+    assert "protein_rotation_enrichment_at_rna1_spots" in nuc_cols
+    assert "protein_rotation_null_z_at_rna1_spots" in nuc_cols
+    assert "rotation_null_usable" in nuc_cols
+    assert not any("rna2_rotation" in c for c in nuc_cols)
+
+    # per-image pooled rollup relabeled too.
+    assert "protein_pooled_rotation_enrichment_at_rna1_spots" in res.per_image
+    assert "n_nuclei_partner_rotation_null" in res.per_image
+    assert not any("rna2_pooled_rotation" in k for k in res.per_image)
+
+    # The extra "coloc_rotation_null" carrier is emitted only when >=1 nucleus is
+    # rot-USABLE (this fixture's tiny dense nuclei may all fail the retention gate
+    # -> no pooled null -> no carrier, which is correct). WHEN present, its columns
+    # must also be routed through the rna2->protein relabel (no rna2 token).
+    rot_df = res.extra.get("coloc_rotation_null")
+    if rot_df is not None:
+        assert isinstance(rot_df, pd.DataFrame)
+        assert not any("rna2" in c for c in rot_df.columns)

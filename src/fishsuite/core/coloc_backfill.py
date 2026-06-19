@@ -70,6 +70,7 @@ from .modes.rna_rna import (
     _annulus_stencils,
     _partner_null_for_nucleus,
     _radial_profile_for_nucleus,
+    _rotation_null_for_nucleus,
 )
 
 
@@ -103,6 +104,8 @@ def _compute_coloc_extras_for_image(
     do_null_draws: bool = True,
     do_radial: bool = True,
     do_montage: bool = False,
+    do_rotation: bool = False,
+    rotation_min_retention: float = 0.5,
     montage_n_nuclei: int = 6,
     montage_max_spots: int = 8,
     montage_crop_half: int = 12,
@@ -161,6 +164,20 @@ def _compute_coloc_extras_for_image(
         r_nsd = np.zeros(n_rings, dtype=np.float64)
         r_w = np.zeros(n_rings, dtype=np.float64)
 
+    # ---- rotation "proper background" accumulators (own rng stream) --------
+    # 2026-06-19 Brian: retrofit the rotation null for OLD runs. Rotates each
+    # nucleus's spot constellation about its OWN centroid (keep-N redraw), pools
+    # spot-count-weighted over rot-USABLE nuclei (full-length keep-N null -> pools
+    # per-iteration exactly like the position null). Separate rng (seed offset) so
+    # toggling it never perturbs the position/radial draws.
+    do_rot = bool(do_rotation)
+    if do_rot:
+        rot_rng = np.random.default_rng(int(seed) + 101)
+        rot_obs_num = 0.0
+        rot_w_den = 0.0
+        rot_pool = np.zeros(n_null, dtype=np.float64)
+        rot_n_used = 0
+
     montage_candidates: List[tuple] = []
 
     for nid in range(1, n_after + 1):
@@ -217,6 +234,21 @@ def _compute_coloc_extras_for_image(
                     r_nm[ri] += rnm * rnsp
                     r_nsd[ri] += rnsd * rnsp
                     r_w[ri] += rnsp
+
+        if do_rot:
+            cy0 = float(scy.mean())
+            cx0 = float(scx.mean())
+            rot = _rotation_null_for_nucleus(
+                qki_f, scy, scx, samp_mask, (cy0, cx0), ndy, ndx, n_null, rot_rng,
+                min_retention=float(rotation_min_retention),
+            )
+            rns = rot["null_stats"]
+            if rot["usable"] and rns.size == n_null:
+                n_sp = int(scy.size)
+                rot_obs_num += rot["obs"] * n_sp
+                rot_w_den += n_sp
+                rot_pool += rns * n_sp
+                rot_n_used += 1
 
         if do_montage:
             montage_candidates.append((nid, scy.copy(), scx.copy(), nys, nxs))
@@ -276,6 +308,38 @@ def _compute_coloc_extras_for_image(
                 }
             )
 
+    # ---- pooled rotation "proper background" summary + per-draw frame ------
+    rotation_summary = None
+    rotation_draws_rows = None
+    if do_rot and rot_w_den > 0:
+        ro_pool = rot_obs_num / rot_w_den
+        rp_pool = rot_pool / rot_w_den
+        rp_mean = float(rp_pool.mean())
+        rp_sd = float(rp_pool.std(ddof=1)) if rp_pool.size > 1 else 0.0
+        rot_enr = (ro_pool / rp_mean) if rp_mean > 0 else float("nan")
+        rot_z = ((ro_pool - rp_mean) / rp_sd) if rp_sd > 0 else float("nan")
+        rot_p = float((np.sum(rp_pool >= ro_pool) + 1) / (n_null + 1))
+        rotation_summary = {
+            "pooled_obs": float(ro_pool),
+            "pooled_rotation_null_mean": rp_mean,
+            "pooled_rotation_null_sd": rp_sd,
+            "pooled_rotation_enrichment": float(rot_enr),
+            "pooled_rotation_null_z": float(rot_z),
+            "pooled_rotation_p_empirical": rot_p,
+            "n_nuclei_used": int(rot_n_used),
+            "n_null": n_null,
+            "disk_px": float(disk_px),
+        }
+        rotation_draws_rows = pd.DataFrame(
+            {
+                "image": image,
+                "condition": condition,
+                "iter": np.arange(n_null, dtype=int),
+                "pooled_null_value": rp_pool,
+                "pooled_obs": float(ro_pool),
+            }
+        )
+
     # ---- montage crops ----------------------------------------------------
     montage_crops: List[Dict[str, Any]] = []
     if do_montage and montage_candidates:
@@ -292,6 +356,8 @@ def _compute_coloc_extras_for_image(
         "null_draws_rows": null_draws_rows,
         "radial_rows": radial_rows,
         "montage_crops": montage_crops,
+        "rotation_summary": rotation_summary,
+        "rotation_draws_rows": rotation_draws_rows,
     }
 
 
@@ -745,6 +811,7 @@ def backfill_run(
     do_null_draws: bool = True,
     do_radial: bool = True,
     do_montage: bool = True,
+    do_rotation: bool = False,
     seed: int = 0,
     tol_rel: float = 0.02,
     verbose: bool = True,
@@ -796,6 +863,7 @@ def backfill_run(
     null_seed = int(getattr(cfg.foci, "partner_null_seed", seed))
     radial_bins_um = list(getattr(cfg.foci, "partner_radial_bins_um", None)
                           or [0.25, 0.5, 0.75, 1.0])
+    rot_min_ret = float(getattr(cfg.foci, "partner_rotation_min_retention", 0.5))
 
     # QKI display floor/ceil for the montage (manual_antibody_min/max).
     vmin = _first_present(rc.get("config_resolved", {}).get("output", {}),
@@ -822,6 +890,8 @@ def backfill_run(
     all_radial: List[pd.DataFrame] = []
     summary_rows: List[Dict[str, Any]] = []
     gate_rows: List[Dict[str, Any]] = []
+    all_rot_draws: List[pd.DataFrame] = []
+    rot_summary_rows: List[Dict[str, Any]] = []
     # Mean-enrichment montage accumulators. Each per-image patch is already
     # per-nucleus normalized (enrichment units) so pooling across images is valid
     # (no absolute brightness mixed) — accumulate as a spot-weighted sum.
@@ -897,9 +967,25 @@ def backfill_run(
                 disk_px=disk_px, n_null=n_null, seed=null_seed,
                 radial_bins_px=radial_bins_px,
                 do_null_draws=do_null_draws, do_radial=do_radial,
-                do_montage=do_montage,
+                do_montage=do_montage, do_rotation=do_rotation,
+                rotation_min_retention=rot_min_ret,
                 image=image_name, condition=condition,
             )
+
+            rs = out.get("rotation_summary")
+            if rs is not None:
+                rot_summary_rows.append({
+                    "image": image_name, "condition": condition,
+                    "pooled_obs": rs["pooled_obs"],
+                    "pooled_rotation_null_mean": rs["pooled_rotation_null_mean"],
+                    "pooled_rotation_null_sd": rs["pooled_rotation_null_sd"],
+                    "pooled_rotation_enrichment": rs["pooled_rotation_enrichment"],
+                    "pooled_rotation_null_z": rs["pooled_rotation_null_z"],
+                    "pooled_rotation_p_empirical": rs["pooled_rotation_p_empirical"],
+                    "n_nuclei_used": rs["n_nuclei_used"],
+                })
+            if out.get("rotation_draws_rows") is not None:
+                all_rot_draws.append(out["rotation_draws_rows"])
 
             s = out["null_summary"]
             if s is not None:
@@ -982,6 +1068,14 @@ def backfill_run(
         p = run_dir / "coloc_radial_profile.csv"
         rad.to_csv(p, index=False)
         written["coloc_radial_profile"] = str(p)
+    if all_rot_draws:
+        p = run_dir / "coloc_rotation_null_draws.csv"
+        pd.concat(all_rot_draws, ignore_index=True).to_csv(p, index=False)
+        written["coloc_rotation_null_draws"] = str(p)
+    if rot_summary_rows:
+        p = run_dir / "coloc_rotation_null_summary.csv"
+        pd.DataFrame(rot_summary_rows).to_csv(p, index=False)
+        written["coloc_rotation_null_summary"] = str(p)
     if do_montage and miat_w > 0 and rand_w > 0:
         miat_patch = miat_acc / miat_w
         rand_patch = rand_acc / rand_w
@@ -1124,6 +1218,11 @@ def main(argv: Optional[List[str]] = None) -> int:
     ap.add_argument("--no-null-draws", action="store_true")
     ap.add_argument("--no-radial", action="store_true")
     ap.add_argument("--no-montage", action="store_true")
+    ap.add_argument("--rotation", action="store_true",
+                    help="ALSO compute the rotation 'proper background' null "
+                         "(keep-N constellation redraw) -> coloc_rotation_null_"
+                         "summary.csv + coloc_rotation_null_draws.csv. OFF by "
+                         "default (opt-in retrofit).")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--tol-rel", type=float, default=0.02)
     args = ap.parse_args(argv)
@@ -1135,6 +1234,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         do_null_draws=not args.no_null_draws,
         do_radial=not args.no_radial,
         do_montage=not args.no_montage,
+        do_rotation=args.rotation,
         seed=args.seed,
         tol_rel=args.tol_rel,
     )

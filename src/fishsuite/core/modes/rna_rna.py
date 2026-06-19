@@ -328,6 +328,234 @@ def _radial_profile_for_nucleus(
     return out
 
 
+# ===========================================================================
+# ROTATION / TRANSLATION "PROPER BACKGROUND" NULLS (2026-06-19, Brian)
+# ---------------------------------------------------------------------------
+# Spatial-structure-PRESERVING, registration-DESTROYING nulls for the spot-
+# centric partner-intensity statistic. Where ``_partner_null_for_nucleus``
+# randomizes spot POSITIONS (and is inflated when partner & spots merely share a
+# nuclear compartment), the rotation null rotates the WHOLE spot CONSTELLATION
+# about its OWN centroid: the spot pattern keeps its internal geometry, only its
+# alignment to the fixed partner field is destroyed. So observed > rotation-null
+# means the partner is concentrated at the spots BEYOND a shared compartment.
+#
+# Native port of the adversarially-validated prototype ``rotation_null_prototype
+# .py`` (F:\\Image Analysis Work\\MIAT-QKI-Coloc\\UD\\_QKI_association_proper_
+# background_2026-06-18). They REUSE the engine's exact ``_disk_means_at`` disk
+# statistic so the rotation/position/translation nulls are directly comparable.
+# ===========================================================================
+def _rotate_pts(oy, ox, cy0, cx0, angle_deg):
+    """Rotate centroid-relative offset arrays ``(oy, ox)`` about ``(cy0, cx0)``;
+    return int ``(ny, nx)``. ``angle_deg`` may be a SCALAR (one angle for the
+    whole constellation) or a per-spot ARRAY (used by the keep-N redraw)."""
+    th = np.radians(np.asarray(angle_deg, dtype=np.float64))
+    c, s = np.cos(th), np.sin(th)
+    ny = np.rint(cy0 + (oy * c - ox * s)).astype(np.intp)
+    nx = np.rint(cx0 + (oy * s + ox * c)).astype(np.intp)
+    return ny, nx
+
+
+def _rotation_null_for_nucleus(
+    partner_2d: np.ndarray,
+    scy: np.ndarray,
+    scx: np.ndarray,
+    in_mask: np.ndarray,
+    centroid_yx: Tuple[float, float],
+    dy: np.ndarray,
+    dx: np.ndarray,
+    n_null: int,
+    rng: np.random.Generator,
+    *,
+    min_retention: float = 0.5,
+    max_redraw: int = 40,
+) -> Dict[str, Any]:
+    """Per-nucleus ROTATION null about the CONSTELLATION centroid (keep-N redraw).
+
+    For each of ``n_null`` iterations one rotation angle is drawn (the first three
+    are exactly 90/180/270 deg, the rest uniform on [0, 360)) and ALL spots are
+    rotated about ``centroid_yx`` (= the spot set's OWN centroid). Any rotated spot
+    landing OUTSIDE ``in_mask`` is REDRAWN by a fresh per-spot uniform angle
+    (repeated up to ``max_redraw`` times) until in-mask — this KEEPS the full spot
+    count N every iteration (dropping out-of-mask points biases enrichment LOW by
+    ~0.01-0.015). Still-unplaceable spots fall back to their observed position
+    (rare; counted). The per-iter statistic is the mean disk-mean partner over all
+    N (redrawn) points.
+
+    Returns a dict with ``obs`` (observed per-nucleus stat), ``null_stats``
+    (keep-N null array — PRIMARY), ``null_stats_drop`` (legacy drop, for
+    comparison), ``median_retention`` (first-pass in-mask fraction),
+    ``frac_unplaceable``, ``n_usable_iters`` and ``usable`` (median first-pass
+    retention >= ``min_retention`` and >= 2 finite null draws).
+    """
+    H, W = partner_2d.shape
+    cy0, cx0 = float(centroid_yx[0]), float(centroid_yx[1])
+    n_sp = int(scy.size)
+    if n_sp == 0:
+        return {"obs": float("nan"), "null_stats": np.empty(0),
+                "null_stats_drop": np.empty(0), "median_retention": 0.0,
+                "mean_retention": 0.0, "n_usable_iters": 0,
+                "frac_unplaceable": 0.0, "usable": False}
+    obs = float(_disk_means_at(partner_2d, scy, scx, dy, dx).mean())
+    oy = scy.astype(np.float64) - cy0
+    ox = scx.astype(np.float64) - cx0
+
+    fixed = np.array([90.0, 180.0, 270.0], dtype=np.float64)
+    n_rand = max(0, n_null - fixed.size)
+    rand = rng.uniform(0.0, 360.0, size=n_rand)
+    angles = np.concatenate([fixed[:n_null], rand])[:n_null]
+
+    keepN_vals: List[float] = []
+    drop_vals: List[float] = []
+    raw_retentions = np.empty(n_null, dtype=np.float64)
+    unplaceable = 0
+
+    for i, ang in enumerate(angles):
+        ny, nx = _rotate_pts(oy, ox, cy0, cx0, ang)
+        inb = (ny >= 0) & (ny < H) & (nx >= 0) & (nx < W)
+        inmask = np.zeros(n_sp, dtype=bool)
+        if inb.any():
+            inmask[inb] = in_mask[ny[inb], nx[inb]]
+        raw_retentions[i] = inmask.mean() if n_sp else 0.0
+
+        if inmask.any():
+            drop_vals.append(float(
+                _disk_means_at(partner_2d, ny[inmask], nx[inmask], dy, dx).mean()))
+        else:
+            drop_vals.append(np.nan)
+
+        ny_k = ny.copy()
+        nx_k = nx.copy()
+        bad = ~inmask
+        tries = 0
+        while bad.any() and tries < max_redraw:
+            idx = np.where(bad)[0]
+            new_ang = rng.uniform(0.0, 360.0, size=idx.size)
+            ny2, nx2 = _rotate_pts(oy[idx], ox[idx], cy0, cx0, new_ang)
+            ib2 = (ny2 >= 0) & (ny2 < H) & (nx2 >= 0) & (nx2 < W)
+            ok2 = np.zeros(idx.size, dtype=bool)
+            if ib2.any():
+                ok2[ib2] = in_mask[ny2[ib2], nx2[ib2]]
+            ny_k[idx[ok2]] = ny2[ok2]
+            nx_k[idx[ok2]] = nx2[ok2]
+            bad[idx[ok2]] = False
+            tries += 1
+        if bad.any():
+            unplaceable += int(bad.sum())
+            ny_k[bad] = scy[bad]
+            nx_k[bad] = scx[bad]
+        keepN_vals.append(float(
+            _disk_means_at(partner_2d, ny_k, nx_k, dy, dx).mean()))
+
+    keepN_arr = np.asarray(keepN_vals, dtype=np.float64)
+    drop_arr = np.asarray(drop_vals, dtype=np.float64)
+    med_ret = float(np.median(raw_retentions)) if raw_retentions.size else 0.0
+    n_finite = int(np.isfinite(keepN_arr).sum())
+    usable = bool(med_ret >= min_retention and n_finite >= 2)
+    drop_mask = (raw_retentions >= min_retention) & np.isfinite(drop_arr)
+    return {
+        "obs": obs,
+        "null_stats": keepN_arr[np.isfinite(keepN_arr)],
+        "null_stats_drop": drop_arr[drop_mask],
+        "median_retention": med_ret,
+        "mean_retention": float(raw_retentions.mean()) if raw_retentions.size else 0.0,
+        "n_usable_iters": n_finite,
+        "frac_unplaceable": (float(unplaceable / (n_sp * n_null))
+                             if (n_sp and n_null) else 0.0),
+        "usable": usable,
+    }
+
+
+def _translation_null_for_nucleus(
+    partner_2d: np.ndarray,
+    scy: np.ndarray,
+    scx: np.ndarray,
+    in_mask: np.ndarray,
+    nuc_ys: np.ndarray,
+    nuc_xs: np.ndarray,
+    dy: np.ndarray,
+    dx: np.ndarray,
+    n_null: int,
+    rng: np.random.Generator,
+    *,
+    min_retention: float = 0.5,
+) -> Dict[str, Any]:
+    """Per-nucleus TRANSLATION null: shift the WHOLE spot constellation by random
+    ``(dy, dx)`` defined by moving its centroid onto a random in-mask sampling
+    pixel. Points leaving ``in_mask`` are dropped; per-iter stat = mean disk-mean
+    partner over kept points. Translation is UNRELIABLE for dense, space-filling
+    spot patterns (most rigid shifts push too many points out of mask) — included
+    as a companion reference but gated by ``min_retention`` like the rotation null
+    and flagged unreliable at the method level. Returns the same dict shape as
+    ``_rotation_null_for_nucleus`` (minus the redraw-only keys)."""
+    H, W = partner_2d.shape
+    n_sp = int(scy.size)
+    npix = int(nuc_ys.size)
+    if n_sp == 0 or npix == 0:
+        return {"obs": float("nan"), "null_stats": np.empty(0),
+                "median_retention": 0.0, "mean_retention": 0.0,
+                "n_usable_iters": 0, "usable": False}
+    obs = float(_disk_means_at(partner_2d, scy, scx, dy, dx).mean())
+    cy0 = int(round(float(scy.mean())))
+    cx0 = int(round(float(scx.mean())))
+    anc = rng.integers(0, npix, size=n_null)
+    sdy = nuc_ys[anc] - cy0
+    sdx = nuc_xs[anc] - cx0
+
+    null_vals: List[float] = []
+    retentions = np.empty(n_null, dtype=np.float64)
+    for i in range(n_null):
+        ny = scy + int(sdy[i])
+        nx = scx + int(sdx[i])
+        inb = (ny >= 0) & (ny < H) & (nx >= 0) & (nx < W)
+        keep = np.zeros(n_sp, dtype=bool)
+        if inb.any():
+            keep[inb] = in_mask[ny[inb], nx[inb]]
+        retentions[i] = keep.mean() if n_sp else 0.0
+        if keep.any():
+            null_vals.append(float(
+                _disk_means_at(partner_2d, ny[keep], nx[keep], dy, dx).mean()))
+        else:
+            null_vals.append(np.nan)
+
+    null_arr = np.asarray(null_vals, dtype=np.float64)
+    usable_iters = (retentions >= min_retention) & np.isfinite(null_arr)
+    med_ret = float(np.median(retentions)) if retentions.size else 0.0
+    return {
+        "obs": obs,
+        "null_stats": null_arr[usable_iters],
+        "median_retention": med_ret,
+        "mean_retention": float(retentions.mean()) if retentions.size else 0.0,
+        "n_usable_iters": int(usable_iters.sum()),
+        "usable": bool(med_ret >= min_retention and usable_iters.sum() >= 2),
+    }
+
+
+def _rotation_single_position_dist(
+    partner_2d, scy, scx, in_mask, centroid_yx, dy, dx, *, n_iters, rng
+) -> np.ndarray:
+    """Distribution of SINGLE-position disk-mean partner under rotation of the
+    spot constellation — pool the per-POINT disk-means (not the per-iter mean)
+    across kept rotated points over ``n_iters`` random angles. Used to set the
+    high-percentile threshold for the null-calibrated association fraction."""
+    H, W = partner_2d.shape
+    cy0, cx0 = float(centroid_yx[0]), float(centroid_yx[1])
+    oy = scy.astype(np.float64) - cy0
+    ox = scx.astype(np.float64) - cx0
+    pooled: List[float] = []
+    angles = rng.uniform(0.0, 360.0, size=int(n_iters))
+    for ang in angles:
+        ny, nx = _rotate_pts(oy, ox, cy0, cx0, float(ang))
+        inb = (ny >= 0) & (ny < H) & (nx >= 0) & (nx < W)
+        if not inb.any():
+            continue
+        ny2, nx2 = ny[inb], nx[inb]
+        km = in_mask[ny2, nx2]
+        if km.any():
+            pooled.extend(
+                _disk_means_at(partner_2d, ny2[km], nx2[km], dy, dx).tolist())
+    return np.asarray(pooled, dtype=np.float64)
+
+
 def _resolve_channels(cfg, img) -> Tuple[int, int, int]:
     """Resolve dapi / rna / rna2 channel indices from cfg, with auto fallback.
 
@@ -1071,13 +1299,28 @@ def run_one(
         compute_partner_intensity
         and bool(getattr(cfg.foci, "compute_partner_radial_profile", False))
     )
-    # When EITHER feature is on we need the per-nucleus sampling block (nucleolus
-    # detection + shared spot/mask prep). When radial is OFF this is exactly
+    # 2026-06-19 Brian: rotation "proper background" null (+ optional translation
+    # companion). Reuses the SAME per-nucleus sampling block (mask, spots, disk
+    # stencil) as the disk null but rotates the spot CONSTELLATION about its own
+    # centroid (keep-N redraw). Each null family gets its OWN seed-derived RNG so
+    # toggling it never perturbs the position/radial draws. Default OFF.
+    compute_partner_rotation = (
+        compute_partner_intensity
+        and bool(getattr(cfg.foci, "compute_partner_rotation_null", False))
+    )
+    compute_partner_translation = (
+        compute_partner_rotation
+        and bool(getattr(cfg.foci, "compute_partner_translation_null", False))
+    )
+    # When ANY feature is on we need the per-nucleus sampling block (nucleolus
+    # detection + shared spot/mask prep). When all OFF this is exactly
     # ``compute_partner_null`` -> the legacy gate -> byte-identical behavior.
-    _need_partner_block = compute_partner_null or compute_partner_radial
+    _need_partner_block = (compute_partner_null or compute_partner_radial
+                           or compute_partner_rotation)
     # Surfaced-output carriers (None -> key never added to extra; defaults OFF).
     coloc_null_draws_df = None
     coloc_radial_df = None
+    coloc_rotation_null_df = None
     # Nucleolus-exclusion for the null sampling positions + observed spots.
     # When requested AND nucleolus is enabled, detect nucleoli ONCE here (the
     # post-loop nucleolus column block below REUSES this array, so detection
@@ -1148,6 +1391,37 @@ def run_one(
         _radial_nullmean_num = np.zeros(_n_rings, dtype=np.float64)
         _radial_nullsd_num = np.zeros(_n_rings, dtype=np.float64)
         _radial_w_den = np.zeros(_n_rings, dtype=np.float64)
+
+    # 2026-06-19 Brian: rotation/translation "proper background" setup. SEPARATE
+    # RNG streams (seed offsets) so toggling these never perturbs the position /
+    # radial draws (byte-identical pooled-null contract). The disk stencil is the
+    # same _null_dy/_null_dx as the position null (computed when compute_partner_null
+    # is on); when rotation runs without the position null we build it here.
+    if compute_partner_rotation:
+        _rot_seed = int(getattr(cfg.foci, "partner_rotation_seed", 0))
+        _rot_n = int(getattr(cfg.foci, "partner_rotation_n", 1000))
+        _rot_min_ret = float(getattr(cfg.foci, "partner_rotation_min_retention", 0.5))
+        _rot_assoc_pct = float(getattr(cfg.foci, "partner_rotation_assoc_percentile", 95.0))
+        _rot_disk_px = float(getattr(cfg.foci, "partner_null_disk_px", 3.0))
+        _rot_dy, _rot_dx = _disk_stencil(_rot_disk_px)
+        _rot_rng = np.random.default_rng(_rot_seed + 101)
+        _rot_assoc_rng = np.random.default_rng(_rot_seed + 404)
+        # per-image spot-count-weighted pool over rot-USABLE nuclei
+        _rot_obs_num = 0.0
+        _rot_w_den = 0.0
+        _rot_pool = np.zeros(_rot_n, dtype=np.float64)
+        _rot_n_nuclei_used = 0
+        if compute_partner_translation:
+            # Translation drops out-of-mask points -> variable-length null arrays
+            # per iter, so we pool the per-nucleus ENRICHMENT (spot-weighted),
+            # NOT a per-iteration vector. (Rotation's keep-N null is full-length,
+            # so it pools per-iteration like the position null + yields an
+            # empirical p. Translation is the flagged-unreliable companion.)
+            _tr_rng = np.random.default_rng(_rot_seed + 202)
+            _tr_enr_num = 0.0
+            _tr_z_num = 0.0
+            _tr_w_den = 0.0
+            _tr_n_nuclei_used = 0
 
     for nid in range(1, n_after + 1):
         rp = rp_by_id.get(nid, {})
@@ -1464,6 +1738,17 @@ def run_one(
         # per-image rollup. Mirrors qki_at_miat_null_ALLARMS_tm1.0.py.
         rna2_enrichment_vs_null_at_rna1_spots = float("nan")
         rna2_null_z_at_rna1_spots = float("nan")
+        # rotation/translation per-nucleus results (default NaN -> emitted as
+        # columns only when the rotation feature is on; see the row block below).
+        rna2_rotation_enrichment_at_rna1_spots = float("nan")
+        rna2_rotation_null_z_at_rna1_spots = float("nan")
+        rna2_rotation_null_p_at_rna1_spots = float("nan")
+        rna2_rotation_assoc_fraction_at_rna1_spots = float("nan")
+        rotation_null_usable = False
+        rotation_median_retention = float("nan")
+        rna2_translation_enrichment_at_rna1_spots = float("nan")
+        rna2_translation_null_z_at_rna1_spots = float("nan")
+        translation_null_usable = False
         if _need_partner_block and nuc_mask.any():
             sub1 = spots1_by_nid.get(nid)
             if sub1 is not None and len(sub1) > 0 and {"y_px", "x_px"}.issubset(sub1.columns):
@@ -1521,6 +1806,83 @@ def run_one(
                                 _radial_nullmean_num[_ri] += _rnm * _rnsp
                                 _radial_nullsd_num[_ri] += _rnsd * _rnsp
                                 _radial_w_den[_ri] += _rnsp
+                    if compute_partner_rotation:
+                        # ROTATION "proper background": rotate this nucleus's spot
+                        # CONSTELLATION about its OWN centroid (keep-N redraw),
+                        # disk-sample the partner. Only rot-USABLE nuclei (median
+                        # first-pass retention >= min_retention) feed the pooled
+                        # rollup. The keep-N null is full-length -> pools per-
+                        # iteration like the position null (-> empirical p).
+                        _cy0 = float(_scy.mean())
+                        _cx0 = float(_scx.mean())
+                        _rot = _rotation_null_for_nucleus(
+                            _rna2_2d_f, _scy, _scx, _samp_mask, (_cy0, _cx0),
+                            _rot_dy, _rot_dx, _rot_n, _rot_rng,
+                            min_retention=_rot_min_ret,
+                        )
+                        rotation_null_usable = bool(_rot["usable"])
+                        rotation_median_retention = float(_rot["median_retention"])
+                        _rns = _rot["null_stats"]
+                        if _rns.size:
+                            _rnm2 = float(_rns.mean())
+                            _rnsd2 = float(_rns.std(ddof=1)) if _rns.size > 1 else 0.0
+                            _robs = _rot["obs"]
+                            rna2_rotation_enrichment_at_rna1_spots = (
+                                _robs / _rnm2 if _rnm2 > 0 else float("nan")
+                            )
+                            rna2_rotation_null_z_at_rna1_spots = (
+                                (_robs - _rnm2) / _rnsd2 if _rnsd2 > 0 else float("nan")
+                            )
+                            rna2_rotation_null_p_at_rna1_spots = float(
+                                (np.sum(_rns >= _robs) + 1) / (_rns.size + 1)
+                            )
+                            # null-calibrated association fraction: fraction of
+                            # observed spots whose disk-mean exceeds the rotation
+                            # SINGLE-position high percentile (chance = 1-pct/100).
+                            _single = _rotation_single_position_dist(
+                                _rna2_2d_f, _scy, _scx, _samp_mask, (_cy0, _cx0),
+                                _rot_dy, _rot_dx,
+                                n_iters=min(200, _rot_n), rng=_rot_assoc_rng,
+                            )
+                            if _single.size >= 20:
+                                _thr = float(np.percentile(_single, _rot_assoc_pct))
+                                _obs_per_spot = _disk_means_at(
+                                    _rna2_2d_f, _scy, _scx, _rot_dy, _rot_dx)
+                                rna2_rotation_assoc_fraction_at_rna1_spots = float(
+                                    (_obs_per_spot > _thr).mean())
+                            # pool only rot-USABLE nuclei (full-length keep-N null)
+                            if rotation_null_usable and _rns.size == _rot_n:
+                                _n_sp_rot = int(_scy.size)
+                                _rot_obs_num += _robs * _n_sp_rot
+                                _rot_w_den += _n_sp_rot
+                                _rot_pool += _rns * _n_sp_rot
+                                _rot_n_nuclei_used += 1
+                    if compute_partner_translation:
+                        _tr = _translation_null_for_nucleus(
+                            _rna2_2d_f, _scy, _scx, _samp_mask, _nys, _nxs,
+                            _rot_dy, _rot_dx, _rot_n, _tr_rng,
+                            min_retention=_rot_min_ret,
+                        )
+                        translation_null_usable = bool(_tr["usable"])
+                        _tns = _tr["null_stats"]
+                        if _tns.size:
+                            _tnm = float(_tns.mean())
+                            _tnsd = float(_tns.std(ddof=1)) if _tns.size > 1 else 0.0
+                            _tobs = _tr["obs"]
+                            rna2_translation_enrichment_at_rna1_spots = (
+                                _tobs / _tnm if _tnm > 0 else float("nan")
+                            )
+                            rna2_translation_null_z_at_rna1_spots = (
+                                (_tobs - _tnm) / _tnsd if _tnsd > 0 else float("nan")
+                            )
+                            if (translation_null_usable
+                                    and np.isfinite(rna2_translation_enrichment_at_rna1_spots)):
+                                _n_sp_tr = int(_scy.size)
+                                _tr_enr_num += rna2_translation_enrichment_at_rna1_spots * _n_sp_tr
+                                if np.isfinite(rna2_translation_null_z_at_rna1_spots):
+                                    _tr_z_num += rna2_translation_null_z_at_rna1_spots * _n_sp_tr
+                                _tr_w_den += _n_sp_tr
+                                _tr_n_nuclei_used += 1
 
         # Per-nucleus row — column ordering: rna_only-compatible fields first
         # (so anything reading rna_only output still finds its columns), then
@@ -1709,6 +2071,20 @@ def run_one(
         if compute_partner_null:
             nuc_row["rna2_enrichment_vs_null_at_rna1_spots"] = rna2_enrichment_vs_null_at_rna1_spots
             nuc_row["rna2_null_z_at_rna1_spots"] = rna2_null_z_at_rna1_spots
+        # GATED rotation "proper background" per-nucleus columns (default OFF).
+        # Only emitted when cfg.foci.compute_partner_rotation_null is True, so the
+        # OFF path stays byte-equivalent. rna_protein relabels rna2->protein.
+        if compute_partner_rotation:
+            nuc_row["rna2_rotation_enrichment_at_rna1_spots"] = rna2_rotation_enrichment_at_rna1_spots
+            nuc_row["rna2_rotation_null_z_at_rna1_spots"] = rna2_rotation_null_z_at_rna1_spots
+            nuc_row["rna2_rotation_null_p_at_rna1_spots"] = rna2_rotation_null_p_at_rna1_spots
+            nuc_row["rna2_rotation_assoc_fraction_at_rna1_spots"] = rna2_rotation_assoc_fraction_at_rna1_spots
+            nuc_row["rotation_median_retention"] = rotation_median_retention
+            nuc_row["rotation_null_usable"] = rotation_null_usable
+            if compute_partner_translation:
+                nuc_row["rna2_translation_enrichment_at_rna1_spots"] = rna2_translation_enrichment_at_rna1_spots
+                nuc_row["rna2_translation_null_z_at_rna1_spots"] = rna2_translation_null_z_at_rna1_spots
+                nuc_row["translation_null_usable"] = translation_null_usable
         nuc_rows.append(nuc_row)
 
         # Morphology row (per-nucleus, single block — shape is channel-agnostic)
@@ -1781,6 +2157,57 @@ def run_one(
                     "pooled_obs": float(_obs_pool),
                 }
             )
+
+    # ---- Per-image pooled ROTATION "proper background" rollup --------------
+    # 2026-06-19 Brian. Spot-count-weighted pool over rot-USABLE nuclei (keep-N
+    # null is full-length so it pools per-iteration exactly like the position
+    # null): enrichment = obs_pool/mean(null_pool); z = (obs-mean)/sd; empirical p
+    # = (#{null_pool >= obs_pool}+1)/(n+1). Translation (when on) pools the per-
+    # nucleus ENRICHMENT (variable-length null) and reports no pooled empirical p.
+    pooled_rot_enrichment = float("nan")
+    pooled_rot_z = float("nan")
+    pooled_rot_p_empirical = float("nan")
+    pooled_rot_obs = float("nan")
+    pooled_rot_mean = float("nan")
+    pooled_rot_assoc = float("nan")
+    pooled_tr_enrichment = float("nan")
+    pooled_tr_z = float("nan")
+    if compute_partner_rotation and _rot_w_den > 0:
+        _ro_pool = _rot_obs_num / _rot_w_den
+        _rp_pool = _rot_pool / _rot_w_den
+        _rp_mean = float(_rp_pool.mean())
+        _rp_sd = float(_rp_pool.std(ddof=1)) if _rp_pool.size > 1 else 0.0
+        pooled_rot_obs = float(_ro_pool)
+        pooled_rot_mean = _rp_mean
+        pooled_rot_enrichment = (_ro_pool / _rp_mean) if _rp_mean > 0 else float("nan")
+        pooled_rot_z = ((_ro_pool - _rp_mean) / _rp_sd) if _rp_sd > 0 else float("nan")
+        pooled_rot_p_empirical = float(
+            (np.sum(_rp_pool >= _ro_pool) + 1) / (_rot_n + 1)
+        )
+        # Per-image mean of the per-nucleus null-calibrated association fraction
+        # over rot-usable nuclei (unweighted; it is already a per-nucleus rate).
+        _assoc_vals = [
+            r.get("rna2_rotation_assoc_fraction_at_rna1_spots")
+            for r in nuc_rows
+            if r.get("rotation_null_usable")
+        ]
+        _assoc_vals = [float(a) for a in _assoc_vals
+                       if a is not None and float(a) == float(a)]
+        pooled_rot_assoc = (float(np.mean(_assoc_vals)) if _assoc_vals
+                            else float("nan"))
+        if bool(getattr(cfg.foci, "save_partner_rotation_null_draws", False)):
+            coloc_rotation_null_df = pd.DataFrame(
+                {
+                    "image": img_name,
+                    "condition": condition,
+                    "iter": np.arange(_rot_n, dtype=int),
+                    "pooled_null_value": _rp_pool,
+                    "pooled_obs": float(_ro_pool),
+                }
+            )
+    if compute_partner_translation and _tr_w_den > 0:
+        pooled_tr_enrichment = float(_tr_enr_num / _tr_w_den)
+        pooled_tr_z = float(_tr_z_num / _tr_w_den)
 
     # ---- Per-image pooled radial QKI-around-MIAT profile -------------------
     # 2026-06-06 Brian. Spot-count-weighted pool of the per-nucleus per-ring
@@ -2317,6 +2744,21 @@ def run_one(
             per_image["n_nuclei_partner_null"] = int(_null_n_nuclei_used)
             per_image["partner_null_n"] = int(_null_n)
             per_image["partner_null_disk_px"] = float(_null_disk_px)
+        # GATED rotation "proper background" per-image pooled rollup (default OFF).
+        if compute_partner_rotation:
+            per_image["rna2_pooled_rotation_enrichment_at_rna1_spots"] = round(pooled_rot_enrichment, 4) if pooled_rot_enrichment == pooled_rot_enrichment else float("nan")
+            per_image["rna2_pooled_rotation_null_z_at_rna1_spots"] = round(pooled_rot_z, 3) if pooled_rot_z == pooled_rot_z else float("nan")
+            per_image["rna2_pooled_rotation_null_p_empirical_at_rna1_spots"] = pooled_rot_p_empirical
+            per_image["rna2_pooled_rotation_obs_at_rna1_spots"] = round(pooled_rot_obs, 3) if pooled_rot_obs == pooled_rot_obs else float("nan")
+            per_image["rna2_pooled_rotation_null_mean_at_rna1_spots"] = round(pooled_rot_mean, 3) if pooled_rot_mean == pooled_rot_mean else float("nan")
+            per_image["rna2_mean_rotation_assoc_fraction_at_rna1_spots"] = round(pooled_rot_assoc, 4) if pooled_rot_assoc == pooled_rot_assoc else float("nan")
+            per_image["n_nuclei_partner_rotation_null"] = int(_rot_n_nuclei_used)
+            per_image["partner_rotation_n"] = int(_rot_n)
+            per_image["partner_rotation_disk_px"] = float(_rot_disk_px)
+            if compute_partner_translation:
+                per_image["rna2_pooled_translation_enrichment_at_rna1_spots"] = round(pooled_tr_enrichment, 4) if pooled_tr_enrichment == pooled_tr_enrichment else float("nan")
+                per_image["rna2_pooled_translation_null_z_at_rna1_spots"] = round(pooled_tr_z, 3) if pooled_tr_z == pooled_tr_z else float("nan")
+                per_image["n_nuclei_partner_translation_null"] = int(_tr_n_nuclei_used)
     else:
         per_image = {
             "image": img_name,
@@ -2421,6 +2863,22 @@ def run_one(
             per_image["n_nuclei_partner_null"] = 0
             per_image["partner_null_n"] = int(_null_n)
             per_image["partner_null_disk_px"] = float(_null_disk_px)
+        # GATED rotation "proper background" per-image rollup — empty-image fallback
+        # (mirror the populated branch's KEY SET so the schema is image-invariant).
+        if compute_partner_rotation:
+            per_image["rna2_pooled_rotation_enrichment_at_rna1_spots"] = float("nan")
+            per_image["rna2_pooled_rotation_null_z_at_rna1_spots"] = float("nan")
+            per_image["rna2_pooled_rotation_null_p_empirical_at_rna1_spots"] = float("nan")
+            per_image["rna2_pooled_rotation_obs_at_rna1_spots"] = float("nan")
+            per_image["rna2_pooled_rotation_null_mean_at_rna1_spots"] = float("nan")
+            per_image["rna2_mean_rotation_assoc_fraction_at_rna1_spots"] = float("nan")
+            per_image["n_nuclei_partner_rotation_null"] = 0
+            per_image["partner_rotation_n"] = int(_rot_n)
+            per_image["partner_rotation_disk_px"] = float(_rot_disk_px)
+            if compute_partner_translation:
+                per_image["rna2_pooled_translation_enrichment_at_rna1_spots"] = float("nan")
+                per_image["rna2_pooled_translation_null_z_at_rna1_spots"] = float("nan")
+                per_image["n_nuclei_partner_translation_null"] = 0
 
     # ---- Thresholds row ----------------------------------------------------
     _kmad = float(pc_cfg.k_mad) if pc_cfg is not None else float("nan")
@@ -2508,6 +2966,8 @@ def run_one(
         _extra["coloc_null_draws"] = coloc_null_draws_df
     if coloc_radial_df is not None:
         _extra["coloc_radial_profile"] = coloc_radial_df
+    if coloc_rotation_null_df is not None:
+        _extra["coloc_rotation_null"] = coloc_rotation_null_df
 
     return ImageResult(
         image=img_name,

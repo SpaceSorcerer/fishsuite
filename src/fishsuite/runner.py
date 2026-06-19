@@ -1201,6 +1201,7 @@ def run_batch(
     # these stay empty -> no extra CSV written -> byte-identical output).
     coloc_null_draws_dfs: List[pd.DataFrame] = []
     coloc_radial_dfs: List[pd.DataFrame] = []
+    coloc_rotation_null_dfs: List[pd.DataFrame] = []
     failures: List[tuple] = []
     t_start = time.time()
 
@@ -1355,6 +1356,9 @@ def run_batch(
                 _crp = res.extra.get("coloc_radial_profile") if isinstance(res.extra, dict) else None
                 if isinstance(_crp, pd.DataFrame) and len(_crp):
                     coloc_radial_dfs.append(_crp)
+                _crot = res.extra.get("coloc_rotation_null") if isinstance(res.extra, dict) else None
+                if isinstance(_crot, pd.DataFrame) and len(_crot):
+                    coloc_rotation_null_dfs.append(_crot)
                 # Inject user-typed channel labels into the per-image
                 # threshold record so the human name flows into both
                 # thresholds.csv and the per-image masks/<stem>__thresholds.csv.
@@ -1989,6 +1993,10 @@ def run_batch(
     if coloc_radial_dfs:
         pd.concat(coloc_radial_dfs, ignore_index=True).to_csv(
             output_dir / f"{prefix}coloc_radial_profile.csv", index=False
+        )
+    if coloc_rotation_null_dfs:
+        pd.concat(coloc_rotation_null_dfs, ignore_index=True).to_csv(
+            output_dir / f"{prefix}coloc_rotation_null.csv", index=False
         )
 
     thr_df = pd.DataFrame(threshold_rows)

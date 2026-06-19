@@ -475,6 +475,58 @@ class FociCfg(BaseModel):
     partner_radial_bins_um: List[float] = Field(
         default_factory=lambda: [0.25, 0.5, 0.75, 1.0]
     )
+    # 2026-06-19 Brian: PIPELINE-NATIVE rotation "proper background" null — a
+    # STRICTER companion to the random-position null above. Where the position
+    # null randomizes spot POSITIONS (and is inflated when the partner and the
+    # rna1 spots merely SHARE a nuclear compartment), the rotation null rotates
+    # each nucleus's rna1 (MIAT) spot CONSTELLATION about its OWN centroid
+    # (registration-destroying, spatial-structure-PRESERVING): the spot pattern
+    # keeps its internal geometry while its alignment to the fixed partner (QKI)
+    # field is destroyed. observed > rotation-null therefore means the partner is
+    # concentrated AT the spots BEYOND a shared compartment. When True (requires
+    # ``compute_partner_intensity``), for EACH nucleus the pipeline emits per
+    # nucleus ``rna2_rotation_enrichment_at_rna1_spots`` +
+    # ``rna2_rotation_null_z_at_rna1_spots`` + ``rna2_rotation_null_p_at_rna1_spots``
+    # + a null-calibrated ``rna2_rotation_assoc_fraction_at_rna1_spots`` (fraction
+    # of observed spots whose partner disk-mean exceeds the per-nucleus rotation
+    # single-position high percentile) + ``rotation_null_usable``, plus a per-image
+    # spot-count-weighted pooled rollup. Uses the SAME disk radius / seed-derived
+    # RNG / nucleolus handling as the position null so the two are directly
+    # comparable. KEEP-N redraw (rotated spots leaving the in-mask region are
+    # re-rotated by a fresh per-spot angle until in-mask, NOT dropped — dropping
+    # biases enrichment LOW). N=1000 seeded. Native port of the adversarially-
+    # validated ``rotation_null_prototype.py``. DEFAULT FALSE -> the columns are
+    # never emitted and the output is byte-equivalent to the pre-feature path.
+    compute_partner_rotation_null: bool = False
+    # Number of seeded rotation iterations per nucleus (validated protocol: 1000).
+    partner_rotation_n: int = 1000
+    # Fixed RNG seed for the rotation/translation draws (deterministic). Distinct
+    # streams are derived from this so toggling rotation never perturbs the
+    # position-null draws (byte-identical pooled-null contract preserved).
+    partner_rotation_seed: int = 0
+    # Median first-pass in-mask retention below which a nucleus is marked NOT
+    # usable for the rotation null (drops SPARSE nuclei whose constellation cannot
+    # be rotated within the mask; does NOT drop dense nuclei). Validated default.
+    partner_rotation_min_retention: float = 0.5
+    # Percentile of the per-nucleus rotation SINGLE-POSITION partner distribution
+    # used as the null-calibrated association threshold; a spot is "associated"
+    # when its observed partner disk-mean exceeds this percentile. The chance
+    # floor of the association fraction is (1 - pct/100), i.e. 0.05 at 95.
+    partner_rotation_assoc_percentile: float = 95.0
+    # When True (requires compute_partner_rotation_null), ALSO compute the
+    # TRANSLATION companion null (rigid shift of the whole constellation). Emitted
+    # per nucleus as ``rna2_translation_enrichment_at_rna1_spots`` +
+    # ``rna2_translation_null_z_at_rna1_spots`` + ``translation_null_usable`` and a
+    # per-image pooled rollup. FLAGGED UNRELIABLE for dense / space-filling spot
+    # patterns (most rigid shifts push too many points out of mask -> few usable
+    # nuclei); rotation is the robust headline. DEFAULT FALSE.
+    compute_partner_translation_null: bool = False
+    # Surface the pooled rotation null vector + pooled observed (the per-iteration
+    # draws the pooling block computes then discards) as
+    # ``extra["coloc_rotation_null"]`` for the null-distribution overlay; requires
+    # compute_partner_rotation_null. DEFAULT FALSE -> the key is never added to
+    # extra (byte-identical carrier).
+    save_partner_rotation_null_draws: bool = False
 
     def resolved_for(self, channel: Literal["rna", "rna2", "antibody"]) -> Dict[str, Any]:
         """Return a dict of effective spot-detection params for ``channel``.
