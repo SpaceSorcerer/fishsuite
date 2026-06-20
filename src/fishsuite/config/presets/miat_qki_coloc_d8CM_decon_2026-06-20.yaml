@@ -1,0 +1,209 @@
+# ============================================================================
+# MIAT x QKI COLOCALIZATION — d8 CARDIOMYOCYTE (ALL 3 ARMS x +/-Dox) — rna_protein
+# Date: 2026-06-20  |  fishsuite-config (Opus 4.8) for MASTER CONTROL
+# ============================================================================
+# PURPOSE
+#   d8 cMyo MIAT (RNA FISH, 640) x QKI (IF, 561) pixel- and spot-level COLOC across
+#   all THREE dCas9-VPR guide arms x +/-Dox in ONE run (6 conditions). Clone of
+#   the validated UD ALLARMS PLAIN strict-MIAT preset
+#   (miat_qki_coloc_ud_ALLARMS_PLAIN_strictMIAT_2026-06-05.yaml); every coloc /
+#   null / nucleolus / radial flag carried verbatim. ONLY the following differ,
+#   per the 2026-06-20 CPU QC gate (QC_TIMEPOINTS_2026-06-20.md):
+#     * INPUT = DECONVOLVED images (d8 is decon-ONLY; no plain twins).
+#     * cellpose diameter 80 (CM nuclei ~84 px at d8, vs UD's 100).
+#     * min_area_px 2560 (UD 4000 scaled by (80/100)^2).
+#     * z-bounds WIDENED: d8 decon stacks are 97 planes (NOT ~78). Set 8..90 so
+#       the intensity-weighted autofocus + central-0.6 guard searches the full
+#       in-focus depth. z MODE unchanged (single-plane autofocus).
+#     * +rotation null (proper-background companion); translation null OFF.
+#   Channels HARD-ASSIGNED rna:0 (MIAT-640) / antibody:1 (QKI-561) / dapi:2
+#   (autodetect SWAPS 561/640 — QC §2 WARNING).
+#
+#   Human / Homo sapiens (dCas9-VPR cardiomyocytes, d8). HARD RULE 9 satisfied.
+#
+# ── CHANNELS (VSI-verified, QC §2) ──────────────────────────────────────────
+#   ch0 = 640 -> MIAT FISH (rna, YELLOW); ch1 = 561 -> QKI IF (antibody, MAGENTA);
+#   ch2 = 405 -> DAPI (blue).
+#
+# ── ACQUISITION ─────────────────────────────────────────────────────────────
+#   3 channels, 97 z-planes (decon), 0.13 um/px XY, 100x.
+#
+# ── INPUT / STAGING (d8) ─────────────────────────────────────────────────────
+#   d8 layout = <arm-folder>/<file>(decon).vsi  (3 arm dirs: d8cMyo_MIAT-gRNA2,
+#   d8cMyo_no-gRNA, d8cMyo_VPRonly). SUBFOLDER mode: point -i at the d8cMyo ROOT
+#   -> discovers all 13 .vsi (arm = single level above files). NO junction staging.
+#   13 decon FOV: g2 wDox 2 (_01,_02), g2 noDox 3 (_03,_04,_05), Nog noDox 2 (_06,_07),
+#   Nog wDox 2 (_08,_09), VPR noDox 2 (_12,_13), VPR wDox 2 (_10,_11).
+#
+# ── CONDITIONS via filename_conditions (ordered, first-match-wins, case-insens) ─
+#   g2 +Dox = "-g2-Dox_" (no "with"); Nog/VPR +Dox = "-with Dox_"; noDox = "-no Dox_".
+#
+#   n per condition is SMALL (2-3 FOV) - per-IMAGE means are the replicate unit.
+# ============================================================================
+
+experiment:
+  name: "MIAT_QKI_coloc_d8CM_decon_ALLARMS_strictMIAT_2026-06-20"
+  description: "d8 cardiomyocyte (dCas9-VPR) MIAT(RNA FISH, ch0/640) x QKI(IF, ch1/561) colocalization across ALL THREE guide arms x +/-Dox in ONE run = 6 conditions, rna_protein, DECONVOLVED images (d8 is decon-only), strict-MIAT (foci tm=1.0). Only g2 wDox is MIAT-OE; Nog/VPR (both Dox states) are non-targeting controls. 13 decon FOV (g2 noDox has 3). Single in-focus plane (mode=autofocus, intensity-weighted, central 0.6, z8-90 — WIDENED for 97-plane decon stacks). cellpose cpsam ds2 diam80 directml; min_area_px 2560 (CM nuclei ~84 px). Pixel coloc Pearson/Manders/Li (MAD PER-IMAGE k=2.5) + MIAT x QKI spot pairing 0.3 um + QKI partner-intensity at MIAT spots + random-position null + rotation proper-background null + nucleolus exclusion + radial profile. Conditions via filename_conditions; d8 = subfolder-mode (point -i at d8cMyo root, arm = single level above files, NO junction staging). Channels hard-assigned rna:0/antibody:1/dapi:2 (autodetect swaps 561/640). pub_contrast manual floors (display only; analysis/spots not gated). Clone of miat_qki_coloc_ud_ALLARMS_PLAIN_strictMIAT_2026-06-05 with QC-confirmed d8 params."
+  cell_line: "d8 cardiomyocyte (dCas9-VPR; g2 / Nog / VPR arms)"
+  date: "2026-06-20"
+
+conditions:
+  mode: subfolders
+  filename_conditions:
+    - ["-g2-no Dox_",    "g2 noDox (control)"]
+    - ["-g2-Dox_",       "g2 wDox (MIAT-OE)"]
+    - ["-Nog-no Dox_",   "Nog noDox (ctrl)"]
+    - ["-Nog-with Dox_", "Nog wDox (ctrl)"]
+    - ["-VPR-no Dox_",   "VPR noDox (ctrl)"]
+    - ["-VPR-with Dox_", "VPR wDox (ctrl)"]
+  subfolder_conditions: {}
+  sec_only_folders: []
+  sec_only_files: []
+  condition_order:
+    - "g2 noDox (control)"
+    - "g2 wDox (MIAT-OE)"
+    - "Nog noDox (ctrl)"
+    - "Nog wDox (ctrl)"
+    - "VPR noDox (ctrl)"
+    - "VPR wDox (ctrl)"
+  min_nuclei_for_stats: 6
+
+# DECON only. d8 has NO plain twins, so this subset is belt-and-suspenders
+# (pins the 13 decon basenames; documents the roster).
+input_file_subset:
+  # --- g2 wDox (MIAT-OE) ---
+  - "Day8-MIAT-FISH-QKI-IF-g2-Dox_01 (decon).vsi"
+  - "Day8-MIAT-FISH-QKI-IF-g2-Dox_02 (decon).vsi"
+  # --- g2 noDox (control) ---  (3 FOV)
+  - "Day8-MIAT-FISH-QKI-IF-g2-no Dox_03 (decon).vsi"
+  - "Day8-MIAT-FISH-QKI-IF-g2-no Dox_04 (decon).vsi"
+  - "Day8-MIAT-FISH-QKI-IF-g2-no Dox_05 (decon).vsi"
+  # --- Nog noDox (ctrl) ---
+  - "Day8-MIAT-FISH-QKI-IF-Nog-no Dox_06 (decon).vsi"
+  - "Day8-MIAT-FISH-QKI-IF-Nog-no Dox_07 (decon).vsi"
+  # --- Nog wDox (ctrl) ---
+  - "Day8-MIAT-FISH-QKI-IF-Nog-with Dox_08 (decon).vsi"
+  - "Day8-MIAT-FISH-QKI-IF-Nog-with Dox_09 (decon).vsi"
+  # --- VPR noDox (ctrl) ---
+  - "Day8-MIAT-FISH-QKI-IF-VPR-no Dox_12 (decon).vsi"
+  - "Day8-MIAT-FISH-QKI-IF-VPR-no Dox_13 (decon).vsi"
+  # --- VPR wDox (ctrl) ---
+  - "Day8-MIAT-FISH-QKI-IF-VPR-with Dox_10 (decon).vsi"
+  - "Day8-MIAT-FISH-QKI-IF-VPR-with Dox_11 (decon).vsi"
+
+channels:
+  analysis_mode: rna_protein
+  dapi: 2
+  rna: 0
+  antibody: 1
+  rna2: -1
+  dapi_label: "DAPI"
+  rna_label: "MIAT-640"
+  antibody_label: "QKI-561"
+  dapi_lut: "blue"
+  rna_lut: "yellow"
+  antibody_lut: "magenta"
+
+z_stack:
+  mode: autofocus
+  focus_metric: variance_of_laplacian
+  autofocus_intensity_weighted: true
+  focus_central_fraction: 0.6
+  focus_min_intensity_frac_of_peak: 0.3
+  start_slice: 8                        # WIDENED for 97-plane d8 decon stacks
+  end_slice: 90                         # (UD's 8-70 a poor fit for 97 planes)
+
+nuclei:
+  backend: cellpose
+  cellpose_model_type: cpsam
+  cellpose_diameter_px: 80.0            # CM nuclei ~84 px (d8); UD hESC used 100
+  cellpose_flow_threshold: 0.4
+  cellpose_cellprob_threshold: 0.0
+  cellpose_downsample_factor: 2.0
+  cellpose_device: directml
+  min_area_px: 2560                     # UD 4000 * (80/100)^2
+  max_area_px: 1000000000000.0
+  exclude_border: true
+  border_margin_px: 10
+  stardist_model: 2D_versatile_fluo
+  prob_threshold: 0.5
+  nms_threshold: 0.5
+  stardist_gauss_sigma: 3.0
+  stardist_postprocess: none
+  label_smoothing_radius_px: 0
+  reject_ghost_nuclei: false
+
+pixel_coloc:
+  threshold_mode: mad
+  threshold_scope: per_image
+  k_mad: 2.5
+
+spot_coloc:
+  pair_distance_um: 0.3
+  report_nn_distance: true
+
+foci:
+  enabled: true
+  backend: bigfish
+  bigfish_voxel_size_nm: 0.0
+  bigfish_voxel_z_nm: 0.0
+  bigfish_spot_radius_nm: 100.0
+  bigfish_spot_radius_z_nm: 300.0
+  threshold_multiplier: 1.0
+  only_nuclear_spots: false
+  min_sep_px: 1
+  detect_in_sec_only: false
+  detect_antibody_spots: false
+  antibody_overrides:
+    bigfish_spot_radius_nm: 150.0
+    bigfish_spot_radius_z_nm: 350.0
+  compute_partner_intensity: true
+  compute_partner_null_enrichment: true
+  partner_null_n: 1000
+  partner_null_disk_px: 3.0
+  partner_null_seed: 0
+  exclude_nucleolus_from_partner_null: true
+  save_partner_null_draws: true
+  compute_partner_radial_profile: true
+  compute_partner_rotation_null: true
+  partner_rotation_n: 1000
+  partner_rotation_seed: 0
+  partner_rotation_min_retention: 0.5
+  partner_rotation_assoc_percentile: 95.0
+  compute_partner_translation_null: false
+  save_partner_rotation_null_draws: true
+
+cytoplasm:
+  enabled: true
+  voronoi_max_expansion_px: 40
+  measure_nc_ratio: true
+
+nucleolus:
+  enabled: true
+
+output:
+  save_qc_overlays: true
+  save_per_image_csv: true
+  save_masks: true
+  save_publication_images: true
+  save_publication_tifs: false
+  pub_contrast_mode: manual
+  manual_rna_min: 525.0
+  manual_rna_max: 2250.0
+  manual_antibody_min: 1250.0
+  manual_antibody_max: 6000.0
+  manual_rna2_min: 1250.0
+  manual_rna2_max: 6000.0
+  manual_dapi_min: 607.0
+  manual_dapi_max: 9000.0
+  apply_pub_contrast_floor_to_analysis: false
+  apply_pub_contrast_floor_to_spots: false
+  prefix: ""
+  scalebar_um: 25.0
+  scalebar_font_px: 52
+
+parallel:
+  workers: 1
+  seg_workers: 1
+  main_workers: 1
+  threads_per_worker: 4
