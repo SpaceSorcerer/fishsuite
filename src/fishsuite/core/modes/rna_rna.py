@@ -1044,6 +1044,36 @@ def run_one(
     else:
         spots2_df, thr2_val = _detect(rna2_2d, rna2_params)
 
+    # ---- QKI antibody specificity floor (per-channel, Brian 2026-07-04) -----
+    # Absolute per-channel minimum spot PEAK-intensity floor
+    # (foci.<chan>_overrides.min_spot_peak_intensity), fully decoupled from the
+    # display/pub-contrast floor. Applied right after BigFISH detection and
+    # BEFORE stratify/pairing, so paired_fraction / active-TSS / per-nucleus
+    # counts / spot_metrics all see the filtered set. Filters on the detection-
+    # time ``intensity_peak`` column via the existing _filter_spots_by_floor.
+    # Unset => None => no-op (byte-identical). MIAT (rna1) carries no floor, so
+    # the rna1 line below is a strict no-op unless a floor is set on rna_overrides.
+    _msi1 = rna1_params.get("min_spot_peak_intensity")
+    if _msi1 and len(spots1_df):
+        n_before_1 = len(spots1_df)
+        spots1_df = _filter_spots_by_floor(spots1_df, _msi1, rna_2d)
+        if len(spots1_df) != n_before_1:
+            print(
+                f"  [spot-floor] {path.name} rna1: dropped "
+                f"{n_before_1 - len(spots1_df)}/{n_before_1} spots below "
+                f"min_spot_peak_intensity={float(_msi1):.1f}"
+            )
+    _msi2 = rna2_params.get("min_spot_peak_intensity")
+    if _msi2 and len(spots2_df):
+        n_before_2 = len(spots2_df)
+        spots2_df = _filter_spots_by_floor(spots2_df, _msi2, rna2_2d)
+        if len(spots2_df) != n_before_2:
+            print(
+                f"  [spot-floor] {path.name} rna2/antibody: dropped "
+                f"{n_before_2 - len(spots2_df)}/{n_before_2} spots below "
+                f"min_spot_peak_intensity={float(_msi2):.1f}"
+            )
+
     # ---- Pub-contrast floor as HARD spot-detection floor (Brian/Sam 2026-05-20) ----
     # When ``output.apply_pub_contrast_floor_to_spots`` is True AND the caller
     # (batch runner) passed in resolved per-channel floors via the

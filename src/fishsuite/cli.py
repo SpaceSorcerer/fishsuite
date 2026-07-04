@@ -149,6 +149,21 @@ def _build_walkthrough_figure(run_dir, staging_dir=None, input_dir=None,
     )
 
 
+def _singlecell_run(run_dir, **kwargs):
+    """Indirection to :func:`fishsuite.core.singlecell.singlecell_run`
+    (lazy import; monkeypatch target for the CLI tests)."""
+    from .core.singlecell import singlecell_run
+    return singlecell_run(run_dir, **kwargs)
+
+
+def _pixelpattern_run(run_dir, staging_dir=None, input_dir=None, **kwargs):
+    """Indirection to :func:`fishsuite.core.pixel_pattern.pixelpattern_run`
+    (lazy import; monkeypatch target for the CLI tests)."""
+    from .core.pixel_pattern import pixelpattern_run
+    return pixelpattern_run(run_dir, staging_dir=staging_dir,
+                            input_dir=input_dir, **kwargs)
+
+
 def _friendly_postrun_error(exc: Exception, run: Path) -> str:
     """Translate an expected/user-fixable backfill/walkthrough exception into a
     plain-English, actionable message (no raw traceback). Falls back to the
@@ -171,6 +186,12 @@ def _friendly_postrun_error(exc: Exception, run: Path) -> str:
                 f"in {run}.\n"
                 "  Point --run at the OUTPUT folder a completed run produced "
                 "(it contains run_config.json, per_image_summary.csv, masks/, figures/)."
+            )
+        if "nuclei_metrics" in low:
+            return (
+                f"This run looks incomplete: {msg}\n"
+                f"  Looking inside {run}. The single-cell / pixel-pattern utilities "
+                "need nuclei_metrics.csv (the per-nucleus table) from a completed run."
             )
         if "per_image_summary" in low or "spot_metrics" in low:
             return (
@@ -337,6 +358,150 @@ def walkthrough(run_dir, image_key, out_path, staging, input_dir):
         click.echo(_friendly_postrun_error(exc, run), err=True)
         sys.exit(2)
     click.echo(f"[walkthrough] wrote: {out}")
+
+
+_SINGLECELL_HELP = """\
+Single-cell (per-nucleus) treatment analysis of a COMPLETED run (CPU-only).
+
+\b
+CPU-only - does NOT use the GPU and re-reads NO images. It reads the run's
+nuclei_metrics.csv (the per-nucleus table) and, for every meaningful per-nucleus
+metric, computes:
+  - DOSE-RESPONSE vs a per-nucleus abundance axis (default: nuclear_spot_count)
+  - MATCHED-ABUNDANCE control-vs-perturbation comparison within each abundance bin
+  - GROUP (condition-depth) HETEROGENEITY (perturbation split by its own tertile)
+  - DISTRIBUTION + per-replicate Welch t
+  - a SATURATION headline when the run carries the rotation-null association columns
+
+\b
+It writes an explorable Excel + locked-style NT-vs-perturbation SuperPlots + a
+plain-language findings file under <run>/deliverables/singlecell/.
+
+GENERIC: the abundance axis and the two groups to compare are auto-detected and
+overridable (--abundance-col / --group-a / --group-b); nothing is hardcoded to a
+particular gene.
+
+\b
+Examples:
+  fishsuite singlecell --run "F:\\Image Analysis Work\\MIAT-QKI-Coloc\\my_run"
+  fishsuite singlecell --run "F:\\...\\my_run" --abundance-col nuclear_spot_count
+  fishsuite singlecell --run "F:\\...\\my_run" --group-a NT --group-b KD --no-figures
+"""
+
+
+@cli.command(help=_SINGLECELL_HELP,
+             short_help="CPU single-cell (per-nucleus) treatment analysis.")
+@click.option("--run", "run_dir", required=True,
+              type=click.Path(exists=True, file_okay=False),
+              help="Completed run output directory (contains nuclei_metrics.csv).")
+@click.option("--abundance-col", default=None,
+              help="Per-nucleus abundance axis (default: nuclear_spot_count).")
+@click.option("--group-a", default=None, help="Control group label (default: auto).")
+@click.option("--group-b", default=None, help="Perturbation group label (default: auto).")
+@click.option("--include-secondary", is_flag=True,
+              help="Do NOT drop secondary-only nuclei (default: dropped).")
+@click.option("--out-subdir", default="singlecell", show_default=True,
+              help="Sub-folder under <run>/deliverables/ for the outputs.")
+@click.option("--seed", default=0, show_default=True, type=int)
+@click.option("--no-figures", is_flag=True, help="Skip the SuperPlots.")
+@click.option("--no-excel", is_flag=True, help="Skip the Excel workbook.")
+def singlecell(run_dir, abundance_col, group_a, group_b, include_secondary,
+               out_subdir, seed, no_figures, no_excel):
+    run = Path(run_dir)
+    click.echo(f"[singlecell] CPU-only - reading nuclei_metrics.csv in {run}")
+    try:
+        res = _singlecell_run(
+            run, abundance_col=abundance_col, group_a=group_a, group_b=group_b,
+            exclude_secondary=not include_secondary, out_subdir=out_subdir,
+            seed=seed, do_figures=not no_figures, do_excel=not no_excel,
+        )
+    except (FileNotFoundError, ValueError) as exc:
+        click.echo(_friendly_postrun_error(exc, run), err=True)
+        sys.exit(2)
+    written = res.get("written", {}) if isinstance(res, dict) else {}
+    click.echo(f"[singlecell] {res.get('n_metrics', 0)} metrics, "
+               f"{res.get('n_figures', 0)} figures -> {res.get('out_dir', run)}")
+    for k, v in written.items():
+        click.echo(f"    {k}: {v}")
+
+
+_PIXELPATTERN_HELP = """\
+Per-nucleus PIXEL-pattern metrics for a COMPLETED run (CPU-only).
+
+\b
+CPU-only - does NOT use the GPU. Like `backfill`, it REUSES the run's saved
+nucleus masks and re-reads only the raw channel pixels (at the recomputed
+analysis z-plane), then computes per-nucleus pixel metrics that need no spot
+calling:
+  - PERINUCLEAR / RADIAL index (RNA1 + partner + DAPI + a secondary-only control
+    = a one-number stain QC of antibody localization)
+  - GINI + top-5% / top-10% concentration per channel
+  - FOCI-BAND counts (partner spots per nucleus above intensity floors)
+  - DECILE intensity-sweep (partner vs RNA1 intensity)
+
+\b
+It appends the metrics to pixel_pattern_metrics.csv and writes NT-vs-condition
+SuperPlots, a stain-QC panel, an Excel and a findings file under
+<run>/deliverables/pixelpattern/.
+
+The source raw images are found automatically from the folder the run recorded;
+pass --staging only if that is wrong or unavailable.
+
+\b
+--secondary-match designates WHICH secondary-only well is the CLEAN control (some
+secondary-only wells can be contaminated); a substring of the image/condition
+(e.g. "well12") restricts the control to that well. Default = all secondary-only.
+
+\b
+Examples:
+  fishsuite pixelpattern --run "F:\\Image Analysis Work\\MIAT-QKI-Coloc\\my_run"
+  fishsuite pixelpattern --run "F:\\...\\my_run" --staging "F:\\Raw Images\\..."
+  fishsuite pixelpattern --run "F:\\...\\my_run" --secondary-match well12
+"""
+
+
+@cli.command(help=_PIXELPATTERN_HELP,
+             short_help="CPU per-nucleus pixel-pattern metrics + stain QC.")
+@click.option("--run", "run_dir", required=True,
+              type=click.Path(exists=True, file_okay=False),
+              help="Completed run output directory (contains masks/ + nuclei_metrics.csv).")
+@click.option("--staging", "staging", default=None,
+              type=click.Path(exists=True, file_okay=False),
+              help="Folder holding the source raw images. Auto-detected from the "
+                   "run if omitted; pass it if auto-detection fails.")
+@click.option("--input", "input_dir", default=None,
+              type=click.Path(exists=True, file_okay=False),
+              help="Alternate source folder for the raw images (rarely needed).")
+@click.option("--secondary-match", default=None,
+              help="Substring picking the CLEAN secondary-only well/condition "
+                   "(e.g. 'well12'); default = all secondary-only nuclei.")
+@click.option("--out-subdir", default="pixelpattern", show_default=True,
+              help="Sub-folder under <run>/deliverables/ for the outputs.")
+@click.option("--seed", default=0, show_default=True, type=int)
+@click.option("--no-figures", is_flag=True, help="Skip the figures.")
+@click.option("--no-excel", is_flag=True, help="Skip the Excel workbook.")
+def pixelpattern(run_dir, staging, input_dir, secondary_match, out_subdir, seed,
+                 no_figures, no_excel):
+    run = Path(run_dir)
+    click.echo(f"[pixelpattern] CPU-only - reusing saved masks + re-reading raw in {run}")
+    try:
+        res = _pixelpattern_run(
+            run, staging_dir=staging, input_dir=input_dir,
+            secondary_match=secondary_match, out_subdir=out_subdir, seed=seed,
+            do_figures=not no_figures, do_excel=not no_excel,
+        )
+    except (FileNotFoundError, ValueError, RuntimeError) as exc:
+        click.echo(_friendly_postrun_error(exc, run), err=True)
+        sys.exit(2)
+    written = res.get("written", {}) if isinstance(res, dict) else {}
+    click.echo(f"[pixelpattern] {res.get('n_images', 0)} images, "
+               f"{res.get('n_nuclei', 0)} nuclei, {res.get('n_figures', 0)} figures "
+               f"-> {res.get('out_dir', run)}")
+    for k, v in written.items():
+        click.echo(f"    {k}: {v}")
+    sq = res.get("stain_qc") if isinstance(res, dict) else None
+    if sq:
+        click.echo(f"[pixelpattern] stain QC (partner perinuclear index): {sq}")
 
 
 _POSTRUN_HELP = """\

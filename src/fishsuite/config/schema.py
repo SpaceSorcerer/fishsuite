@@ -333,6 +333,13 @@ class FociChannelOverrideCfg(BaseModel):
     # BigFISH wrapper); kept here for full per-channel parity with the Fiji
     # launcher so a single fishsuite YAML can drive both backends.
     min_sep_px: Optional[int] = None
+    # 2026-07-04 Brian: per-channel ABSOLUTE minimum spot PEAK-intensity floor,
+    # fully decoupled from the display/pub-contrast floor (manual_*_min) and from
+    # output.apply_pub_contrast_floor_to_spots. When set, spots in THIS channel
+    # with peak intensity < value are dropped right after BigFISH detection,
+    # before stratification/pairing. None = no floor (current behavior, byte-
+    # identical). Used to enforce the QKI antibody specificity floor.
+    min_spot_peak_intensity: Optional[float] = None
 
 
 class FociCfg(BaseModel):
@@ -536,7 +543,7 @@ class FociCfg(BaseModel):
         FociCfg values. Unset (``None``) overrides fall back to the shared
         value. Returned keys: ``bigfish_spot_radius_nm``,
         ``bigfish_spot_radius_z_nm``, ``threshold_multiplier``,
-        ``only_nuclear_spots``, ``min_sep_px``.
+        ``only_nuclear_spots``, ``min_sep_px``, ``min_spot_peak_intensity``.
 
         Unknown channel names raise ``ValueError`` (callers should pass only
         ``"rna"``, ``"rna2"``, or ``"antibody"``).
@@ -577,6 +584,14 @@ class FociCfg(BaseModel):
                 int(ov.min_sep_px)
                 if ov.min_sep_px is not None
                 else int(self.min_sep_px)
+            ),
+            # 2026-07-04 Brian: per-channel absolute spot peak-intensity floor.
+            # No shared FociCfg fallback (there is no FociCfg-level field) —
+            # unset override => None => no floor (byte-identical legacy path).
+            "min_spot_peak_intensity": (
+                float(ov.min_spot_peak_intensity)
+                if ov.min_spot_peak_intensity is not None
+                else None
             ),
         }
 
