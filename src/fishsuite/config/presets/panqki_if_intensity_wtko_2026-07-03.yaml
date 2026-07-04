@@ -1,0 +1,92 @@
+# =============================================================================
+# panQKI IF-intensity antibody validation — WT vs QKI-KO (clone "4-2")
+# Preset for fishsuite analysis_mode: if_intensity   (created 2026-07-03)
+# -----------------------------------------------------------------------------
+# Faithful port of the LOCKED standalone pipeline at
+#   F:\Image Analysis Work\MIAT-QKI-Coloc\WT-QKI-KO_2026_07_01\_scripts\
+# Reproduces the on-disk 20260702 numbers exactly (647-arm nuclear signal mean
+# WT=16647.99 vs KO=3923.19, Welch p=0.01446). Human / Homo sapiens.
+#
+# Point the runner's input dir at the Set-2 (single-plane) quantification folder,
+# e.g.  ...\WT-QKI-KO_2026_07_01\raw\WT_KO_panQKIabTest_2026_07_01-2  — one
+# subfolder per well (Folderwell8-WT-647_..., FolderKO-647-well10_..., etc.).
+# Set-1 CLIPS WT-647 and z-stacks are pretty-picture only — do NOT quantify them.
+# =============================================================================
+
+experiment:
+  name: "panQKI_WTvsKO_IF"
+  description: >-
+    Mouse IgG2b anti-panQKI antibody validation in WT vs QKI-KO (clone 4-2)
+    hESC-lineage cells. Two secondaries (Alexa-568/"565" and Alexa-647), each
+    with secondary-only negative controls. Readout = QKI IF intensity,
+    WT vs KO vs secondary-only. Antibody VALIDATION, small-n honest.
+  cell_line: "WT / QKI-KO (4-2) hESC-lineage"
+
+conditions:
+  # One subfolder per well; the plate CSV (not the folder name) is the biology
+  # source of truth. Condition labels below are informational only — routing is
+  # driven entirely by if_intensity.plate_layout_csv + the well-number regex.
+  mode: subfolders
+
+channels:
+  analysis_mode: if_intensity   # diverts run_batch to core.modes.if_intensity.run_if_batch
+  dapi_label: "DAPI"
+
+nuclei:
+  # LOCKED cpsam/DirectML segmentation, verbatim from the d8-CM path the
+  # standalone reused (config.py SEG_PARAMS). DAPI is always the seg input.
+  backend: cellpose
+  cellpose_model_type: cpsam            # Cellpose 4.1.1 SAM model
+  cellpose_diameter_px: 48.0            # full-res nuclear diameter
+  cellpose_flow_threshold: 0.4
+  cellpose_cellprob_threshold: 0.0
+  cellpose_downsample_factor: 2.0       # segment at ~0.13 um/px, upsample labels
+  cellpose_device: directml             # AMD RX 6750 XT via torch-directml
+  min_area_px: 700                      # drop sub-nuclear debris
+  max_area_px: 1.0e12                   # effectively no upper bound
+  exclude_border: true
+  border_margin_px: 10                  # drop nuclei within 10 px of the frame edge
+
+if_intensity:
+  # --- plate map (biology source of truth) ---------------------------------
+  plate_layout_csv: "F:/Image Analysis Work/MIAT-QKI-Coloc/WT-QKI-KO_2026_07_01/_recon/plate_layout.csv"
+  # Well-2 conflict: the imaging folder name says "565" (=568) but the plate
+  # xlsx groups it with the 647 wells (xlsx matched 11/12 wells) — trust the
+  # xlsx. 02 also writes an empirical channel-carrier check (well2_channel_check.csv);
+  # the override does NOT auto-flip. Flip to "568" to trust the folder name.
+  well_secondary_overrides: {"2": "647"}
+
+  # --- channel routing (substring-matched on OME CSU channel names) --------
+  dapi_channel_key: "405"
+  # NOTE the intentional offset: secondary 647 -> "640" channel (Alexa-647),
+  # secondary 568/"565" -> "561" channel (Alexa-568). DAPI -> "405".
+  signal_channel_map: {"647": "640", "568": "561", "565": "561"}
+
+  # --- metrics -------------------------------------------------------------
+  cyto_ring_px: 12            # perinuclear ring (~2.6 um) for a cytoplasmic aux estimate
+  exposure_tol_s: 1.0e-6      # intra-channel exposure-equality tolerance (WARN, not raise)
+  pixel_size_um: 0.2167       # um/px (2x2 binning); used for scalebars/voxel size
+
+  # --- shared-display micrographs ("Sam's floor") --------------------------
+  display_ceiling_pct: 99.5   # vmax from pooled WT-primary signal pixels (WT not blown out)
+  display_floor_pct: 50.0     # vmin from pooled secondary-only pixels (matched secondary)
+  scalebar_um: 20.0
+  # "fov" = project the quantification FOVs themselves (Set-2 is single-plane, so
+  # the plane IS the image; any Z>1 FOV gets a CENTRAL in-focus windowed max-proj).
+  # "zstack" = pull a separate z-stack folder and windowed-project there.
+  micrograph_source: fov
+  micrograph_z_window_frac: 0.5   # central in-focus fraction kept if projecting a stack
+
+  # --- misc ----------------------------------------------------------------
+  fig_seed: 42                # figure RNG (jitter); segmentation/quant use seed:0 below
+  make_excel: true            # explorable .xlsx deliverable (How_to_read first)
+
+output:
+  prefix: ""
+  save_masks: true               # int32 nucleus masks -> output_dir/masks/*.npy
+  save_publication_images: false # IF mode makes its own shared-display micrographs
+  save_qc_overlays: false
+
+# Broad run-wide reproducibility seed (seeds python random + numpy + torch before
+# any FOV is segmented). Figures additionally use if_intensity.fig_seed above.
+seed: 0

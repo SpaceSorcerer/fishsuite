@@ -248,6 +248,26 @@ def run_batch(
             f"[yellow]Run-metadata write skipped ({_meta_err})[/yellow]"
         )
 
+    # 2026-07-03 Brian: IF-intensity antibody-validation mode. This is a
+    # plate-level pipeline (per-well signal routing, exposure gate, fold-over-
+    # secondary-only, cross-condition Welch stats, shared-display micrographs)
+    # that does NOT fit the per-image spots contract of the FISH modes. Divert
+    # to its self-contained batch runner HERE — after seeds + provenance are
+    # written, BEFORE the generic discover/loop — so every existing FISH mode's
+    # code path below is byte-for-byte untouched. Lazy import keeps package
+    # import unaffected.
+    if getattr(cfg.channels, "analysis_mode", "") == "if_intensity":
+        from .core.modes.if_intensity import run_if_batch as _run_if_batch
+        return _run_if_batch(
+            cfg,
+            config_path,
+            input_dir,
+            output_dir,
+            dirs,
+            dry_run=dry_run,
+            verbose=verbose,
+        )
+
     prefix = cfg.output.prefix or ""
 
     images = _io.discover_inputs(

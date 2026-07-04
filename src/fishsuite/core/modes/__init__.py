@@ -26,3 +26,4 @@ from . import rna_rna  # noqa: F401, E402
 from . import ab_ab  # noqa: F401, E402
 from . import protein_only  # noqa: F401, E402
 from . import pub_images  # noqa: F401, E402
+from . import if_intensity  # noqa: F401, E402

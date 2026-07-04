@@ -46,7 +46,8 @@ class ConditionsCfg(BaseModel):
 
 class ChannelsCfg(BaseModel):
     analysis_mode: Literal[
-        "rna_only", "rna_protein", "rna_rna", "ab_ab", "protein_only", "pub_images"
+        "rna_only", "rna_protein", "rna_rna", "ab_ab", "protein_only",
+        "pub_images", "if_intensity"
     ] = "rna_only"
     # 0 = auto-detect; otherwise 0-indexed channel
     dapi: int = -1
@@ -844,6 +845,61 @@ class QcCfg(BaseModel):
     qc_min_focus_score: float = 0.0
 
 
+class IfIntensityCfg(BaseModel):
+    """Immunofluorescence antibody-validation intensity mode (``if_intensity``).
+
+    Drives the plate-level IF pipeline (per-well signal routing, exposure gate,
+    per-nucleus + whole-FOV intensity, fold-over-secondary-only normalization,
+    per-well biological-replicate stats, SuperPlots, and SHARED-display-range
+    micrographs). Ported verbatim from the locked panQKI WT-vs-QKI-KO standalone
+    (F:\\Image Analysis Work\\MIAT-QKI-Coloc\\WT-QKI-KO_2026_07_01\\_scripts).
+    Segmentation params come from the shared ``nuclei`` block (cellpose/cpsam/
+    DirectML), identical to the FISH modes. Only active when
+    ``channels.analysis_mode == "if_intensity"``; every other mode ignores it.
+    Human / Homo sapiens.
+    """
+    # ---- plate map --------------------------------------------------------
+    # CSV with one row per well: columns well, genotype, staining_arm (or arm),
+    # secondary. Genotype/arm/secondary are the biology source of truth; each
+    # discovered image is matched to a well by parsing the well number from its
+    # containing subfolder name (``well[-_ ]?(\\d+)``). If empty, the mode falls
+    # back to parsing genotype/arm/secondary straight from the folder names.
+    plate_layout_csv: str = ""
+    # Well-number -> secondary override for conflict wells (e.g. folder tag says
+    # 565 but the plate groups it as 647). Keys are stringified well numbers.
+    well_secondary_overrides: Dict[str, str] = Field(default_factory=dict)
+
+    # ---- channel routing (substring-matched on OME channel_names) ---------
+    dapi_channel_key: str = "405"
+    # secondary label -> the CSU channel-name substring that carries its signal.
+    # NOTE the intentional offset: secondary 647 -> "640" channel; 568/565 ->
+    # "561" channel.
+    signal_channel_map: Dict[str, str] = Field(
+        default_factory=lambda: {"647": "640", "568": "561", "565": "561"}
+    )
+
+    # ---- metrics ----------------------------------------------------------
+    cyto_ring_px: int = 12          # dilated-ring width grown from each nucleus
+    exposure_tol_s: float = 1e-6    # intra-channel exposure-equality tolerance
+    low_nuc_flag: int = 3           # flag FOVs with fewer than this many nuclei
+    pixel_size_um: float = 0.0      # 0 = read from image metadata
+
+    # ---- shared-display micrographs ("Sam's floor") ----------------------
+    display_ceiling_pct: float = 99.5   # vmax from the SIGNAL (WT-primary) wells
+    display_floor_pct: float = 50.0     # vmin from the secondary-only wells
+    scalebar_um: float = 20.0
+    # Micrograph source: "fov" projects the quantification FOVs themselves;
+    # "zstack" pulls a separate z-stack folder and uses a CENTRAL in-focus
+    # windowed max-projection (cleaner than a full-stack max).
+    micrograph_source: Literal["fov", "zstack"] = "fov"
+    micrograph_zstack_dir: str = ""
+    micrograph_z_window_frac: float = 0.5   # central in-focus fraction to keep
+
+    # ---- misc -------------------------------------------------------------
+    fig_seed: int = 42
+    make_excel: bool = True
+
+
 class FishsuiteConfig(BaseModel):
     experiment: ExperimentCfg = Field(default_factory=ExperimentCfg)
     conditions: ConditionsCfg = Field(default_factory=ConditionsCfg)
@@ -858,6 +914,7 @@ class FishsuiteConfig(BaseModel):
     output: OutputCfg = Field(default_factory=OutputCfg)
     parallel: ParallelCfg = Field(default_factory=ParallelCfg)
     qc: QcCfg = Field(default_factory=QcCfg)
+    if_intensity: IfIntensityCfg = Field(default_factory=IfIntensityCfg)
 
     # Broad GLOBAL reproducibility seed (ADDITIVE, 2026-06-10). Seeds Python's
     # ``random``, NumPy, PYTHONHASHSEED, and (if present) torch at the very
