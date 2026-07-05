@@ -830,21 +830,72 @@ def run_one(
     # detection, then MIP that window for all channels. Replaces per-image
     # file_overrides for datasets with field-to-field focus drift.
     dapi_autofocus_z: Optional[int] = None
+    # 2026-07-05 Brian: RNA-anchored single-plane autofocus (opt-in). Gated
+    # per-image audit columns for per_image_summary; EMPTY (and thus CSV
+    # byte-identical) unless autofocus_channel != "dapi".
+    _z_af_extra: Dict[str, Any] = {}
     if z_mode == "autofocus":
-        dapi_autofocus_z, dapi_2d = _io.extract_channel_autofocus_with_idx(
-            img, dapi_idx, z_start=z_start, z_end=z_end,
-            intensity_weighted=bool(getattr(cfg.z_stack, "autofocus_intensity_weighted", False)),
-        )
-        rna_2d = _io.extract_channel_at_z(img, rna_idx, z_1indexed=dapi_autofocus_z)
-        rna2_2d = _io.extract_channel_at_z(img, rna2_idx, z_1indexed=dapi_autofocus_z)
-        try:
-            from rich.console import Console as _C
-            _C().print(
-                f"  [dim]z-lock: {Path(path).name} → all channels @ DAPI plane "
-                f"z={dapi_autofocus_z}[/dim]"
+        _af_channel = str(getattr(cfg.z_stack, "autofocus_channel", "dapi")).lower()
+        _af_iw = bool(getattr(cfg.z_stack, "autofocus_intensity_weighted", False))
+        if _af_channel not in ("rna", "auto"):
+            # ── LOCKED default DAPI-anchor path — unchanged ──────────────────
+            dapi_autofocus_z, dapi_2d = _io.extract_channel_autofocus_with_idx(
+                img, dapi_idx, z_start=z_start, z_end=z_end,
+                intensity_weighted=_af_iw,
             )
-        except Exception:
-            pass
+            rna_2d = _io.extract_channel_at_z(img, rna_idx, z_1indexed=dapi_autofocus_z)
+            rna2_2d = _io.extract_channel_at_z(img, rna2_idx, z_1indexed=dapi_autofocus_z)
+            try:
+                from rich.console import Console as _C
+                _C().print(
+                    f"  [dim]z-lock: {Path(path).name} → all channels @ DAPI plane "
+                    f"z={dapi_autofocus_z}[/dim]"
+                )
+            except Exception:
+                pass
+        else:
+            # ── RNA-anchored (or auto) single-plane pick. ONE plane; all
+            # channels (DAPI seg + RNA + antibody) read at it -> coloc-safe. ──
+            _picked_z, _ch_used, _af_diag = _io.resolve_autofocus_plane(
+                img, dapi_idx=dapi_idx, rna_idx=rna_idx,
+                z_start=z_start, z_end=z_end,
+                autofocus_channel=_af_channel, intensity_weighted=_af_iw,
+                auto_rna_quality_min=float(
+                    getattr(cfg.z_stack, "autofocus_auto_rna_quality_min", 3.0)
+                ),
+            )
+            dapi_autofocus_z = int(_picked_z)
+            dapi_2d = _io.extract_channel_at_z(img, dapi_idx, z_1indexed=dapi_autofocus_z)
+            rna_2d = _io.extract_channel_at_z(img, rna_idx, z_1indexed=dapi_autofocus_z)
+            rna2_2d = _io.extract_channel_at_z(img, rna2_idx, z_1indexed=dapi_autofocus_z)
+            _z_af_extra = {
+                "z_autofocus_mode": _af_channel,
+                "z_autofocus_channel_used": _ch_used,
+                "z_plane": int(dapi_autofocus_z),
+            }
+            if _af_channel == "auto":
+                _q = _af_diag.get("rna_quality_score", float("nan"))
+                _z_af_extra["z_autofocus_rna_quality_score"] = (
+                    round(float(_q), 4) if _q == _q else float("nan")
+                )
+                _z_af_extra["z_autofocus_rna_quality_min"] = float(
+                    _af_diag.get("rna_quality_min", float("nan"))
+                )
+            # RNA signal-quality at the CHOSEN plane (focusability + SNR).
+            try:
+                _qual = _io.rna_plane_quality(rna_2d)
+                _z_af_extra["rna_focus_score"] = round(float(_qual["focus_score"]), 4)
+                _z_af_extra["rna_dynamic_range"] = round(float(_qual["dynamic_range"]), 4)
+            except Exception:
+                pass
+            try:
+                from rich.console import Console as _C
+                _C().print(
+                    f"  [dim]z-anchor({_af_channel}): {Path(path).name} → all "
+                    f"channels @ {_ch_used.upper()} plane z={dapi_autofocus_z}[/dim]"
+                )
+            except Exception:
+                pass
     elif z_mode == "autofocus_maxproj":
         (afm_zs, afm_ze), afm_diag, dapi_2d = _io.extract_dapi_focus_window(
             img, dapi_idx,
@@ -2998,6 +3049,20 @@ def run_one(
         _extra["coloc_radial_profile"] = coloc_radial_df
     if coloc_rotation_null_df is not None:
         _extra["coloc_rotation_null"] = coloc_rotation_null_df
+
+    # 2026-07-05 Brian: RNA-anchored-autofocus audit columns. Added ONLY when
+    # autofocus_channel != "dapi" (else _z_af_extra is empty -> per_image_summary
+    # byte-identical). Covers BOTH the main (n>0) and no-nuclei fallback paths
+    # since both converge on this single ``per_image`` variable.
+    if _z_af_extra:
+        try:
+            _z_af_extra["rna_n_confident_spots"] = int(len(spots1_df))
+        except Exception:
+            pass
+        try:
+            per_image.update(_z_af_extra)
+        except Exception:
+            pass
 
     return ImageResult(
         image=img_name,

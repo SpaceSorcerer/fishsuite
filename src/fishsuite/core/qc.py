@@ -98,6 +98,10 @@ def compute_qc_flags(res: Any, cfg: Any, dtype_max: int = 65535) -> Dict[str, An
     min_focus = (
         float(getattr(qc_cfg, "qc_min_focus_score", 0.0)) if qc_cfg is not None else 0.0
     )
+    overdetect_cap = (
+        float(getattr(qc_cfg, "qc_overdetect_rna1_max_per_nucleus", 300.0))
+        if qc_cfg is not None else 300.0
+    )
 
     sat_cut = 0.999 * float(dtype_max)
 
@@ -176,9 +180,111 @@ def compute_qc_flags(res: Any, cfg: Any, dtype_max: int = 65535) -> Dict[str, An
     if zero_spot:
         active_flags.append("zero_spot")
 
+    # ---- RNA1 over-detection guard (2026-07-05, ADVISORY) --------------
+    # RNA1 spots-per-nucleus. Prefer the mode's own RNA1-specific per-image
+    # value (correct for rna_rna/rna_protein where res.spots pools BOTH
+    # channels); fall back to the generic mean, then to n_spots/n_nuclei
+    # (rna_only). NaN when there are no nuclei (over-detection is undefined).
+    spn = per_image.get("mean_spots_per_nucleus_rna1")
+    if spn is None:
+        spn = per_image.get("mean_spots_per_nucleus")
+    if spn is None:
+        spn = (float(n_spots) / n_nuclei) if n_nuclei > 0 else float("nan")
+    try:
+        spn = float(spn)
+    except Exception:
+        spn = float("nan")
+    out["qc_rna1_spots_per_nucleus"] = spn
+    overdetect = False
+    try:
+        if overdetect_cap > 0.0 and np.isfinite(spn) and spn > overdetect_cap:
+            overdetect = True
+    except Exception:
+        overdetect = False
+    out["qc_overdetect_rna1"] = bool(overdetect)
+    if overdetect:
+        active_flags.append("overdetect_rna1")
+
     # ---- summary --------------------------------------------------------
     qc_flags = ",".join(active_flags)
     out["qc_flags"] = qc_flags
     out["qc_pass"] = bool(qc_flags == "")
 
     return out
+
+
+def flag_overdetect_outliers(rows, cfg) -> int:
+    """Run-level robust RNA1 over-detection outlier flag (2026-07-05, ADVISORY).
+
+    The per-image :func:`compute_qc_flags` applies an ABSOLUTE spots/nucleus
+    cap. This second, complementary pass needs the WHOLE run, so the runner
+    calls it once after every image's per_image dict has been collected. It
+    flags images whose RNA1 spots-per-nucleus exceeds ``median + k*MAD`` across
+    the run AND is above a small-signal floor — catching a single blown-up
+    field even when its count sits below the absolute cap.
+
+    Mutates each row dict IN PLACE (never drops/reorders rows):
+      * adds ``qc_overdetect_rna1_run_outlier`` (bool) to every row, and
+      * when it fires, appends ``overdetect_rna1_outlier`` to that row's
+        ``qc_flags`` and sets ``qc_pass`` False.
+
+    Purely advisory — it changes NO detection result. Fully defensive: on any
+    problem it leaves rows untouched (adds the column as False) and returns 0.
+    Returns the number of images flagged.
+    """
+    try:
+        rows = list(rows)
+    except Exception:
+        return 0
+
+    qc_cfg = getattr(cfg, "qc", None)
+    k = float(getattr(qc_cfg, "qc_overdetect_robust_mad_k", 5.0)) if qc_cfg is not None else 5.0
+    floor = (
+        float(getattr(qc_cfg, "qc_overdetect_min_per_nucleus_for_outlier", 50.0))
+        if qc_cfg is not None else 50.0
+    )
+
+    # Seed the column as False on every row up-front (so the column always
+    # exists in per_image_summary once this pass runs).
+    valid = []
+    for r in rows:
+        if isinstance(r, dict):
+            r.setdefault("qc_overdetect_rna1_run_outlier", False)
+            v = r.get("qc_rna1_spots_per_nucleus")
+            try:
+                v = float(v)
+            except Exception:
+                v = float("nan")
+            if np.isfinite(v):
+                valid.append(v)
+
+    # Disabled (k<=0) or too few points to estimate a robust spread.
+    if k <= 0.0 or len(valid) < 3:
+        return 0
+
+    arr = np.asarray(valid, dtype=float)
+    med = float(np.median(arr))
+    mad = float(np.median(np.abs(arr - med)))
+    if not np.isfinite(mad) or mad <= 0.0:
+        return 0
+    cutoff = med + k * 1.4826 * mad
+
+    n_flagged = 0
+    for r in rows:
+        if not isinstance(r, dict):
+            continue
+        try:
+            v = float(r.get("qc_rna1_spots_per_nucleus"))
+        except Exception:
+            continue
+        if np.isfinite(v) and v > cutoff and v > floor:
+            r["qc_overdetect_rna1_run_outlier"] = True
+            n_flagged += 1
+            # Fold into the human-readable flag summary without duplicating.
+            existing = str(r.get("qc_flags", "") or "")
+            tags = [t for t in existing.split(",") if t]
+            if "overdetect_rna1_outlier" not in tags:
+                tags.append("overdetect_rna1_outlier")
+            r["qc_flags"] = ",".join(tags)
+            r["qc_pass"] = False
+    return n_flagged

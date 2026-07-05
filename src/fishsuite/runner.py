@@ -1991,6 +1991,23 @@ def run_batch(
                     _console.print(f"[red]FAIL {dimg.path.name}: {e}[/red]")
             progress.advance(task)
 
+    # 2026-07-05: ADDITIVE run-level RNA1 over-detection outlier flag. Needs the
+    # whole batch (median + MAD across images), so it runs here after every
+    # per_image dict is collected. Advisory only — mutates qc_* columns, never
+    # drops/reorders an image. Crash-proof (warn, never abort).
+    try:
+        from .core.qc import flag_overdetect_outliers as _flag_overdetect_outliers
+        _n_over = _flag_overdetect_outliers(per_image_rows, cfg)
+        if _n_over:
+            _console.print(
+                f"[yellow]QC: {_n_over} image(s) flagged qc_overdetect_rna1_run_outlier "
+                f"(RNA1 spots/nucleus robust-outlier vs run median)[/yellow]"
+            )
+    except Exception as _over_err:
+        _console.print(
+            f"[yellow]Run-level over-detection QC skipped ({_over_err})[/yellow]"
+        )
+
     # ---- Write master CSVs (Fiji column order via union of per-image cols) -
     per_image_df = pd.DataFrame(per_image_rows)
     per_image_df.to_csv(output_dir / f"{prefix}per_image_summary.csv", index=False)

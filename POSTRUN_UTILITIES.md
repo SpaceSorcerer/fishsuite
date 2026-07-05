@@ -242,3 +242,127 @@ python -m fishsuite.core.pixel_pattern      --run-dir <run> [--staging <raw>]
 
 The `fishsuite backfill` / `walkthrough` / `postrun` / `singlecell` /
 `pixelpattern` subcommands are just friendlier wrappers around these.
+
+---
+
+## Detection & z-stack robustness (config-level, 2026-07-05)
+
+These are **not** post-run utilities — they are options set in the preset YAML
+that make a *run* more robust. Documented here because this is the field guide
+people already reach for. All three are **additive and default-off**: leaving
+them at their defaults reproduces the previous behaviour byte-for-byte.
+
+### 1. RNA-anchored autofocus (`z_stack.autofocus_channel`)
+
+In single-plane `autofocus` mode the pipeline picks **one** optical section and
+reads every channel (DAPI segmentation + RNA + antibody) at that same z — this
+one-plane rule is what keeps colocalization honest.
+
+By default the plane is chosen by focusing on **DAPI**. That is usually right,
+but on some z-stacks the DAPI-sharpest plane is **not** where the dim
+single-molecule RNA (e.g. MIAT) is in focus. Reading MIAT out of focus makes its
+BigFISH auto-threshold collapse and carpets the field with **thousands of noise
+"spots"** (the well11 MIAT-KD ~1500-spots/nucleus artifact). QKI, being a bright
+diffuse antibody signal, is unaffected — so you see a MIAT-only blow-up.
+
+The fix is to let the **RNA** channel choose the plane:
+
+```yaml
+z_stack:
+  mode: autofocus
+  autofocus_channel: rna         # dapi (default) | rna | auto
+  autofocus_intensity_weighted: true   # keep your existing thick-stack setting
+  # start_slice / end_slice: the same +/-10% edge guard as before, still honored
+```
+
+- `autofocus_channel: dapi` — **default, unchanged.** Pick the sharpest DAPI
+  plane, lock all channels to it.
+- `autofocus_channel: rna` — pick the sharpest **RNA1** plane instead, then lock
+  DAPI + RNA + antibody to it. Use this when the RNA target focuses on a
+  different plane than DAPI.
+- `autofocus_channel: auto` — compute a per-image RNA signal-quality score and
+  RNA-anchor **only when it clears a threshold**, else fall back to DAPI-anchor.
+  Per-image reporting tells you which channel was used for each FOV:
+
+  ```yaml
+  z_stack:
+    mode: autofocus
+    autofocus_channel: auto
+    autofocus_auto_rna_quality_min: 3.0   # RNA dynamic-range gate (default 3.0)
+  ```
+
+**What gets reported (only when `autofocus_channel` is `rna` or `auto`).** New
+columns appear in `per_image_summary.csv` so the choice is auditable:
+
+| Column | Meaning |
+|---|---|
+| `z_autofocus_mode` | the config value (`rna` / `auto`) |
+| `z_autofocus_channel_used` | which channel actually chose the plane (`rna` / `dapi`) |
+| `z_plane` | the 1-indexed absolute plane used |
+| `rna_focus_score` | RNA sharpness at that plane (variance of Laplacian) |
+| `rna_dynamic_range` | RNA spot-callability / SNR, `(p99.9 - median) / (1.4826*MAD)` |
+| `rna_n_confident_spots` | number of RNA1 spots detected |
+| `z_autofocus_rna_quality_score` / `_min` | (auto only) the decision score + threshold |
+
+With `autofocus_channel: dapi` (the default) **none** of these columns are
+emitted and the CSV is byte-identical to older runs. Currently wired for the
+`rna_rna` / `rna_protein` modes (which is what the MIAT x QKI coloc presets use).
+
+### 2. RNA1 over-detection QC flag (bulletproofing)
+
+Independently of the autofocus choice, every run now **flags** — never drops —
+images whose RNA1 spot count is implausibly high, so you can exclude them by
+hand. This is the safety net for the out-of-focus-collapse symptom above.
+
+`per_image_summary.csv` gains:
+
+- `qc_rna1_spots_per_nucleus` — the RNA1 spots-per-nucleus for the image.
+- `qc_overdetect_rna1` (bool) — fires when that exceeds an **absolute cap**
+  (`qc.qc_overdetect_rna1_max_per_nucleus`, default **300**; a "few hundred per
+  nucleus" is already far above any real single-molecule count here).
+- `qc_overdetect_rna1_run_outlier` (bool) — fires when the image is a **robust
+  outlier** vs the run median (`> median + k*1.4826*MAD`,
+  `qc.qc_overdetect_robust_mad_k` default 5) **and** above the small-signal
+  floor (`qc.qc_overdetect_min_per_nucleus_for_outlier`, default 50).
+
+Either trigger adds `overdetect_rna1` / `overdetect_rna1_outlier` to `qc_flags`
+and sets `qc_pass = False`. **Detection is never altered** — these are advisory.
+Set the relevant threshold to `0` to disable a trigger.
+
+```yaml
+qc:
+  qc_overdetect_rna1_max_per_nucleus: 300.0   # absolute cap; 0 disables
+  qc_overdetect_robust_mad_k: 5.0             # run-level outlier k; 0 disables
+  qc_overdetect_min_per_nucleus_for_outlier: 50.0
+```
+
+### 3. QKI foci detection specificity — the recommended pattern
+
+For a **textured antibody stain** like QKI, the LoG `threshold_multiplier` alone
+does **not** buy you specificity: loosening it to detect real foci also lights up
+the textured cytoplasmic/nucleoplasmic background, and tightening it to suppress
+background also kills real foci. The multiplier controls *relative* contrast, not
+an *absolute* brightness floor, so background texture rides along with signal.
+
+The pattern that **does** work is a **loose LoG detector plus an absolute
+peak-intensity floor calibrated on the clean secondary-only control**:
+
+```yaml
+foci:
+  antibody_overrides:            # (or rna2_overrides, whichever slot QKI is in)
+    threshold_multiplier: 1.0    # LOOSE LoG — catch candidate foci
+    only_nuclear_spots: true
+    min_sep_px: 2
+    min_spot_peak_intensity: 5000.0   # ABSOLUTE floor, sec-only-calibrated
+```
+
+Calibration: measure the **maximum spot peak intensity in the secondary-only
+well** (no primary antibody → any "spots" there are non-specific). Set
+`min_spot_peak_intensity` just above it. Example from the MIAT x QKI presets: the
+sec-only max peak was ~4974, so a floor of **5000** drives sec-only spot counts to
+~0 while keeping true QKI foci in the real wells. Keep `detect_in_sec_only: true`
+so the sec-only spot rate is quantified and the floor stays honest.
+
+Because the floor is an absolute intensity gate (not a relative multiplier), it
+rejects textured background of any shape while preserving genuinely bright foci —
+which the multiplier cannot do on its own.

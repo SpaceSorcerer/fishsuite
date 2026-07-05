@@ -151,6 +151,43 @@ class ZStackCfg(BaseModel):
     # True for thick stacks (the BIN1 d8 cMyo presets do).
     autofocus_intensity_weighted: bool = False
 
+    # ─── RNA-anchored single-plane autofocus (2026-07-05 Brian) ────────────
+    # ONLY affects ``mode == "autofocus"`` (the single-plane pick used by
+    # rna_rna / rna_protein to z-lock every channel to ONE optical section).
+    # Does NOT touch autofocus_maxproj, single, maxproj, or 3d.
+    #
+    # WHICH channel drives the single-plane pick:
+    #   "dapi" (DEFAULT, LOCKED) — pick the sharpest DAPI plane, then read RNA
+    #      + antibody at THAT plane. Byte-identical to all prior behaviour.
+    #   "rna"  — pick the sharpest RNA1 plane instead, then read DAPI (seg) +
+    #      RNA + antibody at THAT plane. Use when the dim single-molecule RNA
+    #      target (e.g. MIAT) focuses on a DIFFERENT plane than the bright DAPI
+    #      chromatin: the DAPI-best plane can read RNA out of focus, collapsing
+    #      the BigFISH auto-threshold into thousands of noise "spots". Anchoring
+    #      on RNA keeps the puncta in focus. The one-plane invariant (all
+    #      channels at the SAME physical z, required for honest colocalization)
+    #      is PRESERVED — only which channel chooses the plane changes.
+    #   "auto" — compute a per-image RNA signal-quality score (dynamic range /
+    #      spot-callability at the RNA-best plane) and RNA-anchor when it clears
+    #      ``autofocus_auto_rna_quality_min``, else fall back to DAPI-anchor.
+    #      The channel actually used is recorded per-image (``z_autofocus_channel_used``).
+    #
+    # Auditing: when this is "rna" or "auto", per_image_summary gains
+    # ``z_autofocus_mode``, ``z_autofocus_channel_used``, ``z_plane`` (1-indexed
+    # absolute), ``rna_focus_score``, ``rna_dynamic_range`` and
+    # ``rna_n_confident_spots`` columns (plus the auto decision score/threshold
+    # in "auto" mode). Default "dapi" emits NONE of these -> byte-identical CSV.
+    autofocus_channel: Literal["dapi", "rna", "auto"] = "dapi"
+
+    # Threshold on the per-image RNA dynamic-range / spot-callability score
+    # used by ``autofocus_channel == "auto"`` to decide RNA-anchor vs DAPI-anchor.
+    # The score is ``(p99.9 - median) / (1.4826 * MAD)`` of the RNA-best plane —
+    # a robust SNR proxy for "are there real puncta standing above background?".
+    # A focused single-molecule field (MIAT) scores high; a flat / out-of-focus
+    # / pure-noise field scores low. RNA-anchor is used when score >= this value.
+    # Only consulted when ``autofocus_channel == "auto"``. Default 3.0.
+    autofocus_auto_rna_quality_min: float = 3.0
+
     # ─── autofocus_maxproj mode parameters (2026-05-24 Brian) ──────────────
     # When ``mode == "autofocus_maxproj"`` the runner computes a per-image
     # in-focus DAPI z-window using ``focus_metric`` on the DAPI channel,
@@ -858,6 +895,31 @@ class QcCfg(BaseModel):
     # Minimum DAPI focus score (variance-of-Laplacian) below which an image is
     # flagged ``low_focus``. Default 0.0 -> focus NEVER flags (opt-in).
     qc_min_focus_score: float = 0.0
+
+    # ─── RNA1 over-detection guard (2026-07-05 Brian, bulletproofing) ───────
+    # ADVISORY-ONLY. Flags images whose RNA1 spots-per-nucleus is implausibly
+    # high, which is the classic symptom of an out-of-focus dim RNA channel
+    # collapsing the BigFISH auto-threshold into thousands of noise "spots"
+    # (e.g. well11 MIAT-KD ~1500 spots/nucleus). It NEVER changes detection or
+    # drops an image — it sets ``qc_overdetect_rna1`` + adds ``overdetect_rna1``
+    # to ``qc_flags`` so downstream/you can EXCLUDE flagged images by hand.
+    #
+    # Two independent triggers (either fires the flag):
+    #   1. ABSOLUTE cap: RNA1 spots/nucleus > this many. A "few hundred per
+    #      nucleus" is already far above any real single-molecule lncRNA/mRNA
+    #      count in these datasets. Set <= 0 to DISABLE the absolute cap.
+    qc_overdetect_rna1_max_per_nucleus: float = 300.0
+    #   2. ROBUST run-level outlier: RNA1 spots/nucleus exceeds
+    #      ``median + k * MAD`` across the run AND is above the small-signal
+    #      floor below. Computed once per run (needs the whole batch), so it is
+    #      applied by the runner after all images are processed. Set k <= 0 to
+    #      DISABLE the robust outlier test.
+    qc_overdetect_robust_mad_k: float = 5.0
+    # Small-signal floor for the robust test: a run whose RNA1 spots/nucleus are
+    # all low won't spuriously flag a merely-2x-median image as "over-detected".
+    # The robust outlier only fires when the image is ALSO above this absolute
+    # spots/nucleus value.
+    qc_overdetect_min_per_nucleus_for_outlier: float = 50.0
 
 
 class IfIntensityCfg(BaseModel):

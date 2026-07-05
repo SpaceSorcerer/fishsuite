@@ -802,6 +802,162 @@ def extract_channel_at_z(
     return zyx[z0]
 
 
+def rna_plane_quality(plane: np.ndarray) -> dict:
+    """Signal-quality readout for a single 2D RNA plane (2026-07-05 Brian).
+
+    A per-image gauge of whether the RNA channel at the chosen focal plane
+    carries *callable* single-molecule signal — used both to REPORT (per-image
+    ``rna_focus_score`` / ``rna_dynamic_range`` columns) and to DRIVE the
+    ``autofocus_channel == "auto"`` RNA-vs-DAPI anchor decision.
+
+    Returns a dict with:
+      * ``focus_score`` — ``var(laplace(plane / mean))``, the mean-normalized
+        Laplacian variance (Pertuz et al. 2013). Higher = crisper structure /
+        sharper puncta. Brightness-insensitive.
+      * ``dynamic_range`` — ``(p99.9 - median) / (1.4826 * MAD)``, a robust SNR
+        proxy: how far the brightest pixels stand above the background noise
+        floor. Real puncta push it high; a flat / out-of-focus / pure-noise
+        field stays near 0. This is the score the ``auto`` gate thresholds.
+      * ``background_median`` / ``background_mad`` / ``top_p999`` — the raw
+        components (handy for logging / debugging).
+
+    Fully defensive — returns NaNs rather than raising on an empty/degenerate
+    plane.
+    """
+    out = {
+        "focus_score": float("nan"),
+        "dynamic_range": float("nan"),
+        "background_median": float("nan"),
+        "background_mad": float("nan"),
+        "top_p999": float("nan"),
+    }
+    arr = np.asarray(plane)
+    if arr.size == 0:
+        return out
+    p = arr.astype(np.float32)
+    # --- focus score (mean-normalized Laplacian variance) ---
+    try:
+        from scipy import ndimage as ndi
+
+        m = float(p.mean())
+        if m > 0:
+            out["focus_score"] = float(np.var(ndi.laplace(p / m)))
+        else:
+            out["focus_score"] = 0.0
+    except Exception:
+        out["focus_score"] = float("nan")
+    # --- robust dynamic range / spot SNR ---
+    try:
+        med = float(np.median(p))
+        mad = float(np.median(np.abs(p - med)))
+        p999 = float(np.percentile(p, 99.9))
+        out["background_median"] = med
+        out["background_mad"] = mad
+        out["top_p999"] = p999
+        denom = 1.4826 * mad
+        if denom > 0:
+            out["dynamic_range"] = (p999 - med) / denom
+        elif p999 > med:
+            # Zero MAD but a bright tail exists -> effectively unbounded SNR;
+            # report a large finite sentinel so the auto gate still fires.
+            out["dynamic_range"] = float("inf")
+        else:
+            out["dynamic_range"] = 0.0
+    except Exception:
+        pass
+    return out
+
+
+def resolve_autofocus_plane(
+    img: ImageWrapper,
+    *,
+    dapi_idx: int,
+    rna_idx: int,
+    z_start: Optional[int] = None,
+    z_end: Optional[int] = None,
+    autofocus_channel: str = "dapi",
+    intensity_weighted: bool = False,
+    auto_rna_quality_min: float = 3.0,
+) -> "tuple[int, str, dict]":
+    """Pick the single autofocus plane, optionally anchored on the RNA channel.
+
+    Companion to the LOCKED default DAPI-anchor path (the mode runners still
+    call ``extract_channel_autofocus_with_idx`` directly for ``autofocus_channel
+    == "dapi"`` so that path is byte-for-byte unchanged). This helper handles
+    ONLY the opt-in ``"rna"`` / ``"auto"`` anchors.
+
+    The one-plane invariant is preserved: exactly ONE absolute z is returned
+    and the caller reads DAPI (segmentation), RNA and antibody all at that z —
+    only the channel that CHOOSES the plane differs.
+
+    Parameters
+    ----------
+    autofocus_channel : {"rna", "auto"}
+        ``"rna"`` -> pick the sharpest RNA1 plane. ``"auto"`` -> RNA-anchor
+        when the RNA-best plane's ``dynamic_range`` (see ``rna_plane_quality``)
+        is >= ``auto_rna_quality_min``, else DAPI-anchor. (``"dapi"`` is a
+        defensive alias for the DAPI-anchor branch — normal callers never pass
+        it here.)
+    intensity_weighted : bool
+        Forwarded to the per-plane focus scorer (thick-stack fix), same as the
+        DAPI path.
+    auto_rna_quality_min : float
+        RNA dynamic-range gate for ``"auto"``.
+
+    Returns
+    -------
+    (abs_z_1indexed, channel_used, diag)
+        ``channel_used`` is "rna" or "dapi". ``diag`` carries
+        ``rna_z`` / ``dapi_z`` (1-indexed, may be None if not computed),
+        ``rna_quality_score`` (the dynamic-range used for the auto decision),
+        ``rna_quality_min`` (the threshold), ``rna_focus_score`` and the mode.
+    """
+    ch = str(autofocus_channel).lower()
+    diag: dict = {
+        "requested_channel": ch,
+        "rna_z": None,
+        "dapi_z": None,
+        "rna_quality_score": float("nan"),
+        "rna_quality_min": float(auto_rna_quality_min),
+        "rna_focus_score": float("nan"),
+    }
+
+    def _dapi_pick() -> int:
+        z, _ = extract_channel_autofocus_with_idx(
+            img, dapi_idx, z_start=z_start, z_end=z_end,
+            intensity_weighted=intensity_weighted,
+        )
+        diag["dapi_z"] = int(z)
+        return int(z)
+
+    # Defensive: an explicit "dapi" (or anything unrecognised) falls back to the
+    # DAPI anchor so a bad config value can never crash a run.
+    if ch not in ("rna", "auto"):
+        return _dapi_pick(), "dapi", diag
+
+    # Autofocus the RNA channel. On failure, fall back to DAPI.
+    try:
+        rna_z, rna_plane = extract_channel_autofocus_with_idx(
+            img, rna_idx, z_start=z_start, z_end=z_end,
+            intensity_weighted=intensity_weighted,
+        )
+        diag["rna_z"] = int(rna_z)
+        q = rna_plane_quality(rna_plane)
+        diag["rna_quality_score"] = float(q.get("dynamic_range", float("nan")))
+        diag["rna_focus_score"] = float(q.get("focus_score", float("nan")))
+    except Exception:
+        return _dapi_pick(), "dapi", diag
+
+    if ch == "rna":
+        return int(rna_z), "rna", diag
+
+    # ch == "auto": gate on RNA dynamic range.
+    score = diag["rna_quality_score"]
+    if np.isfinite(score) and score >= float(auto_rna_quality_min):
+        return int(rna_z), "rna", diag
+    return _dapi_pick(), "dapi", diag
+
+
 def get_voxel_size_nm(img: ImageWrapper) -> Tuple[float, float]:
     """Return (xy_nm, z_nm) physical voxel size, or (NaN, NaN) if unavailable."""
     return (img.voxel_xy_nm, img.voxel_z_nm)
