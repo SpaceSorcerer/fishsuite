@@ -539,9 +539,29 @@ cytoplasm reads near-zero; ceiling = the WT-primary signal percentile. The same
 (vmin,vmax) is applied to WT/KO/secondary-only (never per-image auto-contrast).
 
 \b
-Source dirs + floors + label default from if_run_context.json (written by the
-run); pass --staging / --zstack / --floor / --label to override. Output goes to
-<run>/publication_images/.
+DISPLAY-RANGE CONTROL (all optional; defaults reproduce prior behaviour):
+  --floor SEC=VALUE / SEC:source=VALUE   signal FLOOR (vmin). Bare SEC applies to
+                                         BOTH sources; SEC:source scopes to one
+                                         (e.g. 647:single_plane=5000). More-
+                                         specific source key wins.
+  --ceiling SEC=VALUE / SEC:source=VALUE explicit signal CEILING (vmax); overrides
+                                         --ceiling-pct for that secondary/source.
+  --ceiling-pct PCT                      WT-primary percentile ceiling where no
+                                         explicit --ceiling is set (default 99.5).
+  --dapi-floor / --dapi-ceiling VALUE    FIXED DAPI vmin/vmax across all panels
+                                         (e.g. --dapi-ceiling 8000 so DAPI is not
+                                         over-exposed). Unset = per-image DAPI.
+  --per-image-ceiling                    each panel's signal ceiling from ITS OWN
+                                         percentile (slightly non-rigorous;
+                                         breaks cross-panel comparability). An
+                                         explicit --ceiling still wins.
+The applied (vmin,vmax) per source/secondary/channel is logged to
+publication_images/qc_nuclear_dominance.txt.
+
+\b
+Source dirs + floors + ceilings + DAPI range + label default from
+if_run_context.json (written by the run); pass the flags above to override.
+Output goes to <run>/publication_images/.
 
 \b
 CRITICAL CHANNEL RULE: 647 wells render only the 640-channel signal + DAPI;
@@ -553,7 +573,8 @@ Examples:
   fishsuite if-pub-images --run "F:\\Image Analysis Work\\MIAT-QKI-Coloc\\my_run"
   fishsuite if-pub-images --run "F:\\...\\my_run" --staging "F:\\...\\raw-set2" \\
       --zstack "F:\\...\\z-stacks" --source single_plane --source picked_z \\
-      --floor 647=5000 --floor 568=3500 --label QKI
+      --floor 647:single_plane=5000 --ceiling 647:single_plane=55000 \\
+      --floor 647:picked_z=5500 --dapi-ceiling 8000 --label QKI
 """
 
 
@@ -574,33 +595,86 @@ Examples:
               type=click.Choice(["single_plane", "picked_z"]),
               help="Source(s) to render (repeatable). Default: both / as recorded.")
 @click.option("--floor", "floors", multiple=True,
-              help="Per-secondary display floor as SEC=VALUE (e.g. 647=5000). "
-                   "Repeatable. Default: 647=5000, 568=3500 / as recorded.")
+              help="Signal display floor (vmin) as SEC=VALUE (both sources) or "
+                   "SEC:source=VALUE (that source only), e.g. 647=5000 or "
+                   "647:single_plane=5000. Repeatable. Default: 647=5000, "
+                   "568=3500 / as recorded.")
+@click.option("--ceiling", "ceilings", multiple=True,
+              help="EXPLICIT signal ceiling (vmax) as SEC=VALUE or "
+                   "SEC:source=VALUE (e.g. 647:single_plane=55000). Overrides "
+                   "--ceiling-pct for that secondary/source; unset pairs use the "
+                   "WT-primary percentile. Repeatable.")
 @click.option("--ceiling-pct", default=None, type=float,
-              help="Ceiling percentile of the WT-primary signal (default 99.5).")
+              help="Ceiling percentile of the WT-primary signal (default 99.5). "
+                   "Used only where no explicit --ceiling is given.")
+@click.option("--dapi-floor", "dapi_floor", default=None, type=float,
+              help="Fixed DAPI display floor (vmin) across ALL panels. "
+                   "Unset = per-image DAPI normalization (legacy).")
+@click.option("--dapi-ceiling", "dapi_ceiling", default=None, type=float,
+              help="Fixed DAPI display ceiling (vmax) across ALL panels, e.g. "
+                   "8000 to keep DAPI from over-exposing. Unset = per-image.")
+@click.option("--per-image-ceiling", "per_image_ceiling", is_flag=True, default=False,
+              help="Compute each panel's signal ceiling from THAT image's own "
+                   "percentile instead of the shared WT-primary ceiling. "
+                   "Slightly non-rigorous (breaks cross-panel comparability) - a "
+                   "fallback. An explicit --ceiling still wins. Default OFF "
+                   "(shared display).")
 @click.option("--scalebar", "scalebar_um", default=None, type=float,
               help="Scalebar length in microns (default 20).")
 @click.option("--label", default=None, help="Signal label in panels (e.g. QKI).")
-def if_pub_images_cmd(run_dir, staging, zstack, sources, floors, ceiling_pct,
+def if_pub_images_cmd(run_dir, staging, zstack, sources, floors, ceilings,
+                      ceiling_pct, dapi_floor, dapi_ceiling, per_image_ceiling,
                       scalebar_um, label):
     run = Path(run_dir)
     click.echo(f"[if-pub-images] CPU-only - reusing per_well.csv + re-reading raw "
                f"(no GPU / no re-segmentation) in {run}")
-    floor_map = None
-    if floors:
-        floor_map = {}
-        for f in floors:
-            if "=" not in str(f):
-                click.echo(f"Bad --floor '{f}' (expected SEC=VALUE, e.g. 647=5000).",
+
+    _VALID_SOURCES = ("single_plane", "picked_z")
+
+    def _parse_range_opt(items, flag):
+        """Parse a repeatable SEC=VALUE / SEC:source=VALUE option into a dict.
+
+        Keys are kept as ``"647"`` or ``"647:single_plane"``; the renderer
+        resolves the more-specific source-scoped key first. Exits(2) with a
+        plain-English message on any malformed token."""
+        if not items:
+            return None
+        out = {}
+        for it in items:
+            s = str(it)
+            if "=" not in s:
+                click.echo(f"Bad {flag} '{it}' (expected SEC=VALUE or "
+                           f"SEC:source=VALUE, e.g. 647=5000 or "
+                           f"647:single_plane=5000).", err=True)
+                sys.exit(2)
+            k, v = s.split("=", 1)
+            k = k.strip()
+            if ":" in k:
+                sec, src = k.split(":", 1)
+                src = src.strip()
+                if src not in _VALID_SOURCES:
+                    click.echo(f"Bad {flag} '{it}': source must be one of "
+                               f"{list(_VALID_SOURCES)}, got '{src}'.", err=True)
+                    sys.exit(2)
+                k = f"{sec.strip()}:{src}"
+            try:
+                out[k] = float(v)
+            except ValueError:
+                click.echo(f"Bad {flag} '{it}': value '{v}' is not a number.",
                            err=True)
                 sys.exit(2)
-            k, v = str(f).split("=", 1)
-            floor_map[k.strip()] = float(v)
+        return out
+
+    floor_map = _parse_range_opt(floors, "--floor")
+    ceiling_map = _parse_range_opt(ceilings, "--ceiling")
     try:
         res = _if_pub_images_run(
             run, staging_dir=staging, zstack_dir=zstack,
             sources=(list(sources) or None), floors=floor_map,
-            ceiling_pct=ceiling_pct, scalebar_um=scalebar_um, label=label,
+            ceilings=ceiling_map, ceiling_pct=ceiling_pct,
+            dapi_floor=dapi_floor, dapi_ceiling=dapi_ceiling,
+            per_image_ceiling=(True if per_image_ceiling else None),
+            scalebar_um=scalebar_um, label=label,
         )
     except (FileNotFoundError, ValueError) as exc:
         click.echo(_friendly_postrun_error(exc, run), err=True)

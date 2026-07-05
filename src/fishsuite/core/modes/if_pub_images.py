@@ -88,6 +88,25 @@ def _slabel(source: str) -> str:
     return "single-plane" if source == "single_plane" else "picked-z"
 
 
+def _resolve_source_secondary(mapping, sec, source):
+    """Look up a per-secondary / per-(secondary,source) display value.
+
+    Keys may be bare ``"647"`` (applies to BOTH sources) or source-scoped
+    ``"647:single_plane"`` (that source only). The MORE-SPECIFIC source-scoped
+    key wins. Returns a float, or ``None`` when no key matches (or the value is
+    unparseable) so callers can fall back to their own default.
+    """
+    if not mapping:
+        return None
+    for key in (f"{sec}:{source}", str(sec)):
+        if key in mapping:
+            try:
+                return float(mapping[key])
+            except (TypeError, ValueError):
+                return None
+    return None
+
+
 def _open(path):
     from bioio import BioImage
     import bioio_bioformats
@@ -174,6 +193,24 @@ def _qki01(qki, lo, hi):
     return _norm(qki)
 
 
+def _dapi01(dapi, dapi_lo=None, dapi_hi=None):
+    """DAPI display normalization.
+
+    When NEITHER bound is given, per-image min-max (``_norm``) exactly as before
+    (byte-identical back-compat). When a fixed bound is supplied, use a fixed
+    window; the unset side falls back to the per-image min / max — so passing
+    only a fixed ceiling (Brian's ``--dapi-ceiling 8000``) caps over-exposure
+    without moving the per-image black point.
+    """
+    if dapi_lo is None and dapi_hi is None:
+        return _norm(dapi)
+    lo = float(dapi_lo) if dapi_lo is not None else float(np.min(dapi))
+    hi = float(dapi_hi) if dapi_hi is not None else float(np.max(dapi))
+    if hi > lo:
+        return np.clip((dapi - lo) / (hi - lo), 0, 1)
+    return _norm(dapi)
+
+
 def _add_scalebar(ax, shape, px_um, um):
     h, w = shape
     bar_px = um / px_um if px_um else um
@@ -184,11 +221,12 @@ def _add_scalebar(ax, shape, px_um, um):
             ha="center", va="bottom", fontsize=8, fontweight="bold")
 
 
-def _render_channels(dapi, qki, sec, lo, hi, label, suptitle, out_path, px_um, scalebar_um):
+def _render_channels(dapi, qki, sec, lo, hi, label, suptitle, out_path, px_um,
+                     scalebar_um, dapi_lo=None, dapi_hi=None):
     import matplotlib.pyplot as plt
     q01 = _qki01(qki, lo, hi)
     qki_rgb = _lut(q01, sec)
-    dapi01 = _norm(dapi)
+    dapi01 = _dapi01(dapi, dapi_lo, dapi_hi)
     dapi_rgb = _lut(dapi01, "405")
     merge = np.clip(_lut(q01, sec) + DAPI_WEIGHT * _lut(dapi01, "405"), 0, 1)
     panels = [(qki_rgb, f"{label} ({_alexa_label(sec)})"), (dapi_rgb, "DAPI"), (merge, "Merge")]
@@ -205,10 +243,12 @@ def _render_channels(dapi, qki, sec, lo, hi, label, suptitle, out_path, px_um, s
     print(f"  [OK] {out_path}")
 
 
-def _render_merge(dapi, qki, sec, lo, hi, title, out_path, px_um, scalebar_um):
+def _render_merge(dapi, qki, sec, lo, hi, title, out_path, px_um, scalebar_um,
+                  dapi_lo=None, dapi_hi=None):
     import matplotlib.pyplot as plt
     q01 = _qki01(qki, lo, hi)
-    merge = np.clip(_lut(q01, sec) + DAPI_WEIGHT * _lut(_norm(dapi), "405"), 0, 1)
+    merge = np.clip(_lut(q01, sec)
+                    + DAPI_WEIGHT * _lut(_dapi01(dapi, dapi_lo, dapi_hi), "405"), 0, 1)
     fig, ax = plt.subplots(figsize=(5, 5), dpi=150)
     ax.imshow(merge); ax.axis("off")
     ax.set_title(title, fontsize=10, fontweight="bold", color="black", pad=6)
@@ -219,8 +259,13 @@ def _render_merge(dapi, qki, sec, lo, hi, title, out_path, px_um, scalebar_um):
     print(f"  [OK] {out_path}")
 
 
-def _render_composite(rows, sec, lo, hi, label, source_label, out_path, px_um, scalebar_um):
-    """rows = [(row_label, dapi, qki), ...]; cols = signal | DAPI | Merge."""
+def _render_composite(rows, sec, lo, hi, label, source_label, out_path, px_um,
+                      scalebar_um, his=None, dapi_lo=None, dapi_hi=None):
+    """rows = [(row_label, dapi, qki), ...]; cols = signal | DAPI | Merge.
+
+    ``his`` (optional) = a per-row signal-ceiling list matching ``rows`` (used by
+    --per-image-ceiling); when None every row uses the shared scalar ``hi``.
+    """
     import matplotlib.pyplot as plt
     nrow = len(rows)
     col_titles = [f"{label} ({_alexa_label(sec)})", "DAPI", "Merge"]
@@ -228,8 +273,9 @@ def _render_composite(rows, sec, lo, hi, label, source_label, out_path, px_um, s
     if nrow == 1:
         axes = axes[None, :]
     for r, (row_label, dapi, qki) in enumerate(rows):
-        q01 = _qki01(qki, lo, hi)
-        dapi01 = _norm(dapi)
+        row_hi = his[r] if his is not None else hi
+        q01 = _qki01(qki, lo, row_hi)
+        dapi01 = _dapi01(dapi, dapi_lo, dapi_hi)
         imgs = [_lut(q01, sec), _lut(dapi01, "405"),
                 np.clip(_lut(q01, sec) + DAPI_WEIGHT * _lut(dapi01, "405"), 0, 1)]
         for c in range(3):
@@ -319,11 +365,27 @@ def build_pub_images(out_dir, plate, *, single_plane_dir=None, zstack_dir=None,
                      counts=None, floors=None, ceiling_pct=DEFAULT_CEIL_PCT,
                      sources=None, scalebar_um=DEFAULT_SCALEBAR_UM,
                      z_central_frac=DEFAULT_Z_CENTRAL_FRAC, px_um=0.2167,
-                     dapi_key="405", signal_label="signal"):
+                     dapi_key="405", signal_label="signal", ceilings=None,
+                     dapi_floor=None, dapi_ceiling=None, per_image_ceiling=False):
     """Render the full publication-image set. Returns a dict summary.
 
     ``plate`` : {well:int -> dict(genotype, arm, secondary, qki_channel)}.
     ``counts``: {file_basename -> nucleus_count} for densest-FOV picking (opt).
+
+    Display-range control (all optional; defaults reproduce prior behaviour):
+      * ``floors``   : signal FLOOR (vmin) per secondary. Keys ``"647"`` (both
+                       sources) or ``"647:single_plane"`` (that source only).
+      * ``ceilings`` : EXPLICIT signal ceiling (vmax) per secondary/source (same
+                       key syntax). Overrides ``ceiling_pct`` for that pair; when
+                       absent that pair uses the WT-primary percentile as before.
+      * ``dapi_floor`` / ``dapi_ceiling`` : FIXED DAPI vmin/vmax across all
+                       panels. When both are None, per-image DAPI normalization
+                       (legacy). One-sided is allowed (other side = per-image).
+      * ``per_image_ceiling`` : when True, each panel's signal ceiling comes from
+                       THAT image's own ``ceiling_pct`` percentile instead of the
+                       shared WT-primary ceiling. Slightly non-rigorous (breaks
+                       cross-panel comparability); an explicit ``ceilings`` entry
+                       still wins over it. Default False (shared display).
     """
     import matplotlib
     matplotlib.use("Agg")
@@ -331,6 +393,10 @@ def build_pub_images(out_dir, plate, *, single_plane_dir=None, zstack_dir=None,
     _ifi._install_asarray_shim()
     out_dir = Path(out_dir)
     floors = {str(k): float(v) for k, v in (floors or DEFAULT_PUB_FLOORS).items()}
+    ceilings = {str(k): float(v) for k, v in (ceilings or {}).items()}
+    dapi_floor = None if dapi_floor is None else float(dapi_floor)
+    dapi_ceiling = None if dapi_ceiling is None else float(dapi_ceiling)
+    per_image_ceiling = bool(per_image_ceiling)
     counts = counts or {}
     sources = list(sources or ["single_plane", "picked_z"])
 
@@ -342,6 +408,7 @@ def build_pub_images(out_dir, plate, *, single_plane_dir=None, zstack_dir=None,
     written = {"channels": 0, "merge": 0, "composite": 0}
     qc_rows = []
     channel_rule_log = []
+    range_log = []   # applied (vmin,vmax) per source/secondary/channel
 
     for source in sources:
         if source == "single_plane" and not sp_wells:
@@ -373,27 +440,67 @@ def build_pub_images(out_dir, plate, *, single_plane_dir=None, zstack_dir=None,
 
         for sec, grp in groups.items():
             cache = {}
-            # WT-primary first -> ceiling = ceiling_pct of pooled WT-primary signal
+            # WT-primary first -> shared ceiling = ceiling_pct of pooled WT-primary
             wt_pix = []
             for w in grp["WT"]:
                 got = _read(w, sec)
                 if got is not None:
                     cache[w] = got
                     wt_pix.append(got[1].ravel())
-            lo = float(floors.get(str(sec), np.nan))
-            if not np.isfinite(lo):
+
+            # ---- signal FLOOR (vmin): per-source-aware, per-secondary fallback ----
+            lo = _resolve_source_secondary(floors, sec, source)
+            if lo is None:
                 lo = float(DEFAULT_PUB_FLOORS.get(str(sec), 0.0))
-            if wt_pix:
+
+            # ---- signal CEILING (vmax): explicit > per-image > WT-primary pct ----
+            explicit_hi = _resolve_source_secondary(ceilings, sec, source)
+            use_per_image_hi = per_image_ceiling and explicit_hi is None
+            if explicit_hi is not None:
+                hi = explicit_hi
+                hi_src = "explicit"
+            elif wt_pix:
                 pool = np.concatenate(wt_pix)
                 hi = float(np.percentile(pool, ceiling_pct))
                 if hi <= lo:
                     hi = float(np.percentile(pool, 99.9))
                     if hi <= lo:
                         lo, hi = float(np.percentile(pool, 2)), float(np.percentile(pool, 99.5))
+                hi_src = f"WT-primary {ceiling_pct}p"
             else:
                 hi = lo + 1.0
-            print(f"  [display] secondary {sec} ({slab}): shared signal range "
-                  f"lo={lo:.1f} (raised floor) hi={hi:.1f} (WT-primary {ceiling_pct}p)")
+                hi_src = "fallback (no WT-primary pixels)"
+            if use_per_image_hi:
+                hi_src = f"PER-IMAGE {ceiling_pct}p (--per-image-ceiling)"
+
+            def _panel_hi(qki_img, _lo=lo, _hi=hi, _use=use_per_image_hi):
+                """Per-panel signal ceiling: this image's own percentile when
+                --per-image-ceiling is active (and no explicit ceiling was set),
+                else the shared ``hi``."""
+                if not _use:
+                    return _hi
+                r = qki_img.ravel()
+                h = float(np.percentile(r, ceiling_pct))
+                if h <= _lo:
+                    h = float(np.percentile(r, 99.9))
+                    if h <= _lo:
+                        h = _lo + 1.0
+                return h
+
+            dapi_msg = ("per-image" if (dapi_floor is None and dapi_ceiling is None)
+                        else f"[{'per-img' if dapi_floor is None else f'{dapi_floor:.0f}'},"
+                             f"{'per-img' if dapi_ceiling is None else f'{dapi_ceiling:.0f}'}]")
+            hi_msg = "per-image" if use_per_image_hi else f"{hi:.1f}"
+            print(f"  [display] secondary {sec} ({slab}): signal floor={lo:.1f} "
+                  f"ceiling={hi_msg} ({hi_src}) | DAPI {dapi_msg}")
+            range_log.append(dict(
+                source=source, secondary=str(sec),
+                signal_lo=f"{lo:.1f}",
+                signal_hi=("per-image" if use_per_image_hi else f"{hi:.1f}"),
+                signal_hi_source=hi_src,
+                dapi_lo=("per-image" if dapi_floor is None else f"{dapi_floor:.1f}"),
+                dapi_hi=("per-image" if dapi_ceiling is None else f"{dapi_ceiling:.1f}"),
+            ))
 
             # read the remaining wells
             for w in grp["KO"] + grp["seconly"]:
@@ -418,13 +525,16 @@ def build_pub_images(out_dir, plate, *, single_plane_dir=None, zstack_dir=None,
                         tok = f"seconly_{gdisp}_well{w}"
                     supt = f"{ttl} — {_alexa_label(sec)}, {slab}"
                     base = f"pub_{sec}_{tok}_{slab}"
-                    _render_channels(dapi, qki, sec, lo, hi, signal_label, supt,
-                                     sdir / f"{base}_channels.png", px_um, scalebar_um)
-                    _render_merge(dapi, qki, sec, lo, hi, supt,
-                                  sdir / f"{base}_merge.png", px_um, scalebar_um)
+                    phi = _panel_hi(qki)
+                    _render_channels(dapi, qki, sec, lo, phi, signal_label, supt,
+                                     sdir / f"{base}_channels.png", px_um, scalebar_um,
+                                     dapi_lo=dapi_floor, dapi_hi=dapi_ceiling)
+                    _render_merge(dapi, qki, sec, lo, phi, supt,
+                                  sdir / f"{base}_merge.png", px_um, scalebar_um,
+                                  dapi_lo=dapi_floor, dapi_hi=dapi_ceiling)
                     written["channels"] += 1
                     written["merge"] += 1
-                    qc_rows.append(_qc_nuclear_dominance(dapi, qki, lo, hi,
+                    qc_rows.append(_qc_nuclear_dominance(dapi, qki, lo, phi,
                                                          f"{sec}/{tok}/{slab}"))
 
             # composite: first WT primary / first KO primary / first sec-only
@@ -440,13 +550,19 @@ def build_pub_images(out_dir, plate, *, single_plane_dir=None, zstack_dir=None,
                         rowdefs.append((rl, dapi, qki))
                         break
             if len(rowdefs) >= 2:
+                comp_his = ([_panel_hi(qki) for (_, _, qki) in rowdefs]
+                            if use_per_image_hi else None)
                 _render_composite(rowdefs, sec, lo, hi, signal_label, slab,
                                   out_dir / f"composite_{sec}_{slab}.png",
-                                  px_um, scalebar_um)
+                                  px_um, scalebar_um, his=comp_his,
+                                  dapi_lo=dapi_floor, dapi_hi=dapi_ceiling)
                 written["composite"] += 1
 
     _write_provenance(out_dir, floors, ceiling_pct, sources, scalebar_um,
-                      z_central_frac, px_um, signal_label, qc_rows, channel_rule_log)
+                      z_central_frac, px_um, signal_label, qc_rows, channel_rule_log,
+                      ceilings=ceilings, dapi_floor=dapi_floor,
+                      dapi_ceiling=dapi_ceiling, per_image_ceiling=per_image_ceiling,
+                      range_log=range_log)
     print(f"\n[publication_images] wrote {written['channels']} channel panels, "
           f"{written['merge']} merges, {written['composite']} composites -> {out_dir}")
     return dict(out_dir=str(out_dir), **written,
@@ -455,16 +571,30 @@ def build_pub_images(out_dir, plate, *, single_plane_dir=None, zstack_dir=None,
 
 
 def _write_provenance(out_dir, floors, ceiling_pct, sources, scalebar_um,
-                      z_central_frac, px_um, signal_label, qc_rows, channel_rule_log):
+                      z_central_frac, px_um, signal_label, qc_rows, channel_rule_log,
+                      *, ceilings=None, dapi_floor=None, dapi_ceiling=None,
+                      per_image_ceiling=False, range_log=None):
     import matplotlib as _mpl
     out_dir = Path(out_dir)
+    ceilings = ceilings or {}
+    range_log = range_log or []
     with open(out_dir / "versions.txt", "w", encoding="utf-8") as f:
         f.write(f"# publication_images versions ({datetime.datetime.now().isoformat()})\n")
         f.write(f"python: {sys.version.split()[0]}\nnumpy: {np.__version__}\n")
         f.write(f"matplotlib: {_mpl.__version__}\nplatform: {platform.platform()}\n")
         f.write(f"signal_label={signal_label}; DAPI_WEIGHT={DAPI_WEIGHT}; "
                 f"pub_display_floors={floors}\n")
-        f.write(f"ceiling = {ceiling_pct}th pct of WT-primary signal (per secondary, per source)\n")
+        f.write(f"explicit signal ceilings (override the percentile)={ceilings or '{}'}\n")
+        if per_image_ceiling:
+            f.write(f"ceiling = PER-IMAGE {ceiling_pct}th pct (--per-image-ceiling; "
+                    f"NOT cross-panel comparable) unless an explicit ceiling is set\n")
+        else:
+            f.write(f"ceiling = {ceiling_pct}th pct of WT-primary signal "
+                    f"(per secondary, per source) unless an explicit ceiling is set\n")
+        dfloor = "per-image" if dapi_floor is None else dapi_floor
+        dceil = "per-image" if dapi_ceiling is None else dapi_ceiling
+        f.write(f"DAPI display range: floor={dfloor}; ceiling={dceil} "
+                f"(per-image => min-max normalization)\n")
         f.write(f"sources={sources}; scalebar_um={scalebar_um}; pixel_size_um={px_um}\n")
         f.write(f"picked_z = single best-focus plane (var(laplace)*mean on DAPI), "
                 f"central {z_central_frac} of planes, NO MIP\n")
@@ -477,6 +607,15 @@ def _write_provenance(out_dir, floors, ceiling_pct, sources, scalebar_um,
             f.write(f"{src}\twell{w}\t{sec}\t{ch}\n")
     if qc_rows:
         with open(out_dir / "qc_nuclear_dominance.txt", "w", encoding="utf-8") as f:
+            # --- applied display (vmin,vmax) per source / secondary / channel ---
+            f.write("# APPLIED DISPLAY RANGES (vmin,vmax) per source / secondary / channel\n")
+            f.write("source\tsecondary\tsignal_lo\tsignal_hi\tsignal_hi_source"
+                    "\tdapi_lo\tdapi_hi\n")
+            for rl in range_log:
+                f.write(f"{rl['source']}\t{rl['secondary']}\t{rl['signal_lo']}\t"
+                        f"{rl['signal_hi']}\t{rl['signal_hi_source']}\t"
+                        f"{rl['dapi_lo']}\t{rl['dapi_hi']}\n")
+            f.write("#\n")
             f.write("# Nuclear vs cyto/background signal within the shared display window.\n")
             f.write("# disp = (median - floor)/(ceil - floor), clipped [0,1]; "
                     "cyto disp ~0 => cytoplasmic signal reads very low (goal met).\n")
@@ -502,7 +641,11 @@ def write_run_context(output_dir, cfg, input_dir, px_um):
         dapi_channel_key=ic.dapi_channel_key,
         pixel_size_um=float(px_um),
         pub_display_floors={str(k): float(v) for k, v in dict(ic.pub_display_floors).items()},
+        pub_display_ceilings={str(k): float(v) for k, v in dict(ic.pub_display_ceilings).items()},
         pub_ceiling_pct=float(ic.pub_ceiling_pct),
+        pub_dapi_floor=(None if ic.pub_dapi_floor is None else float(ic.pub_dapi_floor)),
+        pub_dapi_ceiling=(None if ic.pub_dapi_ceiling is None else float(ic.pub_dapi_ceiling)),
+        pub_per_image_ceiling=bool(ic.pub_per_image_ceiling),
         pub_sources=list(ic.pub_sources),
         pub_z_central_frac=float(ic.pub_z_central_frac),
         scalebar_um=float(ic.scalebar_um),
@@ -528,10 +671,14 @@ def make_pub_images_live(output_dir, plate, per_fov, input_dir, cfg, px_um):
         Path(output_dir) / "publication_images", plate,
         single_plane_dir=input_dir, zstack_dir=(zdir or None), counts=counts,
         floors={str(k): float(v) for k, v in dict(ic.pub_display_floors).items()},
+        ceilings={str(k): float(v) for k, v in dict(ic.pub_display_ceilings).items()},
         ceiling_pct=float(ic.pub_ceiling_pct), sources=list(ic.pub_sources),
         scalebar_um=float(ic.scalebar_um), z_central_frac=float(ic.pub_z_central_frac),
         px_um=float(px_um), dapi_key=ic.dapi_channel_key,
         signal_label=ic.pub_signal_label,
+        dapi_floor=(None if ic.pub_dapi_floor is None else float(ic.pub_dapi_floor)),
+        dapi_ceiling=(None if ic.pub_dapi_ceiling is None else float(ic.pub_dapi_ceiling)),
+        per_image_ceiling=bool(ic.pub_per_image_ceiling),
     )
 
 
@@ -579,7 +726,8 @@ def _px_um_from_run(run_dir: Path, fallback=0.2167) -> float:
 def regenerate_pub_images(run_dir, *, staging_dir=None, zstack_dir=None,
                           sources=None, floors=None, ceiling_pct=None,
                           scalebar_um=None, z_central_frac=None, label=None,
-                          out_subdir="publication_images"):
+                          ceilings=None, dapi_floor=None, dapi_ceiling=None,
+                          per_image_ceiling=None, out_subdir="publication_images"):
     """Regenerate the publication images from a COMPLETED if_intensity run,
     CPU-only (no GPU, no re-segmentation). The plate map is rebuilt from the
     run's own per_well.csv; FOV counts from per_fov.csv; the source dirs, floors,
@@ -607,7 +755,14 @@ def regenerate_pub_images(run_dir, *, staging_dir=None, zstack_dir=None,
         single_plane_dir = None
 
     floors = floors or ctx.get("pub_display_floors") or DEFAULT_PUB_FLOORS
+    ceilings = ceilings or ctx.get("pub_display_ceilings") or {}
     ceiling_pct = ceiling_pct if ceiling_pct is not None else ctx.get("pub_ceiling_pct", DEFAULT_CEIL_PCT)
+    if dapi_floor is None:
+        dapi_floor = ctx.get("pub_dapi_floor")
+    if dapi_ceiling is None:
+        dapi_ceiling = ctx.get("pub_dapi_ceiling")
+    if per_image_ceiling is None:
+        per_image_ceiling = bool(ctx.get("pub_per_image_ceiling", False))
     sources = sources or ctx.get("pub_sources") or ["single_plane", "picked_z"]
     scalebar_um = scalebar_um if scalebar_um is not None else ctx.get("scalebar_um", DEFAULT_SCALEBAR_UM)
     z_central_frac = z_central_frac if z_central_frac is not None else ctx.get("pub_z_central_frac", DEFAULT_Z_CENTRAL_FRAC)
@@ -624,10 +779,14 @@ def regenerate_pub_images(run_dir, *, staging_dir=None, zstack_dir=None,
     print(f"[if-pub-images] CPU-only regenerate for {run_dir}")
     print(f"  plate wells={sorted(plate)}  single_plane_dir={single_plane_dir}")
     print(f"  zstack_dir={zstack_dir}  sources={sources}  floors={floors}  px_um={px_um}")
+    print(f"  ceilings={ceilings or '{}'}  dapi_floor={dapi_floor}  "
+          f"dapi_ceiling={dapi_ceiling}  per_image_ceiling={bool(per_image_ceiling)}")
     return build_pub_images(
         run_dir / out_subdir, plate, single_plane_dir=single_plane_dir,
         zstack_dir=zstack_dir, counts=counts, floors=floors,
-        ceiling_pct=float(ceiling_pct), sources=sources,
+        ceilings=ceilings, ceiling_pct=float(ceiling_pct), sources=sources,
         scalebar_um=float(scalebar_um), z_central_frac=float(z_central_frac),
         px_um=float(px_um), dapi_key=dapi_key, signal_label=label,
+        dapi_floor=dapi_floor, dapi_ceiling=dapi_ceiling,
+        per_image_ceiling=bool(per_image_ceiling),
     )

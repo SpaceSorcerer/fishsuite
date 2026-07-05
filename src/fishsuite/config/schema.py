@@ -989,6 +989,29 @@ class IfIntensityCfg(BaseModel):
         default_factory=lambda: {"647": 5000.0, "568": 3500.0}
     )
     pub_ceiling_pct: float = 99.5      # vmax = this pct of the WT-primary signal
+    # 2026-07-05 Brian: EXPLICIT signal ceiling (vmax) override, per secondary
+    # and/or per (secondary, source). Keys may be bare ``"647"`` (both sources)
+    # or source-scoped ``"647:single_plane"`` (that source only; the more-
+    # specific key wins). When a secondary/source has an entry here it OVERRIDES
+    # ``pub_ceiling_pct``; secondaries/sources with no entry keep the WT-primary
+    # percentile behaviour. ``pub_display_floors`` accepts the SAME per-source
+    # ``"SEC:source"`` key syntax. Default empty = percentile ceiling for all
+    # (byte-identical legacy).
+    pub_display_ceilings: Dict[str, float] = Field(default_factory=dict)
+    # 2026-07-05 Brian: FIXED DAPI display range (vmin/vmax) applied to the DAPI
+    # channel across ALL panels (so DAPI is not over-exposed; Brian's target is a
+    # fixed ceiling ~8000). When BOTH are None, per-image DAPI min-max
+    # normalization as before (legacy). One-sided is allowed — the unset side
+    # falls back to the per-image min / max.
+    pub_dapi_floor: Optional[float] = None
+    pub_dapi_ceiling: Optional[float] = None
+    # 2026-07-05 Brian: compute each panel's signal ceiling from THAT image's own
+    # ``pub_ceiling_pct`` percentile instead of the shared WT-primary ceiling.
+    # Slightly non-rigorous (breaks cross-panel brightness comparability) — a
+    # fallback when a shared ceiling clips or washes out individual panels. An
+    # explicit ``pub_display_ceilings`` entry still wins over it. Default False
+    # (shared display is the default and the scientifically preferred mode).
+    pub_per_image_ceiling: bool = False
     # Separate z-stack folder for the picked_z source (subfolders per well). When
     # empty, falls back to micrograph_zstack_dir.
     pub_zstack_dir: str = ""
