@@ -844,6 +844,18 @@ def run_if_batch(cfg, config_path, input_dir, output_dir, dirs,
                                    rep_images, px_um, cfg)
     except Exception as exc:
         print(f"  [WARN] micrographs failed (run continues): {exc}")
+    # Native publication images (channel panels + merges + composites, both
+    # sources, all wells) — CPU render; regenerable without the GPU. Always write
+    # the run-context sidecar so `fishsuite if-pub-images` can regenerate later.
+    try:
+        from . import if_pub_images
+        if_pub_images.write_run_context(output_dir, cfg, input_dir, px_um)
+        if cfg.if_intensity.pub_images:
+            print("\n=== Publication images (native, both sources, all wells) ===")
+            if_pub_images.make_pub_images_live(output_dir, plate, per_fov,
+                                               input_dir, cfg, px_um)
+    except Exception as exc:
+        print(f"  [WARN] publication images failed (run continues): {exc}")
     if cfg.if_intensity.make_excel:
         try:
             xlsx_path = output_dir / f"{_sanitize(cfg.experiment.name)}_IF_intensity.xlsx"

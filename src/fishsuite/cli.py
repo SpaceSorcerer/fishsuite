@@ -164,6 +164,14 @@ def _pixelpattern_run(run_dir, staging_dir=None, input_dir=None, **kwargs):
                             input_dir=input_dir, **kwargs)
 
 
+def _if_pub_images_run(run_dir, **kwargs):
+    """Indirection to
+    :func:`fishsuite.core.modes.if_pub_images.regenerate_pub_images`
+    (lazy import; monkeypatch target for the CLI tests)."""
+    from .core.modes.if_pub_images import regenerate_pub_images
+    return regenerate_pub_images(run_dir, **kwargs)
+
+
 def _friendly_postrun_error(exc: Exception, run: Path) -> str:
     """Translate an expected/user-fixable backfill/walkthrough exception into a
     plain-English, actionable message (no raw traceback). Falls back to the
@@ -186,6 +194,13 @@ def _friendly_postrun_error(exc: Exception, run: Path) -> str:
                 f"in {run}.\n"
                 "  Point --run at the OUTPUT folder a completed run produced "
                 "(it contains run_config.json, per_image_summary.csv, masks/, figures/)."
+            )
+        if "per_well" in low:
+            return (
+                f"This does not look like a finished if_intensity run: {msg}\n"
+                f"  Looking inside {run}. `if-pub-images` rebuilds the plate map from "
+                "per_well.csv (written by an if_intensity run). Point --run at the "
+                "OUTPUT folder such a run produced."
             )
         if "nuclei_metrics" in low:
             return (
@@ -502,6 +517,98 @@ def pixelpattern(run_dir, staging, input_dir, secondary_match, out_subdir, seed,
     sq = res.get("stain_qc") if isinstance(res, dict) else None
     if sq:
         click.echo(f"[pixelpattern] stain QC (partner perinuclear index): {sq}")
+
+
+_IFPUB_HELP = """\
+Regenerate the IF publication images from a COMPLETED if_intensity run (CPU-only).
+
+\b
+CPU-only - does NOT use the GPU and NEVER re-segments. It rebuilds the plate map
+from the run's own per_well.csv, picks the representative FOV per well from
+per_fov.csv, re-reads only DAPI + each well's routed signal channel from the raw
+VSIs, and renders (per representative well per secondary, for both sources):
+  - a signal|DAPI|Merge channel panel (each panel its own scalebar)
+  - a standalone Merge micrograph
+  - one WT/KO/secondary-only composite per secondary/source
+
+\b
+Two SOURCES: single_plane (representative FOV of the quantification set) and
+picked_z (the SINGLE best-focus z-plane - var(laplace)*mean on DAPI, central
+band, NO max-projection). Uses the RAISED per-secondary display floors so WT
+cytoplasm reads near-zero; ceiling = the WT-primary signal percentile. The same
+(vmin,vmax) is applied to WT/KO/secondary-only (never per-image auto-contrast).
+
+\b
+Source dirs + floors + label default from if_run_context.json (written by the
+run); pass --staging / --zstack / --floor / --label to override. Output goes to
+<run>/publication_images/.
+
+\b
+CRITICAL CHANNEL RULE: 647 wells render only the 640-channel signal + DAPI;
+568/565 wells only the 561-channel signal + DAPI. Logged per read to
+publication_images/channel_rule_log.txt.
+
+\b
+Examples:
+  fishsuite if-pub-images --run "F:\\Image Analysis Work\\MIAT-QKI-Coloc\\my_run"
+  fishsuite if-pub-images --run "F:\\...\\my_run" --staging "F:\\...\\raw-set2" \\
+      --zstack "F:\\...\\z-stacks" --source single_plane --source picked_z \\
+      --floor 647=5000 --floor 568=3500 --label QKI
+"""
+
+
+@cli.command("if-pub-images", help=_IFPUB_HELP,
+             short_help="CPU regenerate IF publication images on a finished run.")
+@click.option("--run", "run_dir", required=True,
+              type=click.Path(exists=True, file_okay=False),
+              help="Completed if_intensity run output dir (contains per_well.csv).")
+@click.option("--staging", "staging", default=None,
+              type=click.Path(exists=True, file_okay=False),
+              help="Single-plane raw dir (subfolders per well). Auto-detected "
+                   "from if_run_context.json if omitted.")
+@click.option("--zstack", "zstack", default=None,
+              type=click.Path(exists=True, file_okay=False),
+              help="Z-stack raw dir for the picked_z source (subfolders per well). "
+                   "Auto-detected from if_run_context.json if omitted.")
+@click.option("--source", "sources", multiple=True,
+              type=click.Choice(["single_plane", "picked_z"]),
+              help="Source(s) to render (repeatable). Default: both / as recorded.")
+@click.option("--floor", "floors", multiple=True,
+              help="Per-secondary display floor as SEC=VALUE (e.g. 647=5000). "
+                   "Repeatable. Default: 647=5000, 568=3500 / as recorded.")
+@click.option("--ceiling-pct", default=None, type=float,
+              help="Ceiling percentile of the WT-primary signal (default 99.5).")
+@click.option("--scalebar", "scalebar_um", default=None, type=float,
+              help="Scalebar length in microns (default 20).")
+@click.option("--label", default=None, help="Signal label in panels (e.g. QKI).")
+def if_pub_images_cmd(run_dir, staging, zstack, sources, floors, ceiling_pct,
+                      scalebar_um, label):
+    run = Path(run_dir)
+    click.echo(f"[if-pub-images] CPU-only - reusing per_well.csv + re-reading raw "
+               f"(no GPU / no re-segmentation) in {run}")
+    floor_map = None
+    if floors:
+        floor_map = {}
+        for f in floors:
+            if "=" not in str(f):
+                click.echo(f"Bad --floor '{f}' (expected SEC=VALUE, e.g. 647=5000).",
+                           err=True)
+                sys.exit(2)
+            k, v = str(f).split("=", 1)
+            floor_map[k.strip()] = float(v)
+    try:
+        res = _if_pub_images_run(
+            run, staging_dir=staging, zstack_dir=zstack,
+            sources=(list(sources) or None), floors=floor_map,
+            ceiling_pct=ceiling_pct, scalebar_um=scalebar_um, label=label,
+        )
+    except (FileNotFoundError, ValueError) as exc:
+        click.echo(_friendly_postrun_error(exc, run), err=True)
+        sys.exit(2)
+    if isinstance(res, dict):
+        click.echo(f"[if-pub-images] {res.get('channels', 0)} channel panels, "
+                   f"{res.get('merge', 0)} merges, {res.get('composite', 0)} composites, "
+                   f"sources={res.get('sources', [])} -> {res.get('out_dir', run)}")
 
 
 _POSTRUN_HELP = """\

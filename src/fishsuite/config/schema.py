@@ -910,6 +910,30 @@ class IfIntensityCfg(BaseModel):
     micrograph_zstack_dir: str = ""
     micrograph_z_window_frac: float = 0.5   # central in-focus fraction to keep
 
+    # ---- publication images (native port of the panQKI pub_images.py) -----
+    # Renders, per representative well per secondary, from TWO sources:
+    #   single_plane (representative FOV of the quantification set) and picked_z
+    #   (the SINGLE best-focus z-plane -- var(laplace)*mean on DAPI, central band,
+    #   NO MIP). Per well: a signal|DAPI|Merge channel panel + a standalone merge,
+    #   plus one WT/KO/secondary-only composite per secondary/source. Uses the
+    #   RAISED per-secondary display floors so WT cytoplasm reads near-zero;
+    #   ceiling = pub_ceiling_pct of the WT-primary signal. Regenerable from a
+    #   finished run WITHOUT the GPU via `fishsuite if-pub-images`.
+    pub_images: bool = True            # render publication images (default ON)
+    pub_sources: List[str] = Field(default_factory=lambda: ["single_plane", "picked_z"])
+    # RAISED per-secondary signal display floor (vmin); drives WT cytoplasm to
+    # near-zero. Keyed by secondary label ("647"/"568"). Ported values.
+    pub_display_floors: Dict[str, float] = Field(
+        default_factory=lambda: {"647": 5000.0, "568": 3500.0}
+    )
+    pub_ceiling_pct: float = 99.5      # vmax = this pct of the WT-primary signal
+    # Separate z-stack folder for the picked_z source (subfolders per well). When
+    # empty, falls back to micrograph_zstack_dir.
+    pub_zstack_dir: str = ""
+    pub_z_central_frac: float = 0.8    # central band the best-focus plane is picked from
+    pub_dapi_weight: float = 0.6       # DAPI dimming in the merge (locked)
+    pub_signal_label: str = "signal"   # panel/label text (e.g. "QKI")
+
     # ---- misc -------------------------------------------------------------
     fig_seed: int = 42
     make_excel: bool = True

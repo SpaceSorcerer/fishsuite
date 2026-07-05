@@ -77,6 +77,21 @@ if_intensity:
   micrograph_source: fov
   micrograph_z_window_frac: 0.5   # central in-focus fraction kept if projecting a stack
 
+  # --- native publication images (panQKI pub_images.py, folded in) ---------
+  # Channel panels (signal|DAPI|Merge) + standalone merges + WT/KO/sec-only
+  # composites, for ALL wells, from TWO sources: single_plane (a representative
+  # FOV of the input Set-2) and picked_z (the SINGLE best-focus z-plane of the
+  # z-stack folder below — NO max-projection). RAISED floors drive WT cytoplasm
+  # to near-zero. Regenerable without the GPU: `fishsuite if-pub-images --run <run>`.
+  pub_images: true
+  pub_sources: [single_plane, picked_z]
+  pub_display_floors: {"647": 5000.0, "568": 3500.0}   # vmin per secondary (WT cyto ~0)
+  pub_ceiling_pct: 99.5           # vmax = this pct of the pooled WT-primary signal
+  pub_zstack_dir: "F:/Image Analysis Work/MIAT-QKI-Coloc/WT-QKI-KO_2026_07_01/raw/z-stacks-WT_KO_panQKIabTest_2026_07_01"
+  pub_z_central_frac: 0.8         # central band the single best-focus plane is picked from
+  pub_dapi_weight: 0.6            # DAPI dimming in the merge (locked)
+  pub_signal_label: "QKI"         # panel/label text
+
   # --- misc ----------------------------------------------------------------
   fig_seed: 42                # figure RNG (jitter); segmentation/quant use seed:0 below
   make_excel: true            # explorable .xlsx deliverable (How_to_read first)
