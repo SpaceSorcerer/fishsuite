@@ -590,7 +590,15 @@ class FociCfg(BaseModel):
     # nucleus's MIAT spots), ``coloc_moc`` (Manders Overlap Coefficient R = the
     # threshold-free raw-intensity cosine overlap), ``coloc_icq`` (Li's ICQ), and
     # ``qki_at_miat_foci_enrichment`` (mean QKI over the UNION of all this
-    # nucleus's MIAT-footprint pixels / nuclear-mean QKI). All threshold-free and
+    # nucleus's MIAT-footprint pixels / nuclear-mean QKI). ALSO emits three
+    # EXTENSIVE (mass-based) sponge-CAPACITY columns over this nucleus's NUCLEAR
+    # MIAT spots: ``qki_held_by_miat`` (= sum of qki_at_miat_footprint *
+    # miat_footprint_area_px = total QKI intensity inside MIAT-spot pixels),
+    # ``miat_mass_nuclear`` (= sum of spot_peak_intensity * spot_area_px =
+    # integrated MIAT signal), and ``capacity_qki_at_miat`` (= qki_held_by_miat /
+    # the nuclear QKI total ``nuclear_total_intensity_rna2`` [->
+    # nuclear_total_intensity_protein] = fraction of the nucleus's QKI captured by
+    # MIAT). All threshold-free and
     # emitted ALONGSIDE (never replacing) the MAD-thresholded Manders M1/M2 so a
     # gated-vs-ungated comparison is possible. When a partner (QKI) floor is set
     # via ``assoc_qki_floor`` a SECONDARY floor-gated variant

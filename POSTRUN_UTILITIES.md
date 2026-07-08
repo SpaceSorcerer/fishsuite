@@ -422,6 +422,15 @@ crop, or the seed falls below threshold) the spot falls back to a per-spot
 | `coloc_moc`                         | Manders' Overlap Coefficient **R** = Σ(MIAT·QKI)/√(ΣMIAT²·ΣQKI²) on nuclear pixels — **threshold-free** (aliases the existing `coloc_cosine_overlap_rna1_rna2`). |
 | `coloc_icq`                         | Li's ICQ on nuclear pixels — **threshold-free** (aliases `coloc_li_icq_rna1_rna2`). |
 | `qki_at_miat_foci_enrichment`       | Mean QKI over the **union** of all this nucleus's MIAT-footprint pixels ÷ nuclear-mean QKI. |
+| `qki_held_by_miat`                  | **CAPACITY (extensive).** Σ over the nucleus's **nuclear** MIAT spots of `qki_at_miat_footprint × miat_footprint_area_px` — the **total (integrated) QKI intensity inside MIAT-spot footprint pixels** (mean × area). |
+| `miat_mass_nuclear`                 | **CAPACITY (extensive).** Σ over the same spots of `spot_peak_intensity × spot_area_px` — the **integrated MIAT signal** (peak intensity × nominal spot area, `π(FWHM/2)²`). |
+| `capacity_qki_at_miat`              | **CAPACITY (the sponge test).** `qki_held_by_miat ÷` the **total nuclear QKI intensity** (`nuclear_total_intensity_rna2` → `nuclear_total_intensity_protein`) — the **fraction of the nucleus's QKI captured by MIAT footprints**. NaN when the denominator ≤ 0. |
+
+The three **CAPACITY** columns are the **extensive / mass-based sponge test** — they
+ask *how much* QKI this nucleus's MIAT actually holds, and what fraction of the
+nuclear QKI pool that is, over the nucleus's **nuclear** MIAT spots (so numerator and
+denominator share the same compartment). They complement the *intensive* per-spot
+`qki_footprint_enrichment` / `qki_assoc_ratio_continuous` (fold-enrichment, not amount).
 
 These sit **alongside** (never replace) the existing MAD-thresholded Manders
 `manders_rna1_in_rna2` / `manders_rna2_in_rna1`, so a **gated-vs-ungated**
@@ -430,8 +439,9 @@ null remains the compartment-controlled backbone.
 
 **Per image** (`per_image_summary.csv`): nucleus-mean rollups
 `mean_qki_assoc_ratio_continuous`, `mean_coloc_moc`, `mean_coloc_icq`,
-`mean_qki_at_miat_foci_enrichment` (+ `mean_qki_assoc_ratio_gated_<floor>` when a
-floor is set).
+`mean_qki_at_miat_foci_enrichment`, `mean_qki_held_by_miat`,
+`mean_miat_mass_nuclear`, `mean_capacity_qki_at_miat` (+
+`mean_qki_assoc_ratio_gated_<floor>` when a floor is set).
 
 ### Enabling it
 
