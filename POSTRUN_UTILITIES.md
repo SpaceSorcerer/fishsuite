@@ -366,3 +366,82 @@ so the sec-only spot rate is quantified and the floor stays honest.
 Because the floor is an absolute intensity gate (not a relative multiplier), it
 rejects textured background of any shape while preserving genuinely bright foci —
 which the multiplier cannot do on its own.
+
+---
+
+## MIAT × QKI association metrics (continuous, floor-robust; 2026-07-07)
+
+These are **new per-run analysis columns** (not a post-run utility): they are
+written *during* the pipeline run, in `rna_protein` / `rna_rna` mode, when the
+config flag `foci.compute_footprint_enrichment: true` is set. Default **OFF** →
+byte-identical to older runs. They implement the approved spec
+`_SPEC_association_analysis_2026-07-06.md`, replacing the old **binary**
+"QKI-associated MIAT spots per nucleus" count (which conflated MIAT *abundance*
+with per-molecule *association propensity*) with **continuous, at-the-punctum,
+floor-robust** measures. No CLIP terminology — this is *spatial association*, the
+microscopy analog of a pull-down-normalized-to-input.
+
+### The footprint definition (the crux)
+
+For each MIAT (rna1) spot, the QKI (rna2/protein) intensity is sampled over the
+spot's **exact half-max (FWHM) footprint**, so it **scales with the spot's real
+size** (a 0.3 µm punctum covers fewer pixels than a 1 µm focus) — **not** a fixed
+disk:
+
+1. A small per-spot window is taken around the spot centroid, sized from the
+   spot's **measured** FWHM (`spot_diameter_um`) so a large focus is not clipped.
+2. The **local peak** is the brightest MIAT pixel within ±1 px of the centroid;
+   the **local background** is the 10th-percentile of the window.
+3. The **half-max threshold** is `background + 0.5 × (peak − background)` (a true
+   FWHM cut on the background-subtracted profile).
+4. The footprint is the **connected component** (8-connectivity) of MIAT pixels
+   ≥ that threshold **containing the seed** — so a neighbouring spot's separate
+   blob is excluded.
+5. QKI is averaged over **exactly those footprint pixels** (RAW, never floored).
+
+If the half-max footprint is impractical (edge-clipped window, flat/no-contrast
+crop, or the seed falls below threshold) the spot falls back to a per-spot
+**fitted-radius disk** (radius = FWHM/2) — still size-scaling.
+
+### New columns
+
+**Per spot** (`spot_metrics.csv`, MIAT/`rna1` rows; `rna2` rows carry NaN):
+
+| Column | Meaning |
+|---|---|
+| `qki_at_miat_footprint`   | RAW mean QKI over the spot's exact footprint pixels |
+| `miat_footprint_area_px`  | Footprint size in pixels (scales with spot size) |
+| `qki_footprint_enrichment`| `qki_at_miat_footprint ÷` the spot's-nucleus mean QKI — **floor-robust, PRIMARY per-spot metric** |
+
+**Per nucleus** (`nuclei_metrics.csv`):
+
+| Column | Meaning |
+|---|---|
+| `qki_assoc_ratio_continuous`        | Mean of `qki_footprint_enrichment` over the nucleus's MIAT spots (avg QKI fold-enrichment at MIAT; "input" = all MIAT spots → pull-down-over-input in spirit). **PRIMARY.** |
+| `qki_assoc_ratio_gated_<floor>`     | Same, but MIAT spots whose footprint QKI < `foci.assoc_qki_floor` contribute 0. **SECONDARY** — reintroduces floor-sensitivity, shown for contrast. Emitted only when a floor is set (`<floor>` = the floor value in the name). |
+| `coloc_moc`                         | Manders' Overlap Coefficient **R** = Σ(MIAT·QKI)/√(ΣMIAT²·ΣQKI²) on nuclear pixels — **threshold-free** (aliases the existing `coloc_cosine_overlap_rna1_rna2`). |
+| `coloc_icq`                         | Li's ICQ on nuclear pixels — **threshold-free** (aliases `coloc_li_icq_rna1_rna2`). |
+| `qki_at_miat_foci_enrichment`       | Mean QKI over the **union** of all this nucleus's MIAT-footprint pixels ÷ nuclear-mean QKI. |
+
+These sit **alongside** (never replace) the existing MAD-thresholded Manders
+`manders_rna1_in_rna2` / `manders_rna2_in_rna1`, so a **gated-vs-ungated**
+comparison is possible (the point of the spec). The rotation "proper background"
+null remains the compartment-controlled backbone.
+
+**Per image** (`per_image_summary.csv`): nucleus-mean rollups
+`mean_qki_assoc_ratio_continuous`, `mean_coloc_moc`, `mean_coloc_icq`,
+`mean_qki_at_miat_foci_enrichment` (+ `mean_qki_assoc_ratio_gated_<floor>` when a
+floor is set).
+
+### Enabling it
+
+```yaml
+foci:
+  compute_partner_intensity: true      # (already on in the MIAT/QKI presets)
+  compute_footprint_enrichment: true   # turn ON the association metrics
+  assoc_qki_floor: null                # optional QKI floor for the SECONDARY gated ratio (null = off)
+```
+
+Runs the per-spot footprint loop **in-process** (like `compute_partner_intensity`)
+— use `-p 1`. Single-plane only for QKI quantification (z-stacks have confirmed
+16-bit QKI saturation).

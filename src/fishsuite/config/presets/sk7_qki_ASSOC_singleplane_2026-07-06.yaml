@@ -1,0 +1,268 @@
+# ============================================================================
+# 7SK (561 FISH) x QKI (640 IF) ASSOCIATION RE-ANALYSIS — H9 hESC — MIAT-ASO KD vs NT
+# MAIN single-plane set ONLY  |  HYBRID QKI readout  |  rna_protein
+# Date: 2026-07-06  |  fishsuite-config subagent (Sonnet 5 HIGH) for MASTER CONTROL
+# CLONE of sk7_qki_MAIN_singleplane_HYBRID_2026-07-04.yaml. Brian: turn ON the new
+# footprint-association metrics (Phase-1, schema 2026-07-07) + new publication
+# floors (cytoQKI_suppressed set). DO-NOT-RUN artifact: config only, no GPU used
+# to build this file.
+# ============================================================================
+# PURPOSE
+#   SIBLING of miat_qki_ASSOC_singleplane_2026-07-06.yaml. Colocalization of
+#   7SK (RNA-FISH, 561) with QKI (IF, 640) in undifferentiated H9 hESC, MIAT-ASO
+#   KD vs NT. 7SK is the OFF-TARGET / high-copy snRNA control pairing (wells 9 NT,
+#   10 KD). QKI-640 is the SAME shared IF partner as the MIAT preset. This is a
+#   SEPARATE analysis (different RNA target on the 561 channel, different spot-
+#   tuning) — do NOT merge with the MIAT preset. MAIN single-plane set ONLY.
+#
+#   Human / Homo sapiens (H9 hESC). No GPU/no pipeline was run to build this file.
+#
+# ── WHAT CHANGED vs the 2026-07-04 HYBRID preset (ONLY these 3 things) ───────
+#   1. foci.compute_footprint_enrichment: true  — turns ON the new continuous,
+#      floor-robust at-the-punctum footprint-association metrics (Phase-1 schema
+#      field added 2026-07-07; new columns appear in nuclei_metrics.csv /
+#      per_image_summary.csv, default OFF elsewhere so this is additive-only).
+#   2. foci.assoc_qki_floor: 4000.0  — well12-sec-only-calibrated genuine-QKI
+#      floor for the GATED association-ratio variant of the footprint metric
+#      (the continuous variant above is floor-free / unaffected by this value).
+#   3. output manual-floor fields — switched to the "cytoQKI_suppressed" display
+#      set that kills the QKI junk-dot/speckle background seen at the old floor:
+#        7SK-561 (manual_rna_min/_max):         1000-5000  -> 750-3500
+#        QKI-640 (manual_antibody_min/_max):    1750-17500 -> 4000-20000
+#        QKI-640 (manual_rna2_min/_max mirror): 1750-17500 -> 4000-20000
+#      DAPI floors are UNCHANGED (600-11000). apply_pub_contrast_floor_to_analysis
+#      stays true; apply_pub_contrast_floor_to_spots stays false (floor is a
+#      display/analysis-intensity change only, not a detection-gate change).
+#   EVERYTHING ELSE (channels, single-plane z-handling, LUTs, nuclei/cellpose,
+#   pixel_coloc, spot_coloc, the existing null-enrichment/rotation-null foci
+#   block, the 7SK NT_w9/KD_w10 + shared sec-only well7/well12 subset rosters,
+#   cytoplasm, nucleolus, parallel, -p 1) is IDENTICAL to the 2026-07-04 HYBRID
+#   preset — verbatim clone otherwise.
+#
+# ── HYBRID QKI READOUT + specificity guard (same as MIAT preset) ─────────────
+#   (1) DIFFUSE QKI-intensity-at-7SK-spot nulls (position + rotation, nucleolus-
+#       excluded) = headline;  (2) LOOSE QKI spot-detect (detect_antibody_spots:
+#       true, antibody tm=1.0) = complementary spot-pairing hedge;
+#   detect_in_sec_only:true reports the non-specific QKI/RNA spot rate in the
+#   sec-only wells 7,12 (SHARED with the MIAT preset — same QKI background).
+#
+# ── 7SK IS DENSE (reality-check §C) — RNA spot-tuning DIFFERS from MIAT ───────
+#   7SK is a very high-copy snRNA: reality-check shows a near-confluent speckled
+#   nuclear fill (much denser than MIAT), where sparse single-molecule spot-
+#   calling may SATURATE/MERGE spots. The MIAT-tuned rna threshold_multiplier=1.0
+#   below is a STARTING point that very likely needs to be STRICTER for 7SK (or an
+#   intensity-based readout used instead of a discrete spot count). *** TUNE the
+#   rna threshold_multiplier UP for 7SK and eyeball the QC overlays. ***
+#   ARTIFACT FLAG: NT well9 (e.g. _04) contains a large fully-saturated (65535)
+#   RNA-561 blob + fiber/debris streaks (reality-check §B/§C). It will blow out any
+#   percentile display floor / spot-intensity threshold computed from that FOV —
+#   mask/exclude before tuning floors; do not tune the RNA ceiling off well9.
+#
+# ── CHANNELS / SINGLE-PLANE / DISCOVERY / STATS / FLOORS ─────────────────────
+#   Same as the MIAT preset. ch0/640=QKI(antibody), ch1/561=7SK(rna), ch2/405=DAPI
+#   (indices explicit; reversed vs ascending wavelength). Every MAIN file Z=1 ->
+#   mode:autofocus uses the sole plane as acquired. discover_inputs is a 2-level
+#   walk (verification A, io.py L952-958): -i="F:\Raw Images\Confocal Imaging\
+#   MIAT-ASO-KD" pulls the MAIN well .vsi and auto-excludes the deeper z-stack
+#   folders; input_file_subset (bare-basename) pins the 7SK+sec-only .vsi and is
+#   LOAD-BEARING to keep MIAT wells out of this run. Well=biological replicate
+#   (NT_w9 / KD_w10); sec-only 7,12 -> "Sec-Only". Manual floors (Sam's method);
+#   QKI + DAPI floors KEPT IDENTICAL to the MIAT ASSOC preset for cross-preset
+#   comparability of the shared QKI partner.
+#   RUN WITH:  -i "F:\Raw Images\Confocal Imaging\MIAT-ASO-KD"  -p 1   (fishproc_dml)
+# ============================================================================
+
+experiment:
+  name: "SK7_QKI_ASSOC_singleplane_2026-07-06"
+  description: "7SK(561 FISH) x QKI(640 IF) rna_protein coloc/association re-analysis, H9 hESC, MIAT-ASO KD vs NT (7SK = off-target high-copy-snRNA control pairing; wells 9 NT / 10 KD). Sibling of the MIAT ASSOC preset; QKI-640 is the shared IF partner. MAIN single-plane set only (z-stacks separate). Clone of the 2026-07-04 HYBRID preset with foci.compute_footprint_enrichment:true + foci.assoc_qki_floor:4000.0 (new footprint-association metrics, Phase-1) and cytoQKI_suppressed publication floors (7SK 750-3500, QKI 4000-20000). HYBRID QKI: diffuse QKI-intensity-at-7SK null enrichment (position + rotation nulls, nucleolus-excluded) headline PLUS loose QKI spot-detect (detect_antibody_spots:true, antibody tm=1.0) for spot-pairing; detect_in_sec_only:true quantifies non-specific QKI/RNA spots in sec-only wells 7,12 (shared with MIAT preset). 7SK is DENSE -> the rna threshold_multiplier (started at 1.0) likely needs to go STRICTER; NT well9 has a saturated RNA-561 artifact to mask. Channels ch0/640=QKI(antibody), ch1/561=7SK(rna), ch2/405=DAPI (explicit indices). Single in-focus plane (mode=autofocus; every MAIN file Z=1). Well=biological replicate (NT_w9/KD_w10). Manual comparable floors (QKI+DAPI kept == MIAT ASSOC preset) + batch pixel-coloc. Single-process. -i at MIAT-ASO-KD root is safe (2-level discovery excludes z-stacks); input_file_subset pins the 26 MAIN 7SK+sec-only .vsi."
+  cell_line: "H9 hESC (undifferentiated)"
+  date: "2026-07-06"
+
+conditions:
+  mode: subfolders
+  # WELL = biological replicate. 7SK wells only. MIAT wells 1-6,8,11 are excluded
+  # by input_file_subset (they belong to the sibling MIAT preset).
+  subfolder_conditions:
+    "FolderNT-well9-7SK-QKI_Experiment_20260703": "NT_w9"
+    "FolderKD-well10-7SK-QKI_Experiment_20260703": "KD_w10"
+  # Secondary-only controls (SHARED with the MIAT preset): forced to "Sec-Only".
+  sec_only_folders:
+    - "FolderNT-well7-seconly_Experiment_20260703"
+    - "FolderKD-well12-seconly_Experiment_20260703"
+  sec_only_files: []
+  filename_conditions: []
+  condition_order:
+    - "NT_w9"
+    - "KD_w10"
+  min_nuclei_for_stats: 6
+
+# BELT-AND-SUSPENDERS + LOAD-BEARING well selection. Pins the 26 MAIN .vsi for 7SK
+# wells {9,10} + sec-only {7,12}. Matched by bare basename. Excludes MIAT wells and
+# — redundantly, the 2-level walk already does this — every oldbad/Real z-stack file.
+input_file_subset:
+  # --- NT_w9 (n=8) --- (NT well9 _04 etc. carries a saturated RNA-561 artifact; see header)
+  - "ASO_NT_MIAT-KD_MIAT-QKI-7SK_NT-well9-7SK-QKI_00_20260703.vsi"
+  - "ASO_NT_MIAT-KD_MIAT-QKI-7SK_NT-well9-7SK-QKI_01_20260703.vsi"
+  - "ASO_NT_MIAT-KD_MIAT-QKI-7SK_NT-well9-7SK-QKI_02_20260703.vsi"
+  - "ASO_NT_MIAT-KD_MIAT-QKI-7SK_NT-well9-7SK-QKI_03_20260703.vsi"
+  - "ASO_NT_MIAT-KD_MIAT-QKI-7SK_NT-well9-7SK-QKI_04_20260703.vsi"
+  - "ASO_NT_MIAT-KD_MIAT-QKI-7SK_NT-well9-7SK-QKI_05_20260703.vsi"
+  - "ASO_NT_MIAT-KD_MIAT-QKI-7SK_NT-well9-7SK-QKI_06_20260703.vsi"
+  - "ASO_NT_MIAT-KD_MIAT-QKI-7SK_NT-well9-7SK-QKI_07_20260703.vsi"
+  # --- KD_w10 (n=7) ---
+  - "ASO_NT_MIAT-KD_MIAT-QKI-7SK_KD-well10-7SK-QKI_08_20260703.vsi"
+  - "ASO_NT_MIAT-KD_MIAT-QKI-7SK_KD-well10-7SK-QKI_09_20260703.vsi"
+  - "ASO_NT_MIAT-KD_MIAT-QKI-7SK_KD-well10-7SK-QKI_10_20260703.vsi"
+  - "ASO_NT_MIAT-KD_MIAT-QKI-7SK_KD-well10-7SK-QKI_11_20260703.vsi"
+  - "ASO_NT_MIAT-KD_MIAT-QKI-7SK_KD-well10-7SK-QKI_12_20260703.vsi"
+  - "ASO_NT_MIAT-KD_MIAT-QKI-7SK_KD-well10-7SK-QKI_13_20260703.vsi"
+  - "ASO_NT_MIAT-KD_MIAT-QKI-7SK_KD-well10-7SK-QKI_14_20260703.vsi"
+  # --- Sec-Only NT well7 (n=6) ---
+  - "ASO_NT_MIAT-KD_MIAT-QKI-7SK_NT-well7-seconly_29_20260703.vsi"
+  - "ASO_NT_MIAT-KD_MIAT-QKI-7SK_NT-well7-seconly_30_20260703.vsi"
+  - "ASO_NT_MIAT-KD_MIAT-QKI-7SK_NT-well7-seconly_31_20260703.vsi"
+  - "ASO_NT_MIAT-KD_MIAT-QKI-7SK_NT-well7-seconly_32_20260703.vsi"
+  - "ASO_NT_MIAT-KD_MIAT-QKI-7SK_NT-well7-seconly_33_20260703.vsi"
+  - "ASO_NT_MIAT-KD_MIAT-QKI-7SK_NT-well7-seconly_34_20260703.vsi"
+  # --- Sec-Only KD well12 (n=5) ---
+  - "ASO_NT_MIAT-KD_MIAT-QKI-7SK_KD-well12-seconly_46_20260703.vsi"
+  - "ASO_NT_MIAT-KD_MIAT-QKI-7SK_KD-well12-seconly_47_20260703.vsi"
+  - "ASO_NT_MIAT-KD_MIAT-QKI-7SK_KD-well12-seconly_48_20260703.vsi"
+  - "ASO_NT_MIAT-KD_MIAT-QKI-7SK_KD-well12-seconly_49_20260703.vsi"
+  - "ASO_NT_MIAT-KD_MIAT-QKI-7SK_KD-well12-seconly_50_20260703.vsi"
+
+channels:
+  analysis_mode: rna_protein   # 7SK RNA (ch1/561) x QKI protein (ch0/640) + DAPI (ch2/405)
+  dapi: 2                      # ch2 = "405 CSU" (DAPI)
+  rna: 1                       # ch1 = "561 CSU" (7SK FISH probe)
+  antibody: 0                  # ch0 = "640 CSU" (QKI IF / antibody)
+  rna2: -1
+  one_indexed: false
+  dapi_label: "DAPI"
+  rna_label: "7SK-561"
+  antibody_label: "QKI-640"
+  dapi_lut: "blue"             # 405 -> blue
+  rna_lut: "magenta"           # 561 -> magenta  (7SK here)
+  antibody_lut: "yellow"       # 640 -> yellow  (QKI here)
+
+z_stack:
+  # Every MAIN .vsi is Z=1 (single plane). mode:autofocus returns the sole plane.
+  mode: autofocus
+  autofocus_intensity_weighted: true   # harmless at nz=1; kept for consistency
+  # NO start_slice / end_slice (irrelevant for single-plane). NO file_overrides.
+
+nuclei:
+  backend: cellpose
+  cellpose_model_type: cpsam
+  cellpose_diameter_px: 100.0
+  cellpose_flow_threshold: 0.4
+  cellpose_cellprob_threshold: 0.0
+  cellpose_downsample_factor: 2.0
+  cellpose_device: directml            # REQUIRES the fishproc_dml env
+  min_area_px: 4000
+  max_area_px: 1000000000000.0
+  exclude_border: true
+  border_margin_px: 10
+  stardist_model: 2D_versatile_fluo
+  prob_threshold: 0.5
+  nms_threshold: 0.5
+  stardist_gauss_sigma: 3.0
+  stardist_postprocess: none
+  label_smoothing_radius_px: 0
+  reject_ghost_nuclei: false
+
+pixel_coloc:
+  threshold_mode: mad
+  threshold_scope: batch               # exposure identical across wells (see MIAT-preset caveat)
+  k_mad: 2.5
+
+spot_coloc:
+  pair_distance_um: 0.3
+  report_nn_distance: true
+
+foci:
+  enabled: true
+  backend: bigfish
+  bigfish_voxel_size_nm: 0.0           # 0 = auto (reads 130 nm)
+  bigfish_voxel_z_nm: 0.0
+  # --- 7SK (rna) spot detection ---  *** 7SK IS DENSE: tm=1.0 is a START, likely
+  #     needs to go STRICTER (higher tm) or switch to an intensity readout. TUNE. ***
+  bigfish_spot_radius_nm: 100.0        # start = MIAT radius; adjust if 7SK puncta size differs
+  bigfish_spot_radius_z_nm: 300.0      # moot at Z=1
+  threshold_multiplier: 1.0            # __TUNE__ 7SK dense -> raise for a cleaner spot count
+  only_nuclear_spots: false
+  min_sep_px: 1
+  # CRITICAL specificity guard: detect spots in the secondary-only wells too.
+  detect_in_sec_only: true
+  # --- HYBRID: LOOSE QKI spot-detect (identical to the MIAT preset) ---
+  detect_antibody_spots: true
+  antibody_overrides:
+    bigfish_spot_radius_nm: 150.0
+    bigfish_spot_radius_z_nm: 350.0
+    threshold_multiplier: 1.0          # LOOSE QKI. __TUNE__
+    only_nuclear_spots: true
+    min_sep_px: 2
+    min_spot_peak_intensity: 5000.0    # QKI spot specificity floor — sec-only max peak ~4974, so >=5000 => sec-only ~0 spots (calibrated 2026-07-04). __TUNE__
+  # --- DIFFUSE QKI-intensity-at-7SK nulls (the ROBUST HEADLINE) ---
+  compute_partner_intensity: true
+  compute_partner_null_enrichment: true
+  partner_null_n: 1000
+  partner_null_disk_px: 3.0
+  partner_null_seed: 0
+  exclude_nucleolus_from_partner_null: true
+  save_partner_null_draws: true
+  compute_partner_radial_profile: true
+  partner_radial_bins_um: [0.25, 0.5, 0.75, 1.0]
+  # --- Stricter "proper background" ROTATION null (ON) ---
+  compute_partner_rotation_null: true
+  partner_rotation_n: 1000
+  partner_rotation_seed: 0
+  partner_rotation_min_retention: 0.5
+  partner_rotation_assoc_percentile: 95.0
+  save_partner_rotation_null_draws: true
+  # --- NEW 2026-07-06: footprint-association metrics (Phase-1, schema 2026-07-07) ---
+  compute_footprint_enrichment: true       # ON: continuous, floor-robust at-the-punctum association metric
+  assoc_qki_floor: 4000.0                  # well12-sec-only-calibrated genuine-QKI floor (GATED association-ratio
+                                            # variant only; the continuous variant above is floor-free)
+
+cytoplasm:
+  enabled: true
+  voronoi_max_expansion_px: 40
+  measure_nc_ratio: true
+
+nucleolus:
+  enabled: true
+
+output:
+  save_qc_overlays: true
+  save_per_image_csv: true
+  save_masks: true
+  save_publication_images: true
+  save_publication_tifs: false
+  pub_contrast_mode: manual
+  # NEW 2026-07-06: cytoQKI_suppressed publication floors — kills the QKI
+  # junk-dot/speckle background seen at the old (1750-17500) floor. DAPI
+  # floors UNCHANGED from the 2026-07-04 preset. QKI + DAPI floors KEPT
+  # IDENTICAL to the MIAT ASSOC preset (shared partner). RNA ceiling note:
+  # do NOT tune the RNA ceiling off the saturated NT-well9 FOV.
+  manual_dapi_min: 600.0       # UNCHANGED == MIAT ASSOC preset
+  manual_dapi_max: 11000.0     # UNCHANGED == MIAT ASSOC preset
+  manual_rna_min: 750.0        # 2026-07-06 cytoQKI_suppressed set (7SK-561 floor). was 1000.0 (7SK denser)
+  manual_rna_max: 3500.0       # 2026-07-06 cytoQKI_suppressed set. was 5000.0 (do NOT tune off saturated NT-well9)
+  manual_antibody_min: 4000.0  # 2026-07-06 cytoQKI_suppressed set (QKI-640). was 1750.0 == MIAT ASSOC preset (cross-preset comparable)
+  manual_antibody_max: 20000.0 # 2026-07-06 cytoQKI_suppressed set. was 17500.0 == MIAT ASSOC preset
+  manual_rna2_min: 4000.0      # mirror of manual_antibody_min
+  manual_rna2_max: 20000.0     # mirror of manual_antibody_max
+  apply_pub_contrast_floor_to_analysis: true
+  apply_pub_contrast_floor_to_spots: false
+  prefix: ""
+  scalebar_um: 25.0
+  scalebar_font_px: 52
+
+parallel:
+  workers: 1
+  seg_workers: 1
+  main_workers: 1
+  threads_per_worker: 4
+
+seed: 0

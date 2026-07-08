@@ -572,6 +572,42 @@ class FociCfg(BaseModel):
     # compute_partner_rotation_null. DEFAULT FALSE -> the key is never added to
     # extra (byte-identical carrier).
     save_partner_rotation_null_draws: bool = False
+    # 2026-07-07 Brian: PIPELINE-NATIVE MIAT x QKI ASSOCIATION metrics (approved
+    # spec _SPEC_association_analysis_2026-07-06.md). Continuous, floor-robust,
+    # AT-THE-PUNCTUM replacements for the binary "QKI-associated MIAT spots"
+    # count (which conflated abundance with propensity). When True (rna_protein /
+    # rna_rna path; the partner/rna2 channel is the protein, e.g. QKI), for EACH
+    # rna1 (MIAT) spot the pipeline samples the partner (QKI) intensity over the
+    # spot's EXACT half-max (FWHM) FOOTPRINT — the connected rna1 pixels
+    # >= bg + 0.5*(local_peak - bg) within a small per-spot window — so the sample
+    # SCALES with the spot's real size (a 0.3 um vs 1 um MIAT punctum covers a
+    # different # of pixels), NOT a fixed disk. Emits per SPOT (spot_metrics.csv,
+    # rna1 rows): ``qki_at_miat_footprint`` (raw mean QKI over the footprint),
+    # ``miat_footprint_area_px``, and ``qki_footprint_enrichment``
+    # (= qki_at_miat_footprint / that spot's-nucleus mean QKI; floor-robust,
+    # PRIMARY per-spot metric). Emits per NUCLEUS (nuclei_metrics.csv):
+    # ``qki_assoc_ratio_continuous`` (mean of qki_footprint_enrichment over the
+    # nucleus's MIAT spots), ``coloc_moc`` (Manders Overlap Coefficient R = the
+    # threshold-free raw-intensity cosine overlap), ``coloc_icq`` (Li's ICQ), and
+    # ``qki_at_miat_foci_enrichment`` (mean QKI over the UNION of all this
+    # nucleus's MIAT-footprint pixels / nuclear-mean QKI). All threshold-free and
+    # emitted ALONGSIDE (never replacing) the MAD-thresholded Manders M1/M2 so a
+    # gated-vs-ungated comparison is possible. When a partner (QKI) floor is set
+    # via ``assoc_qki_floor`` a SECONDARY floor-gated variant
+    # ``qki_assoc_ratio_gated_<floor>`` is ALSO emitted (MIAT spots whose footprint
+    # QKI < floor contribute 0 -> reintroduces floor-sensitivity; shown for
+    # contrast). DEFAULT FALSE -> none of these columns are emitted and the output
+    # is byte-equivalent to the pre-feature path (BIN1 / H9 unaffected). Runs the
+    # per-spot footprint loop in-process (like ``compute_partner_intensity``) ->
+    # use -p 1 (the MIAT/QKI presets already force single-process).
+    compute_footprint_enrichment: bool = False
+    # Genuine partner (QKI) intensity floor for the SECONDARY floor-gated
+    # association-ratio variant (``qki_assoc_ratio_gated_<floor>``). None / <= 0
+    # => OFF (no gated column emitted; the continuous ratio is the primary). When
+    # set, a MIAT spot whose ``qki_at_miat_footprint`` is below this value
+    # contributes 0 to the gated per-nucleus ratio. Units = raw partner-channel
+    # intensity (same scale as ``qki_at_miat_footprint``). DEFAULT None.
+    assoc_qki_floor: Optional[float] = None
 
     def resolved_for(self, channel: Literal["rna", "rna2", "antibody"]) -> Dict[str, Any]:
         """Return a dict of effective spot-detection params for ``channel``.

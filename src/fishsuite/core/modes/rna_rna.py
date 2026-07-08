@@ -174,6 +174,170 @@ def _sample_partner_local_intensity(
     return out
 
 
+def _footprint_disk_fallback(
+    part_f: np.ndarray,
+    cy: int,
+    cx: int,
+    fwhm_px: float,
+    union_mask: np.ndarray,
+    H: int,
+    W: int,
+) -> Tuple[float, float]:
+    """Per-spot fitted-radius DISK fallback for the footprint sampler.
+
+    The spec's stated acceptable fallback when the half-max footprint is
+    impractical: an edge-clipped window, a flat / no-contrast crop, or a seed
+    pixel that lands below the half-max threshold (sub-pixel rounding). Radius =
+    ``max(1, FWHM/2)`` px (the per-spot fitted spot radius), so the fallback
+    still SCALES with the spot's measured size. Returns ``(qki_mean, area_px)``
+    (``(nan, 0.0)`` if the disk is entirely off-image) and marks the sampled
+    pixels in ``union_mask``.
+    """
+    rad = max(1.0, float(fwhm_px) / 2.0)
+    ri = int(max(1, round(rad)))
+    yy, xx = np.mgrid[-ri:ri + 1, -ri:ri + 1]
+    disk = (yy * yy + xx * xx) <= (rad * rad)
+    ay = cy + yy[disk]
+    ax = cx + xx[disk]
+    inb = (ay >= 0) & (ay < H) & (ax >= 0) & (ax < W)
+    if not inb.any():
+        return float("nan"), 0.0
+    ay = ay[inb]
+    ax = ax[inb]
+    union_mask[ay, ax] = True
+    return float(part_f[ay, ax].mean()), float(ay.size)
+
+
+def _sample_qki_at_miat_footprint(
+    rna1_2d: np.ndarray,
+    partner_2d: np.ndarray,
+    spots_df: pd.DataFrame,
+    voxel_xy_um: float,
+    *,
+    default_spot_diameter_um: float,
+    half_max_frac: float = 0.5,
+    bg_percentile: float = 10.0,
+    window_pad_px: int = 2,
+    min_window_half: int = 4,
+    max_window_half: int = 12,
+    peak_search_half: int = 1,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Per-spot partner (QKI) mean over each rna1 (MIAT) spot's EXACT half-max
+    footprint — the FWHM-based, SIZE-SCALING replacement for a fixed disk.
+
+    2026-07-07 Brian (spec _SPEC_association_analysis_2026-07-06.md). For every
+    rna1 (MIAT) spot we define the punctum's footprint from the MIAT channel
+    ITSELF so it scales with the spot's real extent, then average the partner
+    (QKI/protein) channel over exactly those footprint pixels:
+
+      1. window: a per-spot square of half-width
+         ``clip(round(FWHM_px) + window_pad_px, min_window_half, max_window_half)``
+         about the (rounded) spot centroid, where ``FWHM_px`` is the per-spot
+         MEASURED FWHM diameter (``spots_df['spot_diameter_um']`` / voxel, see
+         ``_measure_spot_diameter_um``), falling back to the nominal spot size.
+         The window scales with the spot so a large focus is not truncated.
+      2. local peak: the brightest MIAT pixel within +/- ``peak_search_half`` px
+         of the centroid (robust to a sub-pixel centroid) is the seed.
+      3. background: the ``bg_percentile`` (10th) percentile of the window's MIAT
+         pixels — a local estimate the same estimator ``_measure_spot_diameter_um``
+         uses. Background subtraction makes the half-max a true FWHM cut (raw
+         peak/2 without it over-grows when background is high).
+      4. half-max threshold: ``bg + half_max_frac*(peak - bg)`` (FWHM = 50% of the
+         background-subtracted peak).
+      5. footprint = the CONNECTED COMPONENT (8-connectivity) of MIAT pixels
+         >= the half-max threshold that CONTAINS the seed — so a neighbouring
+         spot's separate blob is excluded.
+      6. ``qki_at_miat_footprint`` = mean of ``partner_2d`` (RAW, never floored)
+         over exactly those footprint pixels; ``miat_footprint_area_px`` = the
+         pixel count (scales: a bigger spot -> more pixels).
+
+    When the half-max footprint is impractical (edge-clipped window, flat crop,
+    or the seed falls below threshold) the spot falls back to a per-spot
+    fitted-radius disk (``_footprint_disk_fallback``) — still size-scaling.
+
+    Parameters mirror ``_measure_spot_diameter_um`` where they overlap.
+
+    Returns ``(footprint_qki_mean, footprint_area_px, union_mask)``:
+      * ``footprint_qki_mean`` : (n_spots,) float64 — RAW partner mean over the
+        footprint (NaN only if the whole footprint falls off-image);
+      * ``footprint_area_px``  : (n_spots,) float64 — footprint pixel count;
+      * ``union_mask``         : (H, W) bool — True at EVERY footprint pixel over
+        ALL spots (feeds the per-nucleus MIAT-foci-restricted QKI enrichment).
+    """
+    from scipy import ndimage as _ndi
+
+    n = len(spots_df)
+    if partner_2d.ndim == 2:
+        H, W = partner_2d.shape
+    else:
+        H = W = 0
+    union_mask = np.zeros((H, W), dtype=bool) if (H and W) else np.zeros((1, 1), dtype=bool)
+    if n == 0 or rna1_2d.ndim != 2 or partner_2d.ndim != 2:
+        return (
+            np.full(n, np.nan, dtype=np.float64),
+            np.zeros(n, dtype=np.float64),
+            union_mask,
+        )
+
+    rna1_f = rna1_2d.astype(np.float64, copy=False)
+    part_f = partner_2d.astype(np.float64, copy=False)
+    ys_arr = np.rint(spots_df["y_px"].astype(float).to_numpy()).astype(np.intp)
+    xs_arr = np.rint(spots_df["x_px"].astype(float).to_numpy()).astype(np.intp)
+    if "spot_diameter_um" in spots_df.columns:
+        diam_um = pd.to_numeric(spots_df["spot_diameter_um"], errors="coerce").to_numpy()
+    else:
+        diam_um = np.full(n, np.nan, dtype=np.float64)
+    vx = max(float(voxel_xy_um), 1e-6)
+    default_fwhm_px = float(default_spot_diameter_um) / vx
+
+    fp_qki = np.full(n, np.nan, dtype=np.float64)
+    fp_area = np.zeros(n, dtype=np.float64)
+    struct8 = np.ones((3, 3), dtype=bool)
+
+    for i in range(n):
+        cy = int(np.clip(ys_arr[i], 0, H - 1))
+        cx = int(np.clip(xs_arr[i], 0, W - 1))
+        fwhm_px = diam_um[i] / vx if (np.isfinite(diam_um[i]) and diam_um[i] > 0) else default_fwhm_px
+        if not (np.isfinite(fwhm_px) and fwhm_px > 0):
+            fwhm_px = default_fwhm_px
+        win_half = int(np.clip(round(fwhm_px) + window_pad_px, min_window_half, max_window_half))
+        y0, y1 = max(0, cy - win_half), min(H, cy + win_half + 1)
+        x0, x1 = max(0, cx - win_half), min(W, cx + win_half + 1)
+        if (y1 - y0) < 3 or (x1 - x0) < 3:
+            fp_qki[i], fp_area[i] = _footprint_disk_fallback(
+                part_f, cy, cx, fwhm_px, union_mask, H, W)
+            continue
+        win = rna1_f[y0:y1, x0:x1]
+        # Seed = brightest MIAT pixel within +/- peak_search_half of the centroid.
+        sy0, sy1 = max(y0, cy - peak_search_half), min(y1, cy + peak_search_half + 1)
+        sx0, sx1 = max(x0, cx - peak_search_half), min(x1, cx + peak_search_half + 1)
+        inner = rna1_f[sy0:sy1, sx0:sx1]
+        s_off = np.unravel_index(int(np.argmax(inner)), inner.shape)
+        seed_y = sy0 + int(s_off[0])
+        seed_x = sx0 + int(s_off[1])
+        peak = float(rna1_f[seed_y, seed_x])
+        bg = float(np.percentile(win, bg_percentile))
+        if not (peak > bg):
+            fp_qki[i], fp_area[i] = _footprint_disk_fallback(
+                part_f, cy, cx, fwhm_px, union_mask, H, W)
+            continue
+        thr = bg + half_max_frac * (peak - bg)
+        binary = win >= thr
+        lbl, _nlab = _ndi.label(binary, structure=struct8)
+        seed_lbl = int(lbl[seed_y - y0, seed_x - x0])
+        if seed_lbl == 0:
+            fp_qki[i], fp_area[i] = _footprint_disk_fallback(
+                part_f, cy, cx, fwhm_px, union_mask, H, W)
+            continue
+        ys_fp, xs_fp = np.where(lbl == seed_lbl)
+        abs_y = ys_fp + y0
+        abs_x = xs_fp + x0
+        fp_qki[i] = float(part_f[abs_y, abs_x].mean())
+        fp_area[i] = float(abs_y.size)
+        union_mask[abs_y, abs_x] = True
+    return fp_qki, fp_area, union_mask
+
+
 def _disk_stencil(radius_px: float) -> Tuple[np.ndarray, np.ndarray]:
     """In-disk integer (dy, dx) offsets for a disk of radius ``radius_px``.
 
@@ -1297,6 +1461,66 @@ def run_one(
                 rna_2d, spots2_df, partner_disk_radius_px,
             )
 
+    # ---- MIAT x QKI ASSOCIATION: footprint-based per-spot QKI (Brian 2026-07-07)
+    # GATED behind cfg.foci.compute_footprint_enrichment (default OFF -> byte-
+    # equivalent). For each rna1 (MIAT) spot, sample the partner (rna2 / QKI)
+    # intensity over the spot's EXACT half-max (FWHM) footprint (size-scaling,
+    # NOT a fixed disk) -> per-spot ``qki_at_miat_footprint`` (raw mean) +
+    # ``miat_footprint_area_px`` + ``qki_footprint_enrichment``
+    # (= qki_at_miat_footprint / that spot's-nucleus mean QKI). Computed BEFORE
+    # the _by_nid index below so the per-nucleus association ratio can aggregate
+    # the per-spot enrichment (groupby snapshots columns at call time). The union
+    # of all footprint pixels (``_miat_footprint_union``) feeds the per-nucleus
+    # MIAT-foci-restricted QKI enrichment inside the loop.
+    compute_footprint = bool(getattr(cfg.foci, "compute_footprint_enrichment", False))
+    _assoc_qki_floor = getattr(cfg.foci, "assoc_qki_floor", None)
+    _assoc_floor_ok = (
+        _assoc_qki_floor is not None
+        and _assoc_qki_floor == _assoc_qki_floor  # not NaN
+        and float(_assoc_qki_floor) > 0
+    )
+    _gated_assoc_col = (
+        f"qki_assoc_ratio_gated_{float(_assoc_qki_floor):g}".replace(".", "p")
+        if _assoc_floor_ok else None
+    )
+    _miat_footprint_union = None
+    _nuc_qki_mean_map: Dict[int, float] = {}
+    if compute_footprint:
+        # Per-nucleus mean QKI (rna2) map — the SAME denominator the per-nucleus
+        # loop computes as ``rna2_mean`` (scipy.ndimage.mean over labels == nid),
+        # so per-spot enrichment and the per-nucleus ratio are internally exact.
+        if n_after > 0:
+            from scipy import ndimage as _ndi_mean
+            _qki_means = _ndi_mean.mean(
+                rna2_2d.astype(np.float64), labels=labels,
+                index=np.arange(1, n_after + 1),
+            )
+            _qki_means = np.atleast_1d(_qki_means)
+            _nuc_qki_mean_map = {
+                int(i + 1): float(_qki_means[i]) for i in range(n_after)
+            }
+        if len(spots1_df) > 0:
+            _fp_qki, _fp_area, _miat_footprint_union = _sample_qki_at_miat_footprint(
+                rna_2d, rna2_2d, spots1_df, voxel_xy_um,
+                default_spot_diameter_um=default_spot_diameter_um,
+            )
+            spots1_df["qki_at_miat_footprint"] = _fp_qki
+            spots1_df["miat_footprint_area_px"] = _fp_area
+            if "nucleus_id" in spots1_df.columns:
+                _nuc_ids = pd.to_numeric(
+                    spots1_df["nucleus_id"], errors="coerce"
+                ).fillna(0).astype(int)
+                _nuc_mean_per_spot = _nuc_ids.map(_nuc_qki_mean_map).to_numpy(dtype=np.float64)
+            else:
+                _nuc_mean_per_spot = np.full(len(spots1_df), np.nan)
+            with np.errstate(divide="ignore", invalid="ignore"):
+                _enr = np.where(
+                    (_nuc_mean_per_spot > 0) & np.isfinite(_nuc_mean_per_spot),
+                    _fp_qki / _nuc_mean_per_spot,
+                    np.nan,
+                )
+            spots1_df["qki_footprint_enrichment"] = _enr
+
     # Build the per-nucleus spot indexes NOW — after nn_distance/paired,
     # spot_diameter, and (when enabled) partner_local_mean_intensity have all
     # been written — so groupby snapshots a frame that already carries every
@@ -1809,6 +2033,58 @@ def run_one(
         rna2_enrichment_at_rna1_spots = _enrichment(rna2_local_mean_at_rna1_spots, rna2_mean)
         rna1_enrichment_at_rna2_spots = _enrichment(rna1_local_mean_at_rna2_spots, rna_mean)
 
+        # ---- MIAT x QKI ASSOCIATION metrics (per nucleus) (Brian 2026-07-07) --
+        # Continuous, floor-robust QKI-at-MIAT association (spec 2026-07-06):
+        #   qki_assoc_ratio_continuous = mean over THIS nucleus's MIAT spots of
+        #       qki_footprint_enrichment (the average QKI fold-enrichment at the
+        #       MIAT puncta; "input" = all MIAT spots -> pull-down-over-input in
+        #       spirit). PRIMARY.
+        #   qki_assoc_ratio_gated_<floor> = same, but MIAT spots whose footprint
+        #       QKI is below assoc_qki_floor contribute 0 (SECONDARY; reintroduces
+        #       floor-sensitivity, shown for contrast).
+        #   coloc_moc / coloc_icq = threshold-free Manders Overlap Coefficient R
+        #       (raw-intensity cosine overlap) + Li's ICQ on nuclear pixels
+        #       (surfaced from the already-computed _cm), ALONGSIDE the gated
+        #       Manders M1/M2 above.
+        #   qki_at_miat_foci_enrichment = mean QKI over the UNION of all this
+        #       nucleus's MIAT-footprint pixels / nuclear-mean QKI.
+        qki_assoc_ratio_continuous = float("nan")
+        qki_assoc_ratio_gated = float("nan")
+        coloc_moc = float("nan")
+        coloc_icq = float("nan")
+        qki_at_miat_foci_enrichment = float("nan")
+        if compute_footprint:
+            coloc_moc = _cm["cosine_overlap"]
+            coloc_icq = _cm["li_icq"]
+            _sub_fp = spots1_by_nid.get(nid)
+            if _sub_fp is not None and len(_sub_fp) > 0 and "qki_footprint_enrichment" in _sub_fp.columns:
+                _enr_vals = pd.to_numeric(_sub_fp["qki_footprint_enrichment"], errors="coerce").to_numpy()
+                _fin = np.isfinite(_enr_vals)
+                if _fin.any():
+                    qki_assoc_ratio_continuous = float(_enr_vals[_fin].mean())
+                if _assoc_floor_ok and "qki_at_miat_footprint" in _sub_fp.columns:
+                    _fp_vals = pd.to_numeric(_sub_fp["qki_at_miat_footprint"], errors="coerce").to_numpy()
+                    # gate on finite enrichment rows; below-floor footprint -> 0.
+                    _gated = np.where(
+                        _fin & (_fp_vals >= float(_assoc_qki_floor)),
+                        np.where(_fin, _enr_vals, 0.0),
+                        0.0,
+                    )
+                    # denominator = # spots with a finite enrichment (same base as
+                    # the continuous ratio) so gated <= continuous by construction.
+                    _n_base = int(_fin.sum())
+                    if _n_base > 0:
+                        qki_assoc_ratio_gated = float(_gated[_fin].sum() / _n_base)
+            # MIAT-foci-restricted QKI enrichment: mean QKI over the union of this
+            # nucleus's footprint pixels / nuclear-mean QKI.
+            if (_miat_footprint_union is not None and nuc_mask.any()
+                    and rna2_mean == rna2_mean and rna2_mean > 0):
+                _foci_pix = _miat_footprint_union & nuc_mask
+                if _foci_pix.any():
+                    qki_at_miat_foci_enrichment = float(
+                        rna2_2d[_foci_pix].astype(np.float64).mean() / rna2_mean
+                    )
+
         # ---- Per-nucleus RANDOM-POSITION NULL (partner @ rna1 spots) --------
         # 2026-06-05 Brian. observed = mean over THIS nucleus's rna1 (MIAT)
         # spots of [disk-mean partner (rna2/QKI) intensity]; null = same #spots
@@ -2145,6 +2421,17 @@ def run_one(
             nuc_row["rna2_enrichment_at_rna1_spots"] = rna2_enrichment_at_rna1_spots
             nuc_row["rna1_local_mean_at_rna2_spots"] = rna1_local_mean_at_rna2_spots
             nuc_row["rna1_enrichment_at_rna2_spots"] = rna1_enrichment_at_rna2_spots
+        # GATED MIAT x QKI ASSOCIATION per-nucleus columns (default OFF). Only
+        # emitted when cfg.foci.compute_footprint_enrichment is True, so the OFF
+        # path stays byte-equivalent. Column names are the FIXED literal names
+        # from the approved spec (no rna1/rna2 relabeling).
+        if compute_footprint:
+            nuc_row["qki_assoc_ratio_continuous"] = qki_assoc_ratio_continuous
+            if _gated_assoc_col is not None:
+                nuc_row[_gated_assoc_col] = qki_assoc_ratio_gated
+            nuc_row["coloc_moc"] = coloc_moc
+            nuc_row["coloc_icq"] = coloc_icq
+            nuc_row["qki_at_miat_foci_enrichment"] = qki_at_miat_foci_enrichment
         # GATED random-position-null coloc per-nucleus columns (default OFF).
         # Only emitted when cfg.foci.compute_partner_null_enrichment is True
         # (and compute_partner_intensity is on), so the OFF path stays byte-
@@ -2375,6 +2662,19 @@ def run_one(
                 # OTHER channel in a spot-radius disk at this spot's centroid.
                 spot_row["partner_local_mean_intensity"] = float(
                     r.get("partner_local_mean_intensity", float("nan"))
+                )
+            # GATED MIAT x QKI ASSOCIATION per-spot columns (default OFF).
+            # Footprints are defined on rna1 (MIAT) spots; rna2 rows carry NaN so
+            # the column schema stays stable across channels.
+            if compute_footprint:
+                spot_row["qki_at_miat_footprint"] = float(
+                    r.get("qki_at_miat_footprint", float("nan"))
+                )
+                spot_row["miat_footprint_area_px"] = float(
+                    r.get("miat_footprint_area_px", float("nan"))
+                )
+                spot_row["qki_footprint_enrichment"] = float(
+                    r.get("qki_footprint_enrichment", float("nan"))
                 )
             spot_rows.append(spot_row)
 
@@ -2631,6 +2931,14 @@ def run_one(
         mean_partner_enrich_at_rna1, _, _ = _img_stats("rna2_enrichment_at_rna1_spots")
         mean_partner_local_at_rna2, _, _ = _img_stats("rna1_local_mean_at_rna2_spots")
         mean_partner_enrich_at_rna2, _, _ = _img_stats("rna1_enrichment_at_rna2_spots")
+        # MIAT x QKI ASSOCIATION image-level rollups (mean over nuclei).
+        mean_assoc_ratio_cont, _, _ = _img_stats("qki_assoc_ratio_continuous")
+        mean_assoc_ratio_gated = (
+            _img_stats(_gated_assoc_col)[0] if _gated_assoc_col is not None else float("nan")
+        )
+        mean_coloc_moc, _, _ = _img_stats("coloc_moc")
+        mean_coloc_icq, _, _ = _img_stats("coloc_icq")
+        mean_qki_at_miat_foci_enrich, _, _ = _img_stats("qki_at_miat_foci_enrichment")
 
         # frac_nuclei_with_ge_X_spots for both channels
         def _frac(ct, k):
@@ -2815,6 +3123,14 @@ def run_one(
             per_image["mean_rna2_enrichment_at_rna1_spots"] = round(mean_partner_enrich_at_rna1, 4) if mean_partner_enrich_at_rna1 == mean_partner_enrich_at_rna1 else float("nan")
             per_image["mean_rna1_local_mean_at_rna2_spots"] = round(mean_partner_local_at_rna2, 3) if mean_partner_local_at_rna2 == mean_partner_local_at_rna2 else float("nan")
             per_image["mean_rna1_enrichment_at_rna2_spots"] = round(mean_partner_enrich_at_rna2, 4) if mean_partner_enrich_at_rna2 == mean_partner_enrich_at_rna2 else float("nan")
+        # GATED MIAT x QKI ASSOCIATION per-image rollup (default OFF).
+        if compute_footprint:
+            per_image["mean_qki_assoc_ratio_continuous"] = round(mean_assoc_ratio_cont, 4) if mean_assoc_ratio_cont == mean_assoc_ratio_cont else float("nan")
+            if _gated_assoc_col is not None:
+                per_image[f"mean_{_gated_assoc_col}"] = round(mean_assoc_ratio_gated, 4) if mean_assoc_ratio_gated == mean_assoc_ratio_gated else float("nan")
+            per_image["mean_coloc_moc"] = round(mean_coloc_moc, 4) if mean_coloc_moc == mean_coloc_moc else float("nan")
+            per_image["mean_coloc_icq"] = round(mean_coloc_icq, 4) if mean_coloc_icq == mean_coloc_icq else float("nan")
+            per_image["mean_qki_at_miat_foci_enrichment"] = round(mean_qki_at_miat_foci_enrich, 4) if mean_qki_at_miat_foci_enrich == mean_qki_at_miat_foci_enrich else float("nan")
         # GATED random-position-null per-image pooled rollup (default OFF).
         if compute_partner_null:
             per_image["rna2_pooled_enrichment_vs_null_at_rna1_spots"] = round(pooled_null_enrichment, 4) if pooled_null_enrichment == pooled_null_enrichment else float("nan")
@@ -2934,6 +3250,15 @@ def run_one(
             per_image["mean_rna2_enrichment_at_rna1_spots"] = float("nan")
             per_image["mean_rna1_local_mean_at_rna2_spots"] = float("nan")
             per_image["mean_rna1_enrichment_at_rna2_spots"] = float("nan")
+        # GATED MIAT x QKI ASSOCIATION per-image rollup — empty-image fallback
+        # (mirror the populated branch's KEY SET so the schema is image-invariant).
+        if compute_footprint:
+            per_image["mean_qki_assoc_ratio_continuous"] = float("nan")
+            if _gated_assoc_col is not None:
+                per_image[f"mean_{_gated_assoc_col}"] = float("nan")
+            per_image["mean_coloc_moc"] = float("nan")
+            per_image["mean_coloc_icq"] = float("nan")
+            per_image["mean_qki_at_miat_foci_enrichment"] = float("nan")
         # GATED random-position-null per-image rollup — empty-image fallback.
         if compute_partner_null:
             per_image["rna2_pooled_enrichment_vs_null_at_rna1_spots"] = float("nan")
