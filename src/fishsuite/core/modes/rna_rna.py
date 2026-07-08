@@ -767,11 +767,19 @@ def _compute_pixel_coloc_thr(
     pc_cfg,
     precomputed: Optional[float],
     bigfish_auto_thr: float,
+    img2d_other: Optional[np.ndarray] = None,
 ) -> float:
     """Compute (or accept the pre-scan) pixel-coloc threshold for ONE channel.
 
     Same MAD-on-raw-nuclear-pixels math as rna_only, factored out so we can
     apply it independently to rna and rna2.
+
+    ``img2d_other`` is the PAIRED partner channel and is used ONLY when
+    ``threshold_mode == "costes"``: the Costes regression needs both channels'
+    intensities at the SAME nuclear pixels, so we sample ``img2d_other`` over
+    the identical ``labels > 0`` mask and hand it to ``coloc_threshold`` as
+    ``vals_other``. It is ignored for mad/percentile (those paths stay
+    byte-identical whether or not a partner channel is supplied).
     """
     _scope = getattr(pc_cfg, "threshold_scope", "per_image") if pc_cfg is not None else "per_image"
     if (
@@ -787,12 +795,22 @@ def _compute_pixel_coloc_thr(
         nuc_pixel_mask = labels > 0
         if nuc_pixel_mask.any():
             vals = img2d[nuc_pixel_mask].astype(np.float64).tolist()
+            # Costes needs the PAIRED partner intensities at the same nuclear
+            # pixels; mad/percentile leave this None (unchanged behavior).
+            vals_other = None
+            if (
+                pc_cfg.threshold_mode == "costes"
+                and img2d_other is not None
+                and img2d_other.shape == img2d.shape
+            ):
+                vals_other = img2d_other[nuc_pixel_mask].astype(np.float64).tolist()
             try:
                 v = float(_thr.coloc_threshold(
                     vals,
                     mode=pc_cfg.threshold_mode,
                     k_mad=float(pc_cfg.k_mad),
                     percentile=float(pc_cfg.percentile),
+                    vals_other=vals_other,
                 ))
                 if v == v and v > 0:
                     return v
@@ -1339,10 +1357,12 @@ def run_one(
     rna_thr_value = _compute_pixel_coloc_thr(
         rna_2d, labels, pc_cfg=pc_cfg,
         precomputed=precomputed_rna_threshold, bigfish_auto_thr=thr1_val,
+        img2d_other=rna2_2d,
     )
     rna2_thr_value = _compute_pixel_coloc_thr(
         rna2_2d, labels, pc_cfg=pc_cfg,
         precomputed=precomputed_rna2_threshold, bigfish_auto_thr=thr2_val,
+        img2d_other=rna_2d,
     )
     rna_pos_mask = (rna_2d >= rna_thr_value).astype(np.uint8) * 255
     rna2_pos_mask = (rna2_2d >= rna2_thr_value).astype(np.uint8) * 255

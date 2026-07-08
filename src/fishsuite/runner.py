@@ -471,12 +471,22 @@ def run_batch(
                             ppg.advance(ptask)
             if pooled_list:
                 pooled = np.concatenate(pooled_list)
+                # Costes needs the PAIRED partner pixels. pooled/pooled2 are
+                # accumulated from the SAME nuclear masks in the same order
+                # (collect_nuclear_rna_pixels returns rna/rna2 over one mask),
+                # so they are pixel-paired. None for mad/percentile (unchanged).
+                _pooled_other = (
+                    np.concatenate(pooled2_list).tolist()
+                    if (is_rna_rna and pc_cfg.threshold_mode == "costes" and pooled2_list)
+                    else None
+                )
                 try:
                     batch_rna_threshold = float(_thr.coloc_threshold(
                         pooled.tolist(),
                         mode=pc_cfg.threshold_mode,
                         k_mad=float(pc_cfg.k_mad),
                         percentile=float(pc_cfg.percentile),
+                        vals_other=_pooled_other,
                     ))
                 except Exception as e:
                     _console.print(
@@ -497,12 +507,20 @@ def run_batch(
                 )
             if is_rna_rna and pooled2_list:
                 pooled2 = np.concatenate(pooled2_list)
+                # Paired partner pixels for the rna2 Costes threshold (same
+                # pixel order as pooled2). None for mad/percentile (unchanged).
+                _pooled2_other = (
+                    np.concatenate(pooled_list).tolist()
+                    if (pc_cfg.threshold_mode == "costes" and pooled_list)
+                    else None
+                )
                 try:
                     batch_rna2_threshold = float(_thr.coloc_threshold(
                         pooled2.tolist(),
                         mode=pc_cfg.threshold_mode,
                         k_mad=float(pc_cfg.k_mad),
                         percentile=float(pc_cfg.percentile),
+                        vals_other=_pooled2_other,
                     ))
                 except Exception as e:
                     _console.print(
