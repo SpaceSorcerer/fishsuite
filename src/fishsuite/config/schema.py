@@ -592,12 +592,12 @@ class FociCfg(BaseModel):
     # ``qki_at_miat_foci_enrichment`` (mean QKI over the UNION of all this
     # nucleus's MIAT-footprint pixels / nuclear-mean QKI). ALSO emits three
     # EXTENSIVE (mass-based) sponge-CAPACITY columns over this nucleus's NUCLEAR
-    # MIAT spots: ``qki_held_by_miat`` (= sum of qki_at_miat_footprint *
+    # MIAT spots: ``qki_associated_with_miat`` (= sum of qki_at_miat_footprint *
     # miat_footprint_area_px = total QKI intensity inside MIAT-spot pixels),
     # ``miat_mass_nuclear`` (= sum of spot_peak_intensity * spot_area_px =
-    # integrated MIAT signal), and ``capacity_qki_at_miat`` (= qki_held_by_miat /
+    # integrated MIAT signal), and ``capacity_qki_at_miat`` (= qki_associated_with_miat /
     # the nuclear QKI total ``nuclear_total_intensity_rna2`` [->
-    # nuclear_total_intensity_protein] = fraction of the nucleus's QKI captured by
+    # nuclear_total_intensity_protein] = fraction of the nucleus's QKI associated with
     # MIAT). All threshold-free and
     # emitted ALONGSIDE (never replacing) the MAD-thresholded Manders M1/M2 so a
     # gated-vs-ungated comparison is possible. When a partner (QKI) floor is set
@@ -989,6 +989,12 @@ class IfIntensityCfg(BaseModel):
     # Well-number -> secondary override for conflict wells (e.g. folder tag says
     # 565 but the plate groups it as 647). Keys are stringified well numbers.
     well_secondary_overrides: Dict[str, str] = Field(default_factory=dict)
+    # Image-file extensions ``_discover_wells`` globs inside each well subfolder,
+    # in priority order (case-insensitive, no leading dot; multi-dot like
+    # "ome.tif" is allowed). Default ["vsi"] = legacy byte-identical behaviour.
+    # Set to e.g. ["ome.tif"] to quantify pre-generated MEAN-z-projection
+    # OME-TIFFs (the volumetric if_intensity workflow) instead of raw .vsi.
+    input_glob_exts: List[str] = Field(default_factory=lambda: ["vsi"])
 
     # ---- channel routing (substring-matched on OME channel_names) ---------
     dapi_channel_key: str = "405"

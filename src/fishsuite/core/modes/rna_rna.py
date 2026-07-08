@@ -2075,7 +2075,7 @@ def run_one(
         qki_at_miat_foci_enrichment = float("nan")
         # MIAT x QKI CAPACITY (sponge-capacity) per-nucleus scalars (Brian 2026-07-08;
         # see the CAPACITY block further down). Default NaN so they are always defined.
-        qki_held_by_miat = float("nan")
+        qki_associated_with_miat = float("nan")
         miat_mass_nuclear = float("nan")
         capacity_qki_at_miat = float("nan")
         if compute_footprint:
@@ -2110,11 +2110,11 @@ def run_one(
                         rna2_2d[_foci_pix].astype(np.float64).mean() / rna2_mean
                     )
             # ---- MIAT x QKI CAPACITY (sponge-capacity) per nucleus (Brian 2026-07-08) --
-            # The EXTENSIVE (mass-based) sponge test: how much QKI this nucleus's MIAT
-            # actually holds, the integrated MIAT signal, and the FRACTION of nuclear
+            # The EXTENSIVE (mass-based) sponge test: how much QKI is associated with
+            # this nucleus's MIAT, the integrated MIAT signal, and the FRACTION of nuclear
             # QKI captured. Restricted to this nucleus's NUCLEAR MIAT (rna1) spots so
             # numerator and the nuclear-QKI-total denominator share the same compartment.
-            #   qki_held_by_miat     = Sum over nuclear MIAT spots of
+            #   qki_associated_with_miat = Sum over nuclear MIAT spots of
             #                          (qki_at_miat_footprint * miat_footprint_area_px)
             #                          = footprint MEAN QKI * footprint pixels = the
             #                          INTEGRATED (total) QKI intensity in MIAT pixels.
@@ -2124,7 +2124,7 @@ def run_one(
             #                          intensity_peak; spot_area_px = pi*(FWHM/2)^2 from
             #                          spot_diameter_um -> IDENTICAL formula + default
             #                          fallback the per-spot table uses (see _emit_spot_rows).
-            #   capacity_qki_at_miat = qki_held_by_miat / (total nuclear QKI intensity).
+            #   capacity_qki_at_miat = qki_associated_with_miat / (total nuclear QKI intensity).
             #                          The denominator is sum_rna2_intensity, i.e. the
             #                          SAME value emitted as nuclear_total_intensity_rna2
             #                          (relabeled nuclear_total_intensity_protein) -> the
@@ -2136,13 +2136,13 @@ def run_one(
                     _sub_cap = _sub_cap.loc[_sub_cap["in_nucleus"].astype(bool)]
                 if len(_sub_cap) > 0:
                     if {"qki_at_miat_footprint", "miat_footprint_area_px"}.issubset(_sub_cap.columns):
-                        _held = (
+                        _assoc = (
                             pd.to_numeric(_sub_cap["qki_at_miat_footprint"], errors="coerce").to_numpy()
                             * pd.to_numeric(_sub_cap["miat_footprint_area_px"], errors="coerce").to_numpy()
                         )
-                        _fin_held = np.isfinite(_held)
-                        if _fin_held.any():
-                            qki_held_by_miat = float(_held[_fin_held].sum())
+                        _fin_assoc = np.isfinite(_assoc)
+                        if _fin_assoc.any():
+                            qki_associated_with_miat = float(_assoc[_fin_assoc].sum())
                     if "intensity_peak" in _sub_cap.columns:
                         _cap_pk = pd.to_numeric(_sub_cap["intensity_peak"], errors="coerce").to_numpy()
                         if "spot_diameter_um" in _sub_cap.columns:
@@ -2159,10 +2159,10 @@ def run_one(
                         _fin_mass = np.isfinite(_mass)
                         if _fin_mass.any():
                             miat_mass_nuclear = float(_mass[_fin_mass].sum())
-                    if (qki_held_by_miat == qki_held_by_miat
+                    if (qki_associated_with_miat == qki_associated_with_miat
                             and sum_rna2_intensity == sum_rna2_intensity
                             and sum_rna2_intensity > 0):
-                        capacity_qki_at_miat = float(qki_held_by_miat / sum_rna2_intensity)
+                        capacity_qki_at_miat = float(qki_associated_with_miat / sum_rna2_intensity)
 
         # ---- Per-nucleus RANDOM-POSITION NULL (partner @ rna1 spots) --------
         # 2026-06-05 Brian. observed = mean over THIS nucleus's rna1 (MIAT)
@@ -2513,7 +2513,7 @@ def run_one(
             nuc_row["qki_at_miat_foci_enrichment"] = qki_at_miat_foci_enrichment
             # MIAT x QKI CAPACITY (sponge-capacity) per-nucleus columns (fixed literal
             # names, no rna2 token -> the rna_protein relabeler leaves them intact).
-            nuc_row["qki_held_by_miat"] = qki_held_by_miat
+            nuc_row["qki_associated_with_miat"] = qki_associated_with_miat
             nuc_row["miat_mass_nuclear"] = miat_mass_nuclear
             nuc_row["capacity_qki_at_miat"] = capacity_qki_at_miat
         # GATED random-position-null coloc per-nucleus columns (default OFF).
@@ -3024,7 +3024,7 @@ def run_one(
         mean_coloc_icq, _, _ = _img_stats("coloc_icq")
         mean_qki_at_miat_foci_enrich, _, _ = _img_stats("qki_at_miat_foci_enrichment")
         # MIAT x QKI CAPACITY image-level rollups (mean over nuclei; NaN-dropping).
-        mean_qki_held_by_miat, _, _ = _img_stats("qki_held_by_miat")
+        mean_qki_associated_with_miat, _, _ = _img_stats("qki_associated_with_miat")
         mean_miat_mass_nuclear, _, _ = _img_stats("miat_mass_nuclear")
         mean_capacity_qki_at_miat, _, _ = _img_stats("capacity_qki_at_miat")
 
@@ -3219,7 +3219,7 @@ def run_one(
             per_image["mean_coloc_moc"] = round(mean_coloc_moc, 4) if mean_coloc_moc == mean_coloc_moc else float("nan")
             per_image["mean_coloc_icq"] = round(mean_coloc_icq, 4) if mean_coloc_icq == mean_coloc_icq else float("nan")
             per_image["mean_qki_at_miat_foci_enrichment"] = round(mean_qki_at_miat_foci_enrich, 4) if mean_qki_at_miat_foci_enrich == mean_qki_at_miat_foci_enrich else float("nan")
-            per_image["mean_qki_held_by_miat"] = round(mean_qki_held_by_miat, 3) if mean_qki_held_by_miat == mean_qki_held_by_miat else float("nan")
+            per_image["mean_qki_associated_with_miat"] = round(mean_qki_associated_with_miat, 3) if mean_qki_associated_with_miat == mean_qki_associated_with_miat else float("nan")
             per_image["mean_miat_mass_nuclear"] = round(mean_miat_mass_nuclear, 3) if mean_miat_mass_nuclear == mean_miat_mass_nuclear else float("nan")
             per_image["mean_capacity_qki_at_miat"] = round(mean_capacity_qki_at_miat, 6) if mean_capacity_qki_at_miat == mean_capacity_qki_at_miat else float("nan")
         # GATED random-position-null per-image pooled rollup (default OFF).
@@ -3350,7 +3350,7 @@ def run_one(
             per_image["mean_coloc_moc"] = float("nan")
             per_image["mean_coloc_icq"] = float("nan")
             per_image["mean_qki_at_miat_foci_enrichment"] = float("nan")
-            per_image["mean_qki_held_by_miat"] = float("nan")
+            per_image["mean_qki_associated_with_miat"] = float("nan")
             per_image["mean_miat_mass_nuclear"] = float("nan")
             per_image["mean_capacity_qki_at_miat"] = float("nan")
         # GATED random-position-null per-image rollup — empty-image fallback.

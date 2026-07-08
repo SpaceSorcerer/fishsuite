@@ -435,7 +435,7 @@ def test_defaults_off_byte_equivalent(fake_img, monkeypatch):
 
 # ===========================================================================
 # (e) MIAT x QKI CAPACITY (sponge-capacity) per-nucleus columns (Brian 2026-07-08)
-#     qki_held_by_miat / miat_mass_nuclear / capacity_qki_at_miat
+#     qki_associated_with_miat / miat_mass_nuclear / capacity_qki_at_miat
 # ===========================================================================
 def _partner_plane_constant(value: float = 777.0) -> np.ndarray:
     """A partner (QKI) plane that is CONSTANT everywhere -> lets the constant
@@ -473,23 +473,23 @@ def test_end_to_end_capacity_columns_present(fake_img, monkeypatch):
     cfg.foci.compute_footprint_enrichment = True
     res = _run(cfg, fake_img, monkeypatch)
 
-    for col in ("qki_held_by_miat", "miat_mass_nuclear", "capacity_qki_at_miat"):
+    for col in ("qki_associated_with_miat", "miat_mass_nuclear", "capacity_qki_at_miat"):
         assert col in res.nuclei.columns
         assert "rna2" not in col  # survives the rna_protein rna2->protein relabel
-    for key in ("mean_qki_held_by_miat", "mean_miat_mass_nuclear",
+    for key in ("mean_qki_associated_with_miat", "mean_miat_mass_nuclear",
                 "mean_capacity_qki_at_miat"):
         assert key in res.per_image
     # At least one nucleus carries finite capacity values on the dense-QKI stack.
-    assert np.isfinite(pd.to_numeric(res.nuclei["qki_held_by_miat"], errors="coerce")).any()
+    assert np.isfinite(pd.to_numeric(res.nuclei["qki_associated_with_miat"], errors="coerce")).any()
     assert np.isfinite(pd.to_numeric(res.nuclei["capacity_qki_at_miat"], errors="coerce")).any()
 
 
 def test_end_to_end_capacity_formulas_exact(fake_img, monkeypatch):
     """Definitional exactness + miat_mass AGGREGATION, reconstructed from the
     per-spot table over each nucleus's NUCLEAR MIAT (rna1) spots:
-      qki_held_by_miat     == Sum(qki_at_miat_footprint * miat_footprint_area_px)
-      miat_mass_nuclear    == Sum(spot_peak_intensity * spot_area_px)
-      capacity_qki_at_miat == qki_held_by_miat / nuclear_total_intensity_rna2
+      qki_associated_with_miat == Sum(qki_at_miat_footprint * miat_footprint_area_px)
+      miat_mass_nuclear        == Sum(spot_peak_intensity * spot_area_px)
+      capacity_qki_at_miat == qki_associated_with_miat / nuclear_total_intensity_rna2
     (nuclear_total_intensity_rna2 == the nuclear QKI total; relabels to
     nuclear_total_intensity_protein in rna_protein)."""
     cfg = _base_cfg()
@@ -500,7 +500,7 @@ def test_end_to_end_capacity_formulas_exact(fake_img, monkeypatch):
     sp = res.spots
     rna1_nuc = sp[(sp["channel"] == "rna1")
                   & (pd.to_numeric(sp["in_nucleus"], errors="coerce") > 0)].copy()
-    rna1_nuc["_held"] = (
+    rna1_nuc["_associated"] = (
         pd.to_numeric(rna1_nuc["qki_at_miat_footprint"], errors="coerce")
         * pd.to_numeric(rna1_nuc["miat_footprint_area_px"], errors="coerce")
     )
@@ -508,22 +508,22 @@ def test_end_to_end_capacity_formulas_exact(fake_img, monkeypatch):
         pd.to_numeric(rna1_nuc["spot_peak_intensity"], errors="coerce")
         * pd.to_numeric(rna1_nuc["spot_area_px"], errors="coerce")
     )
-    held_exp = rna1_nuc.groupby("nucleus_id")["_held"].sum(min_count=1)
+    associated_exp = rna1_nuc.groupby("nucleus_id")["_associated"].sum(min_count=1)
     mass_exp = rna1_nuc.groupby("nucleus_id")["_mass"].sum(min_count=1)
 
     checked = 0
     for _, nr in res.nuclei.iterrows():
         nid = int(nr["nucleus_id"])
-        if nid not in held_exp.index or not np.isfinite(held_exp.loc[nid]):
+        if nid not in associated_exp.index or not np.isfinite(associated_exp.loc[nid]):
             continue
-        qh = float(nr["qki_held_by_miat"])
+        qh = float(nr["qki_associated_with_miat"])
         mm = float(nr["miat_mass_nuclear"])
         cap = float(nr["capacity_qki_at_miat"])
         denom = float(nr["nuclear_total_intensity_rna2"])
         # rel=1e-6: the per-spot values originate from a float32 image, so the
         # numpy (in-loop) vs pandas (reconstruction) summation orders differ at
         # ~1e-7 relative -> exactness is only to float32 precision.
-        assert qh == pytest.approx(float(held_exp.loc[nid]), rel=1e-6, abs=1e-3)
+        assert qh == pytest.approx(float(associated_exp.loc[nid]), rel=1e-6, abs=1e-3)
         assert mm == pytest.approx(float(mass_exp.loc[nid]), rel=1e-6, abs=1e-3)
         # capacity is qh/denom read from the SAME emitted row -> exact.
         if denom > 0:
@@ -533,10 +533,10 @@ def test_end_to_end_capacity_formulas_exact(fake_img, monkeypatch):
 
 
 def test_capacity_known_fraction_constant_qki(fake_img_constant_qki, monkeypatch):
-    """KNOWN qki_held / KNOWN total -> KNOWN %. With QKI CONSTANT (= C) across the
-    whole image the constant cancels in the ratio:
-      qki_held      = C * Sum(footprint_area)
-      nuclear_total = C * nuclear_area_px
+    """KNOWN qki_associated / KNOWN total -> KNOWN %. With QKI CONSTANT (= C) across
+    the whole image the constant cancels in the ratio:
+      qki_associated = C * Sum(footprint_area)
+      nuclear_total  = C * nuclear_area_px
       -> capacity   = Sum(footprint_area) / nuclear_area_px   (C-independent, exact)
     so capacity is a pure geometric fraction we recompute independently."""
     cfg = _base_cfg()
@@ -559,11 +559,11 @@ def test_capacity_known_fraction_constant_qki(fake_img_constant_qki, monkeypatch
             continue
         nuc_area = float(nr["nucleus_area_px"])
         denom = float(nr["nuclear_total_intensity_rna2"])
-        qh = float(nr["qki_held_by_miat"])
+        qh = float(nr["qki_associated_with_miat"])
         # Constant QKI: recovered C == the emitted nuclear total / nuclear area.
         C = denom / nuc_area
         assert C == pytest.approx(777.0, rel=1e-6, abs=1e-3)
-        # held == C * sum(footprint_area); capacity == sum(footprint_area)/nuc_area.
+        # associated == C * sum(footprint_area); capacity == sum(footprint_area)/nuc_area.
         assert qh == pytest.approx(C * float(area_sum.loc[nid]), rel=1e-6, abs=1e-3)
         assert float(cap) == pytest.approx(float(area_sum.loc[nid]) / nuc_area,
                                            rel=1e-6, abs=1e-9)
@@ -577,9 +577,9 @@ def test_defaults_off_no_capacity_columns(fake_img, monkeypatch):
     cfg = _base_cfg()
     cfg.foci.compute_partner_intensity = True  # footprint OFF (default)
     res = _run(cfg, fake_img, monkeypatch)
-    for col in ("qki_held_by_miat", "miat_mass_nuclear", "capacity_qki_at_miat"):
+    for col in ("qki_associated_with_miat", "miat_mass_nuclear", "capacity_qki_at_miat"):
         assert col not in res.nuclei.columns
-    for key in ("mean_qki_held_by_miat", "mean_miat_mass_nuclear",
+    for key in ("mean_qki_associated_with_miat", "mean_miat_mass_nuclear",
                 "mean_capacity_qki_at_miat"):
         assert key not in res.per_image
     assert not any("capacity" in c for c in res.nuclei.columns)
