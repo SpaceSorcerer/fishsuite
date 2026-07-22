@@ -1,0 +1,205 @@
+# ============================================================================
+# H9 hESC 100x — MIAT KD ASO — 05-05-2026 SESSION (potential biological rep)
+# OBJECTIVE AUTOFOCUS Z-WINDOW — method cloned from the FIXED 05-08 re-run
+# (h9_miat_kd_rerun_iwfocus_2026-05-31.yaml). 2026-05-31.
+# ============================================================================
+# Committee-critical: analyze Brian's EARLIER 05-05-2026 H9 MIAT RNA-FISH
+# session as a potential additional biological replicate of NT-ASO (WT) vs
+# MIAT-KD-ASO. The ANALYSIS METHOD is held BYTE-IDENTICAL to the fixed 05-08
+# re-run so this session is directly poolable: same objective autofocus_maxproj
+# z-window (intensity-weighted, fixed-N=10, central-fraction 0.6), same cellpose
+# cpsam ds2 diam200, same floor 800, same bigfish 0.5 / 100 nm, same nucleolus,
+# same detect_in_sec_only. The ONLY differences vs 05-08 are:
+#   (1) INPUT FOLDER (this 05-05 session),
+#   (2) CHANNEL MAP — 05-05 is a 2-CHANNEL acquisition (no 561), so DAPI is
+#       ch1 here, not ch2 as in the 3-channel 05-08 run (VERIFIED below), and
+#   (3) CONDITION ROSTER — 05-05 is a single FLAT folder whose condition is
+#       encoded in the FILENAME (NT / MIAT-KD / Sec-only), assigned via the new
+#       conditions.filename_conditions substring map (VERIFIED by dry-run).
+# Everything else is identical to the 05-08 preset.
+#
+# ── VERIFIED CHANNEL MAP + Z (from ACTUAL .vsi metadata, bioio, 2026-05-31) ──
+# Representative files NT_02 / MIAT-KD_05 / Sec-only_10 ALL report:
+#   dims  : T1 C2 Z35 Y2304 X2304   (TWO channels, 35 z-planes)
+#   chans : ['640 CSU', '405 CSU']  -> ch0 = 640 (MIAT FISH), ch1 = 405 (DAPI)
+#   voxel : 0.065 µm/px XY, 0.21 µm z  (~7.1 µm stack over 35 planes)
+# => dapi: 1, rna: 0  (NOT dapi:2 — that was the 3-channel 05-08 layout).
+# Prior renders were NOT trusted; this is read straight from the VSI metadata.
+#
+# ── INPUT PATH NOTE (nested-folder quirk — IMPORTANT) ────────────────────────
+# The 05-05 session folder
+#   F:\Raw Images\H9-MIAT-KD-ASO\H9-MIAT-KD-ASO-05-05-2026
+# contains a NESTED, NON-underscore-prefixed subfolder of the SAME name
+#   ...\H9-MIAT-KD-ASO-05-05-2026\H9-MIAT-KD-ASO-05-05-2026
+# which is a full duplicate of the 13 .vsi (the per-image "_..._/" companion
+# folders and "_temp" are underscore-prefixed and auto-skipped). Because
+# discover_inputs goes into SUBFOLDER mode whenever ANY non-"_" subdir exists,
+# pointing -i at the PARENT folder makes it descend into that nested duplicate
+# and assign every file ONE condition ("H9-MIAT-KD-ASO-05-05-2026"). To get
+# clean FLAT-mode discovery (and correct filename-based conditions), launch
+# with -i pointed at the NESTED folder, which itself has only "_"-prefixed
+# children -> flat mode over its 13 .vsi. VERIFIED by dry-run:
+#   -i ...\H9-MIAT-KD-ASO-05-05-2026\H9-MIAT-KD-ASO-05-05-2026
+#     -> 4 NT ASO / 5 KD ASO / 4 Sec-Only (13 total).
+#
+# ── DATA SCOPE ──────────────────────────────────────────────────────────────
+# Human / Homo sapiens (H9 hESC). Single RNA target = MIAT (lncRNA, 640 probe).
+# rna_only (no coloc partner). RAW .vsi only — skip ".oex" and the "_..._/"
+# companion folders (both auto-skipped by discovery's "_"/extension filter).
+#
+# ── INPUT / OUTPUT ──────────────────────────────────────────────────────────
+# Input dir  : F:\Raw Images\H9-MIAT-KD-ASO\H9-MIAT-KD-ASO-05-05-2026\H9-MIAT-KD-ASO-05-05-2026
+# Output dir : pass at launch, e.g.
+#   F:\Image Analysis Work\H9-MIAT-KD\RERUN_0505_IWFOCUS_floor800_2026-05-31
+#   (NEW timestamped folder — never overwrite a prior run; Brian's rule.)
+# ============================================================================
+
+experiment:
+  name: "H9_MIAT_KD_ASO_0505_iwfocus_2026-05-31"
+  description: "H9 hESC MIAT NT-ASO (WT) vs MIAT-KD-ASO 100x confocal — 05-05-2026 session as a potential biological replicate. OBJECTIVE autofocus_maxproj z-window (intensity-weighted, fixed-N=10, central-fraction 0.6) cloned from the fixed 05-08 re-run. 2-channel acquisition (ch0=640 MIAT, ch1=405 DAPI). cellpose cpsam ds2 diam200, rna_only, floor 800. Flat folder; conditions assigned from filename substrings."
+  cell_line: "H9 hESC"
+
+conditions:
+  # FLAT folder — condition is encoded in the FILENAME (NT / MIAT-KD / Sec-only).
+  # mode stays "subfolders" (its only effect here is metadata in run_config.json;
+  # the actual assignment is driven by filename_conditions + sec_only_files below,
+  # which work in flat mode regardless of `mode`).
+  mode: subfolders
+  subfolder_conditions: {}
+  sec_only_folders: []
+  # Sec-only controls: filename contains "Sec-only" -> forced "Sec-Only" + sec_only=True.
+  sec_only_files:
+    - "sec-only"
+  # NT vs KD split by filename substring (first match wins; evaluated AFTER the
+  # sec_only test so a sec-only file can't be relabelled).
+  # *** LABEL SWAP — 2026-05-31, Brian-confirmed acquisition labeling error ***
+  # In this early 05-05 session the NT and MIAT-KD tubes were SWAPPED at the
+  # microscope (Brian confirmed from the bench; same early-session inexperience
+  # behind the hand-picked planes + KD_07). The FILENAME labels are therefore
+  # inverted vs the true biology. CORRECTED mapping below (raw files NOT renamed;
+  # only the condition assignment is corrected — documented here + for methods):
+  #   files named "-NT_"      are TRUE MIAT-KD  -> "KD ASO"   (low MIAT, ~16 spots)
+  #   files named "-MIAT-KD_" are TRUE NT       -> "NT ASO"   (high MIAT, ~26 spots)
+  # With this correction 05-05 reproduces the knockdown (true NT 26.4 -> true KD
+  # 16.3 spots/nuc, -38%), matching the 05-08 session (-39%).
+  filename_conditions:
+    - ["-nt_", "KD ASO"]
+    - ["-miat-kd_", "NT ASO"]
+  condition_order: ["Sec-Only", "NT ASO", "KD ASO"]
+  min_nuclei_for_stats: 6
+
+channels:
+  analysis_mode: rna_only      # single RNA = MIAT; DAPI; NO coloc partner
+  dapi: 1                      # ch1 = 405 CSU DAPI (2-channel layout — VERIFIED)
+  rna: 0                       # ch0 = 640 CSU MIAT FISH probe (VERIFIED)
+  antibody: -1
+  dapi_label: "DAPI"
+  rna_label: "MIAT-640"
+  dapi_lut: "blue"
+  rna_lut: "yellow"            # 640/Cy5 -> yellow (Brian's LUT convention)
+
+z_stack:
+  # ── OBJECTIVE WINDOWED MAX-PROJECTION — IDENTICAL to the fixed 05-08 re-run.
+  # Per-image DAPI focus-window detection, then MIP that SAME window for DAPI
+  # (segmentation) and MIAT (spot detection). NO file_overrides anywhere.
+  mode: autofocus_maxproj
+  focus_metric: variance_of_laplacian
+  # FIXED-N=10 centered window (matched MIP integration depth across images,
+  # same as 05-08). 35-plane stack here: 10-plane window fits with margin.
+  focus_window_fixed_n_slices: 10
+  # Min-intensity pre-filter (belt-and-suspenders; H9 stacks are bright
+  # throughout so it disqualifies nothing — the real fix is the two knobs below).
+  focus_min_intensity_frac_of_peak: 0.3
+  focus_threshold_frac: 0.5
+  focus_window_min_slices: 3
+  focus_window_max_slices: 0
+  # INTENSITY-WEIGHTED FOCUS (Option B) — REQUIRED: plain var-of-laplacian
+  # picks stack-edge planes on these bright H9 DAPI stacks. Pulls the peak to
+  # the bright+sharp nuclear plane.
+  autofocus_intensity_weighted: true
+  # CENTRAL-FRACTION PEAK GUARD — restricts the focus-PEAK search to the middle
+  # 60% of the (35-plane) stack so the window anchor can never be a true edge
+  # plane. With fixed-N=10, a central peak keeps the window fully mid-stack.
+  focus_central_fraction: 0.6
+
+nuclei:
+  # FIXED vs the 05-08 re-run — held identical so the sessions are poolable.
+  backend: cellpose
+  cellpose_model_type: cpsam
+  cellpose_diameter_px: 200.0
+  cellpose_flow_threshold: 0.4
+  cellpose_cellprob_threshold: 0.0
+  cellpose_downsample_factor: 2.0
+  # DirectML GPU (Brian's AMD RX 6750 XT). Requires fishproc_dml env.
+  # If launching from a CPU-only env, change to "cpu" — no other edits needed.
+  cellpose_device: directml
+  min_area_px: 16000
+  max_area_px: 1000000000000.0
+  exclude_border: true
+  border_margin_px: 10
+  stardist_model: 2D_versatile_fluo
+  prob_threshold: 0.5
+  nms_threshold: 0.5
+  stardist_gauss_sigma: 3.0
+  stardist_postprocess: none
+  label_smoothing_radius_px: 0
+  reject_ghost_nuclei: false
+
+pixel_coloc:
+  threshold_mode: mad
+  threshold_scope: batch
+  k_mad: 2.5
+
+foci:
+  enabled: true
+  backend: bigfish
+  bigfish_voxel_size_nm: 0.0
+  bigfish_voxel_z_nm: 0.0
+  bigfish_spot_radius_nm: 100.0
+  bigfish_spot_radius_z_nm: 300.0
+  threshold_multiplier: 0.5
+  only_nuclear_spots: false
+  min_sep_px: 1
+  # Detect + report spots in secondary-only controls (background QC; reported,
+  # never subtracted). FIXED vs the 05-08 re-run.
+  detect_in_sec_only: true
+
+cytoplasm:
+  enabled: true
+  voronoi_max_expansion_px: 80
+  measure_nc_ratio: true
+
+nucleolus:
+  enabled: true
+  intra_nuclear_percentile: 25.0
+  min_area_um2: 1.0
+  max_area_frac_of_nucleus: 0.6
+  closing_radius_px: 2
+
+output:
+  save_qc_overlays: true
+  save_per_image_csv: true
+  save_masks: true
+  save_publication_images: true
+  save_publication_tifs: false
+  pub_contrast_mode: manual
+  # FLOOR 800 — LOCKED (Brian); manual_rna_min is the analysis spot floor (applied
+  # to spots) and is UNCHANGED — the contrast edits below are DISPLAY-only and do
+  # NOT affect the knockdown numbers.
+  # 2026-05-31 Brian: 05-05 publication images had DAPI over-exposed + MIAT too dim.
+  # 05-05 is a brighter 2-ch acquisition than 05-08, so the inherited ceilings were
+  # wrong. Measured per-image: DAPI p99.9~6900, MIAT p99.9~2000. Fix DISPLAY only:
+  #   manual_dapi_max 3200 -> 7000 (DAPI no longer blown out)
+  #   manual_rna_max  4200 -> 2800 (MIAT spots map brighter)
+  manual_rna_min: 800.0
+  manual_rna_max: 2800.0
+  manual_dapi_min: 300.0
+  manual_dapi_max: 7000.0
+  apply_pub_contrast_floor_to_analysis: false
+  apply_pub_contrast_floor_to_spots: true
+  prefix: ""
+  scalebar_um: 25.0
+  scalebar_font_px: 52
+
+parallel:
+  workers: auto

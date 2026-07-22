@@ -1,0 +1,193 @@
+# ============================================================================
+# UNDIFFERENTIATED hESC (g2) — MIAT OVEREXPRESSION RNA-FISH — rna_only (2026-06-03)
+# ============================================================================
+# Brian's MIAT-overexpression FISH in undifferentiated hESC (H9-type "g2" line).
+# Dox-inducible MIAT transgene:
+#   * g2 +Dox  (wDOX)  = MIAT OVEREXPRESSION (OE)   -> expect MUCH more MIAT
+#   * g2 noDox (noDOX) = CONTROL (no induction)     -> low baseline MIAT
+# Single FISH target quantified = MIAT (640 probe). Cloned from the committee-
+# grade H9 MIAT-KD objective-z method (h9_miat_kd_rerun_iwfocus_2026-05-31.yaml):
+# rna_only, objective autofocus_maxproj windowed MIP, cellpose cpsam ds2,
+# batch MAD coloc, bigfish 0.5/100 nm. Only the per-dataset facts change
+# (pixel size, z-depth, nucleus diameter, conditions, floor).
+#
+# Human / Homo sapiens (undifferentiated hESC). HARD RULE 9 satisfied.
+#
+# ── CHANNELS (VSI-verified, scene "001 640 CSU, 561 CSU, 405 CSU") ──────────
+#   ch0 = 640 CSU  -> MIAT FISH probe   -> rna   (yellow LUT; 640 -> yellow)
+#   ch1 = 561 CSU  -> panQKI IF         -> NOT ANALYZED THIS RUN (QKI partner;
+#                                          note for a later rna_protein run)
+#   ch2 = 405 CSU  -> DAPI              -> dapi  (blue LUT)
+# This run is MIAT-ONLY (rna_only). QKI (ch1/561) is deliberately untouched.
+#
+# ── ACQUISITION (VSI metadata) ──────────────────────────────────────────────
+#   3 channels, 78 z-planes, 1152x1152, pixel = 0.13 um/px XY, 0.21 um Z.
+#   100x confocal (CSU spinning disk). Thick stack (78 z) -> windowed MIP.
+#
+# ── NUCLEUS DIAMETER (scaled from H9) ───────────────────────────────────────
+#   H9 used cellpose_diameter_px=200 at 0.065 um/px (= 13.0 um physical nucleus).
+#   Here pixel is 0.13 um/px (2x coarser) -> the SAME 13 um nucleus = ~100 px.
+#   -> cellpose_diameter_px: 100.0. min_area scaled to match (H9 16000 px @
+#   0.065 um = 67.6 um^2; at 0.13 um/px that is ~4000 px -> set 4000 conservative
+#   floor; raise after first run if border debris leaks in).
+#
+# ── Z-METHOD (objective windowed MIP, autofocus_maxproj — LOCKED) ────────────
+#   Per-image DAPI focus window, then MIP that SAME window for DAPI (seg) +
+#   MIAT (spots). focus_window_fixed_n_slices: 10 (constant integration depth),
+#   autofocus_intensity_weighted: true (thick-stack fix — plain var-of-Laplacian
+#   picks stack-edge garbage), focus_central_fraction: 0.6 (peak-search guard so
+#   the anchor is never a true edge plane). NO file_overrides / rna_start_slice
+#   -> the RNA channel uses the SAME objective window as DAPI. After the run,
+#   read the per-image "[autofocus_maxproj] ... window=[a,b]" log lines and
+#   confirm each window lands MID-stack (near z ~30-50 of 78), not at z=1/z=78.
+#
+# ── FLOOR (STARTING value — to be tuned on the BRIGHT OE per Sam's method) ───
+#   MIAT ch0 central-10-plane MIP intensity percentiles (raw uint16):
+#     Control (noDOX): p50 ~72, p95 ~148, p99 ~227, p99.9 ~1058
+#     OE      (wDOX):  p50 ~120, p95 ~325, p99 ~1095, p99.9 ~2853
+#   Control background sits ~p95 130-166; genuine Control puncta only emerge in
+#   the p99.9 tail (~1000). A floor of 300 sits ABOVE Control background but
+#   BELOW the Control puncta tail -> captures the LOW baseline MIAT in noDOX
+#   while excluding noise; OE (far brighter) is captured abundantly. This is a
+#   STARTING floor only -> RE-TUNE on the bright OE condition after the first
+#   run (Sam's method: tune where OE puncta are crisp + OE cytoplasm minimal,
+#   then apply the SAME floor to Control). manual_rna_max=4000 ~= OE p99.9 for
+#   display headroom (does not gate detection).
+#
+# ── INPUT / OUTPUT ──────────────────────────────────────────────────────────
+#   Input dir : F:\Raw Images\121925_MIAT-QKI_confocal_UD_MIAT OE v WT\OneDrive_1_6-3-2026
+#               (subfolder-mode: ...noDOX -> Control, ...wDOX -> MIAT OE)
+#   input_file_subset pins ONLY the 4 real .vsi (the C1/C2/C3 MAX .tif exports
+#   + overlay RGB .tif in each folder are derived previews -> EXCLUDED; the
+#   companion "_..._" data folders are auto-skipped by discover_inputs).
+#   Output dir: pass a NEW timestamped folder at launch (never overwrite).
+#
+#   n is SMALL: 2 OE + 2 Control images. This is a scoping/first-pass run;
+#   per-IMAGE means are the replicate unit (n=2 vs n=2) -> report honestly,
+#   not a powered comparison. More fields would be needed for statistics.
+# ============================================================================
+
+experiment:
+  name: "MIAT_OE_UD_g2_rna_only_2026-06-03"
+  description: "Undifferentiated hESC (g2) Dox-inducible MIAT overexpression RNA-FISH. g2 +Dox = MIAT OE, g2 noDox = Control. rna_only MIAT(ch0/640)+DAPI(ch2/405); QKI (ch1/561) present but NOT analyzed. 100x confocal, 0.13 um/px, 78 z. Objective autofocus_maxproj z-window (fixed-N=10, intensity-weighted, central 0.6). cellpose cpsam ds2 diam100. Starting floor 300 (tune on OE)."
+  cell_line: "undifferentiated hESC (H9-type g2)"
+
+conditions:
+  mode: subfolders
+  subfolder_conditions:
+    "121925_MIAT-QKI_confocalUD-g2-noDOX": "Control"
+    "121925_MIAT-QKI_confocalUD-g2-wDOX": "MIAT OE"
+  sec_only_folders: []
+  sec_only_files: []
+  condition_order: ["Control", "MIAT OE"]
+  min_nuclei_for_stats: 6
+
+# Pin ONLY the 4 real .vsi files (basenames). Excludes the derived single-channel
+# C1/C2/C3 MAX .tif exports and the overlay RGB .tif in each folder, which the
+# .tif extension match would otherwise pull in. Companion "_..._" folders are
+# already skipped by discover_inputs (leading-underscore rule).
+input_file_subset:
+  # --- Control (noDOX) ---
+  - "UD-MIAT-FISH-QKI-IF-g2-no Dox_03 (decon).vsi"
+  - "UD-MIAT-FISH-QKI-IF-g2-no Dox_04 (decon).vsi"
+  # --- MIAT OE (wDOX) ---
+  - "UD-MIAT-FISH-QKI-IF-g2-Dox_01 (decon).vsi"
+  - "UD-MIAT-FISH-QKI-IF-g2-Dox_02 (decon).vsi"
+
+channels:
+  analysis_mode: rna_only      # single RNA = MIAT; DAPI; QKI(ch1) NOT analyzed
+  dapi: 2                      # ch2 = 405 CSU (DAPI)
+  rna: 0                       # ch0 = 640 CSU (MIAT FISH probe)
+  antibody: -1                 # QKI/561 (ch1) left OUT this run; -> rna_protein later
+  dapi_label: "DAPI"
+  rna_label: "MIAT-640"
+  dapi_lut: "blue"
+  rna_lut: "yellow"            # 640 -> yellow (Brian's LUT convention)
+
+z_stack:
+  mode: autofocus_maxproj
+  focus_metric: variance_of_laplacian
+  focus_window_fixed_n_slices: 10
+  focus_min_intensity_frac_of_peak: 0.3
+  focus_threshold_frac: 0.5
+  focus_window_min_slices: 3
+  focus_window_max_slices: 0
+  autofocus_intensity_weighted: true   # REQUIRED on thick 78-plane stacks
+  focus_central_fraction: 0.6          # peak-search guard (no edge anchor)
+  # NO file_overrides -> RNA uses the SAME objective window as DAPI.
+
+nuclei:
+  backend: cellpose
+  cellpose_model_type: cpsam
+  cellpose_diameter_px: 100.0          # 13 um nucleus @ 0.13 um/px (scaled from H9 200@0.065)
+  cellpose_flow_threshold: 0.4
+  cellpose_cellprob_threshold: 0.0
+  cellpose_downsample_factor: 2.0
+  cellpose_device: directml            # AMD RX 6750 XT; requires fishproc_dml env
+  min_area_px: 4000                    # scaled from H9 16000 px (0.065 um) -> ~67.6 um^2
+  max_area_px: 1000000000000.0
+  exclude_border: true
+  border_margin_px: 10
+  stardist_model: 2D_versatile_fluo
+  prob_threshold: 0.5
+  nms_threshold: 0.5
+  stardist_gauss_sigma: 3.0
+  stardist_postprocess: none
+  label_smoothing_radius_px: 0
+  reject_ghost_nuclei: false
+
+pixel_coloc:
+  threshold_mode: mad
+  threshold_scope: batch
+  k_mad: 2.5
+
+foci:
+  enabled: true
+  backend: bigfish
+  bigfish_voxel_size_nm: 0.0
+  bigfish_voxel_z_nm: 0.0
+  bigfish_spot_radius_nm: 100.0
+  bigfish_spot_radius_z_nm: 300.0
+  threshold_multiplier: 0.5
+  only_nuclear_spots: false
+  min_sep_px: 1
+  detect_in_sec_only: false            # no sec-only controls in this dataset
+
+cytoplasm:
+  enabled: true
+  voronoi_max_expansion_px: 40         # ~half the H9 px expansion (2x coarser pixel)
+  measure_nc_ratio: true
+
+nucleolus:
+  enabled: true
+  intra_nuclear_percentile: 25.0
+  min_area_um2: 1.0
+  max_area_frac_of_nucleus: 0.6
+  closing_radius_px: 2
+
+output:
+  save_qc_overlays: true
+  save_per_image_csv: true
+  save_masks: true
+  save_publication_images: true
+  save_publication_tifs: false
+  pub_contrast_mode: manual
+  # 2026-06-03 Brian's eyeballed 640/MIAT settings on these decon images:
+  # floor 225 / max 3108. 225 sits right at the Control p99 (~227) so the
+  # EXPECTED baseline MIAT in g2-noDox IS captured (do NOT over-floor it — there
+  # is real control signal); OE is far brighter. (QKI 561 for the LATER coloc
+  # run: ~794-2799 min/max — not used in this rna_only run.)
+  manual_rna_min: 225.0
+  manual_rna_max: 3108.0
+  manual_dapi_min: 300.0
+  manual_dapi_max: 3200.0
+  apply_pub_contrast_floor_to_analysis: false
+  apply_pub_contrast_floor_to_spots: true
+  # rna_intensity_threshold left UNSET -> defaults to the spot floor (225), so
+  # the thresholded-intensity-in-compartments columns populate.
+  prefix: ""
+  scalebar_um: 25.0
+  scalebar_font_px: 52
+
+parallel:
+  workers: auto

@@ -1,0 +1,147 @@
+# H9 hESC 100x — MIAT KD ASO (2026-05-08 dataset) — CELLPOSE nuclei backend
+# *** DIRECTML GPU VARIANT *** of h9_miat_kd_aso_cellpose_floor500_no07_no11.yaml.
+# The ONLY difference vs that CPU preset is nuclei.cellpose_device: directml
+# (everything else byte-identical) so the GPU run is a fair A/B against the
+# CPU baseline at F:\Image Analysis Work\H9-MIAT-KD\CELLPOSE_floor500_no07_no11.
+# Requires the fishproc_dml env (torch 2.4.1 + torch-directml). Run dir:
+# CELLPOSE_floor500_no07_no11_DIRECTML.
+# LOW-FLOOR VARIANT (2026-05-27, Brian): manual_rna_min 800 -> 500 to surface
+# more dim real MIAT signal. Excludes _07 (KD extreme outlier — highest total
+# RNA mass of any image) and _11 (the one secondary-only field that carries
+# real background; at a 500 floor its nonspecific creep is largest, so it is
+# dropped for this run). _06 remains shelved (doubtful provenance).
+# Run dir convention: CELLPOSE_floor500_no07_no11. Run-specific config — NOT committed.
+#
+# Everything else is byte-identical to the locked preset
+# (h9_miat_kd_aso_cellpose.yaml): cellpose cpsam diameter 200 + downsample 2,
+# per-channel z (DAPI single-z, RNA maxproj over Brian's windows), nucleolus on,
+# batch pixel-coloc threshold, sec-only detection on.
+
+experiment:
+  name: "H9_MIAT_KD_ASO_cellpose_floor500_no07_no11_2026-05-27"
+  description: "H9 hESC MIAT NT ASO vs MIAT KD ASO 100x — cellpose cpsam nuclei; RNA spot floor 500; excl _07 (KD outlier) + _11 (high sec-only)"
+  cell_line: "H9 hESC"
+
+conditions:
+  mode: subfolders
+  subfolder_conditions:
+    Folder_NT: "NT ASO"
+    Folder_MIATKD: "KD ASO"
+    Folder_KD-2only: "Sec-Only"
+    Folder_NT-2only: "Sec-Only"
+  sec_only_folders:
+    - Folder_KD-2only
+    - Folder_NT-2only
+  sec_only_files: []
+  condition_order: ["Sec-Only", "NT ASO", "KD ASO"]
+  min_nuclei_for_stats: 6
+
+# 9-image subset: _06 shelved (doubtful provenance), _07 excluded (KD extreme
+# outlier), _11 excluded (high secondary-only background). Raw files untouched.
+input_file_subset:
+  - "H9-MIAT-ASOs-_02.vsi"
+  - "H9-MIAT-ASOs-_03.vsi"
+  - "H9-MIAT-ASOs-_04.vsi"
+  - "H9-MIAT-ASOs-_05.vsi"
+  - "H9-MIAT-ASOs-_08.vsi"
+  - "H9-MIAT-ASOs-_09.vsi"
+  - "H9-MIAT-ASOs-_10.vsi"
+  - "H9-MIAT-ASOs-_12.vsi"
+  - "H9-MIAT-ASOs-_13.vsi"
+
+channels:
+  analysis_mode: rna_only
+  dapi: 2
+  rna: 0
+  antibody: -1
+  dapi_label: "DAPI"
+  rna_label: "MIAT-640"
+
+z_stack:
+  mode: single
+  # Per-channel z: DAPI segments on single_slice (clean nuclei); RNA spots on a
+  # MAXPROJ over [rna_start_slice, rna_end_slice] (Brian's v11 windows).
+  file_overrides:
+    "H9-MIAT-ASOs-_02.vsi": { single_slice: 12, rna_start_slice: 7,  rna_end_slice: 16 }
+    "H9-MIAT-ASOs-_03.vsi": { single_slice: 19, rna_start_slice: 14, rna_end_slice: 23 }
+    "H9-MIAT-ASOs-_04.vsi": { single_slice: 15, rna_start_slice: 10, rna_end_slice: 19 }
+    "H9-MIAT-ASOs-_05.vsi": { single_slice: 15, rna_start_slice: 10, rna_end_slice: 19 }
+    "H9-MIAT-ASOs-_06.vsi": { single_slice: 11, rna_start_slice: 6,  rna_end_slice: 15 }
+    "H9-MIAT-ASOs-_07.vsi": { single_slice: 13, rna_start_slice: 8,  rna_end_slice: 17 }
+    "H9-MIAT-ASOs-_08.vsi": { single_slice: 14, rna_start_slice: 9,  rna_end_slice: 18 }
+    "H9-MIAT-ASOs-_09.vsi": { single_slice: 18, rna_start_slice: 13, rna_end_slice: 22 }
+    "H9-MIAT-ASOs-_10.vsi": { single_slice: 14, rna_start_slice: 9,  rna_end_slice: 18 }
+    "H9-MIAT-ASOs-_11.vsi": { single_slice: 9,  rna_start_slice: 4,  rna_end_slice: 13 }
+    "H9-MIAT-ASOs-_12.vsi": { single_slice: 15, rna_start_slice: 10, rna_end_slice: 19 }
+    "H9-MIAT-ASOs-_13.vsi": { single_slice: 12, rna_start_slice: 7,  rna_end_slice: 16 }
+
+nuclei:
+  backend: cellpose
+  cellpose_model_type: cpsam
+  cellpose_diameter_px: 200.0
+  cellpose_flow_threshold: 0.4
+  cellpose_cellprob_threshold: 0.0
+  cellpose_downsample_factor: 2.0
+  # GPU VARIANT: the ONLY field that differs from the CPU baseline preset.
+  cellpose_device: directml
+  min_area_px: 16000
+  max_area_px: 1000000000000.0
+  exclude_border: true
+  border_margin_px: 10
+  stardist_model: 2D_versatile_fluo
+  prob_threshold: 0.5
+  nms_threshold: 0.5
+  stardist_gauss_sigma: 3.0
+  stardist_postprocess: none
+  label_smoothing_radius_px: 0
+
+pixel_coloc:
+  threshold_mode: mad
+  threshold_scope: batch
+  k_mad: 2.5
+
+foci:
+  enabled: true
+  backend: bigfish
+  bigfish_voxel_size_nm: 0.0
+  bigfish_voxel_z_nm: 0.0
+  bigfish_spot_radius_nm: 100.0
+  bigfish_spot_radius_z_nm: 300.0
+  threshold_multiplier: 0.5
+  only_nuclear_spots: false
+  min_sep_px: 1
+  detect_in_sec_only: true
+
+cytoplasm:
+  enabled: true
+  voronoi_max_expansion_px: 80
+  measure_nc_ratio: true
+
+nucleolus:
+  enabled: true
+  intra_nuclear_percentile: 25.0
+  min_area_um2: 1.0
+  max_area_frac_of_nucleus: 0.6
+  closing_radius_px: 2
+
+output:
+  save_qc_overlays: true
+  save_per_image_csv: true
+  save_masks: true
+  save_publication_images: true
+  pub_contrast_mode: manual
+  # 2026-05-27 Brian: RNA spot floor LOWERED 800 -> 500 to keep more dim real
+  # MIAT signal. The spot floor is applied in rna_only (fixed parity bug). At
+  # 500 more secondary-only background passes, which is why _11 (high sec-only)
+  # is excluded for this run; _10/_12 sec-only retained as the background QC.
+  manual_rna_min: 500.0
+  manual_rna_max: 4200.0
+  manual_dapi_min: 300.0
+  manual_dapi_max: 3200.0
+  apply_pub_contrast_floor_to_spots: true
+  prefix: ""
+  scalebar_um: 25.0
+  scalebar_font_px: 52
+
+parallel:
+  workers: auto

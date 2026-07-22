@@ -1,0 +1,287 @@
+# ============================================================================
+# MIAT x QKI ASSOCIATION (capacity) — UNDIFFERENTIATED hESC (ALL 3 ARMS x ±Dox)
+# Date: 2026-07-08  |  Fable 5 (Brian authorized) for MASTER CONTROL
+# ============================================================================
+# PURPOSE
+#   ASSOC re-run of the MIAT-OE (UD, H9 hESC, MIAT-CRISPRa) coloc dataset. This
+#   is a VERBATIM clone of miat_qki_coloc_ud_ALLARMS_PLAIN_strictMIAT_2026-06-05
+#   (every channel / z / nuclei / pixel-coloc / spot-coloc / display / parallel
+#   knob is identical and correct for this data), with the foci block EXTENDED
+#   to emit the pipeline-native MIAT x QKI ASSOCIATION + sponge-CAPACITY metrics
+#   (footprint enrichment) AND the rotation-null "proper background" control for
+#   grammar-parity with the KD coloc presets.
+#
+#   ARMS (Dox-inducible MIAT transgene; CRISPRa via dCas9-VPR):
+#     * g2   = MIAT-targeting guide  -> +Dox INDUCES MIAT (the OE condition)
+#     * Nog  = non-targeting control guide  (no MIAT induction; ±Dox both ctrl)
+#     * VPR  = VPR/dCas9-only control       (no MIAT induction; ±Dox both ctrl)
+#   Only "g2 wDox" is MIAT-OE; the other 5 are baseline/control. Human / Homo
+#   sapiens (undifferentiated hESC, dCas9-VPR). HARD RULE 9 satisfied.
+#
+# ── CHANNELS (VSI-verified; OE channel order — FLIPPED vs the KD dataset) ────
+#   ch0 = 640 CSU -> MIAT FISH (RNA)   -> rna       (YELLOW LUT)
+#   ch1 = 561 CSU -> QKI IF (protein)  -> antibody  (MAGENTA LUT)
+#   ch2 = 405 CSU -> DAPI              -> dapi      (BLUE LUT)
+#
+# ── ACQUISITION ─────────────────────────────────────────────────────────────
+#   3 channels, ~78 z-planes, 1152x1152, 0.13 um/px XY, 0.21 um Z, 100x. The
+#   pipeline collapses the real 78-plane stack to the single in-focus plane
+#   (mode=autofocus, intensity-weighted, central 0.6, z8-70) — do NOT strip z.
+#
+# ── WHAT'S NEW vs the 2026-06-05 base (foci: block ONLY) ─────────────────────
+#   + compute_footprint_enrichment: true  -> per-spot qki_at_miat_footprint /
+#       miat_footprint_area_px / qki_footprint_enrichment (spot_metrics.csv,
+#       rna1 rows) AND per-nucleus qki_assoc_ratio_continuous / coloc_moc /
+#       coloc_icq / qki_at_miat_foci_enrichment / qki_held_by_miat /
+#       miat_mass_nuclear / capacity_qki_at_miat (nuclei_metrics.csv). All
+#       threshold-free, floor-robust, AT-THE-PUNCTUM (FWHM footprint) —
+#       replaces the abundance-conflated binary "QKI-associated MIAT spots".
+#   + assoc_qki_floor: null (OFF)  -> OE QKI is 561 at a DIFFERENT intensity
+#       scale + there is NO secondary-only control in this dataset to calibrate
+#       a genuine-QKI floor against, so the floor-gated variant is NOT emitted;
+#       we rely on the floor-free continuous ratio + capacity metrics.
+#   + compute_partner_rotation_null: true (n=1000, seed=0, save draws) -> the
+#       literature-standard co-distribution control (rotation of the MIAT
+#       constellation vs the QKI field). The base OE preset lacked it; added
+#       here for parity with the KD proper-background grammar.
+#   Everything else below is UNCHANGED from the 2026-06-05 base — see that
+#   preset's header for the full rationale on each knob (filename_conditions
+#   nesting trap, PLAIN-only subset, strict-MIAT tm=1.0, diffuse-QKI
+#   detect_antibody_spots=false, per_image MAD, manual display floors).
+#
+# ── CONDITIONS / -i STAGING (single-level discovery) ─────────────────────────
+#   Data nested arm\Dox; discover_inputs walks ONE level. -i MUST be a staging
+#   dir of directory-junctions (one per leaf). Use:
+#     -i "E:\Claude\fishsuite\_staging_UD_OE_2026-07-08"
+#   filename_conditions labels all 6 arms from the filenames inside the
+#   junctions; input_file_subset (bare basename) pins the 11 usable PLAIN FOV.
+# ============================================================================
+
+experiment:
+  name: "MIAT_QKI_ASSOC_UD_singleplane_2026-07-08"
+  description: "ASSOC re-run of undifferentiated hESC (dCas9-VPR) MIAT(RNA FISH, ch0/640) x QKI(IF, ch1/561) across ALL THREE guide arms x +/-Dox = 6 conditions, rna_protein, PLAIN (non-decon), strict-MIAT (foci tm=1.0). VERBATIM clone of miat_qki_coloc_ud_ALLARMS_PLAIN_strictMIAT_2026-06-05 with foci EXTENDED: compute_footprint_enrichment=true (per-spot qki_at_miat_footprint/qki_footprint_enrichment + per-nucleus qki_assoc_ratio_continuous/coloc_moc/coloc_icq/qki_at_miat_foci_enrichment/qki_held_by_miat/miat_mass_nuclear/capacity_qki_at_miat), assoc_qki_floor=null (OFF; no sec-only control + 561 scale differs), compute_partner_rotation_null=true (n=1000, seed=0, draws saved). Only g2 wDox is MIAT-OE; Nog/VPR (both Dox) are non-targeting controls. 11 usable plain FOV (plain Nog with-Dox _09 excluded: empty .ets backing in the 06-05 copy). Single in-focus plane (mode=autofocus, intensity-weighted, central 0.6, z8-70). Pixel coloc Pearson/Manders/Li (MAD PER-IMAGE k=2.5) + MIAT x QKI spot pairing 0.3 um + QKI partner-intensity + random-position AND rotation nulls. cellpose cpsam ds2 diam100 directml. Conditions via filename_conditions (nested arm/Dox; -i = junction-staging dir _staging_UD_OE_2026-07-08). pub_contrast_mode=manual (Sam's eye-tuned floors); sections imaged at differing laser power so absolute intensities NOT comparable across arms."
+  cell_line: "undifferentiated hESC (dCas9-VPR; g2 / Nog / VPR arms)"
+  date: "2026-07-08"
+
+conditions:
+  mode: subfolders
+  # AUTHORITATIVE mapping = filename_conditions (encodes BOTH arm and Dox; the
+  # nested folder layout makes subfolder-mode insufficient — see header).
+  # ORDERED, first-match-wins, case-insensitive (core/io.py). Each substring is
+  # the LITERAL on-disk arm+Dox token. g2 +Dox files are "-g2-Dox_" (no "with");
+  # Nog/VPR +Dox are "-with Dox_". noDox files are "-no Dox_". No rule can steal
+  # another's files (verified: 0 cross-assignment).
+  filename_conditions:
+    - ["-g2-no Dox_",    "g2 noDox (control)"]
+    - ["-g2-Dox_",       "g2 wDox (MIAT-OE)"]
+    - ["-Nog-no Dox_",   "Nog noDox (ctrl)"]
+    - ["-Nog-with Dox_", "Nog wDox (ctrl)"]
+    - ["-VPR-no Dox_",   "VPR noDox (ctrl)"]
+    - ["-VPR-with Dox_", "VPR wDox (ctrl)"]
+  # Harmless secondary fallback for the junction-staging case (leaf names alone
+  # can't distinguish arms; filename_conditions always wins for non-sec files).
+  subfolder_conditions: {}
+  sec_only_folders: []
+  sec_only_files: []
+  condition_order:
+    - "g2 noDox (control)"
+    - "g2 wDox (MIAT-OE)"
+    - "Nog noDox (ctrl)"
+    - "Nog wDox (ctrl)"
+    - "VPR noDox (ctrl)"
+    - "VPR wDox (ctrl)"
+  min_nuclei_for_stats: 6
+
+# PLAIN (NON-DECON) only — Brian decision 2026-06-04 (carried from the base
+# preset): the `(decon)` files are inconsistently per-file normalized, poisoning
+# cross-FOV absolute intensity + thresholds; the plain twins are matched across
+# FOV. Pin the PLAIN basenames (no "(decon)") so decon twins are excluded.
+# 11 usable plain FOV (plain Nog "-with Dox_09" dropped: EMPTY .ets backing).
+input_file_subset:
+  # --- g2 noDox (control) ---
+  - "UD-MIAT-FISH-QKI-IF-g2-no Dox_03.vsi"
+  - "UD-MIAT-FISH-QKI-IF-g2-no Dox_04.vsi"
+  # --- g2 wDox (MIAT-OE) ---
+  - "UD-MIAT-FISH-QKI-IF-g2-Dox_01.vsi"
+  - "UD-MIAT-FISH-QKI-IF-g2-Dox_02.vsi"
+  # --- Nog noDox (ctrl) ---
+  - "UD-MIAT-FISH-QKI-IF-Nog-no Dox_07.vsi"
+  - "UD-MIAT-FISH-QKI-IF-Nog-no Dox_08.vsi"
+  # --- Nog wDox (ctrl) ---  (_09 EXCLUDED: empty .ets backing)
+  - "UD-MIAT-FISH-QKI-IF-Nog-with Dox_10.vsi"
+  # --- VPR noDox (ctrl) ---
+  - "UD-MIAT-FISH-QKI-IF-VPR-no Dox_14.vsi"
+  - "UD-MIAT-FISH-QKI-IF-VPR-no Dox_15.vsi"
+  # --- VPR wDox (ctrl) ---
+  - "UD-MIAT-FISH-QKI-IF-VPR-with Dox_11.vsi"
+  - "UD-MIAT-FISH-QKI-IF-VPR-with Dox_12.vsi"
+
+channels:
+  analysis_mode: rna_protein   # MIAT RNA (ch0) x QKI protein (ch1) + DAPI (ch2)
+  dapi: 2                      # ch2 = 405 CSU (DAPI)
+  rna: 0                       # ch0 = 640 CSU (MIAT FISH probe)  [OE order: FLIPPED vs KD]
+  antibody: 1                  # ch1 = 561 CSU (QKI IF / antibody)
+  rna2: -1                     # not used; antibody maps into the coloc slot internally
+  dapi_label: "DAPI"
+  rna_label: "MIAT-640"
+  antibody_label: "QKI-561"
+  dapi_lut: "blue"
+  rna_lut: "yellow"            # 640 -> yellow (Brian's wavelength->LUT convention)
+  antibody_lut: "magenta"      # 561 -> magenta
+
+z_stack:
+  # SINGLE best in-focus plane (NOT maxproj). Spot-detection z is locked to the
+  # segmentation z (the chosen plane) by the rna_protein mode. Real 78-plane
+  # stack collapsed to the in-focus plane — do NOT strip this block.
+  mode: autofocus
+  focus_metric: variance_of_laplacian
+  autofocus_intensity_weighted: true   # REQUIRED on thick 78-plane stacks (edge-plane fix)
+  focus_central_fraction: 0.6          # peak can only be chosen from middle 60% (no edge anchor)
+  focus_min_intensity_frac_of_peak: 0.3  # drop dim padding slices before focus scoring
+  start_slice: 8                       # outer search bound: z8..z70 of 78 (1-indexed)
+  end_slice: 70                        # never pick a true stack-edge plane
+  # NO file_overrides.
+
+nuclei:
+  backend: cellpose
+  cellpose_model_type: cpsam
+  cellpose_diameter_px: 100.0          # 13 um nucleus @ 0.13 um/px
+  cellpose_flow_threshold: 0.4
+  cellpose_cellprob_threshold: 0.0
+  cellpose_downsample_factor: 2.0      # ds2 -> ~0.26 um/px segmentation grid
+  cellpose_device: directml            # AMD RX 6750 XT; REQUIRES the fishproc_dml env
+  min_area_px: 4000
+  max_area_px: 1000000000000.0
+  exclude_border: true
+  border_margin_px: 10
+  stardist_model: 2D_versatile_fluo
+  prob_threshold: 0.5
+  nms_threshold: 0.5
+  stardist_gauss_sigma: 3.0
+  stardist_postprocess: none
+  label_smoothing_radius_px: 0
+  reject_ghost_nuclei: false
+
+pixel_coloc:
+  threshold_mode: mad
+  threshold_scope: per_image           # per-image MAD (sections at differing laser power -> NOT batch)
+  k_mad: 2.5
+
+# MIAT(rna) x QKI(antibody) spot-to-spot nearest-neighbour pairing.
+spot_coloc:
+  pair_distance_um: 0.3                # ~2.3 px at 0.13 um/px (~diffraction limit)
+  report_nn_distance: true
+
+foci:
+  enabled: true
+  backend: bigfish
+  bigfish_voxel_size_nm: 0.0           # 0 = auto (expect 130 nm)
+  bigfish_voxel_z_nm: 0.0              # 0 = auto (expect 210 nm)
+  bigfish_spot_radius_nm: 100.0        # MIAT puncta
+  bigfish_spot_radius_z_nm: 300.0
+  # STRICT-MIAT (plain-input gate). tm scales the BigFISH auto-threshold
+  # (core/spots.py, t = auto_thr * tm) so HIGHER = stricter. 1.0 = BigFISH native
+  # auto-threshold (the "strict" value validated on the g2 plain pilot; suppresses
+  # dim inter-nuclear haze-calls on un-induced controls, which SHOULD be near-empty
+  # of MIAT). Affects MIAT (rna) ONLY; QKI detection is off (diffuse).
+  threshold_multiplier: 1.0
+  only_nuclear_spots: false            # keep cytoplasmic MIAT for % nuclear
+  min_sep_px: 1
+  detect_in_sec_only: false
+  # QKI is DIFFUSE — do NOT spot-detect it (carpets nucleus+cytoplasm with
+  # meaningless spots). detect_antibody_spots: false treats QKI as a DIFFUSE
+  # INTENSITY channel: we use QKI PIXELS for coloc (compute_partner_intensity
+  # samples antibody pixels at MIAT spots + pixel-coloc on the QKI pixel plane),
+  # never QKI spots. Coloc + MIAT counts unaffected.
+  detect_antibody_spots: false
+  # Antibody spot-radius entries retained (harmless when detection is off).
+  antibody_overrides:
+    bigfish_spot_radius_nm: 150.0
+    bigfish_spot_radius_z_nm: 350.0
+  # QKI raw local intensity at each MIAT spot -> protein_*_at_rna1_spots columns.
+  # HANGS the parallel worker pool -> SINGLE-PROCESS ONLY; parallel forced to 1 below.
+  compute_partner_intensity: true
+  # Per-nucleus RANDOM-POSITION NULL for QKI intensity at MIAT spots ->
+  # protein_enrichment_vs_null_at_rna1_spots, protein_null_z_at_rna1_spots (per
+  # nucleus) + per-image pooled enrichment / z / empirical-p. Disk radius 3.0 px;
+  # N_NULL=1000; seed=0 (deterministic). Nucleolar voids excluded.
+  compute_partner_null_enrichment: true
+  partner_null_n: 1000
+  partner_null_disk_px: 3.0
+  partner_null_seed: 0
+  exclude_nucleolus_from_partner_null: true
+  # SELF-SUFFICIENT COLOC OUTPUTS (so post-run backfill is unnecessary for NEW
+  # runs). save_partner_null_draws -> coloc_null_draws.csv; radial profile ->
+  # coloc_radial_profile.csv (SEPARATE rng so the disk-null pooled values stay
+  # byte-identical). partner_radial_bins_um left at schema default.
+  save_partner_null_draws: true
+  compute_partner_radial_profile: true
+  # === ADDED 2026-07-08 (ASSOC re-run) ===
+  # PIPELINE-NATIVE MIAT x QKI ASSOCIATION + sponge-CAPACITY metrics (approved
+  # spec _SPEC_association_analysis_2026-07-06.md). For EACH MIAT spot, QKI is
+  # sampled over the spot's EXACT half-max (FWHM) FOOTPRINT (scales with real
+  # spot size). Emits per SPOT (spot_metrics.csv, rna1 rows): qki_at_miat_footprint,
+  # miat_footprint_area_px, qki_footprint_enrichment (PRIMARY per-spot, floor-robust).
+  # Emits per NUCLEUS (nuclei_metrics.csv): qki_assoc_ratio_continuous, coloc_moc,
+  # coloc_icq, qki_at_miat_foci_enrichment, and the CAPACITY columns qki_held_by_miat,
+  # miat_mass_nuclear, capacity_qki_at_miat (fraction of the nucleus's QKI captured
+  # by MIAT). All threshold-free; runs in-process -> -p 1 (already forced below).
+  compute_footprint_enrichment: true
+  # assoc_qki_floor OFF (null): OE QKI is 561 at a different intensity scale AND
+  # there is NO secondary-only control in this dataset to calibrate a genuine-QKI
+  # floor against. Rely on the floor-free continuous ratio + capacity metrics; the
+  # floor-gated qki_assoc_ratio_gated_<floor> variant is NOT emitted.
+  assoc_qki_floor: null
+  # ROTATION "proper background" null — literature-standard co-distribution control
+  # (rotates the whole MIAT spot constellation vs the QKI field; controls for
+  # shared sub-nuclear compartment, which the random-position null does not).
+  # Added for parity with the KD coloc proper-background grammar (the base OE
+  # preset lacked it). n=1000, seed=0 (deterministic), per-nucleus draws saved.
+  compute_partner_rotation_null: true
+  partner_rotation_n: 1000
+  partner_rotation_seed: 0
+  save_partner_rotation_null_draws: true
+
+cytoplasm:
+  enabled: true
+  voronoi_max_expansion_px: 40
+  measure_nc_ratio: true
+
+nucleolus:
+  enabled: true                        # DAPI-poor nucleolus detection -> excluded from the partner-null (above)
+
+output:
+  save_qc_overlays: true
+  save_per_image_csv: true
+  save_masks: true
+  save_publication_images: true
+  save_publication_tifs: false
+  # Brian eye-tuned MANUAL floors (Sam's method). QKI = antibody; set both
+  # manual_antibody_* and manual_rna2_* the same so either slot resolves right.
+  # Sections imaged at DIFFERENT laser power -> pub PNGs are per-image-incomparable
+  # by design; all quantitation is per-image regardless (pixel-coloc MAD per_image,
+  # per-image spot detection, per-spot partner intensity).
+  pub_contrast_mode: manual
+  manual_rna_min: 525.0
+  manual_rna_max: 2250.0
+  manual_antibody_min: 1250.0
+  manual_antibody_max: 6000.0
+  manual_rna2_min: 1250.0
+  manual_rna2_max: 6000.0
+  manual_dapi_min: 607.0
+  manual_dapi_max: 9000.0
+  # Do NOT gate analysis or spots by the display floor — see ALL detected MIAT spots
+  # + raw intensities. Pixel-coloc MAD is independent of these flags.
+  apply_pub_contrast_floor_to_analysis: false
+  apply_pub_contrast_floor_to_spots: false
+  prefix: ""
+  scalebar_um: 25.0
+  scalebar_font_px: 52
+
+parallel:
+  # compute_partner_intensity + compute_footprint_enrichment run in-process ->
+  # force single-process. Run with -p 1 as well (belt-and-suspenders).
+  workers: 1
+  seg_workers: 1                       # directml MUST stay 1 (single 12 GB VRAM)
+  main_workers: 1                      # required for compute_partner_intensity
+  threads_per_worker: 4

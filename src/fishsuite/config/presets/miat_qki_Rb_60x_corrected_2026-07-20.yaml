@@ -1,0 +1,306 @@
+# ============================================================================
+# MIAT (561 FISH) x QKI-Rb (640 IF) ASSOCIATION — hESC — MIAT-ASO KD vs NT
+# 60x roster (0.2167 um/px)  |  z-STACK -> JOINT autofocus single-plane  |  rna_protein
+# CORRECTED first-look quality read — 2026-07-20  |  fishsuite-config subagent for MASTER CONTROL
+# CLONE of miat_qki_Rb_ASSOC_60x_2026-07-18.yaml (same 60x roster; no GPU run yet).
+# Sibling of the 100x SWEEP/FULL_pinned corrected work (2026-07-19): applies the
+# SAME autofocus-window + joint-nuclear-mask fix and moderate no-floor MIAT
+# detection, WITHOUT per-file pins (first-look; pin per-file later if warranted).
+# DO-NOT-RUN artifact: config only; no GPU used to build this file. Dry-run first.
+# ============================================================================
+# PURPOSE
+#   Colocalization / association of MIAT (RNA-FISH, 561) with QKI (rabbit-anti-QKI
+#   IF, 640) in undifferentiated hESC, MIAT-ASO knockdown (KD) vs non-targeting
+#   (NT), plus secondary-only (SecOnly) specificity controls, at 60x
+#   (0.2167 um/px). SAME MIAT-NT/KD-ASO experiment as the clone source. Human /
+#   Homo sapiens.
+#
+# ── WHAT CHANGED vs the 2026-07-18 clone source (validated on the 100x set) ──
+#   1. AUTOFOCUS (fixes a pick-capping bug): added autofocus_joint_nuclear_mask:
+#      true (score focus ONLY inside the DAPI nuclear mask, so MIAT cytoplasmic
+#      haze can't hijack the pick); focus_central_fraction 0.6 -> 1.0 (NO cap --
+#      fields focus at variable heights and 0.6 was capping the pick at a
+#      blurry plane); search window 3..28 -> 1..31 (FULL stack; per-image clamp
+#      still handles the true 29-31 plane count). NO file_overrides (no
+#      per-image pins for this first-look auto run).
+#   2. MIAT DETECTION (moderate, floor-free): foci.only_nuclear_spots false ->
+#      true (MIAT is nuclear-retained; gates out cytoplasmic textured
+#      autofluor). threshold_multiplier stays 1.0 (moderate; expect ~15-40 MIAT
+#      puncta/nucleus). Confirmed NO rna_overrides peak floor (none added).
+#      detect_in_sec_only stays true. Antibody (QKI) foci settings UNTOUCHED.
+#   3. DISPLAY FLOOR: output.manual_rna_min 1300.0 -> 1800.0 (display-only; cuts
+#      cytoplasmic MIAT haze in rendered micrographs). manual_rna_max unchanged
+#      (4500.0). Detection strictness is controlled separately by
+#      foci.threshold_multiplier, not by this display floor.
+#   Everything else — channels, 60x pixel-scaled nuclei params, bigfish voxel
+#   size, roster/input_file_subset, pixel_coloc, spot_coloc, antibody/QKI foci
+#   params, partner-intensity/rotation nulls, footprint, cytoplasm, nucleolus,
+#   parallel — is BYTE-IDENTICAL to the clone source.
+#
+# ── PIXEL-SIZE / UNIT-SCALING (60x, UNCHANGED from clone source) ─────────────
+#   0.2167 um/px. Clone source pixel size = 0.130 um/px (a 100x preset), so
+#   scale ratio = 0.130 / 0.2167 = 0.600 (length), 0.360 (area). Every
+#   PIXEL-unit param was SHRUNK by that ratio (physical size preserved):
+#     cellpose_diameter_px      100  -> 60      (x0.600)
+#     min_area_px              4000  -> 1440     (x0.360, area)
+#     border_margin_px           10  -> 6        (x0.600)
+#     foci.min_sep_px (rna)       1  -> 1        (0.6 -> floor 1)
+#     antibody min_sep_px         2  -> 1        (1.2 -> 1)
+#     voronoi_max_expansion_px   40  -> 24       (x0.600; ~5.2 um preserved)
+#   KEPT (NOT scaled), each flagged:
+#     cellpose_downsample_factor 2.0 (KEEP) -> on-grid seg diameter now 30 px
+#        (vs 50 px at source). VRAM-safe (matches source engineering). If cpsam
+#        UNDER-SEGMENTS at 30 px on-grid in the dry-run, drop to 1.0 (higher
+#        fidelity, ~4x VRAM/time on 12 GB DirectML — watch the card).
+#     partner_null_disk_px 3.0 (KEEP canonical/validated) -> ~0.65 um physical at
+#        0.2167 (vs ~0.39 um at 100x). The null is INTERNALLY consistent (observed
+#        and null use the SAME disk on the SAME images), so enrichment is unbiased;
+#        the disk just defines a slightly larger "local" neighborhood. If physical
+#        parity with 100x is wanted, set 1.8 -> ~0.39 um. VERIFY preference.
+#   Physical-unit params UNCHANGED (spot_radius_nm/z, pair_distance_um, radial
+#   bins, intensity floors). NOTE: at 0.2167 um/px the MIAT spot radius (100 nm =
+#   ~0.46 px) and QKI radius (150 nm = ~0.69 px) are SUB-PIXEL -> BigFISH LoG runs
+#   near the Nyquist limit; threshold_multiplier tuning matters more and detection
+#   is inherently less crisp than at 100x. This is a physical consequence of the
+#   objective, not a config error; verify spot calls look sane in the dry-run.
+#   bigfish_voxel_size_nm PINNED to 216.7 (was 0.0/auto).
+#
+# ── CHANNELS (OME-verified, authoritative; same as 100x) ─────────────────────
+#     C0 = 640 (QKI-IF, rabbit) -> antibody=0 (YELLOW); C1 = 561 (MIAT) -> rna=1
+#     (MAGENTA); C2 = 405 (DAPI) -> dapi=2 (BLUE). one_indexed:false.
+#
+# ── Z-HANDLING (JOINT autofocus, CORRECTED; 29-31 planes) ────────────────────
+#   mode:autofocus + autofocus_channel:joint + autofocus_joint_reduce:product +
+#   autofocus_joint_nuclear_mask:true (score focus ONLY inside the DAPI nuclear
+#   mask so MIAT cytoplasmic haze can't hijack the pick); intensity_weighted +
+#   central_fraction 1.0 (NO cap -- 0.6 was capping the pick at a blurry plane;
+#   fields focus at variable heights) + min_intensity_frac_of_peak 0.3; FULL
+#   search window 1..31 (per-image clamp handles the true 29-31 plane count).
+#   NO file_overrides (no per-image pins for this first-look auto run). One
+#   physical plane for all channels.
+#
+# ── EXCLUDE the 100x subfolder ───────────────────────────────────────────────
+#   Input root '...\MIAT_QKI_Rb\' ALSO contains a '100x\' subdir. Only the THREE
+#   top-level condition folders are listed in subfolder_conditions, so the 2-level
+#   discovery walk pulls ZERO files from '100x\' (its .vsi live one level deeper).
+#   input_file_subset (the 23 top-level keepers; disjoint basenames from the 100x
+#   set, _16.._45 vs _65.._86) is an additional belt-and-suspenders guard.
+#
+# ── STATS: IMAGE = BIOLOGICAL REPLICATE ──────────────────────────────────────
+#   Condition-level NT / KD folders; SecOnly -> sec_only_folders. Per-image
+#   replicate; NT-vs-KD on per-image means. min_nuclei_for_stats:6.
+#
+# ── ROSTER (globbed 2026-07-18; UNCHANGED) ────────────────────────────────────
+#   NT  = 11 (..._26, _27, _37 ... _45)
+#   KD  = 7  (..._16 ... _22)
+#   Sec = 5  (..._32 ... _36)
+#
+#   RUN WITH:
+#     -i "F:\Raw Images\Confocal Imaging\MIAT_NT_KD_ASO\MIAT_QKI_Rb"  -p 1
+#     (fishproc_dml conda env; --dry-run FIRST; ONE GPU run at a time)
+# ============================================================================
+
+experiment:
+  name: "MIAT_QKI_Rb_60x_corrected_2026-07-20"
+  description: "corrected autofocus (full window, central_fraction 1.0, joint+nuclear_mask) + moderate MIAT detection (tm1.0, no peak floor) — first-look 60x quality read, 2026-07-20. MIAT(561 FISH) x QKI(640 rabbit-anti-QKI IF) rna_protein coloc/association, hESC, MIAT-ASO KD vs NT + secondary-only. 60x roster (0.2167 um/px). z-stacks (29-31 planes) collapsed to ONE joint-in-focus plane (DAPI+MIAT+QKI) via autofocus_channel:joint + autofocus_joint_nuclear_mask (focus scored only inside the DAPI mask) + focus_central_fraction 1.0 (no cap) over the FULL 1..31 search window, no per-file pins. MIAT foci gated to nuclear-only (only_nuclear_spots:true) at threshold_multiplier 1.0, no peak floor. Display floor manual_rna_min raised 1300->1800. Clone of miat_qki_Rb_ASSOC_60x_2026-07-18 (0.2167 um/px); all PIXEL-unit params vs the 100x source remain shrunk by 0.130/0.2167=0.600 (areas 0.360): cellpose_diameter 100->60, min_area 4000->1440, border_margin 10->6, voronoi 40->24, min_sep floored to 1; downsample_factor and partner_null_disk_px KEPT (flagged). Physical-unit params (spot radii nm, pair_distance_um, floors) unchanged -> MIAT/QKI spot radii are sub-pixel at 60x (verify). Condition-level NT/KD/SecOnly folders (per-image replicate); the sibling '100x\\' subfolder is excluded. Channels C0/640=QKI, C1/561=MIAT, C2/405=DAPI (one_indexed:false). Single-process. Human/Homo sapiens."
+  cell_line: "H9 hESC (undifferentiated)"
+  date: "2026-07-20"
+
+conditions:
+  mode: subfolders
+  # Only the THREE top-level condition folders are mapped -> the sibling '100x\'
+  # subdir is never assigned a condition (and yields no direct .vsi anyway).
+  # Exact folder names GLOBBED 2026-07-18 (top-level uses '...-Rb_20260717').
+  subfolder_conditions:
+    "FolderNT-MIAT-QKI-Rb_Experiment_MIAT-QKI-Rb_20260717": "NT"
+    "FolderKD-MIAT-QKI-Rb_Experiment_MIAT-QKI-Rb_20260717": "KD"
+  sec_only_folders:
+    - "FolderSecOnly-MIAT-QKI_Experiment_MIAT-QKI-Rb_20260717"
+  sec_only_files: []
+  filename_conditions: []
+  condition_order:
+    - "NT"
+    - "KD"
+  min_nuclei_for_stats: 6
+
+# INCLUSION allowlist (bare basename). The 23 top-level keepers; a belt-and-
+# suspenders guard so nothing from the '100x\' subfolder can enter (its basenames
+# _65.._86 are disjoint from these _16.._45 anyway). UNCHANGED from clone source.
+input_file_subset:
+  # --- NT (n=11) ---
+  - "MIAT_QKI_zstack__NT-MIAT-QKI-Rb_26.vsi"
+  - "MIAT_QKI_zstack__NT-MIAT-QKI-Rb_27.vsi"
+  - "MIAT_QKI_zstack__NT-MIAT-QKI-Rb_37.vsi"
+  - "MIAT_QKI_zstack__NT-MIAT-QKI-Rb_38.vsi"
+  - "MIAT_QKI_zstack__NT-MIAT-QKI-Rb_39.vsi"
+  - "MIAT_QKI_zstack__NT-MIAT-QKI-Rb_40.vsi"
+  - "MIAT_QKI_zstack__NT-MIAT-QKI-Rb_41.vsi"
+  - "MIAT_QKI_zstack__NT-MIAT-QKI-Rb_42.vsi"
+  - "MIAT_QKI_zstack__NT-MIAT-QKI-Rb_43.vsi"
+  - "MIAT_QKI_zstack__NT-MIAT-QKI-Rb_44.vsi"
+  - "MIAT_QKI_zstack__NT-MIAT-QKI-Rb_45.vsi"
+  # --- KD (n=7) ---
+  - "MIAT_QKI_zstack__KD-MIAT-QKI-Rb_16.vsi"
+  - "MIAT_QKI_zstack__KD-MIAT-QKI-Rb_17.vsi"
+  - "MIAT_QKI_zstack__KD-MIAT-QKI-Rb_18.vsi"
+  - "MIAT_QKI_zstack__KD-MIAT-QKI-Rb_19.vsi"
+  - "MIAT_QKI_zstack__KD-MIAT-QKI-Rb_20.vsi"
+  - "MIAT_QKI_zstack__KD-MIAT-QKI-Rb_21.vsi"
+  - "MIAT_QKI_zstack__KD-MIAT-QKI-Rb_22.vsi"
+  # --- Sec-Only (n=5) ---
+  - "MIAT_QKI_zstack__SecOnly-MIAT-QKI_32.vsi"
+  - "MIAT_QKI_zstack__SecOnly-MIAT-QKI_33.vsi"
+  - "MIAT_QKI_zstack__SecOnly-MIAT-QKI_34.vsi"
+  - "MIAT_QKI_zstack__SecOnly-MIAT-QKI_35.vsi"
+  - "MIAT_QKI_zstack__SecOnly-MIAT-QKI_36.vsi"
+
+channels:
+  analysis_mode: rna_protein   # MIAT RNA (C1/561) x QKI protein (C0/640) + DAPI (C2/405)
+  dapi: 2                      # C2 = 405 (DAPI)
+  rna: 1                       # C1 = 561 (MIAT FISH)
+  antibody: 0                  # C0 = 640 (QKI rabbit-anti-QKI IF)
+  rna2: -1
+  one_indexed: false
+  dapi_label: "DAPI"
+  rna_label: "MIAT-561"
+  antibody_label: "QKI-640-Rb" # rabbit anti-QKI primary
+  dapi_lut: "blue"             # 405 -> blue
+  rna_lut: "magenta"           # 561 -> magenta (MIAT)
+  antibody_lut: "yellow"       # 640 -> yellow (QKI)
+
+z_stack:
+  # 29-31 planes -> JOINT multi-channel autofocus, CORRECTED (2026-07-20). Pick
+  # the ONE plane jointly in focus for DAPI+MIAT+QKI, scored ONLY inside the
+  # DAPI nuclear mask (autofocus_joint_nuclear_mask) so MIAT cytoplasmic haze
+  # can't hijack the pick; lock all channels to it (2D detection on one
+  # physical section). NO per-image pins (file_overrides) — first-look auto run.
+  mode: autofocus
+  autofocus_channel: joint
+  autofocus_joint_reduce: product
+  autofocus_joint_nuclear_mask: true     # score focus ONLY inside DAPI nuclear mask (MIAT cyto haze can't hijack pick)
+  autofocus_intensity_weighted: true
+  focus_central_fraction: 1.0            # NO central cap (was 0.6, capping the pick at a blurry plane)
+  focus_min_intensity_frac_of_peak: 0.3
+  start_slice: 1                         # FULL stack (was 3)
+  end_slice: 31                          # FULL stack (was 28); per-image clamp handles 29-31
+  # No file_overrides (no per-image pins for this first-look auto run).
+
+nuclei:
+  backend: cellpose
+  cellpose_model_type: cpsam
+  cellpose_diameter_px: 60.0           # SCALED 100 x0.600 (~13 um nucleus @ 0.2167 um/px). VERIFY
+  cellpose_flow_threshold: 0.4
+  cellpose_cellprob_threshold: 0.0
+  cellpose_downsample_factor: 2.0      # KEPT (VRAM-safe). on-grid diameter now 30 px (vs 50 at
+                                       # source); if under-segmenting, drop to 1.0. VERIFY
+  cellpose_device: directml            # AMD RX 6750 XT; REQUIRES the fishproc_dml env
+  min_area_px: 1440                    # SCALED 4000 x0.360 (area). VERIFY
+  max_area_px: 1000000000000.0
+  exclude_border: true
+  border_margin_px: 6                  # SCALED 10 x0.600
+  stardist_model: 2D_versatile_fluo
+  prob_threshold: 0.5
+  nms_threshold: 0.5
+  stardist_gauss_sigma: 3.0
+  stardist_postprocess: none
+  label_smoothing_radius_px: 0
+  reject_ghost_nuclei: false
+
+pixel_coloc:
+  threshold_mode: mad
+  threshold_scope: batch               # Pearson/Li threshold-free regardless. VERIFY exposure
+                                       # identity across the 60x wells; if offset, switch to per_image.
+  k_mad: 2.5
+
+spot_coloc:
+  pair_distance_um: 0.3                # physical; unchanged
+  report_nn_distance: true
+
+foci:
+  enabled: true
+  backend: bigfish
+  bigfish_voxel_size_nm: 216.7         # PINNED to the authoritative 60x pixel size (0.2167 um/px)
+  bigfish_voxel_z_nm: 0.0              # 0 = auto; moot for single-plane (2D) detection
+  # --- MIAT (rna) spot detection --- CORRECTED (2026-07-20): moderate, floor-free
+  bigfish_spot_radius_nm: 100.0        # MIAT (physical; unchanged) -> ~0.46 px @ 0.2167 (SUB-PIXEL; VERIFY)
+  bigfish_spot_radius_z_nm: 300.0      # moot (single-plane 2D)
+  threshold_multiplier: 1.0            # MODERATE (unchanged); expect ~15-40 MIAT puncta/nucleus
+  only_nuclear_spots: true             # CHANGED false->true: MIAT nuclear-retained; gate out cytoplasmic textured autofluor
+  min_sep_px: 1                        # SCALED 1 x0.600 -> floor 1
+  # NO rna_overrides peak floor — no hard MIAT floor for this first-look pass.
+  detect_in_sec_only: true             # report non-specific rate in SecOnly (32-36)
+  # --- HYBRID: LOOSE QKI spot-detect (UNCHANGED) ---
+  detect_antibody_spots: true
+  antibody_overrides:
+    bigfish_spot_radius_nm: 150.0      # QKI (physical; unchanged) -> ~0.69 px @ 0.2167 (SUB-PIXEL)
+    bigfish_spot_radius_z_nm: 350.0    # moot (single-plane)
+    threshold_multiplier: 1.0          # LOOSE. __TUNE__
+    only_nuclear_spots: true
+    min_sep_px: 1                      # SCALED 2 x0.600 = 1.2 -> 1
+    # __RE-CALIBRATE off THIS 60x dataset's SecOnly (32-36)__ — 5000.0 is the OLD
+    # 565/647 100x-scale floor; 60x objective + rabbit primary + new exposure change it.
+    min_spot_peak_intensity: 5000.0
+  # --- DIFFUSE QKI-intensity-at-MIAT nulls (the ROBUST HEADLINE) ---
+  compute_partner_intensity: true
+  compute_partner_null_enrichment: true
+  partner_null_n: 1000
+  partner_null_disk_px: 3.0                # KEPT canonical (~0.65 um @ 0.2167; internally consistent).
+                                           # For 100x physical parity (~0.39 um) set 1.8. VERIFY
+  partner_null_seed: 0
+  exclude_nucleolus_from_partner_null: true
+  save_partner_null_draws: true
+  compute_partner_radial_profile: true
+  partner_radial_bins_um: [0.25, 0.5, 0.75, 1.0]   # physical; unchanged
+  # --- Stricter "proper background" ROTATION null (ON) ---
+  compute_partner_rotation_null: true
+  partner_rotation_n: 1000
+  partner_rotation_seed: 0
+  partner_rotation_min_retention: 0.5
+  partner_rotation_assoc_percentile: 95.0
+  save_partner_rotation_null_draws: true
+  # --- footprint-association metrics (Phase-1) ---
+  compute_footprint_enrichment: true
+  # __RE-CALIBRATE off THIS 60x dataset's SecOnly__ — 4000.0 is the OLD 565/647 floor.
+  assoc_qki_floor: 4000.0
+
+cytoplasm:
+  enabled: true
+  voronoi_max_expansion_px: 24         # SCALED 40 x0.600 (~5.2 um preserved @ 0.2167 um/px)
+  measure_nc_ratio: true               # for % nuclear MIAT
+
+nucleolus:
+  enabled: true                        # DAPI-poor nucleolus -> excluded from the partner-null.
+                                       # (nucleolus pixel-DEFAULTS closing_radius_px/min_border_distance_px
+                                       # are ~1.7x larger physically at 60x; negligible for masking.)
+
+output:
+  save_qc_overlays: true
+  save_per_image_csv: true
+  save_masks: true
+  save_publication_images: true
+  save_publication_tifs: false
+  pub_contrast_mode: manual
+  # ── FLOORS: 100x anchors as a STARTING point — RE-TUNE for 60x (different
+  # objective/exposure). MIAT is nuclear-retained -> target NO cytoplasmic MIAT;
+  # if the floor does not clear cytoplasmic MIAT, DIAGNOSE bleed-through first. ──
+  manual_dapi_min: 600.0
+  manual_dapi_max: 11000.0
+  manual_rna_min: 1800.0       # CHANGED 1300->1800 (display-only; cuts cytoplasmic MIAT haze in micrographs)
+  manual_rna_max: 4500.0
+  manual_antibody_min: 600.0   # QKI-640 (100x anchor; RE-TUNE for 60x)
+  manual_antibody_max: 6500.0
+  manual_rna2_min: 600.0       # mirror of manual_antibody_min
+  manual_rna2_max: 6500.0
+  apply_pub_contrast_floor_to_analysis: true
+  apply_pub_contrast_floor_to_spots: false
+  prefix: ""
+  scalebar_um: 25.0
+  scalebar_font_px: 52
+
+parallel:
+  workers: 1
+  seg_workers: 1
+  main_workers: 1
+  threads_per_worker: 4
+
+seed: 0

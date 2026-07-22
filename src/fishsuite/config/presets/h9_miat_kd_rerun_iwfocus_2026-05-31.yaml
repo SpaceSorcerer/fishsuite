@@ -1,0 +1,303 @@
+# ============================================================================
+# H9 hESC 100x — MIAT KD ASO RE-RUN — OBJECTIVE AUTOFOCUS Z-WINDOW (2026-05-31)
+# ============================================================================
+# Dissertation-critical / committee-facing re-run of Brian's MIAT RNA-FISH
+# NT-ASO (WT) vs MIAT-KD-ASO quantification. SCOPE: methodologically-defensible
+# replacement of the HAND-PICKED per-image max-projection window with an
+# OBJECTIVE, intensity-weighted, re-derivable z-window. Everything else
+# (cellpose cpsam ds2 diam200, floor 800, rna_only MIAT+DAPI, batch coloc
+# threshold, nucleolus) is held FIXED vs CELLPOSE_FINAL_floor800_nucleolus so
+# the ONLY thing that changes is the z-selection method.
+#
+# ── WHY THIS RE-RUN (committee assessment, 2026-05-30) ──────────────────────
+# The committee assessment (F:\Image Analysis Work\H9-MIAT-KD\
+# COMMITTEE_READINESS_ASSESSMENT.md) identified the hand-picked z-window as the
+# single MATERIAL (non-cosmetic) reproducibility gap: MIAT spot counts in the
+# canonical run depend on a hand-set ~10-of-33-plane max-projection window per
+# image (z_stack.file_overrides rna_start_slice/rna_end_slice), chosen when
+# Brian was less microscope-experienced at acquisition. The attack surface is
+# "you picked the planes — could you have under-counted the KD fields?". This
+# re-run removes that by letting the pipeline choose the projection window
+# OBJECTIVELY from the DAPI focus profile, identically for every image.
+#
+# ── THE Z-METHOD (objective windowed MIP — autofocus_maxproj) ───────────────
+# z_stack.mode: autofocus_maxproj. The runner computes a per-image in-focus
+# DAPI z-window via a focus metric on the DAPI channel, then MAX-PROJECTS THAT
+# SAME WINDOW for BOTH DAPI (segmentation) and the MIAT RNA channel (spot
+# detection). This is the objective analogue of the old hand-picked MIP:
+#   * still a windowed max-projection (spot-capture comparable to the canonical
+#     run — NOT a single plane, so MIAT spots are not under-counted), and
+#   * the window is DERIVED from the image, not typed in by hand → fully
+#     re-derivable and identical across NT and KD.
+#
+# CRITICAL IMPLEMENTATION NOTE — NO rna_start_slice/rna_end_slice OVERRIDES.
+# In rna_only.py (run_one + collect_nuclear_rna_pixels), when an image's
+# file_override carries rna_start_slice AND rna_end_slice, the RNA channel uses
+# THAT hand-picked window EVEN under autofocus_maxproj (DAPI gets the objective
+# window, RNA does not). To make the RNA channel ALSO use the objective focus
+# window, this preset deliberately OMITS all rna_start_slice/rna_end_slice
+# overrides. With them absent, the RNA channel is MIP'd over the objective DAPI
+# focus window (extract_channel_in_z_range over [afm_zs, afm_ze]). VERIFIED in
+# rna_only.py lines 220-253 (run_one) and 1176-1199 (collect pre-pass).
+#
+# FIXED-N CENTERED WINDOW (focus_window_fixed_n_slices: 10). We pin the window
+# to EXACTLY 10 slices centered on the peak-focus DAPI plane. Rationale:
+#   * 10 slices == the canonical hand-picked window width (every override in the
+#     canonical config was a 10-plane window, e.g. _02 = 7-16), so MIP
+#     integration depth — and thus spot-capture and total-intensity scale — is
+#     matched to the prior run. Only the WINDOW POSITION becomes objective.
+#   * fixed-N keeps integration depth CONSTANT across all images, so per-image
+#     means are not confounded by per-image window-width differences (a
+#     committee-defensible, pre-stated rule). VERIFIED: fixed_n_slices path in
+#     io.compute_focus_window centers N on the peak and slides (not shrinks) at
+#     stack edges.
+#
+# INTENSITY-WEIGHTED FOCUS — OPTION B NOW ACTIVE (2026-05-31, implemented).
+# UPDATE 2026-05-31: Option A (focus_min_intensity_frac_of_peak: 0.3 ALONE, no
+# intensity weighting) was TESTED OFFLINE on the raw DAPI of all 10 kept images
+# and FAILED — it picked STACK-EDGE windows on every image:
+#   * 9/10 images: focus peak z=33 (top) → window [24,33]
+#   * _08:        focus peak z=1  (bottom) → window [1,10]
+# WHY: the H9 DAPI stacks are BRIGHT THROUGHOUT (every one of the 33 planes is
+# >=46% of the brightest-plane mean), so the 0.3 min-intensity pre-filter
+# disqualifies NOTHING. Meanwhile the plain mean-normalized var-of-Laplacian
+# profile is INVERTED vs the true focus: it climbs monotonically toward the dim,
+# noisy top/bottom planes (z=33 scores 100%, the mid-stack nuclear plane only
+# ~55%). So the unweighted metric anchors on a noise-driven edge plane. The
+# min-intensity guard only helps when stacks have DIM empty padding (BIN1-style);
+# here there is none, so Option A alone is insufficient.
+#
+# OPTION B — IMPLEMENTED + VALIDATED. io.compute_focus_window now takes
+# intensity_weighted (wired from cfg.z_stack.autofocus_intensity_weighted) which
+# multiplies each slice's score by its mean → var(laplace(plane/mean))*mean, the
+# SAME metric the single-plane "autofocus" z-mode uses (the BIN1 fix). With it
+# on, the focus peak follows the DAPI intensity dome (peaks z=9–15 mid-stack);
+# 9/10 windows land mid-stack matching the canonical hand-picked ~7–17.
+#
+# CENTRAL-FRACTION GUARD (focus_central_fraction: 0.6) — also new + active. The
+# one residual edge case under pure intensity-weighting was _12 (peak z=5 →
+# fixed-N=10 window [1,10] touches the bottom edge). focus_central_fraction
+# restricts the focus-PEAK search to the middle 60% of the stack, so the anchor
+# can never be a true edge plane; _12's peak moves to z=7 → window [2,11]
+# (off-edge). With BOTH knobs on, ALL 10 windows are mid-stack, none touch z=1
+# or z=33, and there is NO NT/KD condition bias. (Offline validation table in
+# the 2026-05-31 session record; reproduced from raw DAPI, no cellpose/GPU.)
+#
+# SANITY-CHECK AFTER THE RUN (do not skip): the run prints per-image
+# "[autofocus_maxproj] <file>: focus peak at z=..., window=[a,b]". Compare each
+# objective window against the canonical hand-picked window (e.g. _02 was
+# 7-16). Large divergences (esp. on KD_07 had it been kept) are exactly what
+# re-tests the outlier objectively. KD_07 is EXCLUDED here (see below); if a
+# future run re-adds it, the objective window is the documented basis to keep
+# or drop it.
+#
+# ── KD_07 EXCLUSION RULE (stated, not silent) ───────────────────────────────
+# KD_07 (raw file: H9-MIAT-ASOs-_07.vsi, Folder_MIATKD) is EXCLUDED from this
+# re-run (Brian approved). STATED RULE: KD_07 is the single KD field whose MIAT
+# signal is NT-like / control-like (38.5 spots/nuc and 82,908 total
+# intensity/cell — higher than the NT mean and higher than EVERY NT image),
+# i.e. it presents as a non-knockdown or mislabeled field. It is dropped by
+# OMITTING its basename from input_file_subset below. The full-set run (with
+# KD_07) remains on record in CELLPOSE_FINAL_floor800_nucleolus. NOTE for the
+# committee: this is still a provisional exclusion; the OBJECTIVE z-window in
+# this re-run is what lets a future run re-test KD_07 under a reproducible rule
+# rather than a recollection.
+#
+# ── DATA SCOPE ──────────────────────────────────────────────────────────────
+# Human / Homo sapiens (H9 hESC). Single RNA target = MIAT (lncRNA), 640 probe.
+# No coloc partner (rna_only). NOT the deconvolved (_20ADVMLE/_30ADVMLE)
+# variants — RAW .vsi only, selected by exact basename in input_file_subset.
+#
+# ── INPUT / OUTPUT ──────────────────────────────────────────────────────────
+# Input dir  : F:\Raw Images\H9-MIAT-KD-ASO\H9-MIAT-KD-05-08-2026  (subfolders)
+# Output dir : pass at launch, e.g.
+#   F:\Image Analysis Work\H9-MIAT-KD\RERUN_IWFOCUS_floor800_no07_2026-05-31
+#   (NEW timestamped folder — never overwrite the canonical run; per Brian's
+#    "new output folder per run" rule.)
+#
+# Voxel auto-detected from VSI metadata: 65 nm/px (0.065 µm/px), z = 210 nm,
+# 33 z-planes (~6.9 µm stack).
+# ============================================================================
+
+experiment:
+  name: "H9_MIAT_KD_ASO_RERUN_iwfocus_2026-05-31"
+  description: "H9 hESC MIAT NT-ASO (WT) vs MIAT-KD-ASO 100x confocal — RE-RUN with OBJECTIVE autofocus_maxproj z-window (fixed-N=10 centered on DAPI focus peak + min-intensity pre-filter) replacing the hand-picked MIP window. cellpose cpsam ds2 diam200, rna_only MIAT+DAPI, floor 800, KD_07 excluded."
+  cell_line: "H9 hESC"
+
+conditions:
+  mode: subfolders
+  subfolder_conditions:
+    Folder_NT: "NT ASO"
+    Folder_MIATKD: "KD ASO"
+    Folder_KD-2only: "Sec-Only"
+    Folder_NT-2only: "Sec-Only"
+  sec_only_folders:
+    - Folder_KD-2only
+    - Folder_NT-2only
+  sec_only_files: []
+  condition_order: ["Sec-Only", "NT ASO", "KD ASO"]
+  min_nuclei_for_stats: 6
+
+# RAW .vsi only (NOT the _20ADVMLE/_30ADVMLE deconv variants). KD_07
+# (H9-MIAT-ASOs-_07.vsi) DELIBERATELY OMITTED — see KD_07 rule in the header.
+# _06 stays shelved (Brian 2026-05-25: sec-only but KD-like spot counts,
+# provenance doubtful). _01 omitted (not in the canonical analysis roster).
+# KEPT roster: 4 NT (_02 _03 _04 _05) + 3 KD (_08 _09 _13) + 3 Sec-Only
+# (_10 _11 _12) = 10 images. Matches the no07 analysis arm of the canonical run.
+input_file_subset:
+  # --- NT ASO (WT) — Folder_NT ---
+  - "H9-MIAT-ASOs-_02.vsi"
+  - "H9-MIAT-ASOs-_03.vsi"
+  - "H9-MIAT-ASOs-_04.vsi"
+  - "H9-MIAT-ASOs-_05.vsi"
+  # --- MIAT KD ASO — Folder_MIATKD (KD_07 EXCLUDED) ---
+  - "H9-MIAT-ASOs-_08.vsi"
+  - "H9-MIAT-ASOs-_09.vsi"
+  - "H9-MIAT-ASOs-_13.vsi"
+  # --- Secondary-only controls — Folder_KD-2only ---
+  - "H9-MIAT-ASOs-_10.vsi"
+  - "H9-MIAT-ASOs-_11.vsi"
+  - "H9-MIAT-ASOs-_12.vsi"
+
+channels:
+  analysis_mode: rna_only      # single RNA = MIAT; DAPI; NO coloc partner
+  dapi: 2                      # ch2 = DAPI (0-indexed; matches canonical run)
+  rna: 0                       # ch0 = MIAT 640 FISH probe
+  antibody: -1
+  dapi_label: "DAPI"
+  rna_label: "MIAT-640"
+  dapi_lut: "blue"
+  rna_lut: "yellow"            # 640/Cy5 → yellow (Brian's LUT convention)
+
+z_stack:
+  # ── OBJECTIVE WINDOWED MAX-PROJECTION (replaces hand-picked MIP) ──────────
+  # autofocus_maxproj: per-image DAPI focus-window detection, then MIP that
+  # SAME window for DAPI (segmentation) and MIAT (spot detection). NO
+  # file_overrides → no hand-picked planes anywhere in this run.
+  mode: autofocus_maxproj
+
+  # Per-slice DAPI sharpness metric (Pertuz et al. 2013 — standard fluorescence
+  # focus operator). Used to find the in-focus DAPI plane that anchors the
+  # window. INTENSITY-WEIGHTED via autofocus_intensity_weighted below (Option B,
+  # now implemented) → effective metric is var(laplace(plane/mean))*mean.
+  focus_metric: variance_of_laplacian
+
+  # FIXED-N centered window: exactly 10 slices centered on the peak-focus DAPI
+  # plane. 10 == the canonical hand-picked window width → matched MIP depth /
+  # spot-capture, only the window POSITION becomes objective. Constant
+  # integration depth across all images (committee-defensible pre-stated rule).
+  focus_window_fixed_n_slices: 10
+
+  # Min-intensity pre-filter: BEFORE the focus-peak search, disqualify any
+  # z-slice whose mean DAPI intensity is < 0.3 * brightest-slice-mean. NOTE: on
+  # these H9 stacks every plane is >=46% of the brightest mean, so this filter
+  # disqualifies nothing here — it is kept as a harmless belt-and-suspenders
+  # guard for any field that does have dim edge padding. The real fix is the
+  # intensity weighting + central-fraction guard below (see header for the
+  # offline test that showed 0.3 ALONE still picked stack edges).
+  focus_min_intensity_frac_of_peak: 0.3
+
+  # FWHM knobs below are IGNORED when focus_window_fixed_n_slices > 0 (fixed-N
+  # bypasses the threshold/min/max machinery). Kept at defaults for clarity.
+  focus_threshold_frac: 0.5
+  focus_window_min_slices: 3
+  focus_window_max_slices: 0
+
+  # OPTION B — INTENSITY-WEIGHTED FOCUS (2026-05-31, now wired into
+  # autofocus_maxproj). Multiplies each slice's var(laplace(plane/mean)) by its
+  # mean → the bright AND sharp nuclear plane wins instead of a dim noisy edge
+  # plane. REQUIRED here: plain var-of-laplacian picked z=33/z=1 stack edges on
+  # all 10 images (the H9 DAPI focus profile is inverted; see header). With this
+  # on, the peak follows the DAPI dome (z=9–15) and 9/10 windows land mid-stack.
+  autofocus_intensity_weighted: true
+
+  # CENTRAL-FRACTION PEAK GUARD (2026-05-31). Restricts the focus-PEAK search to
+  # the middle 60% of the stack so the window anchor can never be a true edge
+  # plane. Needed for the last residual case: _12 peaked at z=5 under pure
+  # intensity-weighting → fixed-N=10 window [1,10] touched the bottom edge; with
+  # 0.6 its peak moves to z=7 → window [2,11] (off-edge). With BOTH knobs on,
+  # ALL 10 windows are mid-stack, none touch z=1/z=33, no NT/KD bias.
+  focus_central_fraction: 0.6
+
+  # NO file_overrides. (Deliberate — see header. Adding rna_start_slice/
+  # rna_end_slice here would re-introduce the hand-picked RNA window.)
+
+nuclei:
+  # FIXED vs canonical run — do not change (only z-selection changes this run).
+  backend: cellpose
+  cellpose_model_type: cpsam
+  cellpose_diameter_px: 200.0
+  cellpose_flow_threshold: 0.4
+  cellpose_cellprob_threshold: 0.0
+  cellpose_downsample_factor: 2.0
+  # DirectML GPU (Brian's AMD RX 6750 XT, no CUDA). Requires fishproc_dml env.
+  # If launching from a CPU-only env, change to "cpu" — no other edits needed.
+  cellpose_device: directml
+  min_area_px: 16000
+  max_area_px: 1000000000000.0
+  exclude_border: true
+  border_margin_px: 10
+  # StarDist knobs ignored under cellpose backend; kept for flip-back parity.
+  stardist_model: 2D_versatile_fluo
+  prob_threshold: 0.5
+  nms_threshold: 0.5
+  stardist_gauss_sigma: 3.0
+  stardist_postprocess: none
+  label_smoothing_radius_px: 0
+  # Ghost-nucleus rejection OFF (cosmetic for H9 per committee assessment;
+  # only 0.4-0.7% empty nuclei in NT/KD; Sec-Only "empty" is correct biology).
+  reject_ghost_nuclei: false
+
+pixel_coloc:
+  threshold_mode: mad
+  threshold_scope: batch
+  k_mad: 2.5
+
+foci:
+  enabled: true
+  backend: bigfish
+  bigfish_voxel_size_nm: 0.0
+  bigfish_voxel_z_nm: 0.0
+  bigfish_spot_radius_nm: 100.0
+  bigfish_spot_radius_z_nm: 300.0
+  threshold_multiplier: 0.5
+  only_nuclear_spots: false
+  min_sep_px: 1
+  # Detect + report spots in secondary-only controls (background QC; reported,
+  # never subtracted). FIXED vs canonical run.
+  detect_in_sec_only: true
+
+cytoplasm:
+  enabled: true
+  voronoi_max_expansion_px: 80
+  measure_nc_ratio: true
+
+nucleolus:
+  enabled: true
+  intra_nuclear_percentile: 25.0
+  min_area_um2: 1.0
+  max_area_frac_of_nucleus: 0.6
+  closing_radius_px: 2
+
+output:
+  save_qc_overlays: true
+  save_per_image_csv: true
+  save_masks: true
+  save_publication_images: true
+  save_publication_tifs: false
+  pub_contrast_mode: manual
+  # FLOOR 800 — LOCKED (Brian). Spot floor IS applied in rna_only
+  # (apply_pub_contrast_floor_to_spots) — confirmed wired in rna_only.py.
+  manual_rna_min: 800.0
+  manual_rna_max: 4200.0
+  manual_dapi_min: 300.0
+  manual_dapi_max: 3200.0
+  apply_pub_contrast_floor_to_analysis: false
+  apply_pub_contrast_floor_to_spots: true
+  prefix: ""
+  scalebar_um: 25.0
+  scalebar_font_px: 52
+
+parallel:
+  workers: auto
+  # directml forces seg_workers=1 internally (single GPU). Leave auto.

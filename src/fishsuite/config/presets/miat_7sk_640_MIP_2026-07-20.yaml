@@ -1,0 +1,247 @@
+# ============================================================================
+# 7SK-640 NARROW-MIP QUANTIFICATION — rna_only, INDEPENDENT of MIAT
+# (does MIAT KD change 7SK level/distribution? — specificity control) — 2026-07-20
+# ============================================================================
+# Sibling of miat_qki_Rb_60x_MIATMIP_2026-07-20.yaml — SAME verified mechanism
+# (rna_only + z_stack.mode: single + per-file DAPI pin start_slice==end_slice==F
+# + narrow-window MIP via rna_start_slice/rna_end_slice=F+/-3, clamped). 60x
+# nuclei/voxel structure CLONED from that file (this 7SK set is ALSO
+# 0.2167 um/px, 60x-equivalent). Channels, roster, and folder names are NEW
+# for this 7SK dataset (a separate image set from the MIAT_QKI_Rb sets).
+#
+# ── PURPOSE ───────────────────────────────────────────────────────────────
+#   Independent NT-vs-KD 7SK-640 quantification: does MIAT-ASO knockdown
+#   change 7SK snRNA level or nuclear distribution? Acts as a specificity
+#   control alongside the MIAT-count and MIAT-QKI-coloc presets (this is
+#   NOT a MIAT x 7SK 2-RNA coloc run — that is a SEPARATE rna_rna preset;
+#   this one quantifies 7SK alone, ignoring the MIAT-561 channel entirely).
+#   7SK is partly diffuse (not purely punctate like MIAT), so BOTH the spot
+#   count AND the whole-nucleus intensity readout matter — see "INTENSITY
+#   READOUT" note below. Human / Homo sapiens, H9 hESC (undifferentiated).
+#
+# ── Z-STACK MODE — same verified deviation as the MIAT MIATMIP presets ──────
+#   z_stack.mode: single (NOT autofocus). VERIFIED in
+#   fishsuite/core/modes/rna_only.py: under z_mode=="autofocus" the RNA
+#   channel is explicitly LOCKED to DAPI's autofocus plane and
+#   rna_start_slice/rna_end_slice overrides are IGNORED (logged "...
+#   IGNORED under autofocus"). "single" (the "else" branch) is the path that
+#   actually honors a file_override's rna_start_slice/rna_end_slice pair:
+#   with start_slice==end_slice==F, DAPI gets a direct 1-plane slice (no
+#   window-search algorithm) while rna_start_slice/rna_end_slice drives a
+#   genuine extract_channel(z_mode="maxproj", ...) MIP of the 7SK channel
+#   over the narrow window. Full code-line citations are in
+#   miat_qki_Rb_100x_MIATMIP_2026-07-20.yaml's header (same dispatch logic).
+#
+# ── CHANNELS — VERIFIED against per-image OME metadata (2026-07-20) ─────────
+#   Read directly (fishsuite.core.io.read_image) on
+#   MIAT_7SK_zstack__NT-miat-565-7sk-647_01.vsi: channel_names =
+#   ['640 CSU', '561 CSU', '405 CSU'], n_channels=3, n_z=31. Confirms:
+#     C0 = 640 (7SK RNA-FISH probe)  -> rna=0   (YELLOW LUT; 640/647->yellow
+#                                                 per wavelength convention)
+#     C1 = 561 (MIAT FISH)           -> IGNORED in this rna_only run
+#     C2 = 405 (DAPI)                -> dapi=2  (BLUE LUT)
+#   one_indexed:false. This is the "647-target" channel referenced in the
+#   session plan's dataset survey table (Set C: 7SK RNA-FISH, 2-RNA w/ MIAT)
+#   — here consumed ALONE (antibody: -1, MIAT channel simply not read).
+#
+# ── SPOT RADIUS — WIDENED for 60x (2026-07-20) ───────────────────────────────
+#   bigfish_spot_radius_nm: 250.0 (vs the 100.0 nm used for MIAT at 100x/60x).
+#   At 0.2167 um/px, 100 nm is ~0.46 px — sub-pixel, and empirically found
+#   nothing for 7SK's punctate component. 250 nm -> ~1.15 px, a
+#   diffraction-appropriate kernel for this probe/objective/pixel-size
+#   combination. Physical spot-radius choice, not scaled from the MIAT value.
+#
+# ── INTENSITY READOUT — floors NOT YET TUNED for this dataset (2026-07-20) ──
+#   No Sam's-method (eye-tuned) display floor exists yet for 7SK-640 — this
+#   is a NEW probe/channel with no prior validated anchor (unlike MIAT-561 or
+#   QKI-640-Rb, which carry forward Brian's validated 100x/60x floors).
+#   output.pub_contrast_mode: auto_batch (the schema default; percentile-
+#   derived from the real pooled batch pixels, NOT an invented number) is
+#   used instead of guessing a manual floor. Consequence: the FLOOR-GATED
+#   thresholded-intensity-in-compartments columns (rna_thresh_total_intensity_
+#   nuclear etc.) may resolve to NaN until a manual_rna_min is pinned in a
+#   follow-up revision (per schema docs: "columns present but empty" when no
+#   floor resolves — documented behavior, not a silent drop). The BASE,
+#   FLOOR-FREE whole-nucleus intensity columns (sum_rna_intensity /
+#   mean_rna_intensity per nucleus) are ALWAYS emitted regardless of any
+#   floor config and ARE the primary "7SK level" readout for this NT-vs-KD
+#   comparison. apply_pub_contrast_floor_to_analysis stays true (matches the
+#   sibling MIATMIP presets) so the above-floor columns populate as soon as a
+#   floor IS pinned in a later revision. apply_pub_contrast_floor_to_spots
+#   stays false — spot-detection strictness is controlled by
+#   foci.threshold_multiplier only.
+#
+# ── DAPI FLOOR — also unpinned for the same reason ───────────────────────────
+#   Same DAPI probe (405) as the other MIAT_NT_KD_ASO sets, but exposure may
+#   differ per set (confirm before assuming parity — session plan explicitly
+#   flags "verify exposure identity in OME metadata per set" before any
+#   cross-set intensity claim). auto_batch handles DAPI display the same way
+#   as RNA above; no manual_dapi_min/max invented.
+#
+# ── ROSTER (globbed + file-listed 2026-07-20; input_file_subset = 14) ───────
+#   NT   = 5  (_01, _02, _03, _04, _05)   folder FolderNT-miat-565-7sk-647_Experiment_20260717
+#   KD   = 6  (_09, _10, _11, _12, _13, _14)  folder FolderKD-miat-7sk_Experiment_20260717
+#   Sec  = 3  (_06, _07, _08)             folder FolderNT-seconly-miat-7sk_Experiment_20260717
+#   (NT_01 also has a sibling .oex file alongside its .vsi — input_file_subset
+#   lists only the .vsi basename, so the .oex is never selected.)
+#
+#   RUN WITH:
+#     -i "F:\Raw Images\Confocal Imaging\MIAT_NT_KD_ASO\MIAT_7SK_RNA_FISH"  -p auto
+#     (fishproc_dml conda env; --dry-run FIRST; ONE GPU run at a time)
+# ============================================================================
+# DO-NOT-RUN artifact: config only; no GPU used to build this file. Dry-run
+# first (per fishsuite-rna-fish skill hard rules).
+# Date: 2026-07-20  |  fishsuite-config subagent (Sonnet 5) for MASTER CONTROL
+# ============================================================================
+
+experiment:
+  name: "MIAT_7SK_640_MIP_2026-07-20"
+  description: "Independent 7SK-640 NT-vs-KD quantification (does MIAT-ASO KD change 7SK level/distribution? specificity control), rna_only narrow-MIP (F+/-3 planes) over per-file validated pinned focus planes; DAPI single-plane seg. bigfish_spot_radius_nm=250.0 (widened for 60x-equivalent 0.2167 um/px — 100nm was sub-pixel). Channels verified from per-image OME metadata (C0=640=7SK, C1=561=MIAT [ignored], C2=405=DAPI). No display floor pinned yet for this new probe (auto_batch; base floor-free whole-nucleus intensity columns are the primary level readout). 14-image roster: NT 5 (_01-_05), KD 6 (_09-_14), Sec-Only 3 (_06-_08). Human/Homo sapiens, H9 hESC undifferentiated. 2026-07-20."
+  cell_line: "H9 hESC (undifferentiated)"
+  date: "2026-07-20"
+
+conditions:
+  mode: subfolders
+  # Exact folder names confirmed by directory listing 2026-07-20 (NOT globbed
+  # from a template — this is a separate image set from MIAT_QKI_Rb).
+  subfolder_conditions:
+    "FolderNT-miat-565-7sk-647_Experiment_20260717": "NT"
+    "FolderKD-miat-7sk_Experiment_20260717": "KD"
+  sec_only_folders:
+    - "FolderNT-seconly-miat-7sk_Experiment_20260717"
+  sec_only_files: []
+  filename_conditions: []
+  condition_order:
+    - "NT"
+    - "KD"
+  min_nuclei_for_stats: 6
+
+# Confirmed by direct file listing 2026-07-20 (14 files: NT 5 / KD 6 / Sec 3).
+input_file_subset:
+  # --- NT (n=5) ---
+  - "MIAT_7SK_zstack__NT-miat-565-7sk-647_01.vsi"
+  - "MIAT_7SK_zstack__NT-miat-565-7sk-647_02.vsi"
+  - "MIAT_7SK_zstack__NT-miat-565-7sk-647_03.vsi"
+  - "MIAT_7SK_zstack__NT-miat-565-7sk-647_04.vsi"
+  - "MIAT_7SK_zstack__NT-miat-565-7sk-647_05.vsi"
+  # --- KD (n=6) ---
+  - "MIAT_7SK_zstack__KD-miat-7sk_09.vsi"
+  - "MIAT_7SK_zstack__KD-miat-7sk_10.vsi"
+  - "MIAT_7SK_zstack__KD-miat-7sk_11.vsi"
+  - "MIAT_7SK_zstack__KD-miat-7sk_12.vsi"
+  - "MIAT_7SK_zstack__KD-miat-7sk_13.vsi"
+  - "MIAT_7SK_zstack__KD-miat-7sk_14.vsi"
+  # --- Sec-Only (n=3) ---
+  - "MIAT_7SK_zstack__NT-seconly-miat-7sk_06.vsi"
+  - "MIAT_7SK_zstack__NT-seconly-miat-7sk_07.vsi"
+  - "MIAT_7SK_zstack__NT-seconly-miat-7sk_08.vsi"
+
+channels:
+  analysis_mode: rna_only      # 7SK-COUNT/INTENSITY run — MIAT-561 ignored entirely
+  dapi: 2                      # C2 = 405 (DAPI)
+  rna: 0                       # C0 = 640 (7SK RNA-FISH) — VERIFIED via OME metadata
+  antibody: -1                 # not used
+  rna2: -1                     # not used
+  one_indexed: false           # indices above are 0-indexed
+  dapi_label: "DAPI"
+  rna_label: "7SK-640"
+  dapi_lut: "blue"             # 405 -> blue
+  rna_lut: "yellow"            # 640/647 -> yellow (Brian's wavelength LUT convention)
+
+z_stack:
+  # ── DAPI single pinned plane + 7SK narrow-MIP ──────────────────────────────
+  # mode: single -> the "else" branch of rna_only.py, the ONLY dispatch path
+  # (besides autofocus_maxproj) that honors a file_override's
+  # rna_start_slice/rna_end_slice pair. See header "Z-STACK MODE" for why
+  # mode: autofocus does NOT work here.
+  mode: single
+  # Top-level fallback bounds. NEVER ACTUALLY USED: every one of the 14
+  # input_file_subset files has its own file_overrides entry below.
+  start_slice: 1
+  end_slice: 31
+  # Per-file: {start_slice, end_slice} = the validated best-focus plane F per
+  # file (degenerate 1-plane window -> direct DAPI segmentation pin).
+  # {rna_start_slice, rna_end_slice} = [F-3, F+3] -> 7SK spot detection runs
+  # on a MAXPROJ of ONLY that narrow window.
+  file_overrides:
+    "MIAT_7SK_zstack__NT-miat-565-7sk-647_01.vsi": {start_slice: 7, end_slice: 7, rna_start_slice: 4, rna_end_slice: 10}
+    "MIAT_7SK_zstack__NT-miat-565-7sk-647_02.vsi": {start_slice: 19, end_slice: 19, rna_start_slice: 16, rna_end_slice: 22}
+    "MIAT_7SK_zstack__NT-miat-565-7sk-647_03.vsi": {start_slice: 19, end_slice: 19, rna_start_slice: 16, rna_end_slice: 22}
+    "MIAT_7SK_zstack__NT-miat-565-7sk-647_04.vsi": {start_slice: 16, end_slice: 16, rna_start_slice: 13, rna_end_slice: 19}
+    "MIAT_7SK_zstack__NT-miat-565-7sk-647_05.vsi": {start_slice: 16, end_slice: 16, rna_start_slice: 13, rna_end_slice: 19}
+    "MIAT_7SK_zstack__KD-miat-7sk_09.vsi": {start_slice: 25, end_slice: 25, rna_start_slice: 22, rna_end_slice: 28}
+    "MIAT_7SK_zstack__KD-miat-7sk_10.vsi": {start_slice: 16, end_slice: 16, rna_start_slice: 13, rna_end_slice: 19}
+    "MIAT_7SK_zstack__KD-miat-7sk_11.vsi": {start_slice: 25, end_slice: 25, rna_start_slice: 22, rna_end_slice: 28}
+    "MIAT_7SK_zstack__KD-miat-7sk_12.vsi": {start_slice: 19, end_slice: 19, rna_start_slice: 16, rna_end_slice: 22}
+    "MIAT_7SK_zstack__KD-miat-7sk_13.vsi": {start_slice: 22, end_slice: 22, rna_start_slice: 19, rna_end_slice: 25}
+    "MIAT_7SK_zstack__KD-miat-7sk_14.vsi": {start_slice: 7, end_slice: 7, rna_start_slice: 4, rna_end_slice: 10}
+    "MIAT_7SK_zstack__NT-seconly-miat-7sk_06.vsi": {start_slice: 13, end_slice: 13, rna_start_slice: 10, rna_end_slice: 16}
+    "MIAT_7SK_zstack__NT-seconly-miat-7sk_07.vsi": {start_slice: 19, end_slice: 19, rna_start_slice: 16, rna_end_slice: 22}
+    "MIAT_7SK_zstack__NT-seconly-miat-7sk_08.vsi": {start_slice: 19, end_slice: 19, rna_start_slice: 16, rna_end_slice: 22}
+
+nuclei:
+  # 60x-equivalent (0.2167 um/px) — CLONED from miat_qki_Rb_60x_MIATMIP_2026-07-20.
+  backend: cellpose
+  cellpose_model_type: cpsam
+  cellpose_diameter_px: 60.0           # ~13 um nucleus @ 0.2167 um/px
+  cellpose_flow_threshold: 0.4
+  cellpose_cellprob_threshold: 0.0
+  cellpose_downsample_factor: 2.0      # on-grid seg diameter 30 px
+  cellpose_device: directml            # AMD RX 6750 XT; REQUIRES the fishproc_dml env
+  min_area_px: 1440
+  max_area_px: 1000000000000.0
+  exclude_border: true
+  border_margin_px: 6
+  stardist_model: 2D_versatile_fluo
+  prob_threshold: 0.5
+  nms_threshold: 0.5
+  stardist_gauss_sigma: 3.0
+  stardist_postprocess: none
+  label_smoothing_radius_px: 0
+  reject_ghost_nuclei: false
+
+foci:
+  enabled: true
+  backend: bigfish
+  bigfish_voxel_size_nm: 216.7         # PINNED to the authoritative 60x-equivalent pixel size (0.2167 um/px)
+  bigfish_voxel_z_nm: 0.0              # 0 = auto; moot (2D detection on the narrow-window MIP)
+  bigfish_spot_radius_nm: 250.0        # WIDENED for 60x (see header) — 100nm was sub-pixel and found nothing
+  bigfish_spot_radius_z_nm: 300.0      # moot (2D detection)
+  threshold_multiplier: 1.0            # moderate starting point; RE-TUNE once dry-run spot counts are seen (no prior anchor for this probe)
+  only_nuclear_spots: true             # 7SK is a nuclear snRNA; cytoplasmic signal gated OUT
+  min_sep_px: 1
+  # NO rna_overrides peak floor — no established floor for 7SK yet (see header).
+  detect_in_sec_only: true             # report (never subtract) SecOnly non-specific spot rate
+
+cytoplasm:
+  enabled: true
+  voronoi_max_expansion_px: 24         # 60x-equivalent (~5.2 um @ 0.2167 um/px)
+  measure_nc_ratio: true               # % nuclear 7SK (distribution readout, per the KD-vs-NT question)
+
+output:
+  save_qc_overlays: true
+  save_per_image_csv: true
+  save_masks: true
+  save_publication_images: true
+  save_publication_tifs: false
+  # auto_batch (schema DEFAULT): percentile-derived from the real pooled batch
+  # pixels. NO manual floor invented — see header "INTENSITY READOUT" / "DAPI
+  # FLOOR" notes: this is a new probe/channel with no prior validated Sam's-
+  # method anchor. Re-tune to pub_contrast_mode: manual with eye-tuned
+  # manual_rna_min/max (and pin output.rna_intensity_threshold or
+  # manual_rna_min) once Brian/Sam have looked at the dry-run / preview.
+  pub_contrast_mode: auto_batch
+  apply_pub_contrast_floor_to_analysis: true   # emit above-floor per-nucleus columns once a floor IS resolved
+  apply_pub_contrast_floor_to_spots: false     # do NOT gate spot counts by the display floor
+  prefix: ""
+  scalebar_um: 25.0
+  scalebar_font_px: 52
+
+parallel:
+  # No compute_partner_intensity in this rna_only preset -> safe to parallelize.
+  workers: auto
+  seg_workers: 1                       # DirectML: single 12 GB VRAM -> 1
+  main_workers: 1
+  threads_per_worker: 4
+
+seed: 0

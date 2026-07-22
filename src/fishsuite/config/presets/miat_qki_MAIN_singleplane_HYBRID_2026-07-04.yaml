@@ -1,0 +1,323 @@
+# ============================================================================
+# MIAT (561 FISH) x QKI (640 IF) COLOCALIZATION — H9 hESC — MIAT-ASO KD vs NT
+# MAIN single-plane set ONLY  |  HYBRID QKI readout  |  rna_protein
+# Date: 2026-07-04  |  fishsuite-config subagent (Opus 4.8 HIGH) for MASTER CONTROL
+# Brian locked the design decisions 2026-07-04. DO-NOT-RUN artifact: config only.
+# ============================================================================
+# PURPOSE
+#   Colocalization of MIAT (RNA-FISH, 561) with QKI (IF, 640) in undifferentiated
+#   H9 hESC, MIAT-ASO knockdown (KD) vs non-targeting (NT). This preset covers the
+#   MAIN single-plane acquisition ONLY (the z-stack sets are a SEPARATE later run).
+#   The 7SK x QKI wells (9,10) are a SEPARATE preset
+#   (sk7_qki_MAIN_singleplane_HYBRID_2026-07-04.yaml) — different RNA target on the
+#   561 channel; do NOT mix. QKI-640 is the shared IF partner across both presets.
+#
+#   Human / Homo sapiens (H9 hESC). No GPU/no pipeline was run to build this file.
+#
+# ── HYBRID QKI READOUT (Brian 2026-07-04) ────────────────────────────────────
+#   The reality-check (REALITYCHECK_REPORT.md) shows QKI-640 as a FINE GRANULAR
+#   nuclear FILL (not classic discrete puncta) but WITH some visibly brighter
+#   foci. So we run BOTH readouts in one pass:
+#     (1) DIFFUSE INTENSITY (robust headline): QKI raw local intensity at each
+#         MIAT spot + random-position null + rotation "proper-background" null,
+#         with nucleolar voids excluded. This is the trusted coloc statistic.
+#     (2) LOOSE QKI SPOT-DETECT (complementary hedge): detect_antibody_spots:true
+#         with a LENIENT antibody threshold (tm=1.0) so we ALSO get MIAT x QKI
+#         spot-pairing metrics (paired_fraction, nn_distance, active-TSS overlap).
+#   CRITICAL specificity guard: detect_in_sec_only:true reports QKI (and MIAT)
+#   spot counts in the secondary-only wells (7,12) so the NON-SPECIFIC QKI spot
+#   rate is quantified — the loose QKI spots are only meaningful above that floor.
+#   The reality-check flagged sec-only QKI as a structured ~3-4x-over-background
+#   speckle (NOT empty), so this guard is essential.
+#
+# ── CHANNELS (OME-verified in inventory + reality-check) ─────────────────────
+#   On-disk channel order is REVERSED vs ascending wavelength — set indices
+#   EXPLICITLY (a hand-written ascending-order guess would be backwards):
+#     ch0 = "640 CSU" (668 nm) -> QKI IF (antibody)  -> antibody=0  (YELLOW LUT)
+#     ch1 = "561 CSU" (603 nm) -> MIAT FISH (RNA)     -> rna=1       (MAGENTA LUT)
+#     ch2 = "405 CSU" (442 nm) -> DAPI                -> dapi=2      (BLUE LUT)
+#   NOTE the wavelength flip vs the older UD MIAT-QKI presets (there MIAT was on
+#   640 and QKI on 561). Here MIAT=561, QKI=640. LUTs are set by WAVELENGTH.
+#   3 channels, 1152x1152, 0.13 um/px XY, Z=1 (single plane) on every MAIN file.
+#
+# ── SINGLE-PLANE (verification B) ────────────────────────────────────────────
+#   ALL 55 MAIN .vsi are Z=1 (confirmed by opening every file, inventory §4).
+#   mode:autofocus on a 1-slice stack simply returns the sole plane, used as
+#   acquired (core/io.py _autofocus_plane_with_idx returns plane 0 for nz=1).
+#   No start_slice/end_slice needed; the ±10% edge guard is irrelevant at nz=1.
+#
+# ── DISCOVERY / -i (verification A — CODE-VERIFIED against core/io.py) ────────
+#   discover_inputs walks EXACTLY 2 levels: immediate child DIRS of -i, then the
+#   files DIRECTLY inside each child dir (io.py L952-958). It does NOT recurse
+#   into grandchild dirs, and it SKIPS any dir/file whose name starts with "_".
+#   Consequence for -i = "F:\Raw Images\Confocal Imaging\MIAT-ASO-KD":
+#     * the 12 MAIN well folders yield their .vsi directly -> DISCOVERED, labelled
+#       by their well-folder name (subfolder mode).
+#     * "oldbad-z-stacks\" and "Real-zstacks\" appear as child dirs but their .vsi
+#       live one level DEEPER (inside per-well subfolders), so ZERO files are
+#       pulled from them — the z-stacks are auto-excluded by the 2-level walk.
+#     * top-level "_temp\" is skipped (leading "_").
+#   => Pointing -i at the MAIN root is ALREADY SAFE re: z-stacks. input_file_subset
+#      below is nevertheless pinned as a belt-and-suspenders guard AND is
+#      LOAD-BEARING for the MIAT-vs-7SK split (both sets share the same root; only
+#      the subset separates wells 1-6,8,11 from 9,10). Subset matches by BARE
+#      BASENAME (runner.py L299-309). MAIN/oldbad/Real basenames share no collision
+#      (distinct prefixes: "ASO_NT_MIAT-KD_..." vs "ASO_MIATKD-NT-zstack__..." vs
+#      "zstack__..."), so the pin is unambiguous.
+#   RUN WITH:  -i "F:\Raw Images\Confocal Imaging\MIAT-ASO-KD"  -p 1   (fishproc_dml)
+#
+# ── STATS: WELL = BIOLOGICAL REPLICATE (Brian 2026-07-04) ────────────────────
+#   subfolder_conditions maps each MAIN well folder to a PER-WELL label carrying
+#   its NT/KD prefix (NT_w1 ... KD_w11). Each well collapses to one mean; NT-vs-KD
+#   on well-means is done downstream. Sec-only wells 7,12 -> sec_only_folders (NOT
+#   a biological condition; they are forced to the "Sec-Only" label by _add()).
+#   min_nuclei_for_stats: 6.
+#
+# ── INTENSITY COMPARABILITY / FLOORS ─────────────────────────────────────────
+#   Exposure is identical across all wells (640=0.7s, 561=0.7s, 405=0.5s; reality-
+#   check §D), so manual floors (Sam's method) are used and pixel-coloc uses BATCH
+#   scope. CAVEAT (reality-check §D): laser %/gain are NOT recorded in the OME
+#   metadata, so absolute cross-well comparability is PROBABLE-not-proven; if a
+#   downstream check shows a well-to-well offset, switch pixel_coloc.threshold_scope
+#   to per_image and/or normalize to the sec-only floor. ALL manual_* floors below
+#   are __TUNE__ starting values derived from the reality-check percentiles
+#   (min~p50, max~p99.9 of the relevant channel); TUNE on the strongest well by eye
+#   before locking. The QKI (antibody/rna2) + DAPI floors are kept IDENTICAL to the
+#   7SK preset so the shared QKI partner is displayed comparably across both.
+# ============================================================================
+
+experiment:
+  name: "MIAT_QKI_MAIN_singleplane_HYBRID_2026-07-04"
+  description: "MIAT(561 FISH) x QKI(640 IF) rna_protein coloc, H9 hESC, MIAT-ASO KD vs NT. MAIN single-plane set only (z-stacks are a separate run). HYBRID QKI: diffuse QKI-intensity-at-MIAT null enrichment (position + rotation proper-background nulls, nucleolus-excluded) as the headline PLUS a LOOSE QKI spot-detect (detect_antibody_spots:true, antibody tm=1.0) for complementary MIAT x QKI spot-pairing; detect_in_sec_only:true quantifies the non-specific QKI/MIAT spot rate in sec-only wells 7,12. Channels ch0/640=QKI(antibody), ch1/561=MIAT(rna), ch2/405=DAPI (indices explicit; reversed vs ascending-wavelength). Single in-focus plane (mode=autofocus; every MAIN file is Z=1, used as acquired). Well=biological replicate (subfolder_conditions NT_w#/KD_w#). Manual comparable floors (Sam's method, all TUNE) + batch pixel-coloc. Single-process (compute_partner_intensity). -i at MIAT-ASO-KD root is safe (2-level discovery excludes the deeper z-stack folders); input_file_subset pins the 40 MAIN MIAT+sec-only .vsi as a guard and to split MIAT from 7SK."
+  cell_line: "H9 hESC (undifferentiated)"
+  date: "2026-07-04"
+
+conditions:
+  mode: subfolders
+  # WELL = biological replicate. Each MAIN well folder -> a per-well NT/KD label.
+  # Wells 9,10 (7SK) are deliberately NOT listed here and are excluded by
+  # input_file_subset (they belong to the sibling 7SK preset). Even if discovery
+  # sees them (it does, at -i=root), the subset filter drops them before analysis.
+  subfolder_conditions:
+    "FolderNT-well1-MIAT565-QKI647_Experiment_20260703": "NT_w1"
+    "FolderNT-well2-MIAT-QKI_Experiment_20260703": "NT_w2"
+    "FolderNT-well3-MIAT-QKI_Experiment_20260703": "NT_w3"
+    "FolderNT-well8-MIAT-QKI_Experiment_20260703": "NT_w8"
+    "FolderKD-well4-MIAT-QKI_Experiment_20260703": "KD_w4"
+    "FolderKD-well5-MIAT-QKI_Experiment_20260703": "KD_w5"
+    "FolderKD-well6-MIAT-QKI_Experiment_20260703": "KD_w6"
+    "FolderKD-well11-MIAT-QKI_Experiment_20260703": "KD_w11"
+  # Secondary-only controls: NOT a biological condition. Forced to "Sec-Only".
+  sec_only_folders:
+    - "FolderNT-well7-seconly_Experiment_20260703"
+    - "FolderKD-well12-seconly_Experiment_20260703"
+  sec_only_files: []
+  filename_conditions: []
+  condition_order:
+    - "NT_w1"
+    - "NT_w2"
+    - "NT_w3"
+    - "NT_w8"
+    - "KD_w4"
+    - "KD_w5"
+    - "KD_w6"
+    - "KD_w11"
+  min_nuclei_for_stats: 6
+
+# BELT-AND-SUSPENDERS + LOAD-BEARING well selection (verification A/B). Pins the
+# 40 MAIN .vsi for MIAT wells {1,2,3,4,5,6,8,11} + sec-only {7,12}. Matched by
+# bare basename. Excludes 7SK wells {9,10} (sibling preset) and — redundantly, the
+# 2-level walk already does this — every oldbad/Real z-stack file.
+input_file_subset:
+  # --- NT_w1 (n=3) ---
+  - "ASO_NT_MIAT-KD_MIAT-QKI-7SK_NT-well1-MIAT565-QKI647_26_20260703.vsi"
+  - "ASO_NT_MIAT-KD_MIAT-QKI-7SK_NT-well1-MIAT565-QKI647_27_20260703.vsi"
+  - "ASO_NT_MIAT-KD_MIAT-QKI-7SK_NT-well1-MIAT565-QKI647_28_20260703.vsi"
+  # --- NT_w2 (n=3) ---
+  - "ASO_NT_MIAT-KD_MIAT-QKI-7SK_NT-well2-MIAT-QKI_23_20260703.vsi"
+  - "ASO_NT_MIAT-KD_MIAT-QKI-7SK_NT-well2-MIAT-QKI_24_20260703.vsi"
+  - "ASO_NT_MIAT-KD_MIAT-QKI-7SK_NT-well2-MIAT-QKI_25_20260703.vsi"
+  # --- NT_w3 (n=3) ---
+  - "ASO_NT_MIAT-KD_MIAT-QKI-7SK_NT-well3-MIAT-QKI_20_20260703.vsi"
+  - "ASO_NT_MIAT-KD_MIAT-QKI-7SK_NT-well3-MIAT-QKI_21_20260703.vsi"
+  - "ASO_NT_MIAT-KD_MIAT-QKI-7SK_NT-well3-MIAT-QKI_22_20260703.vsi"
+  # --- NT_w8 (n=3) ---
+  - "ASO_NT_MIAT-KD_MIAT-QKI-7SK_NT-well8-MIAT-QKI_35_20260703.vsi"
+  - "ASO_NT_MIAT-KD_MIAT-QKI-7SK_NT-well8-MIAT-QKI_36_20260703.vsi"
+  - "ASO_NT_MIAT-KD_MIAT-QKI-7SK_NT-well8-MIAT-QKI_37_20260703.vsi"
+  # --- KD_w4 (n=5) ---
+  - "ASO_NT_MIAT-KD_MIAT-QKI-7SK_KD-well4-MIAT-QKI_15_20260703.vsi"
+  - "ASO_NT_MIAT-KD_MIAT-QKI-7SK_KD-well4-MIAT-QKI_16_20260703.vsi"
+  - "ASO_NT_MIAT-KD_MIAT-QKI-7SK_KD-well4-MIAT-QKI_17_20260703.vsi"
+  - "ASO_NT_MIAT-KD_MIAT-QKI-7SK_KD-well4-MIAT-QKI_18_20260703.vsi"
+  - "ASO_NT_MIAT-KD_MIAT-QKI-7SK_KD-well4-MIAT-QKI_19_20260703.vsi"
+  # --- KD_w5 (n=3) ---
+  - "ASO_NT_MIAT-KD_MIAT-QKI-7SK_KD-well5-MIAT-QKI_38_20260703.vsi"
+  - "ASO_NT_MIAT-KD_MIAT-QKI-7SK_KD-well5-MIAT-QKI_39_20260703.vsi"
+  - "ASO_NT_MIAT-KD_MIAT-QKI-7SK_KD-well5-MIAT-QKI_40_20260703.vsi"
+  # --- KD_w6 (n=5) ---
+  - "ASO_NT_MIAT-KD_MIAT-QKI-7SK_KD-well6-MIAT-QKI_41_20260703.vsi"
+  - "ASO_NT_MIAT-KD_MIAT-QKI-7SK_KD-well6-MIAT-QKI_42_20260703.vsi"
+  - "ASO_NT_MIAT-KD_MIAT-QKI-7SK_KD-well6-MIAT-QKI_43_20260703.vsi"
+  - "ASO_NT_MIAT-KD_MIAT-QKI-7SK_KD-well6-MIAT-QKI_44_20260703.vsi"
+  - "ASO_NT_MIAT-KD_MIAT-QKI-7SK_KD-well6-MIAT-QKI_45_20260703.vsi"
+  # --- KD_w11 (n=4) ---
+  - "ASO_NT_MIAT-KD_MIAT-QKI-7SK_KD-well11-MIAT-QKI_51_20260703.vsi"
+  - "ASO_NT_MIAT-KD_MIAT-QKI-7SK_KD-well11-MIAT-QKI_52_20260703.vsi"
+  - "ASO_NT_MIAT-KD_MIAT-QKI-7SK_KD-well11-MIAT-QKI_53_20260703.vsi"
+  - "ASO_NT_MIAT-KD_MIAT-QKI-7SK_KD-well11-MIAT-QKI_54_20260703.vsi"
+  # --- Sec-Only NT well7 (n=6) ---
+  - "ASO_NT_MIAT-KD_MIAT-QKI-7SK_NT-well7-seconly_29_20260703.vsi"
+  - "ASO_NT_MIAT-KD_MIAT-QKI-7SK_NT-well7-seconly_30_20260703.vsi"
+  - "ASO_NT_MIAT-KD_MIAT-QKI-7SK_NT-well7-seconly_31_20260703.vsi"
+  - "ASO_NT_MIAT-KD_MIAT-QKI-7SK_NT-well7-seconly_32_20260703.vsi"
+  - "ASO_NT_MIAT-KD_MIAT-QKI-7SK_NT-well7-seconly_33_20260703.vsi"
+  - "ASO_NT_MIAT-KD_MIAT-QKI-7SK_NT-well7-seconly_34_20260703.vsi"
+  # --- Sec-Only KD well12 (n=5) ---
+  - "ASO_NT_MIAT-KD_MIAT-QKI-7SK_KD-well12-seconly_46_20260703.vsi"
+  - "ASO_NT_MIAT-KD_MIAT-QKI-7SK_KD-well12-seconly_47_20260703.vsi"
+  - "ASO_NT_MIAT-KD_MIAT-QKI-7SK_KD-well12-seconly_48_20260703.vsi"
+  - "ASO_NT_MIAT-KD_MIAT-QKI-7SK_KD-well12-seconly_49_20260703.vsi"
+  - "ASO_NT_MIAT-KD_MIAT-QKI-7SK_KD-well12-seconly_50_20260703.vsi"
+
+channels:
+  analysis_mode: rna_protein   # MIAT RNA (ch1/561) x QKI protein (ch0/640) + DAPI (ch2/405)
+  dapi: 2                      # ch2 = "405 CSU" (DAPI)
+  rna: 1                       # ch1 = "561 CSU" (MIAT FISH probe)
+  antibody: 0                  # ch0 = "640 CSU" (QKI IF / antibody)
+  rna2: -1                     # not used; antibody maps into the coloc slot internally
+  one_indexed: false           # indices above are 0-indexed
+  dapi_label: "DAPI"
+  rna_label: "MIAT-561"
+  antibody_label: "QKI-640"
+  dapi_lut: "blue"             # 405 -> blue
+  rna_lut: "magenta"           # 561 -> magenta  (MIAT here; wavelength-based)
+  antibody_lut: "yellow"       # 640 -> yellow  (QKI here)
+
+z_stack:
+  # Every MAIN .vsi is Z=1 (single plane). mode:autofocus on a 1-slice stack
+  # returns the sole plane, used as acquired (io.py). The intensity-weighting and
+  # start/end/central-fraction guards are all MOOT at nz=1 — set mode only.
+  mode: autofocus
+  autofocus_intensity_weighted: true   # harmless at nz=1; kept for consistency
+  # NO start_slice / end_slice (irrelevant for single-plane). NO file_overrides.
+
+nuclei:
+  backend: cellpose
+  cellpose_model_type: cpsam
+  cellpose_diameter_px: 100.0          # ~13 um nucleus @ 0.13 um/px
+  cellpose_flow_threshold: 0.4
+  cellpose_cellprob_threshold: 0.0
+  cellpose_downsample_factor: 2.0      # ds2 -> ~0.26 um/px segmentation grid
+  cellpose_device: directml            # AMD RX 6750 XT; REQUIRES the fishproc_dml env
+  min_area_px: 4000
+  max_area_px: 1000000000000.0
+  exclude_border: true
+  border_margin_px: 10
+  stardist_model: 2D_versatile_fluo
+  prob_threshold: 0.5
+  nms_threshold: 0.5
+  stardist_gauss_sigma: 3.0
+  stardist_postprocess: none
+  label_smoothing_radius_px: 0
+  reject_ghost_nuclei: false
+
+pixel_coloc:
+  threshold_mode: mad
+  threshold_scope: batch               # exposure identical across wells -> batch is
+                                       # legitimate (Pearson + Li-ICQ threshold-free
+                                       # regardless). See intensity-comparability caveat.
+  k_mad: 2.5
+
+# MIAT(rna) x QKI(antibody) spot-to-spot nearest-neighbour pairing (populated
+# because the LOOSE QKI spot-detect below is ON).
+spot_coloc:
+  pair_distance_um: 0.3                # ~2.3 px at 0.13 um/px (~diffraction limit)
+  report_nn_distance: true
+
+foci:
+  enabled: true
+  backend: bigfish
+  bigfish_voxel_size_nm: 0.0           # 0 = auto (reads 130 nm from metadata)
+  bigfish_voxel_z_nm: 0.0              # 0 = auto
+  # --- MIAT (rna) spot detection ---  *** TUNE threshold_multiplier on real data ***
+  bigfish_spot_radius_nm: 100.0        # MIAT puncta
+  bigfish_spot_radius_z_nm: 300.0      # moot at Z=1
+  threshold_multiplier: 1.0            # MIAT strictness (t = auto_thr * tm; higher=stricter). __TUNE__
+  only_nuclear_spots: false            # keep cytoplasmic MIAT for % nuclear
+  min_sep_px: 1
+  # CRITICAL specificity guard: also detect spots in the secondary-only wells so
+  # the non-specific QKI (and MIAT) spot rate is REPORTED (never subtracted).
+  detect_in_sec_only: true
+  # --- HYBRID: LOOSE QKI spot-detect (complementary hedge) ---
+  detect_antibody_spots: true          # QKI IS spot-detected (loose) alongside the intensity readout
+  antibody_overrides:                  # applied to the QKI (antibody/rna2) channel only
+    bigfish_spot_radius_nm: 150.0      # QKI granules a touch larger than MIAT
+    bigfish_spot_radius_z_nm: 350.0    # moot at Z=1
+    threshold_multiplier: 1.0          # LOOSE (Brian: "I can definitely see spots"). __TUNE__ —
+                                       # reality-check says QKI is a fine speckle so a spot-caller
+                                       # may over-segment; detect_in_sec_only quantifies that.
+    only_nuclear_spots: true           # QKI foci are nuclear; reject cyto/edge debris
+    min_sep_px: 2                      # suppress adjacent duplicate calls
+    min_spot_peak_intensity: 5000.0    # QKI spot specificity floor — sec-only max peak ~4974, so >=5000 => sec-only ~0 spots (calibrated 2026-07-04). __TUNE__
+  # --- DIFFUSE QKI-intensity-at-MIAT nulls (the ROBUST HEADLINE) ---
+  compute_partner_intensity: true          # QKI raw local intensity at each MIAT spot -> single-process
+  compute_partner_null_enrichment: true    # per-nucleus RANDOM-POSITION null (needs compute_partner_intensity)
+  partner_null_n: 1000
+  partner_null_disk_px: 3.0                # canonical validated disk radius
+  partner_null_seed: 0
+  exclude_nucleolus_from_partner_null: true  # needs nucleolus.enabled (below)
+  save_partner_null_draws: true            # writes coloc_null_draws.csv (self-sufficient; no backfill)
+  compute_partner_radial_profile: true     # writes coloc_radial_profile.csv (QKI-around-MIAT rings)
+  partner_radial_bins_um: [0.25, 0.5, 0.75, 1.0]
+  # --- Stricter "proper background" ROTATION null (ON) ---
+  compute_partner_rotation_null: true      # rotates the MIAT constellation about its centroid
+  partner_rotation_n: 1000
+  partner_rotation_seed: 0
+  partner_rotation_min_retention: 0.5
+  partner_rotation_assoc_percentile: 95.0
+  save_partner_rotation_null_draws: true   # writes coloc_rotation_null.csv for the null-overlay figure
+
+cytoplasm:
+  enabled: true
+  voronoi_max_expansion_px: 40
+  measure_nc_ratio: true                 # for % nuclear MIAT
+
+nucleolus:
+  enabled: true                          # DAPI-poor nucleolus detection -> excluded from the partner-null
+
+output:
+  save_qc_overlays: true
+  save_per_image_csv: true
+  save_masks: true
+  save_publication_images: true
+  save_publication_tifs: false
+  pub_contrast_mode: manual
+  # ALL floors below are __TUNE__ starting values from the reality-check
+  # percentiles (camera baseline ~325-370; min~p50, max~p99.9 of the channel).
+  # TUNE on the strongest-signal well by eye before locking.
+  manual_dapi_min: 600.0       # __TUNE__ DAPI-405  (pooled p50 ~596)
+  manual_dapi_max: 11000.0     # __TUNE__          (pooled p99.9 ~10800)
+  manual_rna_min: 1000.0       # Brian starter 2026-07-04 (MIAT-561 display/analysis floor). __TUNE__
+  manual_rna_max: 5000.0       # Brian starter 2026-07-04. __TUNE__
+  manual_antibody_min: 1750.0  # Brian starter 2026-07-04 (QKI-640 floor; above sec-only). __TUNE__ — KEEP == 7SK preset
+  manual_antibody_max: 17500.0 # Brian starter 2026-07-04. __TUNE__ — KEEP == 7SK preset
+  manual_rna2_min: 1750.0      # mirror of manual_antibody_min (renderer may read the rna2 slot)
+  manual_rna2_max: 17500.0     # mirror of manual_antibody_max
+  # Intensity IS (nominally) comparable -> emit the above-floor per-nucleus columns.
+  apply_pub_contrast_floor_to_analysis: true
+  # Do NOT gate spot counts by the display floor (see all BigFISH-detected spots).
+  apply_pub_contrast_floor_to_spots: false
+  prefix: ""
+  scalebar_um: 25.0
+  scalebar_font_px: 52
+
+parallel:
+  # compute_partner_intensity HANGS the parallel pool -> force single-process.
+  # Run with -p 1 as well (belt-and-suspenders). DirectML: single 12 GB VRAM -> 1.
+  workers: 1
+  seg_workers: 1
+  main_workers: 1
+  threads_per_worker: 4
+
+seed: 0

@@ -1,0 +1,171 @@
+# BIN1-intron FISH (640) + XRN2 IF (561) — d8 cMyo WT vs QKI-KO (051526 acquisition)
+# First BIN1-intron + XRN2 co-stain. d8Myo WT (Well3) vs QKI-KO_4-2 (Well6).
+#
+# Source: F:\Raw Images\BIN1\051526_Confocal_BIN1int-640_XRN2-G3BP1-561_WT-KO\051526_Confocal_BIN1int-640_XRN2-G3BP1-561_WT-KO
+# Staged (copied, flat→subfolders): <out>\_input_stage\{WT,KO,Sec-Only}
+# Run dir: F:\Image Analysis Work\BIN1\d8cMyo_BIN1intron-640_XRN2-561_WTvsKO_051526
+#
+# Acquisition (bioio): 3 ch [640, 561, 405]; z-stacks = 10 planes; px 0.13 µm.
+#
+# Channel→role (2026-05-28 Brian — CONFIRMED for THIS run; opposite of the
+# 20260528 dataset; matches THIS dataset's WellInfo_Antibodies.png legend):
+#   ch0 = 640 = BIN1 INTRONS (FISH)        → rna (spot-detected, primary readout)
+#   ch1 = 561 = XRN2 antibody (568 2ary)   → antibody/protein (full-depth analysis)
+#   ch2 = 405 = DAPI
+#
+# MODE = rna_protein (UPGRADED to full rna_rna depth, 2026-05-28): the protein
+# (XRN2) gets spot detection + per-nucleus intensity/counts/NC-ratio/spot-props
+# + robust BIN1-intron × XRN2 colocalization, labeled as a protein (not RNA2).
+#
+# n: WT = 1 z-stack FOV (Well3), KO = 2 z-stack FOVs (Well6 #79,#80). Feasibility.
+# Sec-Only = 8 single-plane "2nd only" snaps (no primary XRN2; BIN1 probe present)
+#   → XRN2-channel (561/568) background reference, reported not subtracted.
+# Brian's NON-decon preference; decon copies excluded.
+# Run-specific config — NOT to be committed.
+
+experiment:
+  name: "BIN1intron640_XRN2-561_d8cMyo_WTvsKO_051526"
+  description: "BIN1-intron FISH (640) + XRN2 IF (561), d8 cMyo WT(Well3) vs QKI-KO(Well6). rna_protein (full depth): BIN1-intron spots + XRN2 spots+intensity + intron×XRN2 coloc. cellpose cpsam, per-image middle-80% autofocus (10-plane → 2-9), spot-z locked to DAPI seg-z, Sam's manual contrast, DAPI auto-per-image."
+  cell_line: "d8 cardiomyocyte"
+
+conditions:
+  mode: subfolders
+  subfolder_conditions:
+    "WT": "WT"
+    "KO": "KO"
+  # 2026-05-29 Brian: Sec-Only ("2nd only" snaps) DROPPED — single-plane, noisy
+  # 640 background (had MORE intron spots than the real z-stacks). Not used for
+  # the WT-vs-KO readout. (Alt considered: raise floor until sec-only had no
+  # signal in either channel — dropped instead.)
+  sec_only_folders: []
+  sec_only_files: []
+  condition_order: ["WT", "KO"]
+  min_nuclei_for_stats: 6
+
+# Sec-only "2nd only" snaps dropped (Brian 2026-05-29) — only the 3 real
+# z-stacks: WT Well3 (82), KO Well6 (79, 80). Feasibility n (1 WT / 2 KO FOV).
+input_file_subset:
+  - "82_WT-Well3 (100x) z-stack.vsi"
+  - "79_KO-Well6 (100x) z-stack.vsi"
+  - "80_KO-Well6 (100x) z-stack.vsi"
+
+channels:
+  analysis_mode: rna_protein
+  dapi: 2                # ch2 = 405 (DAPI)
+  rna: 0                 # ch0 = 640 = BIN1 introns (FISH) — primary readout
+  rna2: -1
+  antibody: 1            # ch1 = 561 = XRN2 (protein, full-depth analysis)
+  dapi_label: "DAPI"
+  rna_label: "BIN1 Introns"
+  antibody_label: "XRN2"
+  # Sam's wavelength-LUT convention: 647/640 → yellow, 561/568 → magenta.
+  rna_lut: "yellow"      # ch0 = 640 (BIN1 introns) → yellow
+  antibody_lut: "magenta" # ch1 = 561 (XRN2) → magenta
+
+z_stack:
+  # Per-image middle-80% autofocus; spot-z locked to DAPI seg-z. z-stacks are
+  # nz=10 → middle 80% = floor(0.1*10)+1 .. ceil(0.9*10) = 2..9. The 8 Sec-Only
+  # snaps are nz=1 → autofocus trivially returns their single plane (no override).
+  mode: autofocus
+  # 2026-05-28 Brian: intensity-weighted focus score [var(laplace(plane/mean))*mean].
+  # Strictly more robust (favors bright AND sharp) — pulls the DAPI pick to the
+  # in-focus nuclear plane on thick stacks; harmless on these nz=10 windows and
+  # the nz=1 single-plane snaps.
+  autofocus_intensity_weighted: true
+  file_overrides:
+    "82_WT-Well3 (100x) z-stack.vsi": { start_slice: 2, end_slice: 9 }   # nz=10
+    "79_KO-Well6 (100x) z-stack.vsi": { start_slice: 2, end_slice: 9 }   # nz=10
+    "80_KO-Well6 (100x) z-stack.vsi": { start_slice: 2, end_slice: 9 }   # nz=10
+
+nuclei:
+  backend: cellpose
+  cellpose_model_type: cpsam
+  cellpose_diameter_px: 90.0
+  cellpose_flow_threshold: 0.4
+  cellpose_cellprob_threshold: 0.0
+  cellpose_downsample_factor: 2.0
+  cellpose_device: directml
+  min_area_px: 3000
+  max_area_px: 1000000000000.0
+  exclude_border: true
+  border_margin_px: 10
+  stardist_model: 2D_versatile_fluo
+  prob_threshold: 0.5
+  nms_threshold: 0.5
+  stardist_gauss_sigma: 3.0
+  stardist_postprocess: none
+  label_smoothing_radius_px: 0
+
+pixel_coloc:
+  threshold_mode: mad
+  threshold_scope: batch
+  k_mad: 2.5
+
+foci:
+  enabled: true
+  backend: bigfish
+  bigfish_voxel_size_nm: 0.0       # auto (130 nm)
+  bigfish_voxel_z_nm: 0.0          # auto (210 nm)
+  bigfish_spot_radius_nm: 130.0
+  bigfish_spot_radius_z_nm: 300.0
+  threshold_multiplier: 1.0
+  only_nuclear_spots: false
+  min_sep_px: 1
+  # 2026-05-29: intensity-based coloc ON (XRN2 intensity at each BIN1-intron
+  # spot + enrichment). Verified fast (~0.1s/image) + floor-robust; the earlier
+  # "hang" was GPU contention from orphaned runs, not this sampler.
+  compute_partner_intensity: true
+  # Detect + report on the sec-only group so the XRN2-channel background level
+  # is quantified (reported, not subtracted).
+  detect_in_sec_only: true
+
+cytoplasm:
+  enabled: true
+  voronoi_max_expansion_px: 40
+  measure_nc_ratio: true
+
+nucleolus:
+  enabled: true
+  intra_nuclear_percentile: 25.0
+  min_area_um2: 1.0
+  max_area_frac_of_nucleus: 0.6
+  closing_radius_px: 2
+
+output:
+  save_qc_overlays: true
+  save_per_image_csv: true
+  save_masks: true
+  save_publication_images: true
+  save_publication_tifs: false
+  pub_contrast_mode: manual
+  # 2026-05-29 Brian (2nd pass): B's 640 introns are the DIMMEST of all the BIN1
+  # datasets, and at floor 700 they were too sparse — the intensity-coloc
+  # enrichment came back NaN (too few intron spots to sample XRN2 at). Drop the
+  # intron floor 700 → 500 to RECOVER real dim intron spots for the spot-based /
+  # intensity-coloc readouts. Retention (nuclear_spot_fraction) is a RATIO and is
+  # floor-robust, so the KO>WT retention is unchanged by this. Verify after run:
+  # KO cytoplasmic intron spots stay sane + the enrichment is now non-NaN.
+  # XRN2 floor 496 → 900 (Brian): XRN2 is a bright constitutive nuclear protein,
+  # so a low floor shows lots of background — raise it to clean the XRN2 channel
+  # spots/display. This does NOT change the Pearson/Manders coloc (pixel-based,
+  # MAD-thresholded, floor-DECOUPLED) — the headline coloc number is unaffected.
+  # 2026-05-30 Brian (3rd pass): per-image showed floor 500 too LOW for the bright
+  # images (82_WT 20/nuc + cyto 5; 79_KO noisy) and 700 too HIGH for the dim one
+  # (79_KO collapsed to 1.4/nuc, nearly empty). The dim KO and bright WT images pull
+  # opposite ways, so a single floor is a compromise — 600 is the middle sweet spot.
+  # Retention stays floor-robust; this mainly tunes the spot-count/intensity readouts.
+  #   rna       = ch0/640 = BIN1 introns: 600 – 1043  (middle: 500 noisy, 700 over-cuts 79_KO)
+  #   antibody  = ch1/561 = XRN2:         900 – 1794  (floor 496→900, clean background)
+  #   DAPI      = auto-per-image (manual_dapi left unset → falls back to auto)
+  manual_rna_min: 600.0
+  manual_rna_max: 1043.0
+  manual_antibody_min: 900.0
+  manual_antibody_max: 1794.0
+  apply_pub_contrast_floor_to_analysis: true
+  apply_pub_contrast_floor_to_spots: true
+  prefix: ""
+  scalebar_um: 25.0
+  scalebar_font_px: 52
+
+parallel:
+  workers: auto

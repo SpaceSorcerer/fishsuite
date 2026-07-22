@@ -1,0 +1,131 @@
+# H9 hESC 100x — MIAT KD ASO (2026-05-08 dataset) — DECONV ADVMLE @ floor 1250
+# 2026-05-27 (Brian): proper-floor comparison run on Olympus ADVMLE-deconvolved
+# .vsi (20-strength). Floor 1250 (Brian 2026-05-27) chosen from the DECONV_audit_2026-05-27 sec-only
+# distribution: sec-only _10 peak intensity p90=1047, p99=2248 (no floor);
+# 1250 clears ~92% of sec-only background while retaining ~85% of real NT/KD
+# signal (NT+KD p10=905, p25=1615) — keeps more dim real signal at the cost
+# of slightly more sec-only noise vs 1500.
+#
+# manual_rna_max bumped 4200 -> 7000 because deconv shifts real-spot intensities
+# up by ~3-4x (median ~3177 vs raw ~1250-2000); display contrast needs the
+# headroom. Display only; does not filter spots.
+#
+# Same 6-image deconv subset (20ADVMLE strength only): NT _02/_04/_05, KD _09/_13
+# (NOT _07), Sec-Only _10. Run dir: F:\Image Analysis Work\H9-MIAT-KD\DECONV_floor1250_2026-05-27.
+# Run-specific config — NOT to be committed.
+
+experiment:
+  name: "H9_MIAT_KD_ASO_DECONV_floor1250_2026-05-27"
+  description: "DECONV ADVMLE 20-strength @ spot floor 1250 (audited): NT vs KD comparison on deconvolved data."
+  cell_line: "H9 hESC"
+
+conditions:
+  mode: subfolders
+  subfolder_conditions:
+    Folder_NT: "NT ASO"
+    Folder_MIATKD: "KD ASO"
+    Folder_KD-2only: "Sec-Only"
+    Folder_NT-2only: "Sec-Only"
+  sec_only_folders:
+    - Folder_KD-2only
+    - Folder_NT-2only
+  sec_only_files: []
+  condition_order: ["Sec-Only", "NT ASO", "KD ASO"]
+  min_nuclei_for_stats: 6
+
+# 6-image deconv subset (20ADVMLE strength only).
+input_file_subset:
+  - "H9-MIAT-ASOs-_02_20ADVMLE fast.vsi"
+  - "H9-MIAT-ASOs-_04_20ADVMLE fast.vsi"
+  - "H9-MIAT-ASOs-_05_20ADVMLE fast.vsi"
+  - "H9-MIAT-ASOs-_09_20ADVMLE fast.vsi"
+  - "H9-MIAT-ASOs-_13_20ADVMLE fast.vsi"
+  - "H9-MIAT-ASOs-_10_20ADVMLE fast.vsi"
+
+channels:
+  analysis_mode: rna_only
+  dapi: 2
+  rna: 0
+  antibody: -1
+  dapi_label: "DAPI"
+  rna_label: "MIAT-640"
+
+z_stack:
+  mode: single
+  file_overrides:
+    "H9-MIAT-ASOs-_02_20ADVMLE fast.vsi": { single_slice: 12, rna_start_slice: 7,  rna_end_slice: 16 }
+    "H9-MIAT-ASOs-_04_20ADVMLE fast.vsi": { single_slice: 15, rna_start_slice: 10, rna_end_slice: 19 }
+    "H9-MIAT-ASOs-_05_20ADVMLE fast.vsi": { single_slice: 15, rna_start_slice: 10, rna_end_slice: 19 }
+    "H9-MIAT-ASOs-_09_20ADVMLE fast.vsi": { single_slice: 18, rna_start_slice: 13, rna_end_slice: 22 }
+    "H9-MIAT-ASOs-_10_20ADVMLE fast.vsi": { single_slice: 14, rna_start_slice: 9,  rna_end_slice: 18 }
+    "H9-MIAT-ASOs-_13_20ADVMLE fast.vsi": { single_slice: 12, rna_start_slice: 7,  rna_end_slice: 16 }
+
+nuclei:
+  backend: cellpose
+  cellpose_model_type: cpsam
+  cellpose_diameter_px: 200.0
+  cellpose_flow_threshold: 0.4
+  cellpose_cellprob_threshold: 0.0
+  cellpose_downsample_factor: 2.0
+  min_area_px: 16000
+  max_area_px: 1000000000000.0
+  exclude_border: true
+  border_margin_px: 10
+  stardist_model: 2D_versatile_fluo
+  prob_threshold: 0.5
+  nms_threshold: 0.5
+  stardist_gauss_sigma: 3.0
+  stardist_postprocess: none
+  label_smoothing_radius_px: 0
+
+pixel_coloc:
+  threshold_mode: mad
+  threshold_scope: batch
+  k_mad: 2.5
+
+foci:
+  enabled: true
+  backend: bigfish
+  bigfish_voxel_size_nm: 0.0
+  bigfish_voxel_z_nm: 0.0
+  bigfish_spot_radius_nm: 100.0
+  bigfish_spot_radius_z_nm: 300.0
+  threshold_multiplier: 0.5
+  only_nuclear_spots: false
+  min_sep_px: 1
+  detect_in_sec_only: true
+
+cytoplasm:
+  enabled: true
+  voronoi_max_expansion_px: 80
+  measure_nc_ratio: true
+
+nucleolus:
+  enabled: true
+  intra_nuclear_percentile: 25.0
+  min_area_um2: 1.0
+  max_area_frac_of_nucleus: 0.6
+  closing_radius_px: 2
+
+output:
+  save_qc_overlays: true
+  save_per_image_csv: true
+  save_masks: true
+  save_publication_images: true
+  pub_contrast_mode: manual
+  # 2026-05-27 Brian: audited floor for deconvolved data — 1250.
+  # Sec-only _10 (no floor): p90=1047, p99=2248. NT+KD: p10=905, p25=1615, median=3177.
+  # 1250 clears ~92% of sec-only background, retains ~85% of real signal.
+  manual_rna_min: 1250.0
+  manual_rna_max: 7000.0  # bumped 4200->7000 for deconv display headroom
+  manual_dapi_min: 300.0
+  manual_dapi_max: 3200.0
+  apply_pub_contrast_floor_to_spots: true
+  prefix: ""
+  scalebar_um: 25.0
+  scalebar_font_px: 52
+
+parallel:
+  workers: auto
+  seg_workers: 6
+  threads_per_worker: 4

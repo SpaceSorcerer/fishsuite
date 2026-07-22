@@ -1,0 +1,114 @@
+# =============================================================================
+# RNaseH2B / XRN2 IF-intensity — VOLUMETRIC (z-stack) — WT vs QKI-KO (clone 4-2)
+# Preset for fishsuite analysis_mode: if_intensity   (created 2026-07-08)
+# -----------------------------------------------------------------------------
+# VOLUMETRIC upgrade of the single-plane run RNaseH2B_XRN2_IF_intensity_20260705.
+# Quantification is over the nuclear z-VOLUME: the raw 44-plane z-stacks are
+# collapsed to single-plane 3-channel OME-TIFFs by a MEAN projection over the
+# central-80% z-window (planes 5-40) BEFORE the locked single-plane mode reads
+# them (mean, NOT max -- see the input README). Point -i at the projection tree:
+#   ...\RNaseH2B_XRN2_IF_VOLUMETRIC_zstack_20260708-153628\_volumetric_projection_input
+# d8 cardiomyocyte, QKI WT vs KO(4-2). Human / Homo sapiens.
+# =============================================================================
+
+experiment:
+  name: "RNaseH2B_XRN2_IF_VOLUMETRIC_zstack_WTvsKO"
+  description: >-
+    Volumetric (nuclear-z-window MEAN-projection) IF-intensity antibody
+    quantification of RNaseH2B and XRN2 (both on the 647->640 channel) in d8
+    cardiomyocyte QKI WT vs KO (clone 4-2). Per-well biological replicate;
+    RNaseH2B n=3 wells/genotype, XRN2 honest n=1 well/genotype; matched
+    secondary-only negative controls per arm. Antibody validation, small-n
+    honest. WT-vs-KO within-arm is exposure-clean; the 640 exposure differs
+    across arms by design (gate flags the pooled mismatch, advisory).
+  cell_line: "d8 cardiomyocyte WT / QKI-KO (4-2)"
+
+conditions:
+  # One subfolder per well; the plate CSV (not the folder name) is the biology
+  # source of truth. Routing is driven by if_intensity.plate_layout_csv + the
+  # well-number regex (2-digit wells encode genotype: WT=..1, KO=..2).
+  mode: subfolders
+
+channels:
+  analysis_mode: if_intensity   # diverts run_batch to core.modes.if_intensity.run_if_batch
+  dapi_label: "DAPI"
+
+nuclei:
+  # LOCKED cpsam/DirectML segmentation. Physical thresholds RESCALED from the
+  # panQKI/prior-run values (tuned at 0.2167 um/px) to the z-stack's 0.13 um/px,
+  # so the same PHYSICAL nucleus/debris sizes are used:
+  #   diameter 48 px @0.2167 = 10.40 um  -> 10.40/0.13 = 80 px @0.13
+  #   min_area 700 px @0.2167 = 32.87 um2 -> 32.87/0.13^2 = 1945 px @0.13
+  #   border   10 px @0.2167 = 2.17 um   -> 2.17/0.13 = 17 px @0.13
+  # (min_area/diameter are FULL-RES values; segment_nuclei rescales them for the
+  # downsample grid internally and re-applies the authoritative area filter at
+  # full res.)
+  backend: cellpose
+  cellpose_model_type: cpsam            # Cellpose 4.1.1 SAM model
+  cellpose_diameter_px: 80.0            # full-res nuclear diameter @0.13 um/px (= 10.40 um)
+  cellpose_flow_threshold: 0.4
+  cellpose_cellprob_threshold: 0.0
+  cellpose_downsample_factor: 2.0       # unchanged perf knob; cpsam sees ~40 px @0.26 um/px
+  cellpose_device: directml             # AMD RX 6750 XT via torch-directml
+  min_area_px: 1945                     # rescaled physical debris floor (~32.9 um2)
+  max_area_px: 1.0e12                   # effectively no upper bound
+  exclude_border: true
+  border_margin_px: 17                  # rescaled ~2.17 um edge exclusion
+
+if_intensity:
+  # --- plate map (biology source of truth) ---------------------------------
+  plate_layout_csv: "F:/Image Analysis Work/RNASEH2B-BIN1/RNaseH2B_XRN2_IF_VOLUMETRIC_zstack_20260708-153628/_volumetric_projection_input/plate_layout.csv"
+  well_secondary_overrides: {}   # no conflict wells in this plate
+
+  # --- input discovery -----------------------------------------------------
+  # Quantify the pre-generated MEAN-z-projection OME-TIFFs (not raw .vsi).
+  input_glob_exts: ["ome.tif"]
+
+  # --- channel routing (substring-matched on OME channel names) ------------
+  dapi_channel_key: "405"
+  # Both antibody arms (secondary labels "640rnaseh2b"/"640xrn2") are on the
+  # 647-conjugated secondary -> read from the "640 CSU" channel. Substring "640"
+  # matches both labels; the secondary label still splits the two arms.
+  signal_channel_map: {"640": "640"}
+
+  # --- metrics -------------------------------------------------------------
+  cyto_ring_px: 12            # LOCKED ring width (per task); ~1.56 um at 0.13 um/px (aux only)
+  exposure_tol_s: 1.0e-6      # intra-channel exposure-equality tolerance (WARN, not raise)
+  pixel_size_um: 0.13         # z-stack XY voxel; used for scalebars/voxel size
+
+  # --- shared-display micrographs ("Sam's floor") --------------------------
+  display_ceiling_pct: 99.5   # vmax from pooled WT-primary signal pixels
+  display_floor_pct: 50.0     # vmin from pooled secondary-only pixels
+  scalebar_um: 20.0
+  micrograph_source: fov      # the projection IS a single plane -> used as-is
+  micrograph_z_window_frac: 0.5
+
+  # --- native publication images -------------------------------------------
+  # single_plane source only: the projected FOV is the image. picked_z is
+  # omitted (it needs a per-well z-stack folder mapped to the 2-digit wells; the
+  # projections already integrate the volume). Floors are PROVISIONAL (mean-proj
+  # intensities differ from the 0.2167 single-plane run) and are regenerable/
+  # tunable post-run without the GPU via `fishsuite if-pub-images` (Sam's floor).
+  pub_images: true
+  pub_sources: [single_plane]
+  pub_display_floors: {"640rnaseh2b": 5000.0, "640xrn2": 5000.0}   # PROVISIONAL; tune post-run
+  pub_ceiling_pct: 99.5
+  pub_display_ceilings: {}
+  pub_dapi_floor: null
+  pub_dapi_ceiling: null
+  pub_per_image_ceiling: false
+  pub_z_central_frac: 0.8
+  pub_dapi_weight: 0.6
+  pub_signal_label: "Ab"
+
+  # --- misc ----------------------------------------------------------------
+  fig_seed: 42
+  make_excel: true
+
+output:
+  prefix: ""
+  save_masks: true
+  save_publication_images: false   # IF mode makes its own micrographs
+  save_qc_overlays: false
+
+seed: 0

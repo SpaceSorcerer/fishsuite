@@ -1,0 +1,293 @@
+# ============================================================================
+# MIAT NARROW-MIP COUNT — 60x — rna_only, MIAT-only puncta count
+# (KD-efficiency readout, NT vs KD) — 2026-07-20
+# ============================================================================
+# 60x ANALOG of miat_qki_Rb_100x_MIATMIP_2026-07-20.yaml. Same mechanism,
+# verified against fishsuite/core/modes/rna_only.py in that preset's build:
+# rna_only + z_stack.mode: single + per-file DAPI pin (start_slice==
+# end_slice==F) + MIAT narrow-window MIP (rna_start_slice/rna_end_slice =
+# F+/-3, clamped). See "Z-STACK MODE" note below for the short version; full
+# code-verification reasoning is in the 100x MIATMIP preset's header.
+#
+# 60x-specific settings (nuclei params, voxel size, roster, channels) CLONED
+# from miat_qki_Rb_60x_corrected_2026-07-20.yaml. Changes vs that source:
+#   1. channels.analysis_mode: rna_protein -> rna_only. QKI(640) dropped
+#      entirely (channels.antibody: -1). dapi=2, rna=1 (MIAT-561) UNCHANGED.
+#   2. Z-HANDLING REPLACED: source used mode: autofocus + autofocus_channel:
+#      joint (NO file_overrides — first-look auto pick, single physical
+#      plane for all channels, no MIP at all). This preset instead PINS each
+#      image's DAPI plane to its validated best-focus plane (start_slice==
+#      end_slice==F, from 60x z-montage inspection) and MIPs ONLY the MIAT
+#      channel over a narrow window (F+/-3, clamped to the stack) via
+#      rna_start_slice/rna_end_slice file_overrides.
+#   3. foci.rna_overrides: none (no per-channel peak floor — matches source,
+#      which also carried no MIAT floor). foci.threshold_multiplier: 1.0 and
+#      only_nuclear_spots: true UNCHANGED from source.
+#   4. ALL antibody / coloc / partner-null / rotation-null / footprint /
+#      nucleolus-exclusion machinery REMOVED — this is a single-channel MIAT
+#      count, not an association analysis; none of it is consulted by
+#      rna_only.py regardless of what's in the YAML.
+#   5. input_file_subset: UNCHANGED — same 23-file roster (NT 11: _26,_27,
+#      _37-_45; KD 7: _16-_22; Sec 5: _32-_36).
+#   6. parallel.workers: 1 -> auto. Source pinned workers:1 ONLY because
+#      foci.compute_partner_intensity hangs the parallel pool (rna_protein
+#      coloc feature). This preset never sets compute_partner_intensity, so
+#      the hang does not apply.
+#   7. output: dropped manual_antibody_min/max + manual_rna2_min/max (no
+#      antibody/rna2 channel in rna_only). manual_dapi_*/manual_rna_*
+#      UNCHANGED from source.
+#   8. experiment.name/description updated to reflect this MIAT-MIP variant.
+#   60x pixel-scaled nuclei params, bigfish_voxel_size_nm (216.7),
+#   conditions/roster/channel indices are otherwise carried over UNCHANGED
+#   from the 60x_corrected source (same validated z-montage focus picks, now
+#   used as the CENTER of a narrow window instead of a bare autofocus pick).
+# ============================================================================
+# MIAT (561 FISH) narrow-MIP puncta count — hESC — MIAT-ASO KD vs NT
+# 60x roster (0.2167 um/px)  |  z-STACK -> DAPI single pinned plane / MIAT
+# narrow-window MIP (F+/-3 planes)  |  rna_only
+# Date: 2026-07-20  |  fishsuite-config subagent (Sonnet 5) for MASTER CONTROL
+# DO-NOT-RUN artifact: config only; no GPU used to build this file. Dry-run
+# first (per fishsuite-rna-fish skill hard rules).
+# ============================================================================
+# PURPOSE
+#   MIAT knockdown-efficiency readout (NT vs KD) at 60x: count MIAT
+#   (RNA-FISH, 561) puncta per nucleus in undifferentiated hESC, MIAT-ASO
+#   knockdown (KD) vs non-targeting (NT), plus secondary-only (SecOnly)
+#   specificity controls. Real MIAT puncta span a few z-planes, so a single
+#   plane under-captures the per-nucleus puncta population; a narrow MIP
+#   (validated focus plane +/-3) around each image's best-focus plane should
+#   capture the full population without full-stack dilution/saturation.
+#   DAPI stays on the SAME single pinned plane for segmentation — only the
+#   MIAT channel gets the narrow-window MIP. Human / Homo sapiens.
+#
+# ── Z-STACK MODE — same deviation as the 100x MIATMIP preset ────────────────
+#   z_stack.mode: single (NOT autofocus). VERIFIED in
+#   fishsuite/core/modes/rna_only.py (run_one + collect_nuclear_rna_pixels):
+#   under z_mode=="autofocus" the RNA channel is explicitly LOCKED to DAPI's
+#   autofocus plane and rna_start_slice/rna_end_slice overrides are IGNORED
+#   (logged as "... IGNORED under autofocus"). Only z_mode in
+#   {"single","maxproj","3d"} (the "else" branch) or "autofocus_maxproj"
+#   actually honor a file_override's rna_start_slice/rna_end_slice pair.
+#   "single" was chosen (as in the 100x sibling) because a file_override with
+#   start_slice==end_slice==F gives DAPI a direct 1-plane slice — no
+#   window-search algorithm involved — while rna_start_slice/rna_end_slice
+#   drives a genuine extract_channel(z_mode="maxproj", ...) MIP of the MIAT
+#   channel over the narrow window. Full code-line citations are in
+#   miat_qki_Rb_100x_MIATMIP_2026-07-20.yaml's header (same file, same
+#   dispatch logic — 60x only changes voxel/pixel-scaled params).
+#
+# ── CHANNELS (unchanged from 60x_corrected source; OME-verified) ────────────
+#   C-index order (one_indexed:false):
+#     C1 = 561 (MIAT FISH)  -> rna=1   (MAGENTA LUT)
+#     C2 = 405 (DAPI)       -> dapi=2  (BLUE LUT)
+#   C0 = 640 (QKI-IF) is NOT used in this rna_only run (antibody: -1).
+#
+# ── PIXEL-SIZE (60x, UNCHANGED from source) ──────────────────────────────────
+#   0.2167 um/px. All pixel-unit params (cellpose diameter, min_area,
+#   border_margin, voronoi expansion) are the SAME 0.600-length /
+#   0.360-area-scaled values as the 60x_corrected source (scaled down from
+#   the 0.130 um/px 100x preset). bigfish_spot_radius_nm stays 100.0
+#   (physical, unchanged) -> ~0.46 px @ 0.2167 um/px, i.e. SUB-PIXEL; BigFISH
+#   LoG runs near the Nyquist limit at 60x (a physical consequence of the
+#   objective, not a config error — verify spot calls look sane in the
+#   dry-run / QC overlays).
+#
+# ── EXCLUDE the 100x subfolder ───────────────────────────────────────────────
+#   The 60x input root '...\MIAT_QKI_Rb\' ALSO contains a '100x\' subdir.
+#   Only the THREE top-level condition folders are mapped in
+#   subfolder_conditions, so the 2-level discovery walk pulls ZERO files from
+#   '100x\' (its .vsi live one level deeper). input_file_subset (23 top-level
+#   keepers; basenames _16..45, disjoint from the 100x set's _65..86) is an
+#   additional belt-and-suspenders guard.
+#
+# ── ROSTER (UNCHANGED from 60x_corrected source, globbed 2026-07-18) ────────
+#   NT   = 11 (_26, _27, _37, _38, _39, _40, _41, _42, _43, _44, _45)  [most n_z=31, some 29 — per-image clamp]
+#   KD   = 7  (_16, _17, _18, _19, _20, _21, _22)                      [n_z = 31]
+#   Sec  = 5  (_32, _33, _34, _35, _36)                                [n_z = 31]
+#
+#   RUN WITH:
+#     -i "F:\Raw Images\Confocal Imaging\MIAT_NT_KD_ASO\MIAT_QKI_Rb"  -p auto
+#     (fishproc_dml conda env; --dry-run FIRST; ONE GPU run at a time; verify
+#     the dry-run roster pulls ZERO files from the sibling '100x\' subfolder)
+# ============================================================================
+
+experiment:
+  name: "MIAT_QKI_Rb_60x_MIATMIP_2026-07-20"
+  description: "rna_only 60x MIAT-count via narrow MIAT-MIP (F+/-3) over validated pinned planes; DAPI single-plane seg; KD-efficiency readout; 2026-07-20. Clone of miat_qki_Rb_60x_corrected_2026-07-20 with analysis_mode rna_protein->rna_only (QKI dropped), z_stack.mode autofocus->single (REQUIRED so rna_start_slice/rna_end_slice overrides are actually honored by rna_only.py — autofocus mode ignores them; see header), and a per-file rna_start_slice/rna_end_slice window (F+/-3 planes, clamped) added alongside each file's new single-plane DAPI pin (source had no file_overrides at all). foci.threshold_multiplier=1.0, only_nuclear_spots=true, no per-channel peak floor. Same 23-image NT+KD+Sec 60x roster as source (0.2167 um/px, pixel-scaled nuclei params). Human/Homo sapiens."
+  cell_line: "H9 hESC (undifferentiated)"
+  date: "2026-07-20"
+
+conditions:
+  mode: subfolders
+  # UNCHANGED from 60x_corrected source. Only the THREE top-level condition
+  # folders are mapped -> the sibling '100x\' subdir is never assigned a
+  # condition (and yields no direct .vsi anyway).
+  subfolder_conditions:
+    "FolderNT-MIAT-QKI-Rb_Experiment_MIAT-QKI-Rb_20260717": "NT"
+    "FolderKD-MIAT-QKI-Rb_Experiment_MIAT-QKI-Rb_20260717": "KD"
+  sec_only_folders:
+    - "FolderSecOnly-MIAT-QKI_Experiment_MIAT-QKI-Rb_20260717"
+  sec_only_files: []
+  filename_conditions: []
+  condition_order:
+    - "NT"
+    - "KD"
+  min_nuclei_for_stats: 6
+
+# UNCHANGED from 60x_corrected source: 23 top-level keepers (NT 11 / KD 7 /
+# Sec-Only 5). Belt-and-suspenders guard against the sibling '100x\' subfolder.
+input_file_subset:
+  # --- NT (n=11) ---
+  - "MIAT_QKI_zstack__NT-MIAT-QKI-Rb_26.vsi"
+  - "MIAT_QKI_zstack__NT-MIAT-QKI-Rb_27.vsi"
+  - "MIAT_QKI_zstack__NT-MIAT-QKI-Rb_37.vsi"
+  - "MIAT_QKI_zstack__NT-MIAT-QKI-Rb_38.vsi"
+  - "MIAT_QKI_zstack__NT-MIAT-QKI-Rb_39.vsi"
+  - "MIAT_QKI_zstack__NT-MIAT-QKI-Rb_40.vsi"
+  - "MIAT_QKI_zstack__NT-MIAT-QKI-Rb_41.vsi"
+  - "MIAT_QKI_zstack__NT-MIAT-QKI-Rb_42.vsi"
+  - "MIAT_QKI_zstack__NT-MIAT-QKI-Rb_43.vsi"
+  - "MIAT_QKI_zstack__NT-MIAT-QKI-Rb_44.vsi"
+  - "MIAT_QKI_zstack__NT-MIAT-QKI-Rb_45.vsi"
+  # --- KD (n=7) ---
+  - "MIAT_QKI_zstack__KD-MIAT-QKI-Rb_16.vsi"
+  - "MIAT_QKI_zstack__KD-MIAT-QKI-Rb_17.vsi"
+  - "MIAT_QKI_zstack__KD-MIAT-QKI-Rb_18.vsi"
+  - "MIAT_QKI_zstack__KD-MIAT-QKI-Rb_19.vsi"
+  - "MIAT_QKI_zstack__KD-MIAT-QKI-Rb_20.vsi"
+  - "MIAT_QKI_zstack__KD-MIAT-QKI-Rb_21.vsi"
+  - "MIAT_QKI_zstack__KD-MIAT-QKI-Rb_22.vsi"
+  # --- Sec-Only (n=5) ---
+  - "MIAT_QKI_zstack__SecOnly-MIAT-QKI_32.vsi"
+  - "MIAT_QKI_zstack__SecOnly-MIAT-QKI_33.vsi"
+  - "MIAT_QKI_zstack__SecOnly-MIAT-QKI_34.vsi"
+  - "MIAT_QKI_zstack__SecOnly-MIAT-QKI_35.vsi"
+  - "MIAT_QKI_zstack__SecOnly-MIAT-QKI_36.vsi"
+
+channels:
+  analysis_mode: rna_only      # MIAT-COUNT run — QKI dropped entirely
+  dapi: 2                      # C2 = 405 (DAPI)
+  rna: 1                       # C1 = 561 (MIAT FISH)
+  antibody: -1                 # not used in rna_only
+  rna2: -1                     # not used
+  one_indexed: false           # indices above are 0-indexed
+  dapi_label: "DAPI"
+  rna_label: "MIAT-561"
+  dapi_lut: "blue"             # 405 -> blue
+  rna_lut: "magenta"           # 561 -> magenta (MIAT)
+
+z_stack:
+  # ── DAPI single pinned plane (NEW pins, from 60x z-montage validation) +
+  #    MIAT narrow-MIP ──────────────────────────────────────────────────────
+  # mode: single -> the "else" branch of rna_only.py, the ONLY dispatch path
+  # (besides autofocus_maxproj) that honors a file_override's
+  # rna_start_slice/rna_end_slice pair. See header "Z-STACK MODE" for why
+  # mode: autofocus does NOT work here — it silently ignores
+  # rna_start_slice/rna_end_slice.
+  mode: single
+  # Top-level fallback bounds. NEVER ACTUALLY USED: every one of the 23
+  # input_file_subset files has its own file_overrides entry below, which
+  # fully overrides start_slice/end_slice for that file. Kept as documented,
+  # inert fallback only.
+  start_slice: 1
+  end_slice: 31
+  # Per-file: {start_slice, end_slice} = the validated best-focus plane F per
+  # file (degenerate 1-plane window -> direct DAPI segmentation pin).
+  # {rna_start_slice, rna_end_slice} = [F-3, F+3] clamped to each file's
+  # stack depth -> MIAT spot detection runs on a MAXPROJ of ONLY that narrow
+  # window.
+  file_overrides:
+    "MIAT_QKI_zstack__NT-MIAT-QKI-Rb_26.vsi": {start_slice: 10, end_slice: 10, rna_start_slice: 7, rna_end_slice: 13}
+    "MIAT_QKI_zstack__NT-MIAT-QKI-Rb_27.vsi": {start_slice: 10, end_slice: 10, rna_start_slice: 7, rna_end_slice: 13}
+    "MIAT_QKI_zstack__NT-MIAT-QKI-Rb_37.vsi": {start_slice: 28, end_slice: 28, rna_start_slice: 25, rna_end_slice: 31}
+    "MIAT_QKI_zstack__NT-MIAT-QKI-Rb_38.vsi": {start_slice: 13, end_slice: 13, rna_start_slice: 10, rna_end_slice: 16}
+    "MIAT_QKI_zstack__NT-MIAT-QKI-Rb_39.vsi": {start_slice: 16, end_slice: 16, rna_start_slice: 13, rna_end_slice: 19}
+    "MIAT_QKI_zstack__NT-MIAT-QKI-Rb_40.vsi": {start_slice: 10, end_slice: 10, rna_start_slice: 7, rna_end_slice: 13}
+    "MIAT_QKI_zstack__NT-MIAT-QKI-Rb_41.vsi": {start_slice: 10, end_slice: 10, rna_start_slice: 7, rna_end_slice: 13}
+    "MIAT_QKI_zstack__NT-MIAT-QKI-Rb_42.vsi": {start_slice: 22, end_slice: 22, rna_start_slice: 19, rna_end_slice: 25}
+    "MIAT_QKI_zstack__NT-MIAT-QKI-Rb_43.vsi": {start_slice: 19, end_slice: 19, rna_start_slice: 16, rna_end_slice: 22}
+    "MIAT_QKI_zstack__NT-MIAT-QKI-Rb_44.vsi": {start_slice: 16, end_slice: 16, rna_start_slice: 13, rna_end_slice: 19}
+    "MIAT_QKI_zstack__NT-MIAT-QKI-Rb_45.vsi": {start_slice: 19, end_slice: 19, rna_start_slice: 16, rna_end_slice: 22}
+    "MIAT_QKI_zstack__KD-MIAT-QKI-Rb_16.vsi": {start_slice: 16, end_slice: 16, rna_start_slice: 13, rna_end_slice: 19}
+    "MIAT_QKI_zstack__KD-MIAT-QKI-Rb_17.vsi": {start_slice: 10, end_slice: 10, rna_start_slice: 7, rna_end_slice: 13}
+    "MIAT_QKI_zstack__KD-MIAT-QKI-Rb_18.vsi": {start_slice: 1, end_slice: 1, rna_start_slice: 1, rna_end_slice: 4}
+    "MIAT_QKI_zstack__KD-MIAT-QKI-Rb_19.vsi": {start_slice: 13, end_slice: 13, rna_start_slice: 10, rna_end_slice: 16}
+    "MIAT_QKI_zstack__KD-MIAT-QKI-Rb_20.vsi": {start_slice: 13, end_slice: 13, rna_start_slice: 10, rna_end_slice: 16}
+    "MIAT_QKI_zstack__KD-MIAT-QKI-Rb_21.vsi": {start_slice: 7, end_slice: 7, rna_start_slice: 4, rna_end_slice: 10}
+    "MIAT_QKI_zstack__KD-MIAT-QKI-Rb_22.vsi": {start_slice: 1, end_slice: 1, rna_start_slice: 1, rna_end_slice: 4}
+    "MIAT_QKI_zstack__SecOnly-MIAT-QKI_32.vsi": {start_slice: 16, end_slice: 16, rna_start_slice: 13, rna_end_slice: 19}
+    "MIAT_QKI_zstack__SecOnly-MIAT-QKI_33.vsi": {start_slice: 22, end_slice: 22, rna_start_slice: 19, rna_end_slice: 25}
+    "MIAT_QKI_zstack__SecOnly-MIAT-QKI_34.vsi": {start_slice: 13, end_slice: 13, rna_start_slice: 10, rna_end_slice: 16}
+    "MIAT_QKI_zstack__SecOnly-MIAT-QKI_35.vsi": {start_slice: 10, end_slice: 10, rna_start_slice: 7, rna_end_slice: 13}
+    "MIAT_QKI_zstack__SecOnly-MIAT-QKI_36.vsi": {start_slice: 10, end_slice: 10, rna_start_slice: 7, rna_end_slice: 13}
+
+nuclei:
+  # UNCHANGED from 60x_corrected source (60x-scaled cellpose params).
+  backend: cellpose
+  cellpose_model_type: cpsam
+  cellpose_diameter_px: 60.0           # SCALED 100 x0.600 (~13 um nucleus @ 0.2167 um/px)
+  cellpose_flow_threshold: 0.4
+  cellpose_cellprob_threshold: 0.0
+  cellpose_downsample_factor: 2.0      # KEPT (VRAM-safe); on-grid seg diameter 30 px
+  cellpose_device: directml            # AMD RX 6750 XT; REQUIRES the fishproc_dml env
+  min_area_px: 1440                    # SCALED 4000 x0.360 (area)
+  max_area_px: 1000000000000.0
+  exclude_border: true
+  border_margin_px: 6                  # SCALED 10 x0.600
+  stardist_model: 2D_versatile_fluo
+  prob_threshold: 0.5
+  nms_threshold: 0.5
+  stardist_gauss_sigma: 3.0
+  stardist_postprocess: none
+  label_smoothing_radius_px: 0
+  reject_ghost_nuclei: false
+
+foci:
+  enabled: true
+  backend: bigfish
+  bigfish_voxel_size_nm: 216.7         # PINNED to the authoritative 60x pixel size (0.2167 um/px)
+  bigfish_voxel_z_nm: 0.0              # 0 = auto; moot (2D detection on the narrow-window MIP)
+  bigfish_spot_radius_nm: 250.0        # RAISED for 60x: ~1.15 px @ 0.2167 (100nm=0.46px was sub-pixel -> BigFISH found ~nothing). Diffraction-appropriate kernel to detect the visible puncta.
+  bigfish_spot_radius_z_nm: 300.0      # moot (2D detection)
+  threshold_multiplier: 1.0            # MODERATE; expect ~15-40 MIAT puncta/nucleus on the narrow-MIP window
+  only_nuclear_spots: true             # MIAT is nuclear-retained; cytoplasmic signal gated OUT
+  min_sep_px: 1                        # SCALED 1 x0.600 -> floor 1
+  # NO rna_overrides peak floor — narrow-MIP + nuclear-gating + LoG local-maxima
+  # detection is the haze rejection; no absolute intensity floor applied.
+  detect_in_sec_only: true             # report (never subtract) SecOnly non-specific spot rate
+
+cytoplasm:
+  enabled: true
+  voronoi_max_expansion_px: 24         # SCALED 40 x0.600 (~5.2 um preserved @ 0.2167 um/px)
+  measure_nc_ratio: true               # % nuclear MIAT (retention QC alongside the raw count)
+
+output:
+  save_qc_overlays: true
+  save_per_image_csv: true
+  save_masks: true
+  save_publication_images: true
+  save_publication_tifs: false
+  pub_contrast_mode: manual
+  # DISPLAY-ONLY floors, carried from the 60x_corrected source. Detection
+  # strictness is controlled separately by foci.threshold_multiplier, NOT
+  # these floors.
+  manual_dapi_min: 600.0
+  manual_dapi_max: 11000.0
+  manual_rna_min: 1800.0
+  manual_rna_max: 4500.0
+  apply_pub_contrast_floor_to_analysis: true   # emit above-floor per-nucleus columns
+  apply_pub_contrast_floor_to_spots: false     # do NOT gate spot counts by the display floor
+  prefix: ""
+  scalebar_um: 25.0
+  scalebar_font_px: 52
+
+parallel:
+  # source pinned workers:1 ONLY because compute_partner_intensity (rna_protein
+  # coloc) hangs the parallel pool. This rna_only preset never sets that flag,
+  # so it's safe to parallelize.
+  workers: auto
+  seg_workers: 1                       # DirectML: single 12 GB VRAM -> 1
+  main_workers: 1
+  threads_per_worker: 4
+
+seed: 0

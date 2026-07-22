@@ -1,0 +1,144 @@
+# BIN1 RNase-treat FISH — d8 cMyo WT vs KO — WELLS 1&2 ONLY, Sam's levels
+# 2026-05-29 Sam: wells 1&2 (WT+KO) look accurate/precise; wells 3 weird/imprecise;
+# wells 4 way off (staining mishandling) → DISCARD wells 3 & 4. Run wells 1&2 with
+# C0 (561 BIN1 FISH) levels 1122/1687, DAPI Auto-per-image.
+#
+# Source: F:\Raw Images\BIN1\20260520 d8Myo WT vs. QKI-KO Bin1 FISH RNase treat
+# Staged: F:\Image Analysis Work\BIN1\d8cMyo-RNaseTreat\_input_stage (well junctions)
+# Channels (uniform): ch0=561 (BIN1 FISH), ch1=405 (DAPI). Some single planes have
+# a 3rd DIC channel — ignored by the ch0/ch1 mapping. rna_only.
+#
+# NON-decon. Wells 1&2 z-stacks + single-plane snaps (per Brian: snaps = valid
+# single-z fields; same good wells). Sec-only well4 + weird well3 excluded.
+# Run-specific config — NOT to be committed.
+
+experiment:
+  name: "BIN1_d8cMyo_RNaseTreat_wells12_sam_2026-05-29"
+  description: "BIN1 RNase-treat FISH (d8 cMyo, WT vs KO) — Sam-selected wells 1&2 only (3&4 discarded). C0/561 floor 1122 / ceil 1687, DAPI auto. cellpose cpsam, intensity-weighted autofocus, spot-z locked to DAPI seg-z. z-stacks + single planes."
+  cell_line: "d8 cardiomyocyte"
+
+conditions:
+  mode: subfolders
+  subfolder_conditions:
+    "WT well1": "WT"
+    "WT well2": "WT"
+    "KO well1": "KO"
+    "KO well2": "KO"
+  sec_only_folders: []
+  sec_only_files: []
+  condition_order: ["WT", "KO"]
+  min_nuclei_for_stats: 6
+
+# Wells 1&2 only (wells 3 weird, 4 way off — discarded per Sam). NON-decon.
+# 2026-05-30 Brian: SINGLE-PLANE snaps DROPPED — they bake in an out-of-focus
+# DAPI-fluorescent debris band at the coverslip edge (a PHYSICAL acquisition
+# artifact, NOT a channel/brightfield issue — verified: both single-plane and
+# z-stack are 2-ch 561-BIN1 + 405-DAPI, no transmitted-light channel) that makes
+# cellpose hallucinate "ghost" nuclei. The texture filter removed most but 1-2
+# slipped through (caught a stray spot). The z-stacks autofocus past the debris
+# band and are CLEAN at the source, so RNase = 2v2 z-stacks only (Brian-decided).
+# Retention is even stronger z-stack-only (KO~90 vs WT~83). Single-channel → no coloc.
+input_file_subset:
+  # --- WT z-stacks ---
+  - "WT well1-z stack_27.vsi"
+  - "WT well2-z stack_31.vsi"
+  # --- KO z-stacks ---
+  - "KO well1-z stack_09.vsi"
+  - "KO well2-z stack_13.vsi"
+
+channels:
+  analysis_mode: rna_only
+  dapi: 1                # ch1 = 405 (DAPI)
+  rna: 0                 # ch0 = 561 (BIN1 FISH)  [Sam's "C0"]
+  antibody: -1
+  dapi_label: "DAPI"
+  rna_label: "BIN1"
+  rna_lut: "magenta"     # 561 → magenta
+
+z_stack:
+  mode: autofocus
+  # Intensity-weighted focus (thick-stack fix) + per-image middle-80% windows.
+  # Single-plane files (nz=1) auto-return their one plane.
+  autofocus_intensity_weighted: true
+  file_overrides:
+    "KO well1-z stack_09.vsi": { start_slice: 6, end_slice: 46 }   # nz=51
+    "KO well2-z stack_13.vsi": { start_slice: 7, end_slice: 59 }   # nz=65
+    "WT well1-z stack_27.vsi": { start_slice: 8, end_slice: 72 }   # nz=79
+    "WT well2-z stack_31.vsi": { start_slice: 8, end_slice: 72 }   # nz=79
+
+nuclei:
+  backend: cellpose
+  cellpose_model_type: cpsam
+  cellpose_diameter_px: 90.0
+  cellpose_flow_threshold: 0.4
+  cellpose_cellprob_threshold: 0.0
+  cellpose_downsample_factor: 2.0
+  cellpose_device: directml
+  min_area_px: 3000
+  max_area_px: 1000000000000.0
+  exclude_border: true
+  border_margin_px: 10
+  # 2026-05-29 ghost-nucleus fix: drop empty oval 'ghost' shells that cellpose
+  # segments off the aberrant DAPI border band in some KO SINGLE-PLANE snaps
+  # (out-of-focus debris / coverslip edge). Post-detection composite rule —
+  # a nucleus is rejected only if it has 0 RNA spots AND is large (>=6000 px)
+  # AND flat (dapi_cv<=0.12). Validated offline against this run's saved masks:
+  # removes all 18 ghosts (KO singles 01_1=6,03_1=2,04_1=7,06_1=2,12_3=1),
+  # drops 0 real nuclei in WT or any z-stack. See GHOST_NUCLEUS_FIX.md.
+  reject_ghost_nuclei: true
+  reject_ghost_max_dapi_cv: 0.12
+  reject_ghost_min_area_px: 6000
+  stardist_model: 2D_versatile_fluo
+  prob_threshold: 0.5
+  nms_threshold: 0.5
+  stardist_gauss_sigma: 3.0
+  stardist_postprocess: none
+  label_smoothing_radius_px: 0
+
+pixel_coloc:
+  threshold_mode: mad
+  threshold_scope: batch
+  k_mad: 2.5
+
+foci:
+  enabled: true
+  backend: bigfish
+  bigfish_voxel_size_nm: 0.0
+  bigfish_voxel_z_nm: 0.0
+  bigfish_spot_radius_nm: 130.0
+  bigfish_spot_radius_z_nm: 300.0
+  threshold_multiplier: 0.5    # BigFISH detects; Sam's 1122 floor below does the cut
+  only_nuclear_spots: false
+  min_sep_px: 1
+
+cytoplasm:
+  enabled: true
+  voronoi_max_expansion_px: 40
+  measure_nc_ratio: true
+
+nucleolus:
+  enabled: true
+  intra_nuclear_percentile: 25.0
+  min_area_um2: 1.0
+  max_area_frac_of_nucleus: 0.6
+  closing_radius_px: 2
+
+output:
+  save_qc_overlays: true
+  save_per_image_csv: true
+  save_masks: true
+  save_publication_images: true
+  save_publication_tifs: false
+  pub_contrast_mode: manual
+  # Sam's C0 (561 BIN1 FISH) levels; floor applied to spots + analysis.
+  manual_rna_min: 1122.0
+  manual_rna_max: 1687.0
+  apply_pub_contrast_floor_to_analysis: true
+  apply_pub_contrast_floor_to_spots: true
+  # DAPI = Auto per image (manual_dapi left unset → auto-per-image percentiles).
+  prefix: ""
+  scalebar_um: 25.0
+  scalebar_font_px: 52
+
+parallel:
+  workers: auto

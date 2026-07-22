@@ -1,0 +1,173 @@
+# BIN1-intron FISH + XRN2 IF — d8 cMyo, QKI-KO 4-2 dataset (2026-05-28 acquisition)
+# d8Myo WT vs QKI-KO_4-2. BIN1 intron RNA-FISH + XRN2 antibody (IF) + DAPI.
+#
+# Source: F:\Raw Images\BIN1\20260528 d8Myo WT vs QKI-KO_4-2  (genotype\WellN\*.vsi)
+# Staged: <out>\_input_stage (4 well junctions: WT/KO × Well3/Well6)
+#
+# Acquisition (bioio, uniform): 3 ch [640, 561, 405], z=79, px 0.13 µm, z 0.21 µm.
+#
+# Channel→role (2026-05-28 Brian):
+#   ch0 = 640/647 = XRN2 ANTIBODY (IF, protein)
+#   ch1 = 561/565 = BIN1 INTRONS (FISH)
+#   ch2 = 405     = DAPI
+#
+# MODE = rna_protein (UPGRADED 2026-05-28 to full rna_rna depth — XRN2 is a
+# protein, so it is labeled/treated as one, but analyzed as deeply as a 2nd FISH
+# channel). The protein (XRN2) gets spot detection + per-nucleus intensity /
+# counts / N-C ratio / spot-properties, PLUS BIN1-intron×XRN2 colocalization in
+# BOTH views: spot-spot (paired fraction, nn-distance) AND bidirectional
+# Manders/mask (manders_rna1_in_protein = RNA under the XRN2 mask;
+# manders_protein_in_rna1 = XRN2 under the RNA mask) + Pearson/Jaccard.
+#   rna      = ch1/561 = BIN1 introns (FISH, primary readout)
+#   antibody = ch0/640 = XRN2 (protein, full-depth analysis)
+#
+# Files: 8 raw NON-decon z-stacks. No secondary-only in this dataset.
+# Run-specific config — NOT to be committed.
+
+experiment:
+  name: "BIN1intron_XRN2_d8cMyo_QKIKO-4-2_vs_WT_2026-05-28"
+  description: "BIN1-intron FISH (561) + XRN2 (640), d8 cMyo WT vs QKI-KO_4-2. rna_rna: full spot+intensity analysis on BOTH BIN1 introns (rna) and XRN2 (rna2) + intron×XRN2 coloc. cellpose cpsam, per-image middle-80% autofocus, spot-z locked to DAPI seg-z, manual contrast per Brian."
+  cell_line: "d8 cardiomyocyte"
+
+conditions:
+  mode: subfolders
+  subfolder_conditions:
+    "WT Well3": "WT"
+    "WT Well6": "WT"
+    "KO Well3": "KO"
+    "KO Well6": "KO"
+  sec_only_folders: []
+  sec_only_files: []
+  condition_order: ["WT", "KO"]
+  min_nuclei_for_stats: 6
+
+input_file_subset:
+  - "04_WT well3.vsi"
+  - "05_WT well3.vsi"
+  - "06_WT well6.vsi"
+  - "07_WT well6.vsi"
+  - "02_KO well3.vsi"
+  - "03_KO well3.vsi"
+  - "08_KO well6.vsi"
+  - "09_KO well6.vsi"
+
+channels:
+  # 2026-05-28: rna_protein mode UPGRADED to full rna_rna depth — the protein
+  # (XRN2) gets spot detection + per-nucleus intensity/counts/NC-ratio/spot-
+  # props + robust BIN1-intron×XRN2 coloc, labeled as a protein (not RNA2).
+  analysis_mode: rna_protein
+  dapi: 2                # ch2 = 405 (DAPI)
+  rna: 1                 # ch1 = 561 = BIN1 introns (FISH) — primary readout
+  rna2: -1
+  antibody: 0            # ch0 = 640 = XRN2 (protein, full-depth analysis)
+  dapi_label: "DAPI"
+  rna_label: "BIN1 Introns"
+  antibody_label: "XRN2"
+  # Sam's wavelength-LUT convention: 647/640 → yellow, 561/568 → magenta.
+  rna_lut: "magenta"     # ch1 = 561 (BIN1 introns) → magenta
+  antibody_lut: "yellow" # ch0 = 640 (XRN2) → yellow
+
+z_stack:
+  # Per-image middle-80% autofocus; spot-z locked to DAPI seg-z (rna_rna
+  # already locks rna+rna2 to the DAPI plane). All stacks nz=79 → 8..72.
+  mode: autofocus
+  # 2026-05-28 Brian: intensity-weighted focus score [var(laplace(plane/mean))*mean].
+  # On these thick ~16µm (nz=79) stacks the plain lap-var profile is near-flat and
+  # noise tipped the DAPI pick to out-of-focus high planes (z=42–67); weighting by
+  # plane brightness pulls the pick to the bright+sharp nuclear plane (z≈20–24).
+  autofocus_intensity_weighted: true
+  file_overrides:
+    "04_WT well3.vsi": { start_slice: 8, end_slice: 72 }   # nz=79
+    "05_WT well3.vsi": { start_slice: 8, end_slice: 72 }   # nz=79
+    "06_WT well6.vsi": { start_slice: 8, end_slice: 72 }   # nz=79
+    "07_WT well6.vsi": { start_slice: 8, end_slice: 72 }   # nz=79
+    "02_KO well3.vsi": { start_slice: 8, end_slice: 72 }   # nz=79
+    "03_KO well3.vsi": { start_slice: 8, end_slice: 72 }   # nz=79
+    "08_KO well6.vsi": { start_slice: 8, end_slice: 72 }   # nz=79
+    "09_KO well6.vsi": { start_slice: 8, end_slice: 72 }   # nz=79
+
+nuclei:
+  backend: cellpose
+  cellpose_model_type: cpsam
+  cellpose_diameter_px: 90.0
+  cellpose_flow_threshold: 0.4
+  cellpose_cellprob_threshold: 0.0
+  cellpose_downsample_factor: 2.0
+  cellpose_device: directml
+  min_area_px: 3000
+  max_area_px: 1000000000000.0
+  exclude_border: true
+  border_margin_px: 10
+  stardist_model: 2D_versatile_fluo
+  prob_threshold: 0.5
+  nms_threshold: 0.5
+  stardist_gauss_sigma: 3.0
+  stardist_postprocess: none
+  label_smoothing_radius_px: 0
+
+pixel_coloc:
+  threshold_mode: mad
+  threshold_scope: batch
+  k_mad: 2.5
+
+foci:
+  enabled: true
+  backend: bigfish
+  bigfish_voxel_size_nm: 0.0       # auto (130 nm)
+  bigfish_voxel_z_nm: 0.0          # auto (210 nm)
+  bigfish_spot_radius_nm: 130.0
+  bigfish_spot_radius_z_nm: 300.0
+  threshold_multiplier: 1.0        # BigFISH auto-threshold (strict)
+  only_nuclear_spots: false
+  min_sep_px: 1
+  # 2026-05-29 Brian: intensity-based coloc ON (XRN2 intensity at each BIN1-intron
+  # spot + per-nucleus enrichment vs nuclear mean). A has plenty of intron spots,
+  # so the enrichment is well-defined (unlike sparse B). Verified fast + floor-robust.
+  compute_partner_intensity: true
+  rna_overrides: {}
+  rna2_overrides: {}
+
+cytoplasm:
+  enabled: true
+  voronoi_max_expansion_px: 40
+  measure_nc_ratio: true
+
+nucleolus:
+  enabled: true
+  intra_nuclear_percentile: 25.0
+  min_area_um2: 1.0
+  max_area_frac_of_nucleus: 0.6
+  closing_radius_px: 2
+
+output:
+  save_qc_overlays: true
+  save_per_image_csv: true
+  save_masks: true
+  save_publication_images: true
+  save_publication_tifs: false
+  pub_contrast_mode: manual
+  # 2026-05-29 Brian. Floors raised after the WT>KO total-count was traced to a
+  # low-floor over-detection of dim near-floor spots in WT (real nascent intron
+  # foci sit at peak ≥~1250; the original 2025-10-29 BIN1 run used floor 1100-1300
+  # and got the expected KO>WT). Criterion (per Sam): raise until ~no cytoplasmic
+  # spots remain in WT. Pub ceilings also set per Brian.
+  # 2026-05-29 Brian: introns floor 1250→1600 (KO cytoplasmic intron spots
+  # drop to ~8/img, under the <20 target; nuclear puncta stay strong). Per Sam's
+  # method the floor is tuned for minimal KO cytoplasm + visible nuclear puncta;
+  # WT cytoplasmic signal is expected. % nuclear (KO>WT) is the main result.
+  #   rna      = ch1/561 = BIN1 introns:  1600 – 2200
+  #   antibody = ch0/640 = XRN2:          1100 – 4000  (XRN2 = constitutively nuclear protein, coloc partner — NOT a retention readout)
+  manual_rna_min: 1600.0
+  manual_rna_max: 2200.0
+  manual_antibody_min: 1100.0
+  manual_antibody_max: 4000.0
+  apply_pub_contrast_floor_to_analysis: true
+  apply_pub_contrast_floor_to_spots: true
+  manual_dapi_min: 1200.0
+  manual_dapi_max: 30000.0
+  prefix: ""
+  scalebar_um: 25.0
+  scalebar_font_px: 52
+
+parallel:
+  workers: auto

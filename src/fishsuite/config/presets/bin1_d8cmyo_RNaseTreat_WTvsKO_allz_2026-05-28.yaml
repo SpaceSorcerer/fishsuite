@@ -1,0 +1,169 @@
+# BIN1 RNase-treat FISH — d8 cMyo WT vs QKI-KO — EXPANDED (z-stacks + single planes)
+# 2026-05-28 Brian: bolster the thin z-stack-only 2v2 by ALSO using the
+# single-plane snaps. Rationale: we select ONE z-plane per image anyway
+# (autofocus), so each single-plane snap is already a valid single-z field.
+# ALL files NON-decon for intensity consistency (the single planes are
+# non-decon; switched the z-stacks to their non-decon versions to match).
+#
+# Source: F:\Raw Images\BIN1\20260520 d8Myo WT vs. QKI-KO Bin1 FISH RNase treat
+# Staged: F:\Image Analysis Work\BIN1\d8cMyo-RNaseTreat\_input_stage (well junctions)
+# Run dir: F:\Image Analysis Work\BIN1\d8cMyo-RNaseTreat\WTvsKO_allz_2026-05-28
+#
+# Channels (uniform): ch0=561 (BIN1 FISH), ch1=405 (DAPI). Some single planes
+# carry a 3rd DIC channel — ignored by the ch0/ch1 mapping. rna_only.
+#
+# Secondary-only (well4) EXCLUDED entirely (per Brian).
+#
+# CAVEAT (flag to Brian): multiple single planes per well may be near-duplicate
+# FOVs → per-field n is partly pseudo-replicated. KO well1 contributes 6 single
+# planes (more than the others). The conservative biological unit is per-WELL
+# (3 WT wells vs 3 KO wells); per-field views shown but read n cautiously.
+#
+# Run-specific config — NOT to be committed.
+
+experiment:
+  name: "BIN1_d8cMyo_RNaseTreat_WTvsKO_allz_2026-05-28"
+  description: "BIN1 RNase-treat FISH (d8 cMyo, WT vs QKI-KO). All NON-decon: 6 z-stacks (middle-80% autofocus) + 21 single-plane snaps. cellpose cpsam, spot-z locked to DAPI seg-z, no spot floor, threshold_multiplier 0.5. Sec-only excluded."
+  cell_line: "d8 cardiomyocyte"
+
+conditions:
+  mode: subfolders
+  subfolder_conditions:
+    "WT well1": "WT"
+    "WT well2": "WT"
+    "WT well3": "WT"
+    "KO well1": "KO"
+    "KO well2": "KO"
+    "KO well3": "KO"
+  sec_only_folders: []
+  sec_only_files: []
+  condition_order: ["WT", "KO"]
+  min_nuclei_for_stats: 6
+
+# All NON-decon, probe wells 1-3. 6 z-stacks + 21 single-plane snaps = 27 images.
+input_file_subset:
+  # --- WT z-stacks ---
+  - "WT well1-z stack_27.vsi"
+  - "WT well2-z stack_31.vsi"
+  - "WT well3-z stack_36.vsi"
+  # --- WT single planes ---
+  - "WT well1-single plane_24.vsi"
+  - "WT well1-single plane_25.vsi"
+  - "WT well1-single plane_26.vsi"
+  - "WT well2-single plane_28.vsi"
+  - "WT well2-single plane_29.vsi"
+  - "WT well2-single plane_30.vsi"
+  - "WT well3-single plane_33.vsi"
+  - "WT well3-single plane_34.vsi"
+  - "WT well3-single plane_35.vsi"
+  # --- KO z-stacks ---
+  - "KO well1-z stack_09.vsi"
+  - "KO well2-z stack_13.vsi"
+  - "KO well3-z stack_19.vsi"
+  # --- KO single planes ---
+  - "KO well1-single plane_01_1.vsi"
+  - "KO well1-single plane_02_1.vsi"
+  - "KO well1-single plane_03_1.vsi"
+  - "KO well1-single plane_04_1.vsi"
+  - "KO well1-single plane_05_1.vsi"
+  - "KO well1-single plane_06_1.vsi"
+  - "KO well2-single plane_10_3.vsi"
+  - "KO well2-single plane_11_3.vsi"
+  - "KO well2-single plane_12_3.vsi"
+  - "KO well3-single plane_15_5.vsi"
+  - "KO well3-single plane_16_5.vsi"
+  - "KO well3-single plane_17_5.vsi"
+
+channels:
+  analysis_mode: rna_only
+  dapi: 1                # ch1 = 405 CSU (DAPI)
+  rna: 0                 # ch0 = 561 CSU (BIN1 FISH probe)
+  antibody: -1
+  dapi_label: "DAPI"
+  rna_label: "BIN1"
+  rna_lut: "magenta"     # 561 → magenta
+
+z_stack:
+  # mode=autofocus. z-stacks: per-image middle-80% windows (below). Single-
+  # plane files (nz=1) have no override → autofocus trivially returns their
+  # one plane. The z-lock fix reads RNA at the exact DAPI plane in all cases.
+  mode: autofocus
+  # 2026-05-28 Brian: intensity-weighted focus score [var(laplace(plane/mean))*mean]
+  # for thick (~16µm) stacks where plain lap-var noise tipped the DAPI pick to
+  # out-of-focus high planes (z=42–67); weighting pulls it to the bright+sharp
+  # nuclear plane (z≈20–24). Trivial no-op on the nz=1 single-plane files.
+  autofocus_intensity_weighted: true
+  file_overrides:
+    "KO well1-z stack_09.vsi": { start_slice: 6, end_slice: 46 }   # nz=51
+    "KO well2-z stack_13.vsi": { start_slice: 7, end_slice: 59 }   # nz=65
+    "KO well3-z stack_19.vsi": { start_slice: 8, end_slice: 72 }   # nz=79
+    "WT well1-z stack_27.vsi": { start_slice: 8, end_slice: 72 }   # nz=79
+    "WT well2-z stack_31.vsi": { start_slice: 8, end_slice: 72 }   # nz=79
+    "WT well3-z stack_36.vsi": { start_slice: 8, end_slice: 72 }   # nz=79
+
+nuclei:
+  backend: cellpose
+  cellpose_model_type: cpsam
+  cellpose_diameter_px: 90.0
+  cellpose_flow_threshold: 0.4
+  cellpose_cellprob_threshold: 0.0
+  cellpose_downsample_factor: 2.0
+  cellpose_device: directml
+  min_area_px: 3000
+  max_area_px: 1000000000000.0
+  exclude_border: true
+  border_margin_px: 10
+  stardist_model: 2D_versatile_fluo
+  prob_threshold: 0.5
+  nms_threshold: 0.5
+  stardist_gauss_sigma: 3.0
+  stardist_postprocess: none
+  label_smoothing_radius_px: 0
+
+pixel_coloc:
+  threshold_mode: mad
+  threshold_scope: batch
+  k_mad: 2.5
+
+foci:
+  enabled: true
+  backend: bigfish
+  bigfish_voxel_size_nm: 0.0
+  bigfish_voxel_z_nm: 0.0
+  bigfish_spot_radius_nm: 130.0
+  bigfish_spot_radius_z_nm: 300.0
+  threshold_multiplier: 0.5
+  only_nuclear_spots: false
+  min_sep_px: 1
+
+cytoplasm:
+  enabled: true
+  voronoi_max_expansion_px: 40
+  measure_nc_ratio: true
+
+nucleolus:
+  enabled: true
+  intra_nuclear_percentile: 25.0
+  min_area_um2: 1.0
+  max_area_frac_of_nucleus: 0.6
+  closing_radius_px: 2
+
+output:
+  save_qc_overlays: true
+  save_per_image_csv: true
+  save_masks: true
+  save_publication_images: true
+  save_publication_tifs: false
+  pub_contrast_mode: manual
+  manual_rna_min: 0.0
+  manual_rna_max: 4200.0
+  apply_pub_contrast_floor_to_analysis: false
+  apply_pub_contrast_floor_to_spots: false
+  manual_dapi_min: 300.0
+  manual_dapi_max: 3200.0
+  prefix: ""
+  scalebar_um: 25.0
+  scalebar_font_px: 52
+
+parallel:
+  workers: auto

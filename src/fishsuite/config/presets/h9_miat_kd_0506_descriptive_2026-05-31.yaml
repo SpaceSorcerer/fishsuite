@@ -1,0 +1,173 @@
+# ============================================================================
+# H9 hESC 100x — MIAT KD ASO — 05-06-2026 SESSION (UNLABELED, descriptive run)
+# OBJECTIVE AUTOFOCUS Z-WINDOW — method cloned from the FIXED 05-08 re-run
+# (h9_miat_kd_rerun_iwfocus_2026-05-31.yaml). 2026-05-31.
+# ============================================================================
+# Committee-critical: analyze Brian's EARLIER 05-06-2026 H9 MIAT RNA-FISH
+# session. UNLIKE 05-05 and 05-08, the 05-06 filenames carry NO condition label
+# (H9-MIAT-KD-ASO-_01..._11.vsi) — there is NO NT / KD / Sec-only annotation in
+# the names. We therefore process ALL 11 images as a SINGLE descriptive group
+# ("05-06 (unlabeled)") and DO NOT attempt to split NT vs KD. Splitting by MIAT
+# signal would be circular (you'd define KD as "low MIAT", then conclude KD is
+# low MIAT), so it is deliberately NOT done. This run yields per-image MIAT
+# quantification for the 11 fields under the EXACT 05-08 method so Brian can
+# decide, OFF-pipeline (lab notebook / acquisition record), whether any of these
+# fields are usable replicates.
+#
+# The ANALYSIS METHOD is held BYTE-IDENTICAL to the fixed 05-08 re-run: same
+# objective autofocus_maxproj z-window (intensity-weighted, fixed-N=10,
+# central-fraction 0.6), cellpose cpsam ds2 diam200, floor 800, bigfish 0.5 /
+# 100 nm, nucleolus, detect_in_sec_only. The ONLY differences vs 05-08 are the
+# INPUT FOLDER, the CHANNEL MAP (2-channel — DAPI ch1 here, see below), and the
+# single-group condition roster.
+#
+# ── VERIFIED CHANNEL MAP + Z (from ACTUAL .vsi metadata, bioio, 2026-05-31) ──
+# Representative files _01 / _10 report:
+#   dims  : T1 C2 Z30 Y2304 X2304   (TWO channels, 30 z-planes)
+#   chans : ['640 CSU', '405 CSU']  -> ch0 = 640 (MIAT FISH), ch1 = 405 (DAPI)
+#   voxel : 0.065 µm/px XY, 0.21 µm z  (~6.1 µm stack over 30 planes)
+# => dapi: 1, rna: 0. (Same 2-channel layout as 05-05; NOT the 3-channel 05-08.)
+#
+# ── 05-06 LABELING CLUE (mod-time / file-size; reported, NOT acted on) ───────
+# File modification times show TWO acquisition blocks:
+#   _01.._09  all at 2026-05-06 16:57:34-16:57:40  (one continuous block)
+#   _10, _11  at         2026-05-06 17:11:14         (a later, separate block)
+# AND _10 (265 KB) / _11 (300 KB) are MUCH larger than _01.._09 (155-256 KB),
+# matching the SIZE signature of the 05-05 "Sec-only" controls (264-299 KB,
+# also acquired in a separate later block). This SUGGESTS _10/_11 may be the
+# secondary-only (no-probe) controls for 05-06. This is a HYPOTHESIS from
+# acquisition metadata only — there is no NT/KD distinction recoverable for
+# _01.._09. Per the task, NO split is applied here; all 11 run as one group.
+# If Brian confirms _10/_11 are sec-only from his lab record, add:
+#   sec_only_files: ["_10", "_11"]   (or the exact basenames) and re-dry-run.
+#
+# ── DATA SCOPE ──────────────────────────────────────────────────────────────
+# Human / Homo sapiens (H9 hESC). Single RNA target = MIAT (lncRNA, 640 probe).
+# rna_only. RAW .vsi only — ".oex" + the "_..._/" companion folders + "_temp"
+# are auto-skipped by discovery's "_"/extension filter. The 05-06 folder is a
+# clean FLAT folder (no nested-duplicate quirk like 05-05) — point -i at it
+# directly.
+#
+# ── INPUT / OUTPUT ──────────────────────────────────────────────────────────
+# Input dir  : F:\Raw Images\H9-MIAT-KD-ASO\H9-MIAT-KD-ASO-05-06-2026
+# Output dir : pass at launch, e.g.
+#   F:\Image Analysis Work\H9-MIAT-KD\RERUN_0506_IWFOCUS_floor800_2026-05-31
+#   (NEW timestamped folder — never overwrite a prior run; Brian's rule.)
+# ============================================================================
+
+experiment:
+  name: "H9_MIAT_KD_ASO_0506_unlabeled_iwfocus_2026-05-31"
+  description: "H9 hESC MIAT RNA-FISH 100x confocal — 05-06-2026 session, UNLABELED. All 11 images processed as one descriptive group (no NT/KD split — filenames carry no condition label; splitting by signal would be circular). OBJECTIVE autofocus_maxproj z-window cloned from the fixed 05-08 re-run. 2-channel acquisition (ch0=640 MIAT, ch1=405 DAPI). cellpose cpsam ds2 diam200, rna_only, floor 800."
+  cell_line: "H9 hESC"
+
+conditions:
+  # FLAT folder, UNLABELED. All 11 .vsi assigned ONE descriptive condition via
+  # the empty-subfolder-key mapping (flat-mode files get subfolder ""). No
+  # sec_only_files / filename_conditions -> no NT/KD/sec split (deliberate).
+  mode: subfolders
+  subfolder_conditions:
+    "": "05-06 (unlabeled)"
+  sec_only_folders: []
+  sec_only_files: []
+  filename_conditions: []
+  condition_order: ["05-06 (unlabeled)"]
+  min_nuclei_for_stats: 6
+
+channels:
+  analysis_mode: rna_only      # single RNA = MIAT; DAPI; NO coloc partner
+  dapi: 1                      # ch1 = 405 CSU DAPI (2-channel layout — VERIFIED)
+  rna: 0                       # ch0 = 640 CSU MIAT FISH probe (VERIFIED)
+  antibody: -1
+  dapi_label: "DAPI"
+  rna_label: "MIAT-640"
+  dapi_lut: "blue"
+  rna_lut: "yellow"            # 640/Cy5 -> yellow (Brian's LUT convention)
+
+z_stack:
+  # ── OBJECTIVE WINDOWED MAX-PROJECTION — IDENTICAL to the fixed 05-08 re-run.
+  mode: autofocus_maxproj
+  focus_metric: variance_of_laplacian
+  # FIXED-N=10 centered window. 30-plane stack here: 10-plane window fits with
+  # margin; central-fraction 0.6 keeps the anchor in planes ~6-25.
+  focus_window_fixed_n_slices: 10
+  focus_min_intensity_frac_of_peak: 0.3
+  focus_threshold_frac: 0.5
+  focus_window_min_slices: 3
+  focus_window_max_slices: 0
+  # INTENSITY-WEIGHTED FOCUS (Option B) — required on bright H9 DAPI stacks.
+  autofocus_intensity_weighted: true
+  # CENTRAL-FRACTION PEAK GUARD — middle 60% of the 30-plane stack.
+  focus_central_fraction: 0.6
+
+nuclei:
+  # FIXED vs the 05-08 re-run — held identical so the sessions are poolable.
+  backend: cellpose
+  cellpose_model_type: cpsam
+  cellpose_diameter_px: 200.0
+  cellpose_flow_threshold: 0.4
+  cellpose_cellprob_threshold: 0.0
+  cellpose_downsample_factor: 2.0
+  cellpose_device: directml
+  min_area_px: 16000
+  max_area_px: 1000000000000.0
+  exclude_border: true
+  border_margin_px: 10
+  stardist_model: 2D_versatile_fluo
+  prob_threshold: 0.5
+  nms_threshold: 0.5
+  stardist_gauss_sigma: 3.0
+  stardist_postprocess: none
+  label_smoothing_radius_px: 0
+  reject_ghost_nuclei: false
+
+pixel_coloc:
+  threshold_mode: mad
+  threshold_scope: batch
+  k_mad: 2.5
+
+foci:
+  enabled: true
+  backend: bigfish
+  bigfish_voxel_size_nm: 0.0
+  bigfish_voxel_z_nm: 0.0
+  bigfish_spot_radius_nm: 100.0
+  bigfish_spot_radius_z_nm: 300.0
+  threshold_multiplier: 0.5
+  only_nuclear_spots: false
+  min_sep_px: 1
+  # No sec-only group in this single-group run, but kept ON for method parity
+  # with 05-08 (harmless when no image is flagged sec-only).
+  detect_in_sec_only: true
+
+cytoplasm:
+  enabled: true
+  voronoi_max_expansion_px: 80
+  measure_nc_ratio: true
+
+nucleolus:
+  enabled: true
+  intra_nuclear_percentile: 25.0
+  min_area_um2: 1.0
+  max_area_frac_of_nucleus: 0.6
+  closing_radius_px: 2
+
+output:
+  save_qc_overlays: true
+  save_per_image_csv: true
+  save_masks: true
+  save_publication_images: true
+  save_publication_tifs: false
+  pub_contrast_mode: manual
+  # FLOOR 800 — LOCKED (Brian); identical to the 05-08 re-run.
+  manual_rna_min: 800.0
+  manual_rna_max: 4200.0
+  manual_dapi_min: 300.0
+  manual_dapi_max: 3200.0
+  apply_pub_contrast_floor_to_analysis: false
+  apply_pub_contrast_floor_to_spots: true
+  prefix: ""
+  scalebar_um: 25.0
+  scalebar_font_px: 52
+
+parallel:
+  workers: auto

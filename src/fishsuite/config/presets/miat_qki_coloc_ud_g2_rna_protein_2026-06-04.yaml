@@ -1,0 +1,227 @@
+# ============================================================================
+# MIAT x QKI COLOCALIZATION — UNDIFFERENTIATED hESC (g2 pilot) — rna_protein
+# Date: 2026-06-04  |  fishsuite-config subagent (Opus 4.8 high) for MASTER CONTROL
+# ============================================================================
+# PURPOSE
+#   First (g2-only) PILOT run of MIAT (RNA FISH) x QKI (IF/antibody) pixel- and
+#   spot-level COLOCALIZATION in undifferentiated hESC (dCas9-VPR "g2" line).
+#   Dox-inducible MIAT transgene:
+#     * g2 wDox  (with Dox) = MIAT OVEREXPRESSION  -> more MIAT, test QKI co-recruitment
+#     * g2 noDox (no Dox)   = CONTROL (no induction) -> low baseline MIAT
+#   Question: does QKI protein co-localize / enrich at MIAT RNA foci, and does
+#   that change when MIAT is induced? This is the rna_protein companion to the
+#   MIAT-only run (miat_oe_ud_g2_rna_only_2026-06-03.yaml).
+#
+#   Human / Homo sapiens (undifferentiated hESC). HARD RULE 9 satisfied.
+#
+# ── CHANNELS (VSI-verified, scene "001 640 CSU, 561 CSU, 405 CSU") ──────────
+#   ch0 = 640 CSU (em 668 nm) -> MIAT FISH (RNA)   -> rna       (YELLOW LUT; 640 -> yellow)
+#   ch1 = 561 CSU (em 603 nm) -> QKI IF (protein)  -> antibody  (MAGENTA LUT; 561 -> magenta)
+#   ch2 = 405 CSU (em 442 nm) -> DAPI              -> dapi      (BLUE LUT)
+#   rna2 = -1 (rna_protein maps the antibody channel into the rna2 coloc slot
+#   internally; do NOT set rna2 here).
+#
+# ── ACQUISITION (VSI metadata) ──────────────────────────────────────────────
+#   3 channels, 78 z-planes, 1152x1152, pixel = 0.13 um/px XY, 0.21 um Z, 100x.
+#   Single timepoint. Thick stack (78 z).
+#
+# ── Z-METHOD: SINGLE BEST IN-FOCUS PLANE (mode: autofocus — NOT maxproj) ─────
+#   Per Brian for coloc: use the single in-focus plane (NOT a windowed MIP) so
+#   pixel colocalization is computed on a true confocal optical section (a MIP
+#   would stack out-of-plane signal and inflate apparent overlap). Spot-detection
+#   z is LOCKED to the segmentation z (the chosen plane). On a 78-plane stack,
+#   the plain variance-of-Laplacian focus metric picks bright/noisy stack-EDGE
+#   planes, so autofocus_intensity_weighted: true (sharpness * brightness) +
+#   focus_central_fraction: 0.6 (peak can only be chosen from the middle 60%)
+#   + focus_min_intensity_frac_of_peak: 0.3 (drop dim padding slices before
+#   scoring). start_slice/end_slice constrain the search to z8-z70 of 78 so the
+#   pick can never land on a true stack-edge plane. NO file_overrides.
+#   NOTE: autofocus_intensity_weighted/focus_central_fraction/focus_min_intensity
+#   are the SAME single-plane "autofocus" knobs the schema applies to mode=autofocus
+#   (focus_metric is documented for autofocus_maxproj but is harmless/ignored here;
+#   left at the default for clarity). After the run, confirm the per-image
+#   "[autofocus] picked z=NN" log lands mid-stack (z ~25-55), not z=8 / z=70.
+#
+# ── COLOC (advanced) ────────────────────────────────────────────────────────
+#   * PIXEL coloc (pixel_coloc): Pearson / Manders / Li-ICQ computed per nucleus
+#     on raw pixels, threshold_mode=mad, threshold_scope=batch (one MAD threshold
+#     pooled across the 4 g2 FOV), k_mad=2.5. This MAD coloc threshold is DECOUPLED
+#     from the spot-detection / display floor.
+#   * SPOT pairing (spot_coloc): MIAT(rna spots) x QKI(antibody spots) nearest-
+#     neighbour pairing at pair_distance_um=0.3 um (~2.3 px at 0.13 um/px).
+#   * PARTNER intensity (foci.compute_partner_intensity=true): samples QKI raw
+#     local intensity at each MIAT spot -> per-nucleus protein_local_mean_at_rna1
+#     _spots / protein_enrichment_at_rna1_spots = "QKI intensity enrichment at
+#     MIAT spots". *** SEE PARALLELISM NOTE: this path HANGS the parallel worker
+#     pool (schema comment) and is supported single-process ONLY -> parallel
+#     forced to 1 below; run with -p 1. ***
+#   MIAT spot detection (bigfish/LoG) stays ON for % nuclear + spot coloc.
+#
+# ── FLOORS (PROVISIONAL — pilot uses auto_batch so we SEE the data first) ────
+#   pub_contrast_mode: auto_batch  -> one batch-pooled percentile floor/ceil per
+#   channel across the 4 g2 FOV (the "use_batch_contrast" intent; per-timepoint
+#   scaling). This lets us LOOK at MIAT + QKI before committing manual floors.
+#   *** The spot/display floors here are PROVISIONAL and pending Sam's-method
+#   tuning on the bright OE (g2 wDox) condition. *** Pixel-coloc MAD is computed
+#   independently of any display floor, so the coloc metrics are valid regardless.
+#   No spot-floor gate is applied in the pilot (apply_pub_contrast_floor_to_spots:
+#   false) so we see ALL detected MIAT spots before deciding a cut.
+#
+# ── CONDITIONS (g2 pilot) ───────────────────────────────────────────────────
+#   -i points at ...121925_MIAT-QKI_confocal_UD\g2 (holds noDox\ + wDox\ subfolders).
+#   subfolder-mode: noDox -> "g2 noDox (control)"; wDox -> "g2 wDox (MIAT-OE)".
+#   DECON ONLY: input_file_subset pins (decon) substring so plain .vsi twins are
+#   excluded (each FOV has a decon + a plain .vsi in the same leaf).
+#
+#   n is SMALL: 2 wDox + 2 noDox FOV. Scoping/first-pass; per-IMAGE means are the
+#   replicate unit (n=2 vs n=2) -> report honestly, NOT a powered comparison.
+# ============================================================================
+
+experiment:
+  name: "MIAT_QKI_coloc_UD_g2_rna_protein_2026-06-04"
+  description: "Undifferentiated hESC (g2) MIAT(RNA FISH, ch0/640) x QKI(IF, ch1/561) colocalization, rna_protein. g2 wDox=MIAT-OE vs g2 noDox=control. 100x confocal, 0.13 um/px, 78 z. Single in-focus plane (mode=autofocus, intensity-weighted, central 0.6, z8-70 window). Pixel coloc Pearson/Manders/Li (MAD batch k=2.5) + MIAT x QKI spot pairing 0.3 um + QKI partner-intensity at MIAT spots. cellpose cpsam ds2 diam100. PROVISIONAL floors (auto_batch; tune on OE per Sam's method). g2 PILOT, decon-only, n=2 vs n=2."
+  cell_line: "undifferentiated hESC (dCas9-VPR g2)"
+  date: "2026-06-04"
+
+conditions:
+  mode: subfolders
+  subfolder_conditions:
+    "no Dox": "g2 noDox (control)"
+    "with Dox": "g2 wDox (MIAT-OE)"
+  sec_only_folders: []
+  sec_only_files: []
+  condition_order: ["g2 noDox (control)", "g2 wDox (MIAT-OE)"]
+  min_nuclei_for_stats: 6
+
+# PLAIN (NON-DECON) — Brian decision 2026-06-04: the `(decon)` files are
+# inconsistently normalized per-file (Dox_01 left ~3x brighter; the other 3 were
+# scaled down 2-7x), poisoning cross-FOV absolute intensity + batch thresholds.
+# The PLAIN twins are matched across FOV (cross-FOV CV 0.01-0.08) = consistent base.
+# Coloc is identical on plain vs decon (within-nucleus ratio). Pin the PLAIN
+# basenames (no "(decon)") so the decon twins are excluded. Plain puncta are softer
+# than decon -> the AUTO per-image MAD/LoG thresholds adapt lower automatically;
+# VERIFY MIAT spot detection on the plain re-run and tune LoG sensitivity if needed.
+# The 4 usable g2 FOV:  noDox: _03,_04  |  wDox ("-Dox_"): _01,_02
+input_file_subset:
+  # --- g2 noDox (control) ---
+  - "UD-MIAT-FISH-QKI-IF-g2-no Dox_03.vsi"
+  - "UD-MIAT-FISH-QKI-IF-g2-no Dox_04.vsi"
+  # --- g2 wDox (MIAT-OE) ---
+  - "UD-MIAT-FISH-QKI-IF-g2-Dox_01.vsi"
+  - "UD-MIAT-FISH-QKI-IF-g2-Dox_02.vsi"
+
+channels:
+  analysis_mode: rna_protein   # MIAT RNA (ch0) x QKI protein (ch1) + DAPI (ch2)
+  dapi: 2                      # ch2 = 405 CSU (DAPI)
+  rna: 0                       # ch0 = 640 CSU (MIAT FISH probe)
+  antibody: 1                  # ch1 = 561 CSU (QKI IF / antibody)
+  rna2: -1                     # not used; antibody maps into the coloc slot internally
+  dapi_label: "DAPI"
+  rna_label: "MIAT-640"
+  antibody_label: "QKI-561"
+  dapi_lut: "blue"
+  rna_lut: "yellow"            # 640 -> yellow (Brian's wavelength->LUT convention)
+  antibody_lut: "magenta"      # 561 -> magenta
+
+z_stack:
+  # SINGLE best in-focus plane (NOT maxproj). Spot-detection z is locked to the
+  # segmentation z (the chosen plane) by the rna_protein mode.
+  mode: autofocus
+  focus_metric: variance_of_laplacian
+  autofocus_intensity_weighted: true   # REQUIRED on thick 78-plane stacks (edge-plane fix)
+  focus_central_fraction: 0.6          # peak can only be chosen from middle 60% (no edge anchor)
+  focus_min_intensity_frac_of_peak: 0.3  # drop dim padding slices before focus scoring
+  start_slice: 8                       # outer search bound: z8..z70 of 78 (1-indexed)
+  end_slice: 70                        # never pick a true stack-edge plane
+  # NO file_overrides.
+
+nuclei:
+  backend: cellpose
+  cellpose_model_type: cpsam
+  cellpose_diameter_px: 100.0          # 13 um nucleus @ 0.13 um/px (scaled from H9 200@0.065)
+  cellpose_flow_threshold: 0.4
+  cellpose_cellprob_threshold: 0.0
+  cellpose_downsample_factor: 2.0      # ds2 -> ~0.26 um/px segmentation grid (~4x faster, no quality loss)
+  cellpose_device: directml            # AMD RX 6750 XT; REQUIRES the fishproc_dml env
+  min_area_px: 4000                    # scaled from H9 16000 px (0.065 um) -> ~67.6 um^2
+  max_area_px: 1000000000000.0
+  exclude_border: true
+  border_margin_px: 10
+  stardist_model: 2D_versatile_fluo
+  prob_threshold: 0.5
+  nms_threshold: 0.5
+  stardist_gauss_sigma: 3.0
+  stardist_postprocess: none
+  label_smoothing_radius_px: 0
+  reject_ghost_nuclei: false
+
+pixel_coloc:
+  threshold_mode: mad
+  threshold_scope: per_image           # 2026-06-04 per-image MAD (was batch): Manders
+                                       # was slaved to a pooled floor that swung 6x between
+                                       # OE replicates. Lead with Pearson + Li-ICQ
+                                       # (threshold-independent); Manders per-image only.
+  k_mad: 2.5
+
+# MIAT(rna) x QKI(antibody) spot-to-spot nearest-neighbour pairing.
+spot_coloc:
+  pair_distance_um: 0.3                # ~2.3 px at 0.13 um/px (~diffraction limit)
+  report_nn_distance: true
+
+foci:
+  enabled: true
+  backend: bigfish
+  bigfish_voxel_size_nm: 0.0           # 0 = auto (expect 130 nm)
+  bigfish_voxel_z_nm: 0.0              # 0 = auto (expect 210 nm)
+  bigfish_spot_radius_nm: 100.0        # MIAT puncta (matches MIAT-OE rna_only preset)
+  bigfish_spot_radius_z_nm: 300.0
+  threshold_multiplier: 0.5
+  only_nuclear_spots: false            # keep cytoplasmic MIAT for % nuclear
+  min_sep_px: 1
+  detect_in_sec_only: false
+  # QKI is a diffuse nuclear protein, not a tight punctum. The antibody channel
+  # is spot-detected at the same depth (rna_protein puts it in the rna2 slot).
+  # Give it a larger spot radius so the LoG matches QKI's broader local maxima.
+  antibody_overrides:
+    bigfish_spot_radius_nm: 150.0
+    bigfish_spot_radius_z_nm: 350.0
+  # QKI raw local intensity at each MIAT spot -> protein_*_at_rna1_spots columns
+  # (= QKI intensity enrichment at MIAT foci). HANGS the parallel worker pool
+  # (schema comment) -> supported SINGLE-PROCESS ONLY; parallel forced to 1 below.
+  compute_partner_intensity: true
+
+cytoplasm:
+  enabled: true
+  voronoi_max_expansion_px: 40         # ~half the H9 px expansion (2x coarser pixel)
+  measure_nc_ratio: true
+
+nucleolus:
+  enabled: false                       # off for the coloc pilot (re-enable if QKI nucleolar exclusion is of interest)
+
+output:
+  save_qc_overlays: true
+  save_per_image_csv: true
+  save_masks: true
+  save_publication_images: true
+  save_publication_tifs: false
+  # PILOT: auto_batch -> one batch-pooled floor/ceil per channel across the 4 g2
+  # FOV (the per-timepoint "batch contrast" intent). SEE the data before pinning
+  # manual floors. Switch to pub_contrast_mode: manual + Sam's-method floors on a
+  # follow-up run.
+  pub_contrast_mode: auto_batch
+  # Do NOT gate analysis or spots by the display floor in the pilot — we want to
+  # see ALL detected MIAT spots + raw intensities before choosing a cut. Pixel-
+  # coloc MAD is independent of these flags.
+  apply_pub_contrast_floor_to_analysis: false
+  apply_pub_contrast_floor_to_spots: false
+  prefix: ""
+  scalebar_um: 25.0
+  scalebar_font_px: 52
+
+parallel:
+  # compute_partner_intensity above HANGS the parallel pool -> force single-process.
+  # Run with -p 1 as well (belt-and-suspenders).
+  workers: 1
+  seg_workers: 1                       # directml MUST stay 1 (single 12 GB VRAM)
+  main_workers: 1                      # required for compute_partner_intensity
+  threads_per_worker: 4
