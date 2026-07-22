@@ -227,23 +227,36 @@ def _build_comparison_groups(plate: dict):
     return per_secondary, pooled
 
 
-def _discover_wells(raw_dir: Path) -> dict:
+def _discover_wells(raw_dir: Path, exts=("vsi",)) -> dict:
     """{well:int -> [Path,...]} parsing well number from each subfolder name.
 
-    Files sorted by acquisition sequence. Subfolders with no well match (e.g.
-    ``_temp``) are skipped.
+    Globs the given image extensions (priority order; case-insensitive, no
+    leading dot; multi-dot like "ome.tif" allowed) inside each well subfolder,
+    deduping while preserving discovery order, then sorts by acquisition
+    sequence. Default ("vsi",) reproduces the legacy raw-.vsi behaviour exactly.
+    Subfolders with no well match (e.g. ``_temp``) are skipped.
     """
     raw_dir = Path(raw_dir)
     out: dict = {}
     if not raw_dir.is_dir():
         return out
+    clean_exts = [str(e).lstrip(".").lower() for e in (exts or ("vsi",)) if str(e).strip()]
+    if not clean_exts:
+        clean_exts = ["vsi"]
     for sub in sorted(p for p in raw_dir.iterdir() if p.is_dir()):
         w = _well_num_from_folder(sub.name)
         if w is None:
             continue
-        vsis = sorted(sub.glob("*.vsi"), key=_seq_num_from_file)
-        if vsis:
-            out[w] = vsis
+        found: list = []
+        seen = set()
+        for ext in clean_exts:
+            for f in sub.iterdir():
+                if f.is_file() and f.name.lower().endswith("." + ext) and f not in seen:
+                    seen.add(f)
+                    found.append(f)
+        files = sorted(found, key=_seq_num_from_file)
+        if files:
+            out[w] = files
     return out
 
 
@@ -729,7 +742,7 @@ def run_if_batch(cfg, config_path, input_dir, output_dir, dirs,
           f"pooled WT={pooled['WT']} vs KO={pooled['KO']}")
 
     # ---- discover FOVs on disk, match to wells ----
-    wells_on_disk = _discover_wells(input_dir)
+    wells_on_disk = _discover_wells(input_dir, exts=cfg.if_intensity.input_glob_exts)
     manifest = []
     for w in sorted(wells_on_disk):
         if w not in plate:

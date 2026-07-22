@@ -958,6 +958,284 @@ def resolve_autofocus_plane(
     return _dapi_pick(), "dapi", diag
 
 
+def _per_slice_focus_scores(
+    zyx: np.ndarray,
+    *,
+    intensity_weighted: bool = False,
+    min_intensity_frac_of_peak: float = 0.0,
+    mask: Optional[np.ndarray] = None,
+) -> "tuple[np.ndarray, np.ndarray]":
+    """Per-slice focus scores for one channel's (Z, Y, X) sub-stack.
+
+    Reuses the SAME per-plane score as the single-plane autofocus path
+    (``_autofocus_plane_with_idx`` / ``_focus_score_variance_of_laplacian``):
+    ``var(laplace(plane/mean))`` (mean<=0 -> 0), optionally multiplied by the
+    plane mean when ``intensity_weighted`` (the thick-stack fix). When
+    ``min_intensity_frac_of_peak > 0`` slices dimmer than that fraction of the
+    brightest slice's mean have their score zeroed (per-channel analog of the
+    DAPI-path min-intensity pre-filter) so a dim, noise-driven edge plane cannot
+    anchor the joint pick. Returns ``(scores, slice_means)``.
+
+    ``mask`` (2D bool, same YX as each plane): when given, the score is computed
+    ONLY over in-mask pixels — the mean is the in-mask mean, and the Laplacian is
+    computed on the FULL plane (so the convolution uses real neighbors and there
+    are NO artificial gradients at the mask boundary) but its VARIANCE is taken
+    over in-mask pixels only. Used for nuclear-masked joint autofocus so
+    cytoplasmic signal cannot bias the plane pick. ``mask=None`` (default) is the
+    whole-plane path and is byte-for-byte identical to the pre-mask behavior.
+    """
+    nz = int(zyx.shape[0])
+    if mask is not None:
+        m2 = np.asarray(mask, dtype=bool)
+        from scipy import ndimage as ndi
+        slice_means = np.empty(nz, dtype=float)
+        scores = np.empty(nz, dtype=float)
+        n_in = int(m2.sum())
+        for z in range(nz):
+            p = zyx[z].astype(np.float32)
+            in_vals = p[m2] if n_in else p.reshape(-1)[:0]
+            mval = float(in_vals.mean()) if in_vals.size else 0.0
+            slice_means[z] = mval
+            if mval <= 0.0 or in_vals.size == 0:
+                scores[z] = 0.0
+                continue
+            lap = ndi.laplace(p / mval)          # full-plane conv (no mask-edge artifact)
+            s = float(np.var(lap[m2]))            # variance over in-mask pixels only
+            if intensity_weighted:
+                s *= mval
+            scores[z] = s
+    else:
+        slice_means = np.asarray(
+            [float(zyx[z].mean()) for z in range(nz)], dtype=float
+        )
+        scores = np.empty(nz, dtype=float)
+        for z in range(nz):
+            s = float(_focus_score_variance_of_laplacian(zyx[z]))
+            if intensity_weighted:
+                s *= slice_means[z]
+            scores[z] = s
+    if min_intensity_frac_of_peak and min_intensity_frac_of_peak > 0.0:
+        peak_mean = float(slice_means.max()) if slice_means.size else 0.0
+        cutoff = peak_mean * float(min_intensity_frac_of_peak)
+        scores[slice_means < cutoff] = 0.0
+    return scores, slice_means
+
+
+def _derive_nuclear_mask(
+    dapi_ref_2d: np.ndarray,
+    *,
+    min_coverage: float = 0.01,
+    smooth_sigma: float = 1.5,
+) -> "tuple[Optional[np.ndarray], float]":
+    """Binary nuclear-region mask from a 2D DAPI reference (max-proj over the z window).
+
+    Light Gaussian smooth -> Otsu threshold (``skimage.filters.threshold_otsu``;
+    a robust median + 3*1.4826*MAD fallback if skimage is unavailable or the
+    reference is single-valued) -> small binary opening + closing to drop specks
+    and fill pinholes. Returns ``(mask, coverage_fraction)``. When the mask is
+    empty or covers less than ``min_coverage`` of the frame, returns
+    ``(None, coverage)`` so the caller falls back to whole-plane scoring. Nuclei
+    sit at fixed xy across z, so this single 2D mask applies to every plane.
+    """
+    ref = np.asarray(dapi_ref_2d, dtype=np.float32)
+    if ref.size == 0 or ref.ndim != 2:
+        return None, 0.0
+    from scipy import ndimage as ndi
+    sm = ndi.gaussian_filter(ref, sigma=float(smooth_sigma))
+    thr: Optional[float] = None
+    if float(np.ptp(sm)) > 0.0:
+        try:
+            from skimage.filters import threshold_otsu
+            thr = float(threshold_otsu(sm))
+        except Exception:
+            thr = None
+    if thr is None:
+        med = float(np.median(sm))
+        mad = float(np.median(np.abs(sm - med)))
+        thr = med + 3.0 * 1.4826 * mad
+    mask = sm > thr
+    if mask.any():
+        mask = ndi.binary_opening(mask, iterations=1)
+        mask = ndi.binary_closing(mask, iterations=1)
+    coverage = float(mask.mean()) if mask.size else 0.0
+    if (not mask.any()) or coverage < float(min_coverage):
+        return None, coverage
+    return mask, coverage
+
+
+def resolve_joint_autofocus_plane(
+    img: ImageWrapper,
+    dapi_idx: int,
+    rna_idx: int,
+    partner_idx: Optional[int] = None,
+    *,
+    z_start: Optional[int] = None,
+    z_end: Optional[int] = None,
+    intensity_weighted: bool = False,
+    reduce: str = "product",
+    central_fraction: float = 0.0,
+    min_intensity_frac: float = 0.0,
+    nuclear_mask: bool = False,
+) -> "tuple[int, dict]":
+    """Pick the ONE plane jointly in focus for DAPI + rna (+ partner).
+
+    Companion to ``resolve_autofocus_plane`` for ``autofocus_channel == "joint"``.
+    Instead of anchoring on a single channel, this scores focus on DAPI, rna and
+    (optionally) the partner channel (rna2 = QKI-IF / 7SK), normalizes EACH
+    channel's focus-vs-z curve to its own peak so channels of different absolute
+    sharpness are comparable, then REDUCES the normalized scores across channels
+    at every z and returns the plane that maximizes the reduced score. The
+    one-plane / all-channels-at-same-z invariant is preserved (the caller reads
+    DAPI, rna and partner all at the returned z).
+
+    Parameters
+    ----------
+    dapi_idx, rna_idx : int
+        Channel indices for the two mandatory channels.
+    partner_idx : int or None
+        The second RNA / antibody channel. When ``None`` the joint pick uses
+        DAPI + rna only.
+    z_start, z_end : int or None
+        1-indexed inclusive outer z-bounds (same convention as
+        ``extract_channel_autofocus_with_idx`` / ``cfg.z_stack.start_slice``).
+    intensity_weighted : bool
+        Forwarded to the per-plane focus score for EVERY channel (thick-stack
+        fix), matching the DAPI/rna single-plane paths.
+    reduce : {"product", "geomean", "min"}
+        Cross-channel reducer of the normalized scores. ``product`` = ∏,
+        ``geomean`` = (∏)^(1/k), ``min`` = worst channel. ``product`` and
+        ``geomean`` are monotone-equivalent (identical argmax); ``min`` is the
+        maximin (best worst-channel focus).
+    central_fraction : float
+        In ``(0, 1]``, restrict the reduced-score ARGMAX to the central this-
+        fraction of the (outer-bounded) window — the same edge-anchor guard as
+        the DAPI ``compute_focus_window`` path. 0.0 = disabled.
+    min_intensity_frac : float
+        Per-channel min-intensity pre-filter fraction (see
+        ``_per_slice_focus_scores``). 0.0 = disabled.
+    nuclear_mask : bool
+        When True, restrict per-channel focus scoring to a DAPI-derived nuclear
+        mask (see ``_derive_nuclear_mask``) so cytoplasmic signal (e.g. MIAT
+        cytoplasmic autofluorescence) cannot bias the plane pick. The mask is
+        derived from a max-projection of DAPI over the search window. If the mask
+        is empty / <1% coverage the scorer falls back to whole-plane scoring;
+        either way the outcome is reported in ``diag`` (``nuclear_mask_used`` /
+        ``nuclear_mask_coverage``). Default False = whole-plane scoring.
+
+    Returns
+    -------
+    (abs_z_1indexed, diag)
+        ``abs_z_1indexed`` is the 1-indexed chosen plane. ``diag`` carries
+        ``reduce``, ``z_plane``, ``window`` (1-indexed inclusive [start, end]),
+        ``per_channel_focus_score`` / ``per_channel_norm_score`` (raw and
+        self-peak-normalized score of each channel AT the chosen plane, keyed
+        "dapi"/"rna"/"partner"), ``joint_score`` (the reduced score there),
+        ``nuclear_mask_used`` (bool) / ``nuclear_mask_coverage`` (frame fraction),
+        and the ``central_fraction`` / ``intensity_weighted`` used.
+    """
+    reduce = str(reduce).lower()
+    if reduce not in ("product", "geomean", "min"):
+        raise ValueError(
+            f"resolve_joint_autofocus_plane: unknown reduce {reduce!r} "
+            f"(valid: 'product', 'geomean', 'min')"
+        )
+
+    def _load(idx: int) -> np.ndarray:
+        if idx < 0 or idx >= img.n_channels:
+            raise IndexError(
+                f"Channel {idx} out of range (image has {img.n_channels})"
+            )
+        zyx = img.bio.get_image_data("ZYX", T=0, C=idx)  # type: ignore[attr-defined]
+        if zyx.ndim == 2:
+            zyx = zyx[None, :, :]
+        return zyx
+
+    channels: list[tuple[str, np.ndarray]] = [
+        ("dapi", _load(dapi_idx)),
+        ("rna", _load(rna_idx)),
+    ]
+    if partner_idx is not None:
+        channels.append(("partner", _load(partner_idx)))
+
+    nz = int(channels[0][1].shape[0])
+    # 1-indexed inclusive outer bounds -> 0-indexed half-open window.
+    zs0 = 0 if z_start is None else max(0, int(z_start) - 1)
+    ze0 = nz if z_end is None else min(nz, int(z_end))
+    if zs0 >= ze0:
+        zs0, ze0 = 0, nz
+    win = ze0 - zs0
+
+    # Optional DAPI-derived nuclear mask: score focus ONLY inside nuclei so
+    # cytoplasmic signal can't vote. Derived once from a DAPI max-proj over the
+    # window (nuclei are at fixed xy across z). Empty/<1% -> None -> whole-plane.
+    nuclear_mask_used = False
+    nuclear_mask_coverage = 0.0
+    mask: Optional[np.ndarray] = None
+    if nuclear_mask:
+        dapi_ref = channels[0][1][zs0:ze0].max(axis=0)
+        mask, nuclear_mask_coverage = _derive_nuclear_mask(dapi_ref)
+        nuclear_mask_used = mask is not None
+
+    raw_scores: dict[str, np.ndarray] = {}
+    norm_scores: dict[str, np.ndarray] = {}
+    for name, zyx in channels:
+        sub = zyx[zs0:ze0]
+        sc, _ = _per_slice_focus_scores(
+            sub,
+            intensity_weighted=intensity_weighted,
+            min_intensity_frac_of_peak=min_intensity_frac,
+            mask=mask,
+        )
+        raw_scores[name] = sc
+        peak = float(sc.max()) if sc.size else 0.0
+        if peak > 0.0:
+            norm_scores[name] = sc / peak
+        else:
+            # Degenerate / dead channel: contribute NEUTRALLY (all-ones) so it
+            # can't zero out the joint decision made by the other channels.
+            norm_scores[name] = np.ones_like(sc)
+
+    stacked = np.vstack([norm_scores[name] for name, _ in channels])  # (k, win)
+    prod = np.prod(stacked, axis=0)
+    if reduce == "product":
+        reduced = prod
+    elif reduce == "geomean":
+        reduced = prod ** (1.0 / stacked.shape[0])
+    else:  # "min"
+        reduced = stacked.min(axis=0)
+
+    # Central-fraction argmax guard (mirrors compute_focus_window peak search).
+    plo, phi = 0, win - 1
+    if central_fraction and 0.0 < float(central_fraction) < 1.0 and win > 0:
+        keep = max(1, int(round(win * float(central_fraction))))
+        margin = (win - keep) // 2
+        plo = margin
+        phi = win - 1 - (win - keep - margin)
+        if plo > phi:
+            plo, phi = 0, win - 1
+
+    local = plo + int(np.argmax(reduced[plo : phi + 1]))
+    abs_z_1indexed = zs0 + local + 1
+
+    diag = {
+        "reduce": reduce,
+        "z_plane": int(abs_z_1indexed),
+        "window": [int(zs0 + 1), int(ze0)],
+        "per_channel_focus_score": {
+            name: float(raw_scores[name][local]) for name, _ in channels
+        },
+        "per_channel_norm_score": {
+            name: float(norm_scores[name][local]) for name, _ in channels
+        },
+        "joint_score": float(reduced[local]),
+        "central_fraction": float(central_fraction),
+        "intensity_weighted": bool(intensity_weighted),
+        "nuclear_mask_used": bool(nuclear_mask_used),
+        "nuclear_mask_coverage": float(nuclear_mask_coverage),
+    }
+    return int(abs_z_1indexed), diag
+
+
 def get_voxel_size_nm(img: ImageWrapper) -> Tuple[float, float]:
     """Return (xy_nm, z_nm) physical voxel size, or (NaN, NaN) if unavailable."""
     return (img.voxel_xy_nm, img.voxel_z_nm)

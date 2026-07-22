@@ -1019,7 +1019,55 @@ def run_one(
     if z_mode == "autofocus":
         _af_channel = str(getattr(cfg.z_stack, "autofocus_channel", "dapi")).lower()
         _af_iw = bool(getattr(cfg.z_stack, "autofocus_intensity_weighted", False))
-        if _af_channel not in ("rna", "auto"):
+        if _af_channel == "joint":
+            # ── JOINT multi-channel plane pick (2026-07-18 Brian). ONE plane
+            # jointly in focus for DAPI + RNA1 + RNA2 (partner); all channels
+            # read at it -> coloc-safe. Preserves the one-plane invariant. ──
+            _reduce = str(
+                getattr(cfg.z_stack, "autofocus_joint_reduce", "product")
+            ).lower()
+            _picked_z, _joint_diag = _io.resolve_joint_autofocus_plane(
+                img, dapi_idx, rna_idx, partner_idx=rna2_idx,
+                z_start=z_start, z_end=z_end,
+                intensity_weighted=_af_iw, reduce=_reduce,
+                central_fraction=float(
+                    getattr(cfg.z_stack, "focus_central_fraction", 0.0)
+                ),
+                min_intensity_frac=float(
+                    getattr(cfg.z_stack, "focus_min_intensity_frac_of_peak", 0.0)
+                ),
+                nuclear_mask=bool(
+                    getattr(cfg.z_stack, "autofocus_joint_nuclear_mask", False)
+                ),
+            )
+            dapi_autofocus_z = int(_picked_z)
+            dapi_2d = _io.extract_channel_at_z(img, dapi_idx, z_1indexed=dapi_autofocus_z)
+            rna_2d = _io.extract_channel_at_z(img, rna_idx, z_1indexed=dapi_autofocus_z)
+            rna2_2d = _io.extract_channel_at_z(img, rna2_idx, z_1indexed=dapi_autofocus_z)
+            _z_af_extra = {
+                "z_autofocus_mode": "joint",
+                "z_autofocus_channel_used": "joint",
+                "z_plane": int(dapi_autofocus_z),
+                "z_autofocus_joint_reduce": _reduce,
+                "nuclear_mask_used": bool(_joint_diag.get("nuclear_mask_used", False)),
+                "nuclear_mask_coverage": round(
+                    float(_joint_diag.get("nuclear_mask_coverage", 0.0)), 4
+                ),
+            }
+            try:
+                for _cn, _cv in _joint_diag.get("per_channel_focus_score", {}).items():
+                    _z_af_extra[f"joint_focus_{_cn}"] = round(float(_cv), 4)
+            except Exception:
+                pass
+            try:
+                from rich.console import Console as _C
+                _C().print(
+                    f"  [dim]z-joint({_reduce}): {Path(path).name} → all channels @ "
+                    f"joint plane z={dapi_autofocus_z}[/dim]"
+                )
+            except Exception:
+                pass
+        elif _af_channel not in ("rna", "auto"):
             # ── LOCKED default DAPI-anchor path — unchanged ──────────────────
             dapi_autofocus_z, dapi_2d = _io.extract_channel_autofocus_with_idx(
                 img, dapi_idx, z_start=z_start, z_end=z_end,
@@ -3469,10 +3517,20 @@ def run_one(
     if coloc_rotation_null_df is not None:
         _extra["coloc_rotation_null"] = coloc_rotation_null_df
 
-    # 2026-07-05 Brian: RNA-anchored-autofocus audit columns. Added ONLY when
-    # autofocus_channel != "dapi" (else _z_af_extra is empty -> per_image_summary
-    # byte-identical). Covers BOTH the main (n>0) and no-nuclei fallback paths
-    # since both converge on this single ``per_image`` variable.
+    # 2026-07-18 Brian: record the chosen single-plane autofocus z for EVERY
+    # single-plane autofocus run — including the default "dapi" and the new
+    # "joint" anchors (previously only "rna"/"auto" emitted it). ``dapi_autofocus_z``
+    # is set only in the single-plane ``autofocus`` z-mode branch (None for
+    # maxproj / single / 3d), so this stays absent for those modes.
+    if dapi_autofocus_z is not None:
+        try:
+            per_image["z_plane"] = int(dapi_autofocus_z)
+        except Exception:
+            pass
+    # 2026-07-05 Brian: RNA-/joint-anchored-autofocus audit columns. Added ONLY
+    # when autofocus_channel != "dapi" (else _z_af_extra is empty -> the richer
+    # columns stay absent). Covers BOTH the main (n>0) and no-nuclei fallback
+    # paths since both converge on this single ``per_image`` variable.
     if _z_af_extra:
         try:
             _z_af_extra["rna_n_confident_spots"] = int(len(spots1_df))
@@ -3556,7 +3614,35 @@ def collect_nuclear_rna_pixels(path, *, cfg) -> Tuple[np.ndarray, np.ndarray, np
     # detection, then MIP that window for all channels. Replaces per-image
     # file_overrides for datasets with field-to-field focus drift.
     dapi_autofocus_z: Optional[int] = None
-    if z_mode == "autofocus":
+    if z_mode == "autofocus" and str(
+        getattr(cfg.z_stack, "autofocus_channel", "dapi")
+    ).lower() == "joint":
+        # 2026-07-18 Brian: joint prescan pick MUST mirror run_one so the pooled
+        # batch-threshold RNA pixels are collected from the SAME plane the main
+        # pass analyzes. (rna/auto anchors are NOT wired into the prescan — they
+        # keep using the DAPI-locked plane below — but joint is, for coloc parity.)
+        _picked_z, _ = _io.resolve_joint_autofocus_plane(
+            img, dapi_idx, rna_idx, partner_idx=rna2_idx,
+            z_start=z_start, z_end=z_end,
+            intensity_weighted=bool(getattr(cfg.z_stack, "autofocus_intensity_weighted", False)),
+            reduce=str(getattr(cfg.z_stack, "autofocus_joint_reduce", "product")).lower(),
+            central_fraction=float(getattr(cfg.z_stack, "focus_central_fraction", 0.0)),
+            min_intensity_frac=float(getattr(cfg.z_stack, "focus_min_intensity_frac_of_peak", 0.0)),
+            nuclear_mask=bool(getattr(cfg.z_stack, "autofocus_joint_nuclear_mask", False)),
+        )
+        dapi_autofocus_z = int(_picked_z)
+        dapi_2d = _io.extract_channel_at_z(img, dapi_idx, z_1indexed=dapi_autofocus_z)
+        rna_2d = _io.extract_channel_at_z(img, rna_idx, z_1indexed=dapi_autofocus_z)
+        rna2_2d = _io.extract_channel_at_z(img, rna2_idx, z_1indexed=dapi_autofocus_z)
+        try:
+            from rich.console import Console as _C
+            _C().print(
+                f"  [dim]z-joint (prescan): {Path(path).name} → all channels @ "
+                f"joint plane z={dapi_autofocus_z}[/dim]"
+            )
+        except Exception:
+            pass
+    elif z_mode == "autofocus":
         dapi_autofocus_z, dapi_2d = _io.extract_channel_autofocus_with_idx(
             img, dapi_idx, z_start=z_start, z_end=z_end,
             intensity_weighted=bool(getattr(cfg.z_stack, "autofocus_intensity_weighted", False)),

@@ -171,13 +171,61 @@ class ZStackCfg(BaseModel):
     #      spot-callability at the RNA-best plane) and RNA-anchor when it clears
     #      ``autofocus_auto_rna_quality_min``, else fall back to DAPI-anchor.
     #      The channel actually used is recorded per-image (``z_autofocus_channel_used``).
+    #   "joint" (2026-07-18 Brian) — pick the SINGLE plane that is jointly in
+    #      focus for DAPI AND rna AND rna2 (the partner, e.g. QKI-IF or 7SK) at
+    #      once, rather than anchoring on one channel. For each z the per-channel
+    #      focus score is computed, each channel's focus-vs-z curve is normalized
+    #      to its own peak (so channels of different absolute sharpness are
+    #      comparable), and the normalized scores are REDUCED across channels
+    #      (see ``autofocus_joint_reduce``); the plane maximizing the reduced
+    #      score wins. This is the coloc-correct default when no single channel
+    #      should dictate the shared focal plane. rna2 is optional: if the
+    #      partner channel is absent the joint pick uses DAPI+rna only. The
+    #      one-plane invariant (all channels read at the same physical z) is
+    #      preserved exactly as in the "rna"/"auto" anchors.
     #
     # Auditing: when this is "rna" or "auto", per_image_summary gains
     # ``z_autofocus_mode``, ``z_autofocus_channel_used``, ``z_plane`` (1-indexed
     # absolute), ``rna_focus_score``, ``rna_dynamic_range`` and
     # ``rna_n_confident_spots`` columns (plus the auto decision score/threshold
-    # in "auto" mode). Default "dapi" emits NONE of these -> byte-identical CSV.
-    autofocus_channel: Literal["dapi", "rna", "auto"] = "dapi"
+    # in "auto" mode); "joint" gains ``z_autofocus_mode``/``z_autofocus_channel_used``
+    # (both "joint"), ``z_autofocus_joint_reduce`` and per-channel
+    # ``joint_focus_<dapi|rna|partner>`` scores at the chosen plane. The chosen
+    # ``z_plane`` is now recorded for ALL single-plane autofocus runs INCLUDING
+    # the default "dapi" (previously omitted); the richer RNA/joint audit columns
+    # remain populated only for the non-"dapi" anchors.
+    autofocus_channel: Literal["dapi", "rna", "auto", "joint"] = "dapi"
+
+    # ─── Joint (multi-channel) autofocus reducer (2026-07-18 Brian) ────────────
+    # ONLY consulted when ``autofocus_channel == "joint"``. Selects how the
+    # per-channel, self-peak-normalized focus scores at a given z are combined
+    # into the single joint score that is maximized over z:
+    #   "product" (DEFAULT) — ∏ of the normalized channel scores. Strongly favors
+    #      planes where EVERY channel is reasonably in focus (a poorly-focused
+    #      channel drags the product toward 0). Sharpest joint discrimination.
+    #   "geomean" — (∏)^(1/k): the k-th root of the product (k = #channels). A
+    #      monotone transform of "product", so it selects the SAME plane; provided
+    #      for an interpretable [0,1] joint score.
+    #   "min" — the worst (minimum) normalized channel score at each z: pick the
+    #      plane whose LEAST-focused channel is as focused as possible (maximin).
+    #      More tolerant of one very sharp channel than "product".
+    autofocus_joint_reduce: Literal["product", "geomean", "min"] = "product"
+
+    # ─── Nuclear-masked joint scoring (2026-07-19 Brian) ───────────────────────
+    # ONLY consulted when ``autofocus_channel == "joint"``. When True, each
+    # channel's per-slice focus score is computed ONLY over pixels inside a
+    # DAPI-derived nuclear-region mask, so cytoplasmic signal (e.g. MIAT's
+    # cytoplasmic autofluorescence, whose variance-of-Laplacian can peak on
+    # cytoplasmic texture rather than nuclear puncta) cannot bias the joint plane
+    # pick. The mask is derived ONCE from a max-projection of DAPI over the
+    # search window (nuclei sit at fixed xy across z, so a single 2D mask applies
+    # to all planes — no segmentation-before-autofocus ordering problem): light
+    # Gaussian smooth -> Otsu threshold (skimage; median+MAD fallback) -> binary
+    # open/close. If the mask is empty or covers <1% of the frame the scorer
+    # FALLS BACK to whole-plane scoring (recorded in the per-image audit as
+    # ``nuclear_mask_used`` / ``nuclear_mask_coverage``). Default False preserves
+    # the current whole-plane joint behavior exactly.
+    autofocus_joint_nuclear_mask: bool = False
 
     # Threshold on the per-image RNA dynamic-range / spot-callability score
     # used by ``autofocus_channel == "auto"`` to decide RNA-anchor vs DAPI-anchor.
