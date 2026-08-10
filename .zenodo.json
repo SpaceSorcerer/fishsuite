@@ -1,0 +1,22 @@
+{
+  "title": "fishsuite: a Python pipeline for RNA-FISH and immunofluorescence quantification and colocalization",
+  "upload_type": "software",
+  "license": "MIT",
+  "creators": [
+    {
+      "name": "Amburn, Brian",
+      "affiliation": "Department of Biochemistry & Molecular Biology, University of Texas Medical Branch, Galveston, TX, USA"
+    }
+  ],
+  "keywords": [
+    "microscopy",
+    "RNA-FISH",
+    "immunofluorescence",
+    "colocalization",
+    "image analysis",
+    "single-molecule FISH",
+    "nuclei segmentation",
+    "spot detection"
+  ],
+  "description": "<p>fishsuite quantifies single-molecule RNA-FISH and immunofluorescence confocal images: nuclei segmentation (StarDist, Cellpose, or Otsu), spot detection (Big-FISH Laplacian-of-Gaussian or plain LoG), subcellular compartment assignment, and colocalization between two channels.</p><p>Colocalization is reported both as threshold-free pixel statistics (Pearson, Spearman, Manders, Li's ICQ, Manders overlap, Jaccard, Dice) and as object-based measures (nearest-neighbour spot pairing, partner intensity sampled at detected spots), together with spatial null models &mdash; random-position, rotation, and translation nulls &mdash; that test whether apparent colocalization exceeds what co-distribution within the same subcellular compartment would produce by chance. The rotation null is intended for a diffuse partner channel, such as a nucleoplasm-filling RNA-binding protein, where no thresholdable object exists to mask.</p><p>Source code and documentation: <a href=\"https://github.com/SpaceSorcerer/fishsuite\">https://github.com/SpaceSorcerer/fishsuite</a></p>"
+}

@@ -10,7 +10,7 @@ readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
 authors = [
-    { name = "Brian (MD-PhD, UTMB BMB)", email = "gsdewson@utmb.edu" },
+    { name = "Brian Amburn", email = "gsdewson@utmb.edu" },
 ]
 keywords = ["microscopy", "FISH", "colocalization", "stardist", "cellpose", "bigfish"]
 
