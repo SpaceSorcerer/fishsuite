@@ -31,7 +31,7 @@ must change nothing at all.
 |---|---|---|
 | `run_backend` | `otsu` | **PASS — bitwise identical** |
 | `run_backend` | `stardist` (`2D_versatile_fluo`) | **PASS — bitwise identical** |
-| `run_backend` | `cellpose` (`cpsam`, CPU) | in progress at time of writing; see note below |
+| `run_backend` | `cellpose` (`cpsam`, CPU) | **PASS — bitwise identical** (30 min 41 s) |
 | `detect_spots_bigfish` | Big-FISH LoG | **PASS — identical coordinates and identical auto threshold** |
 | `detect_spots_log` | scikit-image LoG | **PASS — identical coordinates and identical threshold** |
 | vendored checksums | all 8 files | **PASS — every file matches `PROVENANCE.md`** |
@@ -80,9 +80,10 @@ with a different palette. Verified populated after the fix.
 - Parity was measured on synthetic images, not on a real `.vsi`. The synthetic
   fields exercise the same code path; an end-to-end run on real data is worth
   doing before tagging a release.
-- `cellpose` parity is the slowest arm because `cpsam` inference on CPU is slow.
-  Until it reports, treat the cellpose row above as unproven rather than
-  assuming it matches the other backends.
+- All five arms have now reported and all five are bitwise identical, so the
+  parity claim is unqualified. `cellpose` took 30 minutes on CPU because `cpsam`
+  inference is slow; run it with `-k cellpose` separately rather than expecting
+  the default suite to cover it.
 - Both copies were compared under one numpy/scikit-image/cellpose/StarDist
   version set. The comparison isolates the file move, not behaviour across
   dependency upgrades.
