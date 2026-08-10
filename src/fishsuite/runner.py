@@ -2242,6 +2242,22 @@ def run_batch(
             f"[yellow]Run-level over-detection QC skipped ({_over_err})[/yellow]"
         )
 
+    # 2026-08-10: ADDITIVE run-level SPOT-CALLABILITY diagnostic. Compares each
+    # punctate channel's sample spots-per-nucleus against the SAME channel's
+    # secondary-only (no-probe) rate — a comparison the pipeline could already
+    # compute but never surfaced. Needs the whole batch (sample and control
+    # images are different rows), so it runs here alongside the over-detection
+    # pass. Advisory: it adds three rate columns and warns; it never changes a
+    # detection result and never reinterprets a declared channel.
+    try:
+        from .core.qc import flag_spot_callability as _flag_spot_callability
+        for _sc_warn in _flag_spot_callability(per_image_rows, cfg):
+            _console.print(f"[yellow]{_sc_warn}[/yellow]")
+    except Exception as _sc_err:
+        _console.print(
+            f"[yellow]Run-level spot-callability QC skipped ({_sc_err})[/yellow]"
+        )
+
     # ---- Write master CSVs (Fiji column order via union of per-image cols) -
     per_image_df = pd.DataFrame(per_image_rows)
     per_image_df.to_csv(output_dir / f"{prefix}per_image_summary.csv", index=False)
@@ -2265,6 +2281,23 @@ def run_batch(
         pd.concat(coloc_radial_dfs, ignore_index=True).to_csv(
             output_dir / f"{prefix}coloc_radial_profile.csv", index=False
         )
+        # 2026-08-10: mean ± 95% CI profile figure, drawn from the PER-NUCLEUS
+        # radial columns (one nucleus = one observation) rather than from the
+        # spot-count-weighted pool in the CSV above, so the ribbon is an interval
+        # on the replicate-level mean. Crash-proof: a failed figure must never
+        # cost a completed run its CSVs.
+        try:
+            from .core.radial_profile_figure import plot_radial_profile_ci
+
+            _rad_png = plot_radial_profile_ci(
+                nuclei_df, output_dir / f"{prefix}coloc_radial_profile_ci.png"
+            )
+            if _rad_png is not None:
+                _console.print(f"  radial profile figure: {_rad_png.name}")
+        except Exception as _rad_fig_err:
+            _console.print(
+                f"[yellow]Radial profile figure skipped ({_rad_fig_err})[/yellow]"
+            )
     if coloc_rotation_null_dfs:
         pd.concat(coloc_rotation_null_dfs, ignore_index=True).to_csv(
             output_dir / f"{prefix}coloc_rotation_null.csv", index=False

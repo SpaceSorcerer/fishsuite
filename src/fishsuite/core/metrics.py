@@ -24,17 +24,30 @@ from . import thresholds as _thr
 
 
 def _empty_metrics(n_pix: int) -> Dict[str, float]:
+    """Metrics dict for a nucleus too small to compute anything on (n_pix < 10).
+
+    2026-08-10: every value is NaN — NOT 0.0. A returned 0.0 is
+    indistinguishable from a genuine measurement of zero colocalization, so a
+    degenerate nucleus previously looked like a real anticolocalized one to
+    every downstream mean/median. NaN says "not measured", and the per-image
+    rollups drop it instead of dragging the mean toward zero.
+
+    ``n_pix`` stays an honest integer and the two threshold fields stay
+    ``+inf``: no threshold was derived, and that infinity is the unique
+    on-disk TELL that identifies a row as having come from here.
+    """
     return dict(
         n_pix=n_pix,
-        rna_mean=0.0, ab_mean=0.0,
-        pearson_r=0.0, spearman_rho=0.0, li_icq=0.0, cosine_overlap=0.0,
+        rna_mean=float("nan"), ab_mean=float("nan"),
+        pearson_r=float("nan"), spearman_rho=float("nan"),
+        li_icq=float("nan"), cosine_overlap=float("nan"),
         rna_thr=float("inf"), ab_thr=float("inf"),
-        rna_frac_above_thr=0.0, ab_frac_above_thr=0.0,
-        manders_m1=0.0, manders_m2=0.0,
-        jaccard=0.0, dice=0.0, both_frac=0.0,
-        ab_enrich_in_rna_high=0.0, rna_enrich_in_ab_high=0.0,
-        sum_r=0.0, sum_a=0.0, sum_product=0.0,
-        sum_min=0.0, min_frac_r=0.0, min_frac_a=0.0,
+        rna_frac_above_thr=float("nan"), ab_frac_above_thr=float("nan"),
+        manders_m1=float("nan"), manders_m2=float("nan"),
+        jaccard=float("nan"), dice=float("nan"), both_frac=float("nan"),
+        ab_enrich_in_rna_high=float("nan"), rna_enrich_in_ab_high=float("nan"),
+        sum_r=float("nan"), sum_a=float("nan"), sum_product=float("nan"),
+        sum_min=float("nan"), min_frac_r=float("nan"), min_frac_a=float("nan"),
     )
 
 

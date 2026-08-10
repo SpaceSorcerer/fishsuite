@@ -288,3 +288,117 @@ def flag_overdetect_outliers(rows, cfg) -> int:
             r["qc_flags"] = ",".join(tags)
             r["qc_pass"] = False
     return n_flagged
+
+
+# Prefix of the per-image spot-rate keys each punctate channel emits. The
+# channel suffix is whatever follows it (rna1 / rna2, or protein / antibody once
+# rna_protein has relabelled), so discovering channels from the keys keeps this
+# working across modes without a hard-coded channel list.
+_SPOTS_PER_NUCLEUS_PREFIX = "mean_spots_per_nucleus_"
+
+
+def _mean_finite(values) -> float:
+    arr = np.asarray([v for v in values], dtype=float)
+    arr = arr[np.isfinite(arr)]
+    return float(arr.mean()) if arr.size else float("nan")
+
+
+def spot_callability_channels(rows) -> list:
+    """Punctate channel suffixes present in ``rows``, sorted for stable output."""
+    found = set()
+    for r in rows:
+        if not isinstance(r, dict):
+            continue
+        for k in r.keys():
+            if isinstance(k, str) and k.startswith(_SPOTS_PER_NUCLEUS_PREFIX):
+                suffix = k[len(_SPOTS_PER_NUCLEUS_PREFIX):]
+                if suffix:
+                    found.add(suffix)
+    return sorted(found)
+
+
+def flag_spot_callability(rows, cfg) -> list:
+    """Run-level SPOT-CALLABILITY diagnostic (2026-08-10, ADVISORY).
+
+    Answers a question the pipeline could always compute but never showed: does
+    the spot detector actually DISCRIMINATE in this channel? ``detect_in_sec_only``
+    already runs the same detector on the secondary-only (no-probe) control
+    images, and both count sets already reach ``per_image_summary``, so the
+    comparison was one division away from being visible.
+
+    For each punctate channel this adds three columns to EVERY row (they are
+    run-level constants, so a reader does not have to re-derive them per image):
+
+      * ``spot_rate_sample_per_nucleus_<ch>``   mean over sample images
+      * ``spot_rate_seconly_per_nucleus_<ch>``  mean over secondary-only images
+      * ``spot_rate_signal_to_control_<ch>``    the ratio of the two
+
+    A ratio near 1 means the detector finds as many "spots" in the no-probe
+    control as in the sample — the channel has no thresholdable object, and any
+    mask-based colocalization metric computed from it (Manders, ICQ, Jaccard,
+    Dice) is measuring textured background. Threshold-free correlation plus a
+    rotation null is the honest read for such a channel.
+
+    Returns a list of human-readable warning strings (empty when everything is
+    above ``foci.min_spot_signal_to_control``, or when the diagnostic does not
+    apply). It NEVER changes a detection result and NEVER reinterprets a channel:
+    silently switching a user's declared punctate channel to a diffuse treatment
+    would be a worse failure than the one it is warning about. Fully defensive —
+    on any problem it returns no warnings and leaves rows untouched.
+    """
+    try:
+        rows = list(rows)
+    except Exception:
+        return []
+
+    foci_cfg = getattr(cfg, "foci", None)
+    if foci_cfg is None:
+        return []
+    # Without detect_in_sec_only the control images skip detection entirely and
+    # report a structural zero, which would make every ratio infinite and the
+    # diagnostic meaningless rather than reassuring.
+    if not bool(getattr(foci_cfg, "detect_in_sec_only", False)):
+        return []
+    min_ratio = float(getattr(foci_cfg, "min_spot_signal_to_control", 2.0))
+
+    sample_rows, seconly_rows = [], []
+    for r in rows:
+        if not isinstance(r, dict):
+            continue
+        (seconly_rows if bool(r.get("secondary_only")) else sample_rows).append(r)
+    if not seconly_rows or not sample_rows:
+        return []
+
+    warnings = []
+    for ch in spot_callability_channels(rows):
+        key = f"{_SPOTS_PER_NUCLEUS_PREFIX}{ch}"
+        sample_rate = _mean_finite(r.get(key, float("nan")) for r in sample_rows)
+        seconly_rate = _mean_finite(r.get(key, float("nan")) for r in seconly_rows)
+        ratio = (
+            sample_rate / seconly_rate
+            if (np.isfinite(sample_rate) and np.isfinite(seconly_rate)
+                and seconly_rate > 0)
+            else float("nan")
+        )
+        for r in rows:
+            if isinstance(r, dict):
+                r[f"spot_rate_sample_per_nucleus_{ch}"] = sample_rate
+                r[f"spot_rate_seconly_per_nucleus_{ch}"] = seconly_rate
+                r[f"spot_rate_signal_to_control_{ch}"] = ratio
+        if np.isfinite(ratio) and ratio < min_ratio:
+            warnings.append(
+                f"SPOT CALLABILITY [{ch}]: signal-to-control ratio "
+                f"{ratio:.2f} is below foci.min_spot_signal_to_control="
+                f"{min_ratio:g} ({sample_rate:.1f} spots/nucleus in sample vs "
+                f"{seconly_rate:.1f} in secondary-only). This channel has no "
+                f"thresholdable object to mask, so mask-based colocalization "
+                f"(Manders, ICQ, Jaccard, Dice) on it is measuring background "
+                f"texture. The lever is the ABSOLUTE intensity floor "
+                f"min_spot_peak_intensity (per-channel override). Raising "
+                f"threshold_multiplier will NOT improve specificity: textured "
+                f"secondary-antibody background produces genuine LoG maxima, so "
+                f"a relative threshold rescales sample and control together. "
+                f"Nothing was changed or switched — if the channel really is "
+                f"diffuse, use threshold-free correlation with a rotation null."
+            )
+    return warnings

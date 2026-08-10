@@ -389,13 +389,44 @@ PER_IMAGE_GLOSSARY: Dict[str, Tuple[str, str, str]] = {
         "int", "count", "Count of RNA1 spots with a paired RNA2 within 0.3 um."),
     "paired_count_rna2_at_0p3um": (
         "int", "count", "Count of RNA2 spots with a paired RNA1 within 0.3 um."),
-    "median_nn_distance_rna1_um": (
+    # CROSS-channel nearest neighbour: RNA1 -> nearest RNA2 (and vice versa),
+    # not within-channel spot spacing. The scope suffix is load-bearing — these
+    # cover EVERY detected spot in the frame, while the identically-named
+    # per-nucleus column covers one cell's spots, so the two are different
+    # quantities and were previously indistinguishable by name.
+    "median_nn_distance_rna1_um_all_spots_in_frame": (
         "float", "um",
-        "Median nearest-neighbor distance from each RNA1 spot to the next "
-        "closest RNA1 spot (xy plane)."),
-    "median_nn_distance_rna2_um": (
+        "Median distance from each RNA1 spot to its NEAREST RNA2 spot (xy "
+        "plane), over all RNA1 spots detected in this image — before nucleus "
+        "assignment and before floater dropping."),
+    "median_nn_distance_rna2_um_all_spots_in_frame": (
         "float", "um",
-        "Median nearest-neighbor distance for RNA2 spots."),
+        "Same, RNA2 -> nearest RNA1, over all RNA2 spots detected in this "
+        "image. Asymmetric with the RNA1 column: different source set."),
+    "mean_median_nn_distance_rna1_um_per_nucleus": (
+        "float", "um",
+        "Mean over nuclei of each nucleus's median RNA1 -> nearest-RNA2 "
+        "distance. Equal weight per nucleus, so this is the replicate-level "
+        "companion to the frame-scope column above."),
+    "median_median_nn_distance_rna1_um_per_nucleus": (
+        "float", "um",
+        "Median over nuclei of the same per-nucleus value."),
+    "sd_median_nn_distance_rna1_um_per_nucleus": (
+        "float", "um",
+        "Sample SD (ddof=1) over nuclei of the same per-nucleus value; NaN "
+        "when only one nucleus contributed."),
+    "n_nuclei_in_median_nn_distance_rna1_um": (
+        "int", "count",
+        "Nuclei contributing a finite value to the three columns above."),
+    "mean_median_nn_distance_rna2_um_per_nucleus": (
+        "float", "um",
+        "Mean over nuclei of each nucleus's median RNA2 -> nearest-RNA1 distance."),
+    "median_median_nn_distance_rna2_um_per_nucleus": (
+        "float", "um", "Median over nuclei of the same per-nucleus value."),
+    "sd_median_nn_distance_rna2_um_per_nucleus": (
+        "float", "um", "Sample SD (ddof=1) over nuclei; NaN for a single nucleus."),
+    "n_nuclei_in_median_nn_distance_rna2_um": (
+        "int", "count", "Nuclei contributing a finite value to the three above."),
     "rna_threshold_value": (
         "float", "AU",
         "Per-image pixel-coloc MAD threshold value for RNA1 (background-derived "
@@ -505,10 +536,14 @@ PER_NUCLEUS_GLOSSARY: Dict[str, Tuple[str, str, str]] = {
                                   "CV of RNA2 spot peak-pixel intensities within this nucleus."),
     "sum_rna2_intensity": ("int", "AU",
                           "Total RNA2 raw pixel intensity summed over the nuclear mask."),
+    # CROSS-channel, and scoped to this nucleus's own spots (nuclear +
+    # Voronoi-cytoplasmic). The per-image column of the same quantity carries an
+    # explicit ``_all_spots_in_frame`` suffix, since the frame-scope version is a
+    # different number.
     "median_nn_distance_rna1_um": ("float", "um",
-                                  "Median nearest-neighbor distance among the RNA1 spots in this nucleus."),
+                                  "Median distance from each of this cell's RNA1 spots to its NEAREST RNA2 spot (xy plane) — cross-channel, not RNA1-to-RNA1 spacing. Scope is the cell: nuclear AND Voronoi-cytoplasmic spots assigned to this nucleus, not nucleus-interior only."),
     "median_nn_distance_rna2_um": ("float", "um",
-                                  "Median nearest-neighbor distance among the RNA2 spots in this nucleus."),
+                                  "Same for this nucleus's RNA2 spots -> nearest RNA1 spot."),
     "paired_fraction_rna1_at_0p3um": (
         "fraction 0-1", "—",
         "Per-nucleus paired fraction (RNA1 side): of this nucleus's RNA1 spots, "
@@ -756,6 +791,126 @@ THRESHOLDS_GLOSSARY: Dict[str, Tuple[str, str, str]] = {
     "rna_label": ("str", "—", "Human-readable label for the RNA1 channel."),
     "rna2_label": ("str", "—", "Human-readable label for the RNA2 channel."),
 }
+
+
+# ---------------------------------------------------------------------------
+# GENERATED entries for the per-image pixel-coloc rollups (2026-08-10)
+# ---------------------------------------------------------------------------
+# The nine coefficients each get mean / median / sd / n_nuclei_in on the
+# per-image sheet, so writing 36 legend entries by hand would be 36 chances to
+# let one drift. Generated from one table instead.
+#
+# The base names are duplicated from ``core.modes.rna_rna._COLOC_ROLLUP_COLS``
+# deliberately: importing that module here would pull the whole segmentation /
+# skimage chain into every code path that merely writes a workbook. A test
+# asserts the two lists agree, so drift fails loudly rather than silently
+# leaving a column undocumented.
+_COLOC_ROLLUP_BASES: Tuple[Tuple[str, str, str], ...] = (
+    ("coloc_pearson_r_rna1_rna2", "r",
+     "threshold-free Pearson correlation of RNA1 vs RNA2 pixel intensity inside "
+     "the nuclear mask. THE LEAD COLOC METRIC: it needs no thresholdable object "
+     "in either channel, so it is the one that still means something when a "
+     "partner is diffuse and nucleoplasm-filling"),
+    ("coloc_spearman_rho_rna1_rna2", "rho",
+     "threshold-free Spearman rank correlation of the same pixel pair "
+     "(monotonic, so robust to a non-linear intensity response)"),
+    ("manders_rna1_in_rna2", "fraction 0-1",
+     "Manders M1 — fraction of RNA1 intensity inside the RNA2-positive mask. "
+     "MASK-BASED, so it washes out when the partner has no thresholdable object"),
+    ("manders_rna2_in_rna1", "fraction 0-1",
+     "Manders M2 — fraction of RNA2 intensity inside the RNA1-positive mask. "
+     "Mask-based, same caveat"),
+    ("coloc_cosine_overlap_rna1_rna2", "—",
+     "Manders Overlap Coefficient R — the threshold-free raw-intensity cosine "
+     "overlap"),
+    ("coloc_li_icq_rna1_rna2", "ICQ -0.5..+0.5",
+     "Li's Intensity Correlation Quotient: fraction of pixels co-deviating from "
+     "their channel means, minus 0.5. 0 = random, >0 = dependent"),
+    ("coloc_jaccard_rna1_rna2", "fraction 0-1",
+     "Jaccard index of the two thresholded masks (intersection/union). Mask-based"),
+    ("coloc_dice_rna1_rna2", "fraction 0-1",
+     "Dice coefficient of the two thresholded masks. Mask-based"),
+    ("coloc_both_frac_rna1_rna2", "fraction 0-1",
+     "fraction of nuclear pixels above threshold in BOTH channels. Mask-based"),
+)
+
+
+def _build_coloc_rollup_glossary() -> Dict[str, Tuple[str, str, str]]:
+    out: Dict[str, Tuple[str, str, str]] = {}
+    for base, unit, what in _COLOC_ROLLUP_BASES:
+        out[f"mean_{base}"] = (
+            "float", unit,
+            f"Per-image MEAN over nuclei of {what}. The per-image mean is the "
+            f"lab's replicate unit — per-nucleus values are pseudoreplication.",
+        )
+        out[f"median_{base}"] = (
+            "float", unit,
+            f"Per-image MEDIAN over nuclei of {what}.",
+        )
+        out[f"sd_{base}"] = (
+            "float", unit,
+            f"Sample SD (ddof=1) over nuclei of {what}. NaN when only one "
+            f"nucleus contributed — one observation has no spread.",
+        )
+        out[f"n_nuclei_in_{base}"] = (
+            "int", "count",
+            f"Nuclei contributing a finite value to the three columns above — "
+            f"the denominator behind them. Reflects nucleus sampling when "
+            f"sampling.apply_to_rollups is on, so it also reveals whether the "
+            f"rollup was restricted.",
+        )
+    return out
+
+
+PER_IMAGE_GLOSSARY.update(_build_coloc_rollup_glossary())
+
+# Spot-callability diagnostic (run-level constants, repeated on every row).
+PER_IMAGE_GLOSSARY.update({
+    "spot_rate_sample_per_nucleus_rna1": (
+        "float", "spots/nucleus",
+        "Run-level mean RNA1 spots per nucleus across the SAMPLE images."),
+    "spot_rate_seconly_per_nucleus_rna1": (
+        "float", "spots/nucleus",
+        "Same for the SECONDARY-ONLY (no-probe) control images, detected with "
+        "the identical detector and settings."),
+    "spot_rate_signal_to_control_rna1": (
+        "ratio", "—",
+        "sample / secondary-only spot rate for RNA1. Near 1 means the detector "
+        "finds as many 'spots' in the no-probe control as in the sample — the "
+        "channel has no thresholdable object, and any mask-based coloc computed "
+        "from it is measuring background texture. Warned below "
+        "foci.min_spot_signal_to_control."),
+    "spot_rate_sample_per_nucleus_rna2": (
+        "float", "spots/nucleus", "As above, RNA2 sample images."),
+    "spot_rate_seconly_per_nucleus_rna2": (
+        "float", "spots/nucleus", "As above, RNA2 secondary-only images."),
+    "spot_rate_signal_to_control_rna2": (
+        "ratio", "—", "As above, RNA2 signal-to-control ratio."),
+    "translation_null_caveat": (
+        "str", "—",
+        "Reliability limit of the translation null, carried as a column so it "
+        "travels with the numbers: a rigid shift of a dense, space-filling spot "
+        "constellation pushes most spots out of mask, so few nuclei are usable. "
+        "Check n_nuclei_partner_translation_null. Rotation is the robust null."),
+})
+
+# Overlap-coefficient family — per-nucleus, threshold-free.
+PER_NUCLEUS_GLOSSARY.update({
+    "coloc_sum_min_rna1_rna2": (
+        "float", "AU",
+        "sum over nuclear pixels of min(RNA1, RNA2) — the intensity the two "
+        "channels hold in common. Numerator of both min_frac columns."),
+    "coloc_sum_product_rna1_rna2": (
+        "float", "AU",
+        "sum over nuclear pixels of RNA1 x RNA2 (the raw dot product; the "
+        "un-normalised numerator of the cosine overlap)."),
+    "coloc_min_frac_rna1": (
+        "fraction 0-1", "—",
+        "coloc_sum_min / total RNA1 intensity = RNA1's overlapping fraction. "
+        "Threshold-free, so unlike Manders M1 it does not move with the mask cut."),
+    "coloc_min_frac_rna2": (
+        "fraction 0-1", "—", "Same for RNA2."),
+})
 
 
 GLOSSARIES: Dict[str, Dict[str, Tuple[str, str, str]]] = {
@@ -1684,9 +1839,14 @@ COMPARISON_METRICS: List[Tuple[str, str, Optional[str], str]] = [
     ("Mean nuclear fraction RNA2 (above-floor intensity)",
      "mean_frac_nuclear_above_floor_intensity_rna2",
      "frac_nuclear_above_floor_intensity_rna2", "Localization fractions"),
-    ("Median RNA1 spot NN distance (xy)", "median_nn_distance_rna1_um",
+    # The per-image and per-nucleus slots held the SAME name here while holding
+    # two different quantities. The per-image slot now names the frame-scope
+    # column explicitly; the per-nucleus slot is unchanged.
+    ("Median RNA1->RNA2 NN distance (xy, all spots in frame)",
+     "median_nn_distance_rna1_um_all_spots_in_frame",
      "median_nn_distance_rna1_um", "Sizes"),
-    ("Median RNA2 spot NN distance (xy)", "median_nn_distance_rna2_um",
+    ("Median RNA2->RNA1 NN distance (xy, all spots in frame)",
+     "median_nn_distance_rna2_um_all_spots_in_frame",
      "median_nn_distance_rna2_um", "Sizes"),
 ]
 

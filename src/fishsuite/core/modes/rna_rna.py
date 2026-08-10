@@ -49,6 +49,174 @@ from .rna_only import (
 from . import register_mode
 
 
+# ---------------------------------------------------------------------------
+# PER-IMAGE ROLLUPS OF THE PIXEL-COLOC COEFFICIENTS (2026-08-10)
+# ---------------------------------------------------------------------------
+# The nine per-nucleus coefficients ``metrics.compute_coloc_metrics`` produces.
+# Threshold-free nuclear Pearson leads the list because it is the only member
+# that needs no thresholdable OBJECT in either channel — a requirement a
+# diffuse, nucleoplasm-filling partner cannot meet, and the reason the
+# mask-based members (Manders M1/M2, Li's ICQ, Jaccard, Dice, both-positive
+# fraction) wash out against such a partner. All nine are rolled up anyway, so
+# the mask-based ones stay auditable right next to the threshold-free ones
+# rather than being quietly dropped.
+#
+# These existed per-nucleus ONLY, which made them untestable at the lab's
+# replicate unit: the PER-IMAGE MEAN (per-nucleus is pseudoreplication). Each
+# now gets mean / median / sd plus the nucleus count behind them. UNGATED — the
+# rollups are emitted for every rna_rna and rna_protein run.
+_COLOC_ROLLUP_COLS: Tuple[str, ...] = (
+    "coloc_pearson_r_rna1_rna2",
+    "coloc_spearman_rho_rna1_rna2",
+    "manders_rna1_in_rna2",
+    "manders_rna2_in_rna1",
+    "coloc_cosine_overlap_rna1_rna2",
+    "coloc_li_icq_rna1_rna2",
+    "coloc_jaccard_rna1_rna2",
+    "coloc_dice_rna1_rna2",
+    "coloc_both_frac_rna1_rna2",
+)
+
+
+def rollup_mean_median_sd_n(values) -> Tuple[float, float, float, int]:
+    """``(mean, median, sd, n)`` over the FINITE entries of ``values``.
+
+    ``sd`` is the SAMPLE standard deviation (ddof=1) and is NaN for n < 2 — one
+    nucleus has no spread, and reporting 0.0 there would understate the
+    uncertainty of a single observation. ``n`` is the count of finite values
+    actually used, which is what makes the trio interpretable: it is the
+    denominator a reviewer asks for, and it also reveals whether the rollup
+    honoured nucleus sampling (n == the sampled count, not the field count).
+
+    Non-finite entries (NaN from a degenerate nucleus, ±inf) are dropped rather
+    than propagated, so one unmeasurable nucleus cannot void a whole image.
+    Returns ``(nan, nan, nan, 0)`` when nothing finite remains.
+    """
+    arr = pd.to_numeric(pd.Series(values), errors="coerce").to_numpy(dtype=float)
+    arr = arr[np.isfinite(arr)]
+    n = int(arr.size)
+    if n == 0:
+        return float("nan"), float("nan"), float("nan"), 0
+    mean = float(arr.mean())
+    median = float(np.median(arr))
+    sd = float(arr.std(ddof=1)) if n > 1 else float("nan")
+    return mean, median, sd, n
+
+
+def coloc_rollup_columns(nuclei_df: pd.DataFrame) -> Dict[str, Any]:
+    """Per-image ``mean_`` / ``median_`` / ``sd_`` / ``n_nuclei_in_`` keys for
+    each of :data:`_COLOC_ROLLUP_COLS`.
+
+    ``nuclei_df`` must be the frame the rest of the per-image rollups read —
+    i.e. already restricted to ``sampled_in_analysis`` rows when fixed-N
+    sampling is active — so these agree with every neighbouring rollup instead
+    of silently reporting whole-field numbers.
+
+    The key SET does not depend on the frame: a missing column or an empty
+    frame yields NaN/NaN/NaN/0 rather than an absent key, so
+    per_image_summary.csv cannot go ragged across images.
+    """
+    out: Dict[str, Any] = {}
+    have = nuclei_df is not None and len(nuclei_df) > 0
+    for col in _COLOC_ROLLUP_COLS:
+        if have and col in nuclei_df.columns:
+            mean, median, sd, n = rollup_mean_median_sd_n(nuclei_df[col])
+        else:
+            mean, median, sd, n = float("nan"), float("nan"), float("nan"), 0
+        out[f"mean_{col}"] = mean
+        out[f"median_{col}"] = median
+        out[f"sd_{col}"] = sd
+        out[f"n_nuclei_in_{col}"] = n
+    return out
+
+
+def radial_column_suffixes(bins_um) -> List[str]:
+    """Column-name suffix for each radial ring, e.g. ``[0.25, 0.5]`` ->
+    ``['0p25um', '0p5um']``.
+
+    Reuses :func:`_format_pair_um` so the radial columns carry the same
+    distance-in-a-column-name convention as ``paired_fraction_rna1_at_0p3um``.
+    Non-positive bins are dropped, matching the ring construction — the ring
+    index and this list stay positionally aligned.
+    """
+    return [_format_pair_um(float(b)) for b in bins_um if float(b) > 0]
+
+
+def radial_per_nucleus_columns(
+    per_ring, suffixes, *, partner: str = "rna2"
+) -> Dict[str, Any]:
+    """Per-nucleus radial-profile columns for ONE nucleus.
+
+    ``per_ring`` is the ``(obs_mean, null_mean, null_sd, n_spots)`` list
+    :func:`_radial_profile_for_nucleus` returns, or None for a nucleus whose
+    profile was not computed (no spots, or no sampling pixels) — in which case
+    every value is NaN and ``n_spots`` is 0, so the column set stays identical
+    across nuclei.
+
+    ``enrichment`` is ``obs / null_mean`` and ``null_z`` is
+    ``(obs - null_mean) / null_sd`` — the SAME two definitions the pooled
+    per-image profile uses, computed here per nucleus so the profile can be
+    tested at the replicate level instead of only as one spot-weighted pool.
+    ``n_spots`` is a single column, not one per ring: the ring stencils all
+    sample the same nucleus's spots, so the count cannot differ between rings.
+    """
+    out: Dict[str, Any] = {}
+    n_spots = 0
+    for i, sfx in enumerate(suffixes):
+        if per_ring is not None and i < len(per_ring):
+            obs, null_mean, null_sd, n_sp = per_ring[i]
+            obs = float(obs)
+            null_mean = float(null_mean)
+            null_sd = float(null_sd)
+            n_spots = max(n_spots, int(n_sp))
+        else:
+            obs = null_mean = null_sd = float("nan")
+        enr = (obs / null_mean) if null_mean > 0 else float("nan")
+        z = ((obs - null_mean) / null_sd) if null_sd > 0 else float("nan")
+        out[f"{partner}_radial_obs_at_{sfx}"] = obs
+        out[f"{partner}_radial_null_mean_at_{sfx}"] = null_mean
+        out[f"{partner}_radial_enrichment_at_{sfx}"] = enr
+        out[f"{partner}_radial_null_z_at_{sfx}"] = z
+    out[f"{partner}_radial_n_spots"] = n_spots
+    return out
+
+
+def radial_pooled_per_image_columns(
+    obs_num, nullmean_num, nullsd_num, w_den, suffixes, *, partner: str = "rna2"
+) -> Dict[str, Any]:
+    """Wide per-image columns for the POOLED (spot-count-weighted) radial profile.
+
+    Carries the same four pooled quantities per ring that
+    ``coloc_radial_profile.csv`` reports in long form, so a per-image test no
+    longer needs to join a second file. The four ``*_num`` arrays are the
+    spot-weighted accumulators and ``w_den`` their shared weight; a ring with
+    zero weight yields NaN and ``n_spots`` 0.
+
+    This is the SPOT-weighted view: a nucleus with 40 spots counts ten times a
+    nucleus with 4. That is the right pooling for the profile's shape but is NOT
+    the lab's replicate unit, so the caller also emits an equal-weight
+    per-nucleus rollup alongside these.
+    """
+    out: Dict[str, Any] = {}
+    for i, sfx in enumerate(suffixes):
+        w = float(w_den[i]) if i < len(w_den) else 0.0
+        if w > 0:
+            obs = float(obs_num[i]) / w
+            null_mean = float(nullmean_num[i]) / w
+            null_sd = float(nullsd_num[i]) / w
+            enr = (obs / null_mean) if null_mean > 0 else float("nan")
+            z = ((obs - null_mean) / null_sd) if null_sd > 0 else float("nan")
+        else:
+            obs = null_mean = null_sd = enr = z = float("nan")
+        out[f"{partner}_radial_pooled_obs_at_{sfx}"] = obs
+        out[f"{partner}_radial_pooled_null_mean_at_{sfx}"] = null_mean
+        out[f"{partner}_radial_pooled_null_sd_at_{sfx}"] = null_sd
+        out[f"{partner}_radial_pooled_enrichment_at_{sfx}"] = enr
+        out[f"{partner}_radial_pooled_null_z_at_{sfx}"] = z
+        out[f"n_spots_radial_at_{sfx}"] = int(w)
+    return out
+
+
 def _measure_spot_diameter_um(
     rna_2d: np.ndarray,
     spots_df: pd.DataFrame,
@@ -1222,7 +1390,14 @@ def run_one(
             print(f"  WARN: dust speck masking failed: {type(_exc).__name__}: {_exc}")
 
     voxel_xy_nm = _safe_float(img.voxel_xy_nm)
-    if not (voxel_xy_nm > 0):
+    # Whether the IMAGE declared a real lateral pixel size. When it did not, the
+    # substituted default below keeps area/density columns populated, but any
+    # measurement expressed in ABSOLUTE DISTANCE built on a guessed pixel size is
+    # silently wrong by whatever factor the guess is off — so the radial-profile
+    # setup refuses to run on a substituted value instead of rescaling every
+    # distance bin without saying so.
+    voxel_xy_declared = bool(voxel_xy_nm > 0)
+    if not voxel_xy_declared:
         voxel_xy_nm = 65.0
     voxel_z_nm = _safe_float(img.voxel_z_nm)
     if not (voxel_z_nm > 0):
@@ -1703,15 +1878,32 @@ def run_one(
         compute_partner_intensity
         and bool(getattr(cfg.foci, "compute_partner_rotation_null", False))
     )
+    # 2026-08-10: the translation null now has its OWN gate. It used to require
+    # ``compute_partner_rotation_null`` as well, so asking for translation alone
+    # silently produced nothing. Un-nesting it can only ADD output to a config
+    # that previously emitted none — a run with both flags on is unchanged.
     compute_partner_translation = (
-        compute_partner_rotation
+        compute_partner_intensity
         and bool(getattr(cfg.foci, "compute_partner_translation_null", False))
     )
+    if compute_partner_translation and compute_partner_rotation:
+        # The nested form still works and still behaves exactly as before; say so,
+        # because the reason for pairing them (translation being unreachable on its
+        # own) no longer applies and the caveat below is easy to lose track of.
+        print(
+            "  NOTE: compute_partner_translation_null no longer requires "
+            "compute_partner_rotation_null — it has its own gate and can run "
+            "standalone. Behaviour with both on is unchanged. The translation "
+            "null stays UNRELIABLE for dense, space-filling spot patterns "
+            "(most rigid shifts push too many spots out of mask, leaving few "
+            "usable nuclei); rotation is the robust headline."
+        )
     # When ANY feature is on we need the per-nucleus sampling block (nucleolus
     # detection + shared spot/mask prep). When all OFF this is exactly
     # ``compute_partner_null`` -> the legacy gate -> byte-identical behavior.
     _need_partner_block = (compute_partner_null or compute_partner_radial
-                           or compute_partner_rotation)
+                           or compute_partner_rotation
+                           or compute_partner_translation)
     # Surfaced-output carriers (None -> key never added to extra; defaults OFF).
     coloc_null_draws_df = None
     coloc_radial_df = None
@@ -1775,12 +1967,46 @@ def run_one(
         _radial_bins_um = list(
             getattr(cfg.foci, "partner_radial_bins_um", [0.25, 0.5, 0.75, 1.0])
         )
-        _pix_um_radial = float(voxel_xy_nm) / 1000.0 if voxel_xy_nm else 0.13
-        _radial_bins_px = [
-            float(b) / _pix_um_radial for b in _radial_bins_um if float(b) > 0
-        ]
+        # FAIL LOUD on an undeclared pixel size (2026-08-10). This conversion is
+        # the ONLY place the µm bin edges become pixels, so a wrong µm/px here
+        # rescales every ring in the profile — and the resulting numbers look
+        # entirely plausible, just measured at the wrong distances. There is no
+        # safe default: the 65 nm/px substituted upstream and the 130 nm/px that
+        # used to be hard-coded on this line differ by 2x, which would report a
+        # 1 µm ring under the label "0.5 µm". Refuse instead.
+        #
+        # An explicit ``foci.bigfish_voxel_size_nm`` counts as a declaration —
+        # the user stating the pixel size is not a guess — and takes precedence
+        # exactly as it already does for spot detection.
+        _cfg_vx_nm = _safe_float(getattr(cfg.foci, "bigfish_voxel_size_nm", 0.0))
+        if _cfg_vx_nm > 0:
+            _radial_vx_nm = float(_cfg_vx_nm)
+        elif voxel_xy_declared:
+            _radial_vx_nm = float(voxel_xy_nm)
+        else:
+            raise ValueError(
+                f"{img_name}: foci.compute_partner_radial_profile needs a real "
+                f"lateral pixel size, but the image declares no voxel_xy_nm and "
+                f"foci.bigfish_voxel_size_nm is unset. The radial bins are given "
+                f"in µm (partner_radial_bins_um={_radial_bins_um}), so converting "
+                f"them on the substituted {voxel_xy_nm:g} nm/px default would "
+                f"rescale every ring without saying so. Set the pixel size in the "
+                f"image metadata, or set foci.bigfish_voxel_size_nm, then re-run."
+            )
+        _pix_um_radial = _radial_vx_nm / 1000.0
+        # The non-positive bins that get filtered out here USED to leave the ring
+        # index and ``_radial_bins_um`` misaligned, so ring i was reported under
+        # bin i's label instead of its own. Keeping the filtered list and indexing
+        # everything off it fixes that; with every shipped bin list (all > 0) the
+        # two lists are identical and nothing changes.
+        _radial_bins_um_used = [float(b) for b in _radial_bins_um if float(b) > 0]
+        _radial_bins_px = [b / _pix_um_radial for b in _radial_bins_um_used]
         _radial_stencils = _annulus_stencils(_radial_bins_px)
         _n_rings = len(_radial_stencils)
+        # Column-name suffix per ring, positionally aligned with
+        # _radial_stencils / _radial_bins_um_used, so the per-nucleus and
+        # per-image column sets derive from ONE list and cannot drift apart.
+        _radial_suffixes = radial_column_suffixes(_radial_bins_um_used)
         _radial_rng = np.random.default_rng(_null_seed)
         _radial_obs_num = np.zeros(_n_rings, dtype=np.float64)
         _radial_nullmean_num = np.zeros(_n_rings, dtype=np.float64)
@@ -1792,13 +2018,20 @@ def run_one(
     # radial draws (byte-identical pooled-null contract). The disk stencil is the
     # same _null_dy/_null_dx as the position null (computed when compute_partner_null
     # is on); when rotation runs without the position null we build it here.
-    if compute_partner_rotation:
+    # The parameters below are SHARED by rotation and translation (same disk
+    # radius, same n, same retention rule, same seed root), so they are resolved
+    # whenever EITHER is on — that is what lets translation run standalone. The
+    # RNG streams stay separate per family, so the byte-identical pooled-null
+    # contract still holds: turning translation on cannot perturb rotation's
+    # draws, or the position / radial draws.
+    if compute_partner_rotation or compute_partner_translation:
         _rot_seed = int(getattr(cfg.foci, "partner_rotation_seed", 0))
         _rot_n = int(getattr(cfg.foci, "partner_rotation_n", 1000))
         _rot_min_ret = float(getattr(cfg.foci, "partner_rotation_min_retention", 0.5))
-        _rot_assoc_pct = float(getattr(cfg.foci, "partner_rotation_assoc_percentile", 95.0))
         _rot_disk_px = float(getattr(cfg.foci, "partner_null_disk_px", 3.0))
         _rot_dy, _rot_dx = _disk_stencil(_rot_disk_px)
+    if compute_partner_rotation:
+        _rot_assoc_pct = float(getattr(cfg.foci, "partner_rotation_assoc_percentile", 95.0))
         _rot_rng = np.random.default_rng(_rot_seed + 101)
         _rot_assoc_rng = np.random.default_rng(_rot_seed + 404)
         # per-image spot-count-weighted pool over rot-USABLE nuclei
@@ -1806,17 +2039,17 @@ def run_one(
         _rot_w_den = 0.0
         _rot_pool = np.zeros(_rot_n, dtype=np.float64)
         _rot_n_nuclei_used = 0
-        if compute_partner_translation:
-            # Translation drops out-of-mask points -> variable-length null arrays
-            # per iter, so we pool the per-nucleus ENRICHMENT (spot-weighted),
-            # NOT a per-iteration vector. (Rotation's keep-N null is full-length,
-            # so it pools per-iteration like the position null + yields an
-            # empirical p. Translation is the flagged-unreliable companion.)
-            _tr_rng = np.random.default_rng(_rot_seed + 202)
-            _tr_enr_num = 0.0
-            _tr_z_num = 0.0
-            _tr_w_den = 0.0
-            _tr_n_nuclei_used = 0
+    if compute_partner_translation:
+        # Translation drops out-of-mask points -> variable-length null arrays
+        # per iter, so we pool the per-nucleus ENRICHMENT (spot-weighted),
+        # NOT a per-iteration vector. (Rotation's keep-N null is full-length,
+        # so it pools per-iteration like the position null + yields an
+        # empirical p. Translation is the flagged-unreliable companion.)
+        _tr_rng = np.random.default_rng(_rot_seed + 202)
+        _tr_enr_num = 0.0
+        _tr_z_num = 0.0
+        _tr_w_den = 0.0
+        _tr_n_nuclei_used = 0
 
     # ---- FIXED-N NUCLEUS SAMPLING: pre-loop pass ---------------------------
     # Resolve WHICH nuclei this image quantifies BEFORE the loop runs, because
@@ -2338,6 +2571,10 @@ def run_one(
         rna2_translation_enrichment_at_rna1_spots = float("nan")
         rna2_translation_null_z_at_rna1_spots = float("nan")
         translation_null_usable = False
+        # This nucleus's own radial profile: one (obs, null_mean, null_sd,
+        # n_spots) per ring, or None when it was not computed (no spots, no
+        # sampling pixels, or the feature is off). Emitted per nucleus below.
+        _radial_per_nuc = None
         if _need_partner_block and nuc_mask.any():
             sub1 = spots1_by_nid.get(nid)
             if sub1 is not None and len(sub1) > 0 and {"y_px", "x_px"}.issubset(sub1.columns):
@@ -2390,6 +2627,12 @@ def run_one(
                             _rna2_2d_f, _scy, _scx, _nys, _nxs,
                             _radial_stencils, _null_n, _radial_rng,
                         )
+                        # Keep this nucleus's own profile for the per-nucleus
+                        # columns (2026-08-10). Previously the loop consumed
+                        # ``_rad`` straight into the pooled accumulators and threw
+                        # the per-nucleus resolution away, which left the profile
+                        # with no replicate-level representation at all.
+                        _radial_per_nuc = _rad
                         for _ri, (_ro, _rnm, _rnsd, _rnsp) in enumerate(_rad):
                             if _rnsp > 0 and _ro == _ro and _nid_in_sample:  # finite observed
                                 _radial_obs_num[_ri] += _ro * _rnsp
@@ -2579,6 +2822,18 @@ def run_one(
             "rna1_enrich_in_rna2_high": _cm["rna_enrich_in_ab_high"],
             "coloc_mask_thr_rna1": _cm["rna_thr"],
             "coloc_mask_thr_rna2": _cm["ab_thr"],
+            # ---- Overlap-coefficient family (2026-08-10) ------------------
+            # compute_coloc_metrics has always computed these four and returned
+            # them; the emit block simply never copied them out. sum_min is the
+            # numerator shared by both min_frac_* ratios: sum(min(rna1, rna2))
+            # over the nuclear pixels, i.e. the intensity the two channels hold
+            # in common. Dividing it by each channel's own total gives that
+            # channel's overlapping FRACTION — threshold-free, so unlike
+            # Manders M1/M2 these do not depend on the mask cut.
+            "coloc_sum_min_rna1_rna2": _cm["sum_min"],
+            "coloc_sum_product_rna1_rna2": _cm["sum_product"],
+            "coloc_min_frac_rna1": _cm["min_frac_r"],
+            "coloc_min_frac_rna2": _cm["min_frac_a"],
             # ---- Intensity-based, spot-centric, FLOOR-ROBUST coloc ---------
             # 2026-05-29 Brian. GATED behind cfg.foci.compute_partner_intensity
             # (default OFF; see sampling block above). When OFF these columns
@@ -2678,6 +2933,16 @@ def run_one(
         if compute_partner_null:
             nuc_row["rna2_enrichment_vs_null_at_rna1_spots"] = rna2_enrichment_vs_null_at_rna1_spots
             nuc_row["rna2_null_z_at_rna1_spots"] = rna2_null_z_at_rna1_spots
+        # GATED radial (line-scan analogue) per-nucleus columns, 2026-08-10.
+        # Only when cfg.foci.compute_partner_radial_profile is True, so the OFF
+        # path stays byte-equivalent. The profile used to exist ONLY as the
+        # per-(image, ring) rows of coloc_radial_profile.csv, which left it with
+        # no per-nucleus representation and therefore nothing to aggregate at the
+        # replicate level. rna_protein relabels rna2->protein.
+        if compute_partner_radial:
+            nuc_row.update(
+                radial_per_nucleus_columns(_radial_per_nuc, _radial_suffixes)
+            )
         # GATED rotation "proper background" per-nucleus columns (default OFF).
         # Only emitted when cfg.foci.compute_partner_rotation_null is True, so the
         # OFF path stays byte-equivalent. rna_protein relabels rna2->protein.
@@ -2688,10 +2953,13 @@ def run_one(
             nuc_row["rna2_rotation_assoc_fraction_at_rna1_spots"] = rna2_rotation_assoc_fraction_at_rna1_spots
             nuc_row["rotation_median_retention"] = rotation_median_retention
             nuc_row["rotation_null_usable"] = rotation_null_usable
-            if compute_partner_translation:
-                nuc_row["rna2_translation_enrichment_at_rna1_spots"] = rna2_translation_enrichment_at_rna1_spots
-                nuc_row["rna2_translation_null_z_at_rna1_spots"] = rna2_translation_null_z_at_rna1_spots
-                nuc_row["translation_null_usable"] = translation_null_usable
+        # GATED translation-null per-nucleus columns. Un-nested from the rotation
+        # block 2026-08-10 so translation can be requested on its own; the emitted
+        # key set for a rotation+translation run is unchanged.
+        if compute_partner_translation:
+            nuc_row["rna2_translation_enrichment_at_rna1_spots"] = rna2_translation_enrichment_at_rna1_spots
+            nuc_row["rna2_translation_null_z_at_rna1_spots"] = rna2_translation_null_z_at_rna1_spots
+            nuc_row["translation_null_usable"] = translation_null_usable
         # GATED fixed-N sampling provenance (default OFF -> columns absent, so
         # an unsampled run's nuclei_metrics.csv is byte-identical). Every
         # visited nucleus carries its verdict, so nothing is silently
@@ -2833,6 +3101,16 @@ def run_one(
     # (obs, null_mean, null_sd) into one row per (image, ring). enrichment =
     # obs/null_mean; z = (obs-null_mean)/null_sd. Only built when the feature
     # is on AND at least one ring accumulated spots.
+    # Wide per-image mirror of the pooled per-ring profile (2026-08-10). Built
+    # from the SAME accumulators the long-format CSV below is built from — one
+    # source, two shapes, so they cannot disagree. Empty dict when the feature is
+    # off, so the key set is absent exactly as before.
+    radial_pooled_img_cols: Dict[str, Any] = {}
+    if compute_partner_radial:
+        radial_pooled_img_cols = radial_pooled_per_image_columns(
+            _radial_obs_num, _radial_nullmean_num, _radial_nullsd_num,
+            _radial_w_den, _radial_suffixes,
+        )
     if compute_partner_radial and float(_radial_w_den.sum()) > 0:
         _rad_rows = []
         for _ri in range(_n_rings):
@@ -2848,7 +3126,7 @@ def run_one(
                 {
                     "image": img_name,
                     "condition": condition,
-                    "ring_um": float(_radial_bins_um[_ri]),
+                    "ring_um": float(_radial_bins_um_used[_ri]),
                     "obs_mean": float(_o),
                     "null_mean": float(_nm),
                     "null_sd": float(_nsd),
@@ -3395,8 +3673,16 @@ def run_one(
             f"paired_fraction_rna2_at_{pair_suffix}": img_paired_frac_2,
             f"paired_count_rna1_at_{pair_suffix}": paired1_total,
             f"paired_count_rna2_at_{pair_suffix}": paired2_total,
-            "median_nn_distance_rna1_um": img_median_nn_1,
-            "median_nn_distance_rna2_um": img_median_nn_2,
+            # RENAMED 2026-08-10 (was ``median_nn_distance_rna1_um`` / ``_rna2_um``,
+            # the same names the PER-NUCLEUS columns use for a DIFFERENT quantity).
+            # These are computed over EVERY detected spot in the frame — before
+            # nucleus assignment and before floater dropping — whereas the
+            # per-nucleus column of the old name covers only the spots assigned
+            # to that one cell. The explicit scope suffix ends the collision; the
+            # per-nucleus rollup of the other definition is emitted separately as
+            # ``mean_median_nn_distance_rna1_um_per_nucleus``.
+            "median_nn_distance_rna1_um_all_spots_in_frame": img_median_nn_1,
+            "median_nn_distance_rna2_um_all_spots_in_frame": img_median_nn_2,
             # ---- Threshold provenance ------------------------------------
             "rna_threshold_value": rna_thr_value,
             "rna2_threshold_value": rna2_thr_value,
@@ -3450,10 +3736,6 @@ def run_one(
             per_image["n_nuclei_partner_rotation_null"] = int(_rot_n_nuclei_used)
             per_image["partner_rotation_n"] = int(_rot_n)
             per_image["partner_rotation_disk_px"] = float(_rot_disk_px)
-            if compute_partner_translation:
-                per_image["rna2_pooled_translation_enrichment_at_rna1_spots"] = round(pooled_tr_enrichment, 4) if pooled_tr_enrichment == pooled_tr_enrichment else float("nan")
-                per_image["rna2_pooled_translation_null_z_at_rna1_spots"] = round(pooled_tr_z, 3) if pooled_tr_z == pooled_tr_z else float("nan")
-                per_image["n_nuclei_partner_translation_null"] = int(_tr_n_nuclei_used)
     else:
         per_image = {
             "image": img_name,
@@ -3525,8 +3807,16 @@ def run_one(
             f"paired_fraction_rna2_at_{pair_suffix}": img_paired_frac_2,
             f"paired_count_rna1_at_{pair_suffix}": paired1_total,
             f"paired_count_rna2_at_{pair_suffix}": paired2_total,
-            "median_nn_distance_rna1_um": img_median_nn_1,
-            "median_nn_distance_rna2_um": img_median_nn_2,
+            # RENAMED 2026-08-10 (was ``median_nn_distance_rna1_um`` / ``_rna2_um``,
+            # the same names the PER-NUCLEUS columns use for a DIFFERENT quantity).
+            # These are computed over EVERY detected spot in the frame — before
+            # nucleus assignment and before floater dropping — whereas the
+            # per-nucleus column of the old name covers only the spots assigned
+            # to that one cell. The explicit scope suffix ends the collision; the
+            # per-nucleus rollup of the other definition is emitted separately as
+            # ``mean_median_nn_distance_rna1_um_per_nucleus``.
+            "median_nn_distance_rna1_um_all_spots_in_frame": img_median_nn_1,
+            "median_nn_distance_rna2_um_all_spots_in_frame": img_median_nn_2,
             "rna_threshold_value": rna_thr_value,
             "rna2_threshold_value": rna2_thr_value,
             "rna_bigfish_log_threshold": thr1_val,
@@ -3582,10 +3872,89 @@ def run_one(
             per_image["n_nuclei_partner_rotation_null"] = 0
             per_image["partner_rotation_n"] = int(_rot_n)
             per_image["partner_rotation_disk_px"] = float(_rot_disk_px)
-            if compute_partner_translation:
-                per_image["rna2_pooled_translation_enrichment_at_rna1_spots"] = float("nan")
-                per_image["rna2_pooled_translation_null_z_at_rna1_spots"] = float("nan")
-                per_image["n_nuclei_partner_translation_null"] = 0
+
+    # ---- GATED translation-null per-image pooled rollup ---------------------
+    # Un-nested from the rotation block 2026-08-10 and moved after the
+    # populated/empty if/else, which is what gives both paths one key set now
+    # that it is no longer riding along inside rotation's own emit.
+    #
+    # ``translation_null_caveat`` puts the reliability limit where someone
+    # reading the output will actually meet it, instead of only in the config
+    # docstring: a rigid shift of a dense, space-filling constellation pushes
+    # most spots out of mask, so few nuclei end up usable and the pooled value
+    # rests on a small, non-random subset. ``n_nuclei_partner_translation_null``
+    # is the number to check it against.
+    if compute_partner_translation:
+        per_image["rna2_pooled_translation_enrichment_at_rna1_spots"] = (
+            round(pooled_tr_enrichment, 4)
+            if pooled_tr_enrichment == pooled_tr_enrichment else float("nan")
+        )
+        per_image["rna2_pooled_translation_null_z_at_rna1_spots"] = (
+            round(pooled_tr_z, 3) if pooled_tr_z == pooled_tr_z else float("nan")
+        )
+        per_image["n_nuclei_partner_translation_null"] = int(_tr_n_nuclei_used)
+        per_image["translation_null_caveat"] = (
+            "UNRELIABLE for dense, space-filling spot patterns: most rigid "
+            "shifts push too many spots out of mask, so few nuclei are usable "
+            "(see n_nuclei_partner_translation_null). Rotation is the robust "
+            "headline null."
+        )
+
+    # ---- UNGATED per-image rollups of the nine pixel-coloc coefficients -----
+    # 2026-08-10. Injected after the populated/empty if/else for the same reason
+    # the sampling block below is: ONE call site guarantees both paths carry an
+    # identical key set, so per_image_summary.csv cannot go ragged between an
+    # image with nuclei and one without.
+    #
+    # ``nuclei_df`` is the frame every other per-image rollup reads — already
+    # rebound to the sampled subset when fixed-N sampling is active — so these
+    # honour ``sampling.apply_to_rollups`` by construction rather than by a
+    # second, separately-maintained filter. ``n_nuclei_in_*`` is the audit trail
+    # for exactly that: it reports the sampled count, not the field count.
+    per_image.update(coloc_rollup_columns(nuclei_df))
+
+    # Per-nucleus-scope companion to the renamed frame-scope NN medians. The
+    # per-nucleus ``median_nn_distance_rna*_um`` column covers the spots assigned
+    # to one cell — nuclear AND Voronoi-cytoplasmic, so "per nucleus" here means
+    # per CELL, not nucleus-interior-only; the suffix says ``_per_nucleus`` rather
+    # than ``_in_nucleus`` for that reason. This rolls THAT definition up to the
+    # image, so the per-image row carries both scopes under names that say which
+    # is which instead of one name meaning two things.
+    for _nn_ch in ("rna1", "rna2"):
+        _nn_col = f"median_nn_distance_{_nn_ch}_um"
+        _nn_mean, _nn_med, _nn_sd, _nn_n = rollup_mean_median_sd_n(
+            nuclei_df[_nn_col]
+            if (len(nuclei_df) and _nn_col in nuclei_df.columns)
+            else pd.Series(dtype=float)
+        )
+        per_image[f"mean_{_nn_col}_per_nucleus"] = _nn_mean
+        per_image[f"median_{_nn_col}_per_nucleus"] = _nn_med
+        per_image[f"sd_{_nn_col}_per_nucleus"] = _nn_sd
+        per_image[f"n_nuclei_in_{_nn_col}"] = _nn_n
+
+    # ---- GATED radial (line-scan analogue) per-image profile ----------------
+    # 2026-08-10. Two views of the same rings, both wide so a per-image test can
+    # read them straight out of per_image_summary.csv:
+    #   * ``*_radial_pooled_*``  — the spot-count-weighted pool, identical to
+    #     coloc_radial_profile.csv (a nucleus with more spots weighs more).
+    #   * ``mean_/median_/sd_/n_nuclei_in_ *_radial_enrichment_at_*`` — equal
+    #     weight per nucleus over the per-nucleus columns. THIS is the lab's
+    #     replicate unit, and because it reads the (already sampling-restricted)
+    #     ``nuclei_df`` it honours sampling.apply_to_rollups automatically.
+    # Injected after the if/else so an image with no nuclei carries the same keys.
+    if compute_partner_radial:
+        per_image.update(radial_pooled_img_cols)
+        for _sfx in _radial_suffixes:
+            _rcol = f"rna2_radial_enrichment_at_{_sfx}"
+            _rm, _rmd, _rsd, _rn = rollup_mean_median_sd_n(
+                nuclei_df[_rcol]
+                if (len(nuclei_df) and _rcol in nuclei_df.columns)
+                else pd.Series(dtype=float)
+            )
+            per_image[f"mean_{_rcol}"] = _rm
+            per_image[f"median_{_rcol}"] = _rmd
+            per_image[f"sd_{_rcol}"] = _rsd
+            per_image[f"n_nuclei_in_{_rcol}"] = _rn
 
     # ---- GATED fixed-N sampling per-image provenance ------------------------
     # Injected after the populated/empty if/else so both paths get the SAME key

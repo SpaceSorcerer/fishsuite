@@ -548,6 +548,18 @@ class FociCfg(BaseModel):
     # flow through per_image_summary / per-nucleus CSV exactly like any other
     # image — REPORTED for background QC, never subtracted from sample images.
     detect_in_sec_only: bool = False
+    # 2026-08-10: SPOT-CALLABILITY guardrail. When ``detect_in_sec_only`` is on and
+    # a run contains secondary-only images, the runner divides each punctate
+    # channel's sample spots-per-nucleus by the same channel's secondary-only
+    # spots-per-nucleus and warns when the ratio falls below this value. The
+    # comparison was always computable — both counts already flow through
+    # per_image_summary — but nobody saw it, so a channel with no thresholdable
+    # object could be analysed as if it had one. Measured on this lab's own prior
+    # data, a diffuse nucleoplasm-filling antibody channel returned a ratio near
+    # 0.9: the detector found essentially as many "spots" in the no-probe control
+    # as in the sample, i.e. no discrimination at all. ADVISORY ONLY — it warns and
+    # emits the three rate columns, and never reinterprets a declared channel.
+    min_spot_signal_to_control: float = 2.0
     # 2026-05-22 Brian: ALL post-detection spot filters OFF. NoMIP testing
     # showed the floater filter dropped 70-87% of legitimate cytoplasmic
     # Exons because Voronoi cytoplasm (40 px max expansion) doesn't reach
@@ -708,13 +720,22 @@ class FociCfg(BaseModel):
     # when its observed partner disk-mean exceeds this percentile. The chance
     # floor of the association fraction is (1 - pct/100), i.e. 0.05 at 95.
     partner_rotation_assoc_percentile: float = 95.0
-    # When True (requires compute_partner_rotation_null), ALSO compute the
-    # TRANSLATION companion null (rigid shift of the whole constellation). Emitted
-    # per nucleus as ``rna2_translation_enrichment_at_rna1_spots`` +
-    # ``rna2_translation_null_z_at_rna1_spots`` + ``translation_null_usable`` and a
-    # per-image pooled rollup. FLAGGED UNRELIABLE for dense / space-filling spot
-    # patterns (most rigid shifts push too many points out of mask -> few usable
-    # nuclei); rotation is the robust headline. DEFAULT FALSE.
+    # When True (requires only ``compute_partner_intensity``), compute the
+    # TRANSLATION null (rigid shift of the whole constellation). Emitted per
+    # nucleus as ``rna2_translation_enrichment_at_rna1_spots`` +
+    # ``rna2_translation_null_z_at_rna1_spots`` + ``translation_null_usable``, and
+    # per image as the pooled rollup + ``n_nuclei_partner_translation_null`` +
+    # ``translation_null_caveat`` (the reliability limit, carried as an emitted
+    # column so it travels with the numbers).
+    #
+    # 2026-08-10: this used to ALSO require ``compute_partner_rotation_null``, so
+    # setting it alone silently produced nothing. It now has its own gate and runs
+    # standalone. Setting both still behaves exactly as it did (and logs a note).
+    #
+    # FLAGGED UNRELIABLE for dense / space-filling spot patterns: most rigid
+    # shifts push too many points out of mask, leaving few usable nuclei, so the
+    # pooled value rests on a small non-random subset. Rotation is the robust
+    # headline. DEFAULT FALSE.
     compute_partner_translation_null: bool = False
     # Surface the pooled rotation null vector + pooled observed (the per-iteration
     # draws the pooling block computes then discards) as
