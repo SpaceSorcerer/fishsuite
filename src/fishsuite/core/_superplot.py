@@ -11,10 +11,10 @@ condition. Okabe-Ito palette; NT / control = orange (#E69F00), the perturbation
 This module is a thin, import-safe bridge:
 
 * :func:`get_locked_drawer` tries to import the LOCKED drawer (the canonical
-  look). It searches, in order, (1) an already-importable ``analysis`` package,
-  (2) ``$FISHSUITE_SUPERPLOT_PATH``, (3) the known lab default path. The import
-  is LAZY (only when a figure is actually drawn) so importing fishsuite never
-  depends on the external tree.
+  look). It searches, in order, (1) the in-package vendored copy at
+  ``core/_vendor/analysis/``, (2) an already-importable ``analysis`` package,
+  (3) ``$FISHSUITE_SUPERPLOT_PATH``. The import is LAZY (only when a figure is
+  actually drawn) so importing fishsuite never depends on an external tree.
 * :func:`superplot_into_axes` calls the locked drawer when available and
   otherwise falls back to a faithful, self-contained Okabe-Ito SuperPlot so the
   subcommands still render a correct figure on a machine without the locked tree
@@ -41,10 +41,14 @@ OKABE_ITO: List[str] = ["#E69F00", "#0072B2", "#009E73", "#D55E00", "#CC79A7",
 CONTROL_COLOR = "#E69F00"   # NT / control -> orange
 PERTURB_COLOR = "#0072B2"   # perturbation -> blue
 
-# Default location of the locked drawer in Brian's lab (overridable via
-# $FISHSUITE_SUPERPLOT_PATH). Kept out of the import path until a figure is
-# actually requested.
-_DEFAULT_LOCKED_PATH = r"F:\Image Analysis Work\image-analysis-pipeline\python"
+# 2026-08-10: a hard-coded absolute fallback used to live here, pointing at the
+# original lab tree. It was removed for the release. The reason is not tidiness:
+# the loop below inserts a candidate into ``sys.path`` when the directory exists,
+# so on any machine that happened to have a directory of that name, an arbitrary
+# third-party ``analysis`` package would have been imported and used to draw
+# figures. Since the drawer is now vendored at ``core/_vendor/analysis/``,
+# candidate (1) always succeeds and this fallback was unreachable in practice.
+# Set $FISHSUITE_SUPERPLOT_PATH to compare against a different revision.
 
 _CONTROL_PATTERNS = ("nt", "control", "ctrl", "ctl", "scr", "scramble", "sic",
                      "si-c", "wt", "dmso", "veh", "vehicle", "mock", "untreated",
@@ -94,12 +98,11 @@ def get_locked_drawer() -> Optional[Callable]:
     except Exception:
         pass
 
-    # (3) env override, then (4) the original lab tree
+    # (3) explicit env override — the only remaining external candidate
     candidates = []
     env = os.environ.get("FISHSUITE_SUPERPLOT_PATH")
     if env:
         candidates.append(env)
-    candidates.append(_DEFAULT_LOCKED_PATH)
     for cand in candidates:
         try:
             if cand and Path(cand).is_dir():

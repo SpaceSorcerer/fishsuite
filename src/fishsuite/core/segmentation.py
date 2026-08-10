@@ -29,6 +29,55 @@ import numpy as np
 # behaviour by wrapping here, never by editing the vendored file.
 
 
+def _install_cuda_cellpose_route() -> None:
+    """Teach the vendored cellpose constructor about ``device="cuda"``.
+
+    The vendored ``_construct_cellpose_model`` recognizes only "directml"/"dml"
+    and sends every other device string down ``CellposeModel(gpu=False, ...)``,
+    i.e. CPU. Passing "cuda" there would therefore run on the CPU *silently*.
+    The vendored file is checksum-pinned and must not be edited, so the CUDA
+    branch is installed from here (the wrapper is the designated place to change
+    vendored behaviour).
+
+    Idempotent. Delegates "cpu"/"directml"/"dml" to the original unchanged, so
+    both existing paths stay byte-for-byte identical.
+
+    NOTE — do not generalize the DirectML workaround to "any GPU". DirectML has
+    no sparse kernel, so the vendored DirectML builder monkeypatches
+    ``dynamics.resize_and_compute_masks`` to force the flow-dynamics step back
+    onto the CPU. CUDA *has* that kernel: applying the same patch would strand
+    most of the GPU benefit. The condition is ``device == "directml"``
+    specifically, never ``device != "cpu"``. (The vendored patch sets a
+    process-global flag on the cellpose module; DirectML is AMD/Windows-only and
+    CUDA is NVIDIA, so the two never coexist in one process.)
+    """
+    from ._vendor.segmentation import segment_image as _si
+
+    if getattr(_si, "_fishsuite_cuda_route_installed", False):
+        return
+    _orig_construct = _si._construct_cellpose_model
+
+    def _construct_with_cuda(model_type: str, device: str):
+        _dev = str(device or "cpu").lower()
+        if _dev not in ("cuda", "gpu"):
+            return _orig_construct(model_type, device)
+        from cellpose import models
+        try:
+            import torch
+            if not torch.cuda.is_available():
+                raise RuntimeError("torch reports no CUDA device available")
+            return models.CellposeModel(gpu=True, pretrained_model=model_type)
+        except Exception as exc:  # noqa: BLE001 — mirror the DirectML fallback
+            sys.stderr.write(
+                f"WARNING: cellpose_device='cuda' requested but CUDA setup "
+                f"failed ({exc}); falling back to CPU.\n"
+            )
+            return models.CellposeModel(gpu=False, pretrained_model=model_type)
+
+    _si._construct_cellpose_model = _construct_with_cuda
+    _si._fishsuite_cuda_route_installed = True
+
+
 def _smooth_label_boundaries(labels: np.ndarray, radius: int) -> np.ndarray:
     """Round per-label boundaries via morphological closing + opening.
 
@@ -152,12 +201,16 @@ def segment_nuclei(
         cellpose_model_type=str(p.get("cellpose_model_type", "cpsam")),
         # 2026-05-27: OPT-IN GPU device selector. Default "cpu" => existing
         # CPU behavior is byte-for-byte unchanged (run_backend forwards "cpu"
-        # to segment_cellpose, which takes the legacy gpu=False path). Only
+        # to segment_cellpose, which takes the legacy gpu=False path).
         # "directml" enables the torch-directml GPU path (fp32 net on GPU,
-        # sparse flow-dynamics forced back to CPU). Non-cellpose backends
-        # ignore this kwarg.
+        # sparse flow-dynamics forced back to CPU); "cuda" enables the NVIDIA
+        # path via _install_cuda_cellpose_route below, which does NOT apply the
+        # DirectML flow-dynamics workaround. Non-cellpose backends ignore this
+        # kwarg.
         cellpose_device=str(p.get("cellpose_device", "cpu")),
     )
+    if backend == "cellpose" and kwargs["cellpose_device"].lower() in ("cuda", "gpu"):
+        _install_cuda_cellpose_route()
     # 2026-05-25: cellpose speed lever (no CUDA on Brian's AMD GPU). cpsam
     # runtime scales ~quadratically with pixel count, and H9 DAPI at
     # 0.065 µm/px is heavily oversampled for segmentation (nuclei ~200 px).

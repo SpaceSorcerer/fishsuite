@@ -1,5 +1,9 @@
 # fishsuite — Implementation Log
 
+> **Internal development record — not user documentation.** Kept for provenance;
+> it describes the state of the code at the date shown, not the current release.
+> User-facing documentation is `README.md` and `CONTRIBUTING.md`.
+
 ## Phase 0 — Foundations (DONE)
 
 **Outcome:** scaffold created at `E:\Claude\fishsuite\`; bioio VSI reads work via a one-function monkey-patch around `bffile`. See `docs/PHASE0_STATUS.md`.

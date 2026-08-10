@@ -727,6 +727,38 @@ _CENTRES = [(35, 35), (35, 90), (35, 145), (90, 35),
             (90, 90), (90, 145), (145, 35), (145, 90)]
 
 
+def _no_bioio_reader() -> bool:
+    """True when bioio has no reader plugin, so NO image format is readable.
+
+    ``bioio`` is a dispatcher: it reads nothing on its own and delegates to a
+    reader plugin discovered through the ``bioio.readers`` entry-point group.
+    The only plugin this package declares is ``bioio-bioformats``, so in an
+    environment without it even a plain ``.tif`` fails to open and every
+    end-to-end test below reports zero processed images.
+
+    Detection is by entry point rather than by opening a file on purpose: the
+    bioformats plugin starts a JVM on first read, and on Windows that start can
+    raise a native access violation that no ``except`` can catch (see the note
+    in ``_run_batch``). Probing the registry costs nothing and cannot destabilise
+    the process.
+    """
+    from importlib.metadata import entry_points
+    try:
+        return not list(entry_points(group="bioio.readers"))
+    except TypeError:  # importlib.metadata < 3.10 selection API
+        return not list(entry_points().get("bioio.readers", []))
+
+
+# The end-to-end tests drive the real runner over real files on disk, so they
+# need a working reader. Marked rather than deselected by name so a light CI
+# environment reports them as skipped instead of silently not running them.
+needs_bioio_reader = pytest.mark.skipif(
+    _no_bioio_reader(),
+    reason="no bioio reader plugin installed (bioio.readers entry-point group "
+           "is empty) — bioio cannot open any image, including plain TIFF",
+)
+
+
 def _write_synthetic_tiffs(root):
     """Two wells, three fields of view, eight round nuclei each."""
     import tifffile
@@ -815,6 +847,7 @@ def _run_batch(root, outdir, *, parallel, seg_workers, sampling=None):
     )
 
 
+@needs_bioio_reader
 def test_end_to_end_selection_is_identical_at_1_and_12_workers(tmp_path):
     """THE reproducibility test: the draw must not depend on worker count.
 
@@ -840,6 +873,7 @@ def test_end_to_end_selection_is_identical_at_1_and_12_workers(tmp_path):
     assert int(a["sampled_in_analysis"].astype(bool).sum()) == 12
 
 
+@needs_bioio_reader
 def test_end_to_end_disabled_adds_no_columns_and_no_methods_file(tmp_path):
     """Sampling off must be invisible: no new columns, no new files.
 
@@ -862,6 +896,7 @@ def test_end_to_end_disabled_adds_no_columns_and_no_methods_file(tmp_path):
     assert not (out / "sampling_methods.txt").exists()
 
 
+@needs_bioio_reader
 def test_end_to_end_sampled_count_matches_the_per_nucleus_flags(tmp_path):
     root = _write_synthetic_tiffs(tmp_path / "data")
     pi, nu, out = _run_batch(
@@ -882,6 +917,7 @@ def test_end_to_end_sampled_count_matches_the_per_nucleus_flags(tmp_path):
     assert (out / "sampling_methods.txt").exists()
 
 
+@needs_bioio_reader
 def test_end_to_end_n_above_eligible_is_short_and_takes_everything(tmp_path):
     root = _write_synthetic_tiffs(tmp_path / "data")
     pi, nu, _ = _run_batch(
@@ -893,6 +929,7 @@ def test_end_to_end_n_above_eligible_is_short_and_takes_everything(tmp_path):
     assert nu["sampled_in_analysis"].astype(bool).all()
 
 
+@needs_bioio_reader
 def test_end_to_end_run_config_records_the_resolved_sampling_block(tmp_path):
     import json
 

@@ -1,0 +1,253 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  schedule:
+    # Weekly dependency-drift check (the heavy job below). Mondays, 06:00 UTC.
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+  # fishsuite forces this itself on import; setting it here too means a bare
+  # matplotlib import in a test collection phase cannot try to open a display.
+  MPLBACKEND: Agg
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # The blocking job. Windows is not optional: it is the platform this package is
+  # developed on, and it is where the absolute-path defects lived.
+  # ---------------------------------------------------------------------------
+  test:
+    if: github.event_name != 'schedule'
+    name: test (${{ matrix.os }}, py${{ matrix.python-version }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        # requires-python is >=3.10,<3.13 (numpy<2.0 has no cp313 wheels), so
+        # 3.13 must NOT be added here.
+        python-version: ["3.10", "3.12"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      # -- (a) install + light test run ------------------------------------
+      #
+      # Installed WITHOUT the heavy ML stack. This is deliberate and it is not
+      # just about runtime: `pip install fishsuite` with the full declared
+      # dependency set currently FAILS TO RESOLVE, because bioio-bioformats
+      # pulls bffile, which requires numpy>=2.1, while fishsuite pins numpy<2.0
+      # for StarDist/TensorFlow. The `deps-resolve` job below reports that
+      # non-blockingly instead of hiding it. Until it is fixed, the light set is
+      # the only installable set.
+      #
+      # Excluded here: cellpose, stardist, tensorflow, torch, torch-directml,
+      # bioio-bioformats, PySide6. None is needed at import time — verified.
+      - name: Install light runtime dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install "numpy>=1.24,<2.0" "scipy>=1.10" "scikit-image>=0.22" "tifffile>=2024.1" "big-fish>=0.6" "pillow>=10.0" "roifile>=2023.8" "bioio>=3.0" "pydantic>=2.5" "click>=8.1" "rich>=13.0" "psutil>=5.9" "pyyaml>=6.0" "openpyxl>=3.1" "pandas>=2.0" "matplotlib>=3.7"
+          python -m pip install "pytest>=8.0" "hypothesis>=6.0" "ruff>=0.6" "build>=1.0" "twine>=5.0"
+
+      - name: Install fishsuite (editable, no deps)
+        run: python -m pip install -e . --no-deps
+
+      # The `lab` / `gpu` / `heavy` / `bioformats` markers guard everything that
+      # needs hardware or the lab image tree; the two ML-backend tests are
+      # deselected by name. Anything else that cannot run here must SKIP, so a
+      # failure in this step is a real failure.
+      - name: Run tests (light)
+        run: python -m pytest tests/ -q -p no:cacheprovider -k "not stardist and not cellpose"
+
+      # -- (b) lint --------------------------------------------------------
+      # Rule selection lives in pyproject.toml [tool.ruff.lint] and passes clean.
+      # `_vendor` is excluded there because it is checksum-pinned.
+      - name: ruff check
+        run: python -m ruff check .
+
+      # Advisory, NOT blocking. The repository carries a formatting backlog (72
+      # files as of 2026-08-10) that has deliberately not been paid down, because
+      # a whole-repo restyle in the same branch as substantive changes makes the
+      # substantive part unreviewable. See CONTRIBUTING.md. Remove
+      # continue-on-error once the reformat has been done as its own commit.
+      - name: ruff format --check (advisory)
+        continue-on-error: true
+        run: python -m ruff format --check .
+
+      # -- (c) build + metadata --------------------------------------------
+      - name: Build sdist and wheel
+        run: python -m build
+
+      - name: twine check
+        run: python -m twine check dist/*
+
+      # -- (d) THE gate that matters: does the built artifact actually work? --
+      #
+      # Installs the WHEEL (not the source tree) into a fresh venv and imports
+      # it. This is what catches a package that builds and uploads cleanly but
+      # ships a non-functional shell: a missing subpackage, package data left out
+      # of the wheel, or a console-script entry point that does not resolve.
+      #
+      # --no-deps because the full declared set does not currently resolve (see
+      # the deps-resolve job). The light deps are installed alongside so the
+      # import is a real import, not an import of a stub.
+      - name: Install built wheel into a clean venv and smoke-test it
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m venv /tmp/cleanvenv || python -m venv "$RUNNER_TEMP/cleanvenv"
+          VENV="${RUNNER_TEMP:-/tmp}/cleanvenv"
+          if [ -d "$VENV/Scripts" ]; then BIN="$VENV/Scripts"; else BIN="$VENV/bin"; fi
+          "$BIN/python" -m pip install --upgrade pip
+          "$BIN/python" -m pip install "numpy>=1.24,<2.0" "scipy>=1.10" "scikit-image>=0.22" "tifffile>=2024.1" "big-fish>=0.6" "pillow>=10.0" "roifile>=2023.8" "bioio>=3.0" "pydantic>=2.5" "click>=8.1" "rich>=13.0" "psutil>=5.9" "pyyaml>=6.0" "openpyxl>=3.1" "pandas>=2.0" "matplotlib>=3.7"
+          WHEEL=$(ls dist/*.whl)
+          echo "installing $WHEEL"
+          "$BIN/python" -m pip install --no-deps "$WHEEL"
+          # Import from a directory that is NOT the repo root, so a working
+          # `import fishsuite` cannot be satisfied by ./src or ./fishsuite.
+          cd "${RUNNER_TEMP:-/tmp}"
+          "$BIN/python" -c "import fishsuite; print('fishsuite', fishsuite.__version__)"
+          "$BIN/fishsuite" --help
+          "$BIN/fishsuite" --version
+
+      # -- (e) no absolute machine paths in shipped source -------------------
+      #
+      # `F:\`, `C:\Users`, `E:\Claude` etc. are the author's drive layout. In a
+      # comment or docstring they are merely unhelpful; as an ACTIVE value they
+      # are a correctness bug, because a path that happens to exist on another
+      # machine gets read silently instead of erroring.
+      #
+      # This is a Python script rather than a grep on purpose. The first version
+      # of this gate WAS a grep (`grep -rnE 'F:\\|F:/|C:\\Users'`) and it matched
+      # nothing at all — the shell and ERE each consume a backslash — so it
+      # passed while checking nothing, and missed a live absolute path in
+      # core/_superplot.py. The script parses Python with `ast` (so docstrings
+      # are exempt but real string literals are not) and loads YAML (so comments
+      # vanish and only active values are seen), and it self-tests its own
+      # matcher on known-bad input before reporting a pass.
+      - name: No absolute machine paths as active values in src/
+        run: python scripts/check_no_absolute_paths.py src
+
+      # -- (f) the wheel must not carry non-portable presets -----------------
+      #
+      # 42 of the 46 presets are run records naming the author's own image files.
+      # pyproject excludes them deny-all-then-allow, so this asserts the policy
+      # actually held rather than trusting the build config.
+      - name: Wheel ships only the portable presets
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import glob, sys, zipfile
+          wheels = glob.glob("dist/*.whl")
+          assert len(wheels) == 1, f"expected exactly one wheel, got {wheels}"
+          names = zipfile.ZipFile(wheels[0]).namelist()
+
+          expected = {
+              "fishsuite/config/presets/generic_100x_0p065.yaml",
+              "fishsuite/config/presets/generic_60x_0p108.yaml",
+              "fishsuite/config/presets/u2os_100x.yaml",
+              "fishsuite/config/presets/hek293_60x.yaml",
+          }
+          shipped = {n for n in names if "/presets/" in n and n.endswith(".yaml")}
+
+          problems = []
+          extra = shipped - expected
+          if extra:
+              problems.append(
+                  "non-portable preset(s) shipped in the wheel:\n  "
+                  + "\n  ".join(sorted(extra))
+              )
+          missing = expected - shipped
+          if missing:
+              problems.append(
+                  "portable preset(s) MISSING from the wheel:\n  "
+                  + "\n  ".join(sorted(missing))
+              )
+          for forbidden in ("presets_archive_scratch", "presets/lab"):
+              bad = [n for n in names if forbidden in n]
+              if bad:
+                  problems.append(f"{forbidden!r} entries in the wheel:\n  "
+                                  + "\n  ".join(sorted(bad)))
+          if problems:
+              print("\n\n".join(problems), file=sys.stderr)
+              sys.exit(1)
+          print(f"OK: wheel ships exactly the {len(expected)} portable presets.")
+          PY
+
+      - name: Upload distributions
+        if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.12'
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  # ---------------------------------------------------------------------------
+  # Non-blocking: does the FULL declared dependency set even resolve?
+  #
+  # As of 2026-08-10 it does NOT — bioio-bioformats -> bffile requires
+  # numpy>=2.1, which contradicts fishsuite's numpy<2.0 pin (itself forced by
+  # StarDist/TensorFlow). `--dry-run` reports that in seconds without downloading
+  # gigabytes. Non-blocking so the defect is visible without every pull request
+  # inheriting it; it must be fixed before v1.0.0 is tagged.
+  # ---------------------------------------------------------------------------
+  deps-resolve:
+    if: github.event_name != 'schedule'
+    name: full dependency set resolves (advisory)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: pip install --dry-run .
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install --dry-run . 2>&1 | tail -40
+
+  # ---------------------------------------------------------------------------
+  # Weekly, non-blocking: install the heavy stack and run the tests it unlocks,
+  # so upstream drift (a cellpose 4.x API change, a numpy/TensorFlow pin moving)
+  # surfaces here rather than in the middle of someone's analysis. Never gates a
+  # pull request — it depends on other projects' releases, not on this diff.
+  # ---------------------------------------------------------------------------
+  heavy:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    name: heavy stack (weekly, non-blocking)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+          cache: pip
+
+      - name: Install the full stack
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev,gui]"
+
+      - name: Report what actually got installed
+        run: python -m pip list
+
+      # No -k exclusion here: the heavy backends are the point of this job.
+      # `lab`-marked tests still skip — that tree exists only on the author's
+      # machine and is not part of the package.
+      - name: Run the full test suite
+        run: python -m pytest tests/ -q -p no:cacheprovider

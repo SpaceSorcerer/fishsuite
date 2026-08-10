@@ -1,5 +1,9 @@
 # fishsuite — End-to-End Run Results
 
+> **Internal development record — not user documentation.** Kept for provenance;
+> it describes the state of the code at the date shown, not the current release.
+> User-facing documentation is `README.md` and `CONTRIBUTING.md`.
+
 **Date:** 2026-05-11
 **Run command:**
 ```powershell

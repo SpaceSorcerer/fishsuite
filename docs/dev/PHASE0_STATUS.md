@@ -1,5 +1,9 @@
 # Phase 0 status — fishsuite scaffolding + bioio VSI smoke test
 
+> **Internal development record — not user documentation.** Kept for provenance;
+> it describes the state of the code at the date shown, not the current release.
+> User-facing documentation is `README.md` and `CONTRIBUTING.md`.
+
 **Date:** 2026-05-11
 **Build target:** `E:\Claude\fishsuite\`
 **Python env:** `C:\Users\ambur\miniconda3\envs\fishproc\python.exe` (Python 3.10.20)

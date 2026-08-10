@@ -1,3 +1,9 @@
+# portable: true
+# Generic single-FISH starting point for a 60x objective at ~0.108 um/px.
+# PORTABLE: no machine-specific paths, no input_file_subset, no
+# z_stack.file_overrides, CPU device. Safe to run on any machine and
+# shipped inside the built wheel. Retarget channel indices, pixel-scale-
+# dependent areas and spot radius for your own data.
 experiment:
   name: generic_60x
 channels:

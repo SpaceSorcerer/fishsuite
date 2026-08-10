@@ -1,3 +1,9 @@
+# portable: true
+# Generic U2OS single-FISH template, 100x objective.
+# PORTABLE: no machine-specific paths, no input_file_subset, no
+# z_stack.file_overrides, CPU device. Safe to run on any machine and
+# shipped inside the built wheel. Retarget channel indices, pixel-scale-
+# dependent areas and spot radius for your own data.
 experiment:
   name: U2OS_100x
   cell_line: U2OS

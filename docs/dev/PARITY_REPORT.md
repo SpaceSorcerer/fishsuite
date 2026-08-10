@@ -1,5 +1,17 @@
 # fishsuite ↔ Fiji pipeline — Output parity report
 
+> **Internal development record — not user documentation.** Kept for provenance;
+> it describes the state of the code at the date shown, not the current release.
+> User-facing documentation is `README.md` and `CONTRIBUTING.md`.
+>
+> **Its citations are not independently checkable.** This document cites the Fiji
+> reference scripts by file and line number, and that repository is private and was
+> deliberately *not* vendored into fishsuite. A reader outside the lab cannot verify
+> those line references. Treat the Fiji-side claims as a record of what the author
+> observed at the time, not as reproducible evidence. The parity evidence that *is*
+> reproducible from this repository alone is in `VENDOR_PARITY.md` and
+> `tests/test_vendor_parity.py`.
+
 This document tracks how the standalone Python pipeline (`fishsuite`) compares
 to the canonical Fiji pipeline at
 `F:\Image Analysis Work\image-analysis-pipeline\` on every dimension

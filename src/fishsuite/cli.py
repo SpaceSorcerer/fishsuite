@@ -255,13 +255,13 @@ The source VSIs are found automatically from the folder the run recorded; pass
 \b
 Examples:
   # the common case - everything auto-detected:
-  fishsuite backfill --run "F:\\Image Analysis Work\\MIAT-QKI-Coloc\\my_run_20260605"
+  fishsuite backfill --run ./results/my_run_20260605
 
-  # point at the VSI staging folder explicitly:
-  fishsuite backfill --run "F:\\...\\my_run" --staging "E:\\Claude\\fishsuite\\_staging_UD_ALLARMS"
+  # point at the image staging folder explicitly:
+  fishsuite backfill --run ./results/my_run --staging ./raw/my_experiment
 
   # montage only (skip the CSV products):
-  fishsuite backfill --run "F:\\...\\my_run" --no-null-draws --no-radial
+  fishsuite backfill --run ./results/my_run --no-null-draws --no-radial
 """
 
 
@@ -338,9 +338,9 @@ Defaults:
 
 \b
 Examples:
-  fishsuite walkthrough --run "F:\\Image Analysis Work\\MIAT-QKI-Coloc\\my_run"
-  fishsuite walkthrough --run "F:\\...\\my_run" --image "g2_wDox_(MIAT_OE)__g2-Dox_01"
-  fishsuite walkthrough --run "F:\\...\\my_run" --out "F:\\figures\\walkthrough.png"
+  fishsuite walkthrough --run ./results/my_run
+  fishsuite walkthrough --run ./results/my_run --image "cond_A__field_01"
+  fishsuite walkthrough --run ./results/my_run --out ./figures/walkthrough.png
 """
 
 
@@ -398,9 +398,9 @@ particular gene.
 
 \b
 Examples:
-  fishsuite singlecell --run "F:\\Image Analysis Work\\MIAT-QKI-Coloc\\my_run"
-  fishsuite singlecell --run "F:\\...\\my_run" --abundance-col nuclear_spot_count
-  fishsuite singlecell --run "F:\\...\\my_run" --group-a NT --group-b KD --no-figures
+  fishsuite singlecell --run ./results/my_run
+  fishsuite singlecell --run ./results/my_run --abundance-col nuclear_spot_count
+  fishsuite singlecell --run ./results/my_run --group-a NT --group-b KD --no-figures
 """
 
 
@@ -469,9 +469,9 @@ secondary-only wells can be contaminated); a substring of the image/condition
 
 \b
 Examples:
-  fishsuite pixelpattern --run "F:\\Image Analysis Work\\MIAT-QKI-Coloc\\my_run"
-  fishsuite pixelpattern --run "F:\\...\\my_run" --staging "F:\\Raw Images\\..."
-  fishsuite pixelpattern --run "F:\\...\\my_run" --secondary-match well12
+  fishsuite pixelpattern --run ./results/my_run
+  fishsuite pixelpattern --run ./results/my_run --staging ./raw/my_experiment
+  fishsuite pixelpattern --run ./results/my_run --secondary-match well12
 """
 
 
@@ -570,9 +570,9 @@ publication_images/channel_rule_log.txt.
 
 \b
 Examples:
-  fishsuite if-pub-images --run "F:\\Image Analysis Work\\MIAT-QKI-Coloc\\my_run"
-  fishsuite if-pub-images --run "F:\\...\\my_run" --staging "F:\\...\\raw-set2" \\
-      --zstack "F:\\...\\z-stacks" --source single_plane --source picked_z \\
+  fishsuite if-pub-images --run ./results/my_run
+  fishsuite if-pub-images --run ./results/my_run --staging ./raw/single-plane \\
+      --zstack ./raw/z-stacks --source single_plane --source picked_z \\
       --floor 647:single_plane=5000 --ceiling 647:single_plane=55000 \\
       --floor 647:picked_z=5500 --dapi-ceiling 8000 --label QKI
 """
@@ -699,7 +699,7 @@ the others are still attempted (the command then exits non-zero).
 
 \b
 Example (the common case - nothing else needed):
-  fishsuite postrun --run "F:\\Image Analysis Work\\MIAT-QKI-Coloc\\my_run_20260605"
+  fishsuite postrun --run ./results/my_run_20260605
 """
 
 

@@ -56,6 +56,9 @@ dependencies = [
 dev = [
     "pytest>=8.0",
     "hypothesis>=6.0",
+    "ruff>=0.6",
+    "build>=1.0",
+    "twine>=5.0",
 ]
 gui = [
     "PySide6>=6.6",
@@ -71,6 +74,27 @@ fishsuite = "fishsuite.cli:cli"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/fishsuite"]
+# Of the 46 presets in the repository, 42 are RUN RECORDS, not templates: they
+# carry `input_file_subset` naming the author's own .vsi files, or
+# `z_stack.file_overrides` keyed to literal filenames, or `cellpose_device:
+# directml` (AMD-only). An external user who ran one would discover zero images
+# with no clear error. They stay in the repository — they are the provenance of
+# published figures — but they must not ship to someone who cannot use them.
+#
+# This is deliberately DENY-ALL-THEN-ALLOW rather than a list of the 42 to drop.
+# An exclusion list would silently start shipping the next lab preset added to
+# this folder; an allowlist keeps that from being possible. To ship a new preset,
+# mark it `# portable: true` and add it to force-include below.
+exclude = [
+    "src/fishsuite/config/presets/*.yaml",
+    "src/fishsuite/config/presets_archive_scratch_2026-07-09",
+]
+
+[tool.hatch.build.targets.wheel.force-include]
+"src/fishsuite/config/presets/generic_100x_0p065.yaml" = "fishsuite/config/presets/generic_100x_0p065.yaml"
+"src/fishsuite/config/presets/generic_60x_0p108.yaml" = "fishsuite/config/presets/generic_60x_0p108.yaml"
+"src/fishsuite/config/presets/u2os_100x.yaml" = "fishsuite/config/presets/u2os_100x.yaml"
+"src/fishsuite/config/presets/hek293_60x.yaml" = "fishsuite/config/presets/hek293_60x.yaml"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -85,3 +109,30 @@ markers = [
 # Vendored code is copied verbatim and checksum-recorded; reformatting it would
 # break the provenance record in core/_vendor/PROVENANCE.md.
 extend-exclude = ["src/fishsuite/core/_vendor"]
+
+[tool.ruff.lint]
+# CI gates on this set and it passes clean. Deliberately narrow: every rule here
+# flags code that is *wrong* (a NameError waiting to happen, a redefinition that
+# silently discards a definition, a format string that will not render), not code
+# that is merely unfashionable. A gate that fires on style gets switched off.
+#
+# NOT selected, and why:
+#   E501  line length — cosmetic.
+#   E4/E7 import placement and semicolons — cosmetic. E712 (`== True`) is worse
+#         than cosmetic here: it is *wrong advice* for pandas, where
+#         `series == True` is the idiomatic elementwise mask and `if series`
+#         raises. Selecting it would push a real regression.
+#   F401 unused-import / F841 unused-variable / F541 f-string-without-placeholder
+#         — 72 findings as of 2026-08-10. Real debt, but clearing it means
+#         deleting imports and locals from a numerical pipeline, which is a
+#         deliberate change with a full test run behind it, not a drive-by in a
+#         release branch. See CONTRIBUTING.md.
+select = [
+    "E9",               # syntax errors / IO errors
+    "F502", "F506", "F522", "F524",   # broken %-format and .format() calls
+    "F601", "F632",                   # `is` compared against a literal
+    "F701", "F702", "F706", "F707",   # misplaced break/continue/return/except
+    "F811",                           # redefinition of an unused name
+    "F821", "F822", "F823",           # undefined name / undefined __all__ / used-before-assign
+    "F901",                           # raise NotImplemented (should be NotImplementedError)
+]

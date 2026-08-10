@@ -1,6 +1,7 @@
 """fishsuite — standalone Python RNA-FISH / IF colocalization & quantification suite.
 
-See README.md for a quickstart and docs/IMPLEMENTATION_LOG.md for build status.
+See README.md for a quickstart, CONTRIBUTING.md for development, and
+docs/dev/IMPLEMENTATION_LOG.md for the internal build log.
 """
 
 import os as _os

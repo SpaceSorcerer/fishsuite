@@ -361,7 +361,13 @@ class NucleiCfg(BaseModel):
     # kernel) — see core.segmentation + segment_image.segment_cellpose. Only
     # usable from an env that has torch-directml installed (e.g. fishproc_dml);
     # the production fishproc env never selects it. cellpose backend only.
-    cellpose_device: Literal["cpu", "directml"] = "cpu"
+    #
+    # 2026-08-10: "cuda" added for NVIDIA GPUs (the common case outside this
+    # lab, which is AMD). It routes through core.segmentation, NOT through the
+    # DirectML branch — CUDA has the sparse flow-dynamics kernel DirectML lacks,
+    # so the DirectML CPU-fallback workaround must not be applied to it. Falls
+    # back to CPU with a warning on stderr if torch reports no CUDA device.
+    cellpose_device: Literal["cpu", "directml", "cuda"] = "cpu"
     exclude_border: bool = True
     border_margin_px: int = 5
     # 2026-05-29: OPT-IN ghost-nucleus rejection. DEFAULT False keeps every
