@@ -12,9 +12,10 @@ from typing import Dict, Any, Optional
 import numpy as np
 import pandas as pd
 
-_FIJI_PY = Path(r"F:\Image Analysis Work\image-analysis-pipeline\python")
-if str(_FIJI_PY) not in sys.path:
-    sys.path.insert(0, str(_FIJI_PY))
+# The spot detectors now ship inside this package at ``core/_vendor/spots/`` —
+# see ``_vendor/PROVENANCE.md`` for the source repository, commit and per-file
+# checksums. They are copied verbatim; change behaviour by wrapping here, never
+# by editing the vendored file.
 
 
 def detect_spots(
@@ -35,7 +36,7 @@ def detect_spots(
     Returns a DataFrame with columns:
         spot_id, x_px, y_px, z_slice, intensity_peak, threshold_used
     """
-    from spots.detect_spots import detect_spots_bigfish, detect_spots_log
+    from ._vendor.spots.detect_spots import detect_spots_bigfish, detect_spots_log
 
     if backend == "bigfish":
         # Apply threshold multiplier by first running auto, then re-running with

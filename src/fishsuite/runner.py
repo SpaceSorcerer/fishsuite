@@ -2209,25 +2209,49 @@ def run_batch(
     # success is independent of this step's exit code (a downstream-only
     # failure should not bubble up as a batch failure).
     try:
+        import os as _os
         import subprocess as _sp
-        _down_cwd = Path(r"F:\Image Analysis Work\image-analysis-pipeline\python")
-        if _down_cwd.is_dir():
-            _log_path = output_dir / "_downstream_plots.log"
-            with open(_log_path, "w", encoding="utf-8") as _lf:
-                _lf.write(f"# downstream auto-run from fishsuite runner — {datetime.now(tz=timezone.utc).isoformat()}\n")
-                _lf.flush()
-                rc = _sp.call(
-                    [sys.executable, "-m", "analysis.single_condition_plots",
-                     "--output-dir", str(output_dir)],
-                    cwd=str(_down_cwd),
-                    stdout=_lf, stderr=_sp.STDOUT,
+
+        # The figure module ships inside the package (core/_vendor/analysis/).
+        # $FISHSUITE_DOWNSTREAM_PATH points at an external checkout instead,
+        # which is only useful for comparing against a different revision.
+        _module = "fishsuite.core._vendor.analysis.single_condition_plots"
+        _down_cwd = None
+        _override = _os.environ.get("FISHSUITE_DOWNSTREAM_PATH")
+        if _override:
+            if Path(_override).is_dir():
+                _module = "analysis.single_condition_plots"
+                _down_cwd = _override
+            else:
+                _console.print(
+                    "[yellow]FISHSUITE_DOWNSTREAM_PATH is set but is not a "
+                    f"directory, ignoring it[/yellow]: {_override}"
                 )
-                _lf.write(f"\n# exit code: {rc}\n")
-            _console.print(f"[dim]downstream figures: exit={rc}, log={_log_path}[/dim]")
+
+        _log_path = output_dir / "_downstream_plots.log"
+        with open(_log_path, "w", encoding="utf-8") as _lf:
+            _lf.write(f"# downstream auto-run from fishsuite runner — {datetime.now(tz=timezone.utc).isoformat()}\n")
+            _lf.write(f"# module: {_module}\n")
+            _lf.write(f"# cwd: {_down_cwd or 'inherited'}\n")
+            _lf.flush()
+            rc = _sp.call(
+                [sys.executable, "-m", _module, "--output-dir", str(output_dir)],
+                cwd=_down_cwd,
+                stdout=_lf, stderr=_sp.STDOUT,
+            )
+            _lf.write(f"\n# exit code: {rc}\n")
+
+        # Runner success stays independent of this step, but a silent failure
+        # here used to leave the run with no figures/ and no visible complaint.
+        _figs = output_dir / "figures"
+        _n_figs = len(list(_figs.rglob("*.png"))) if _figs.is_dir() else 0
+        if rc == 0 and _n_figs:
+            _console.print(f"[dim]downstream figures: {_n_figs} PNG(s), log={_log_path}[/dim]")
         else:
             _console.print(
-                "[yellow]downstream skipped[/yellow]: "
-                f"{_down_cwd} not found"
+                f"[yellow]downstream figures PRODUCED NOTHING[/yellow] "
+                f"(exit={rc}, {_n_figs} PNGs under {_figs}). "
+                f"The run itself is unaffected — see {_log_path}"
             )
     except Exception as _exc:
         _console.print(f"[yellow]downstream failed[/yellow]: {_exc!r}")

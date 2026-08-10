@@ -3568,7 +3568,10 @@ if _QT_OK:
             if not self.skip_down.isChecked():
                 cmd_down = [py, "-m", _state.DEFAULT_DOWNSTREAM_MODULE,
                             "--output-dir", str(out_dir)]
-                down_cwd = _state.DEFAULT_DOWNSTREAM_CWD if _state.DEFAULT_DOWNSTREAM_CWD.is_dir() else None
+                # The figure module ships inside the package, so normally no
+                # working directory is needed; DEFAULT_DOWNSTREAM_CWD is None.
+                _dc = _state.DEFAULT_DOWNSTREAM_CWD
+                down_cwd = _dc if (_dc is not None and Path(_dc).is_dir()) else None
 
             self._last_output_dir = out_dir
             self._clear_log()
