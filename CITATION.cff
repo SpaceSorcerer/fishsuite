@@ -7,7 +7,7 @@ authors:
     given-names: Brian
     email: gsdewson@utmb.edu
     affiliation: "Department of Biochemistry & Molecular Biology, University of Texas Medical Branch, Galveston, TX, USA"
-    # orcid: "https://orcid.org/0000-0000-0000-0000"   # TODO: add before tagging a release
+    orcid: "https://orcid.org/0000-0003-4977-5475"
 repository-code: "https://github.com/SpaceSorcerer/fishsuite"
 license: MIT
 version: 0.1.0
