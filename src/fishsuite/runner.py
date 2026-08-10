@@ -142,6 +142,191 @@ def _write_masks(mask_dir: Path, stem: str, *,
 
 
 # ---------------------------------------------------------------------------
+# Fixed-N nucleus sampling: run-level plan + Methods sentence.
+# ---------------------------------------------------------------------------
+
+def _sampling_unit_key(path, input_dir, unit: str) -> str:
+    """Stable key naming the sampling unit an image belongs to.
+
+    Relative to the input root, not absolute, so the same dataset analysed from
+    a different mount point draws the SAME nuclei.
+    """
+    p = Path(path)
+    try:
+        rel = p.relative_to(Path(input_dir))
+    except ValueError:
+        rel = Path(p.name)
+    if unit == "per_well":
+        # A well is one image folder in this lab's layout. A flat input folder
+        # therefore collapses to a single well, which is the honest reading of
+        # "per well" for a flat acquisition.
+        parent = rel.parent.as_posix()
+        return parent if parent not in ("", ".") else Path(input_dir).name
+    return rel.as_posix()
+
+
+def _resolve_sampling_plan(images, input_dir, samp: Dict[str, Any]) -> Dict[str, Any]:
+    """Map each image path -> (unit_key, n_alloc) for this run.
+
+    ``per_image``: every field of view gets the full ``n_per_unit``.
+    ``per_well``: the well's N is divided EQUALLY across the images beneath it
+    (see ``core.segmentation.allocate_per_unit``) rather than drawn flat from a
+    pooled well, so one dense field of view cannot supply most of the sample.
+    """
+    from .core.segmentation import allocate_per_unit
+
+    unit = str(samp.get("unit", "per_image"))
+    n = int(samp.get("n_per_unit", 20))
+    keys = {str(im.path): _sampling_unit_key(im.path, input_dir, unit) for im in images}
+    if unit != "per_well":
+        return {p: (k, n) for p, k in keys.items()}
+
+    plan: Dict[str, Any] = {}
+    by_well: Dict[str, list] = {}
+    for p, well in keys.items():
+        by_well.setdefault(well, []).append(p)
+    for well, paths in by_well.items():
+        # Allocate on the per-IMAGE keys (relative paths) so the split is a
+        # function of the file names alone, never of processing order.
+        img_keys = {p: _sampling_unit_key(p, input_dir, "per_image") for p in paths}
+        alloc = allocate_per_unit(list(img_keys.values()), n)
+        for p, ik in img_keys.items():
+            # The RNG is keyed on the WELL for per_well, so every image beneath
+            # one well draws from that well's single stream.
+            plan[p] = (f"{well}|{ik}", int(alloc.get(ik, 0)))
+    return plan
+
+
+def _sampling_methods_text(cfg, samp: Dict[str, Any], per_image_df) -> str:
+    """Generate the Methods sentence FROM the resolved config that just ran.
+
+    Written into the output directory so the description can never drift from
+    what actually executed — the alternative is a hand-written Methods
+    paragraph that silently goes stale the first time a parameter changes.
+
+    Deliberately does NOT attribute the per-field-of-view rule to any
+    publication. Fixed-N-per-condition quantification is common in the
+    literature, but the papers that report it do not state how the cells were
+    selected, so the selection rule below is ours and is described as ours.
+    """
+    import pandas as _pd
+
+    n = int(samp["n_per_unit"])
+    unit = samp["unit"]
+    order = samp["order"]
+    seed = int(samp["seed"])
+    ncfg = cfg.nuclei
+
+    unit_phrase = (
+        "per field of view" if unit == "per_image"
+        else "per well, divided equally across the fields of view acquired for that well"
+    )
+
+    if order == "random":
+        draw = (
+            f"Of the eligible nuclei in each unit, {n} were drawn AT RANDOM "
+            f"WITHOUT REPLACEMENT (NumPy PCG64, seed {seed}, with a separate "
+            f"generator per unit keyed on a hash of the image's path so that "
+            f"the selection is independent of the order in which images were "
+            f"processed). No information from the analysis channels entered the "
+            f"selection."
+        )
+    elif order == "raster":
+        draw = (
+            f"Of the eligible nuclei in each unit, the first {n} in raster scan "
+            f"order (by nuclear centroid, top to bottom then left to right) were "
+            f"quantified. This ordering is spatially systematic and therefore "
+            f"NOT an unbiased sample of the field: any gradient across the frame "
+            f"is sampled non-uniformly. No information from the analysis "
+            f"channels entered the selection."
+        )
+    else:
+        draw = (
+            f"Of the eligible nuclei in each unit, the {n} nearest the centre of "
+            f"the field were quantified. This ordering is deliberately "
+            f"centre-weighted, where the point spread function is best and "
+            f"illumination flattest, and systematically excludes the periphery; "
+            f"it is therefore NOT an unbiased sample of the field. No "
+            f"information from the analysis channels entered the selection."
+        )
+
+    short_txt = {
+        "keep": (
+            "Units with fewer eligible nuclei than the target contributed all of "
+            "their eligible nuclei and are flagged "
+            "(`sampling_short_of_target` in per_image_summary.csv)."
+        ),
+        "drop_unit": (
+            "Units with fewer eligible nuclei than the target were EXCLUDED "
+            "entirely and are recorded as dropped "
+            "(`sampling_unit_dropped` in per_image_summary.csv)."
+        ),
+        "fail": "The run was configured to abort if any unit fell short of the target.",
+    }[samp["on_short"]]
+
+    observed = ""
+    try:
+        if per_image_df is not None and len(per_image_df) and \
+                "n_nuclei_sampled" in per_image_df.columns:
+            tot = int(_pd.to_numeric(
+                per_image_df["n_nuclei_sampled"], errors="coerce").fillna(0).sum())
+            n_short = int(_pd.to_numeric(
+                per_image_df.get("sampling_short_of_target", _pd.Series(dtype=float)),
+                errors="coerce").fillna(0).astype(bool).sum())
+            observed = (
+                f"\n\nIn this run: {len(per_image_df)} field(s) of view "
+                f"contributed {tot} quantified nuclei in total"
+                + (f"; {n_short} field(s) fell short of the per-unit target."
+                   if n_short else ".")
+            )
+    except Exception:
+        observed = ""
+
+    return (
+        "Nucleus sampling (generated from the resolved configuration of this run "
+        "— do not edit by hand)\n"
+        "=======================================================================\n\n"
+        f"Nuclei were segmented from the DAPI channel using the "
+        f"{ncfg.backend} backend"
+        + (f" (model {ncfg.stardist_model})" if ncfg.backend == "stardist" else "")
+        + f". Segmented objects were then filtered, in this order: nuclear area "
+        f"outside {int(ncfg.min_area_px)}"
+        + (f"-{int(ncfg.max_area_px)}" if float(ncfg.max_area_px) < 1e12 else "+")
+        + " px was excluded"
+        + (f"; objects touching within {int(ncfg.border_margin_px)} px of the "
+           f"image border were excluded" if ncfg.exclude_border else "")
+        + ("; empty 'ghost' shells (zero detected spots, large area and low DAPI "
+           "texture) were excluded" if getattr(ncfg, "reject_ghost_nuclei", False) else "")
+        + ".\n\n"
+        f"A FIXED NUMBER of the surviving nuclei was then quantified: {n} "
+        f"{unit_phrase}, equalized across every unit in the run, so that all "
+        f"conditions are compared on an identical denominator. Sampling was the "
+        f"LAST step of the filter chain above — a nucleus excluded by any "
+        f"quality filter could not be selected.\n\n"
+        f"{draw}\n\n"
+        f"The selection key used only the DAPI channel and nuclear geometry. "
+        f"Nuclei were NOT ranked by DAPI intensity or nuclear area, because both "
+        f"track cell-cycle stage and therefore total RNA, which would mean "
+        f"selecting on the quantity being measured.\n\n"
+        f"{short_txt}\n\n"
+        "Every segmented nucleus remains in nuclei_metrics.csv, with columns "
+        "`eligible_for_sampling`, `sampled_in_analysis` and `sampling_rank` "
+        "recording its selection status and its position in the applied order, "
+        "so the sample is auditable and N can be revisited without re-running. "
+        + ("Per-image rollups and the pooled colocalization nulls were computed "
+           "over the sampled nuclei only. Pooled pixel-colocalization "
+           "thresholds are the single exception: they remain computed over all "
+           "pooled pixels, because a threshold that shifted with the draw would "
+           "make the between-condition comparison depend on which nuclei were "
+           "sampled.\n" if samp["apply_to_rollups"] else
+           "Per-image rollups were computed over ALL eligible nuclei; only the "
+           "per-nucleus selection columns reflect the sample.\n")
+        + observed
+        + "\n"
+    )
+
+
+# ---------------------------------------------------------------------------
 # Parallel pre-scan worker (module-level so it is picklable for ProcessPool).
 # ---------------------------------------------------------------------------
 
@@ -1255,6 +1440,18 @@ def run_batch(
     # order within each group.
     images = sorted(images, key=lambda im: (1 if im.sec_only else 0,))
 
+    # ---- FIXED-N nucleus sampling plan -------------------------------------
+    # Resolved HERE, once, before any image is processed, because per_well
+    # allocation needs to know every image beneath a well — which an individual
+    # mode call cannot see. Each image is then told only its own unit key and
+    # its own share of N, so the mode stays a pure per-image function and the
+    # plan cannot depend on processing order.
+    _sampling_rs = cfg.resolved_sampling()
+    _sampling_plan = (
+        _resolve_sampling_plan(images, input_dir, _sampling_rs)
+        if _sampling_rs["enabled"] else {}
+    )
+
     # ---- Process each image ------------------------------------------------
     with Progress(
         SpinnerColumn(),
@@ -1311,6 +1508,25 @@ def run_batch(
                     _cached_labels = precomputed_labels_by_path.get(str(dimg.path))
                     if _cached_labels is not None:
                         _mode_kwargs["precomputed_labels"] = _cached_labels
+                # Fixed-N sampling: hand this image its unit key + its share of
+                # N. Only forwarded when sampling is enabled, so every other
+                # path is untouched.
+                #
+                # rna_protein is deliberately NOT in this list. Its run_one has
+                # an explicit keyword-only signature with no **kwargs, so
+                # forwarding these would raise TypeError on every image. It
+                # delegates to rna_rna.run_one, which applies sampling using its
+                # own defaults — the per-image unit key falls back to
+                # parent-dir/filename (equally stable) and n_alloc falls back to
+                # sampling.n_per_unit. Consequence: per_image sampling works for
+                # rna_protein, but unit='per_well' does NOT get the per-well
+                # split there. Add the two optional kwargs to rna_protein.run_one
+                # to close that gap.
+                if cfg.channels.analysis_mode in ("rna_only", "rna_rna"):
+                    _plan = _sampling_plan.get(str(dimg.path))
+                    if _plan is not None:
+                        _mode_kwargs["sampling_unit_key"] = _plan[0]
+                        _mode_kwargs["sampling_n_alloc"] = _plan[1]
                 # 2026-05-20 Brian/Sam: forward the resolved per-channel pub-
                 # image contrast floor as a hard quantification floor when
                 # output.apply_pub_contrast_floor_to_analysis is True. The
@@ -2134,9 +2350,53 @@ def run_batch(
         CHANNEL_RNA2_LABEL=getattr(cfg.channels, "rna2_label", "RNA2"),
         CHANNEL_ANTIBODY_LABEL=getattr(cfg.channels, "antibody_label", "Protein"),
         CHANNEL_AB2_LABEL=getattr(cfg.channels, "ab2_label", "Protein2"),
+        # Fixed-N nucleus sampling, RESOLVED (inherited seed / min_eligible
+        # substituted). config_resolved already carries the raw block; this is
+        # the block as it actually ran, promoted to top level so provenance
+        # tooling does not have to re-apply the inheritance rules.
+        sampling=_sampling_rs,
     )
     with open(output_dir / "run_config.json", "w", encoding="utf-8") as f:
         json.dump(run_config, f, indent=2, default=str)
+
+    # ---- Fixed-N sampling: Methods sentence + honesty line -----------------
+    # The Methods text is GENERATED from the resolved config, so it cannot
+    # describe a run that did not happen. Written only when sampling ran.
+    if _sampling_rs["enabled"]:
+        try:
+            (output_dir / "sampling_methods.txt").write_text(
+                _sampling_methods_text(cfg, _sampling_rs, per_image_df),
+                encoding="utf-8",
+            )
+        except Exception as _sm_err:
+            _console.print(
+                f"[yellow]sampling_methods.txt not written ({_sm_err})[/yellow]"
+            )
+
+    # `conditions.min_nuclei_for_stats` is ANNOTATED, NOT ENFORCED. It has been
+    # exposed in the GUI and set by ~40 presets while having zero consumers, so
+    # saying so out loud is the honest step-1 behaviour: report the count, change
+    # nothing. Do not turn this into an exclusion without a deliberate decision.
+    try:
+        _min_nuc = int(cfg.conditions.min_nuclei_for_stats)
+        _cnt_col = (
+            "n_nuclei_eligible" if "n_nuclei_eligible" in per_image_df.columns
+            else ("n_nuclei" if "n_nuclei" in per_image_df.columns else None)
+        )
+        if _min_nuc > 0 and _cnt_col and len(per_image_df):
+            _below = int(
+                (pd.to_numeric(per_image_df[_cnt_col], errors="coerce").fillna(0)
+                 < _min_nuc).sum()
+            )
+            if _below:
+                _console.print(
+                    f"[yellow]{_below} of {len(per_image_df)} image(s) have fewer "
+                    f"than conditions.min_nuclei_for_stats={_min_nuc} nuclei "
+                    f"({_cnt_col}). This is ANNOTATED ONLY — no image was "
+                    f"excluded from any statistic.[/yellow]"
+                )
+    except Exception:
+        pass
 
     # ---- Excel workbook (PI-ready) ----------------------------------------
     # Written AFTER run_config.json so the Run_Config sheet can read the

@@ -158,8 +158,23 @@ def run_one(
     precomputed_rna_threshold: Optional[float] = None,
     precomputed_labels: Optional[np.ndarray] = None,
     analysis_floors: Optional[Dict[str, Any]] = None,
+    sampling_unit_key: Optional[str] = None,
+    sampling_n_alloc: Optional[int] = None,
 ) -> ImageResult:
     """Run the rna_only pipeline on a single image.
+
+    Parameters (fixed-N sampling)
+    -----------------------------
+    sampling_unit_key : str or None
+        Stable key for this image's sampling unit (input-relative image path
+        for ``sampling.unit='per_image'``, well name for ``per_well``). The
+        per-unit RNG is keyed on a hash of it, so the draw does not depend on
+        the order the parallel pool happened to process images in. Falls back
+        to a parent-dir/filename key when the caller supplies nothing.
+    sampling_n_alloc : int or None
+        This image's share of the unit's N (equal to ``sampling.n_per_unit``
+        for ``per_image``; pre-divided across a well's images for
+        ``per_well``). None -> ``sampling.n_per_unit``.
 
     Parameters
     ----------
@@ -376,6 +391,7 @@ def run_one(
         cellpose_downsample_factor=cfg.nuclei.cellpose_downsample_factor,
         cellpose_device=getattr(cfg.nuclei, "cellpose_device", "cpu"),
     )
+    _seg_stats: Dict[str, Any] = {}
     if precomputed_labels is not None:
         # Batch threshold_scope pre-pass already segmented + border-excluded
         # this exact image; reuse those labels and SKIP re-segmentation so
@@ -386,7 +402,10 @@ def run_one(
         n_before = n_after
         n_border_excluded = 0
     else:
-        labels = _seg.segment_nuclei(dapi_2d, backend=cfg.nuclei.backend, params=seg_params)
+        labels = _seg.segment_nuclei(
+            dapi_2d, backend=cfg.nuclei.backend, params=seg_params,
+            stats=_seg_stats,
+        )
         n_before = int(labels.max())
         if cfg.nuclei.exclude_border:
             labels = _seg.exclude_border_labels(labels, margin_px=cfg.nuclei.border_margin_px)
@@ -595,6 +614,70 @@ def run_one(
 
     img_name = path.name
 
+    # ---- FIXED-N NUCLEUS SAMPLING: pre-loop pass ---------------------------
+    # Resolved BEFORE the loop so the per-image rollups (built during the run)
+    # can restrict to the sampled set; a post-hoc filter on nuclei_metrics.csv
+    # would leave them computed over the full field. The loop still visits
+    # every nucleus — nothing is skipped, so no row is lost.
+    #
+    # rna_only ALREADY applies ghost rejection, but POST-loop (it needs the
+    # per-nucleus spot counts). That block is left exactly as it is; the ghost
+    # IDs computed here are used only for sampling ELIGIBILITY, so a ghost can
+    # never be selected. The two evaluations share one rule and one dapi_cv
+    # definition (`nucleus_pre_pass`), and the post-loop block remains
+    # authoritative for which rows physically survive.
+    _samp_cfg = getattr(cfg, "sampling", None)
+    _samp_on = bool(getattr(_samp_cfg, "enabled", False))
+    _samp_res = None
+    _sampled_ids: set = set()
+    _restrict_rollups = False
+    # No `n_after > 0` guard: an image with ZERO nuclei must still emit the
+    # sampling columns (as honest zeros), or per_image_summary.csv would be
+    # ragged. Every helper below handles an empty label image.
+    if _samp_on:
+        _samp_rs = cfg.resolved_sampling() if hasattr(cfg, "resolved_sampling") else {}
+        _spot_y, _spot_x = _seg.spot_xy_columns(spots_df)
+        _pre = _seg.nucleus_pre_pass(
+            labels, dapi_2d, spot_y=_spot_y, spot_x=_spot_x,
+        )
+        _pre_ghost_ids: List[int] = []
+        if getattr(cfg.nuclei, "reject_ghost_nuclei", False) and _pre:
+            _ghost_probe = pd.DataFrame([
+                {"nucleus_id": k, "rna_spot_count": v["spot_count"],
+                 "dapi_cv": v["dapi_cv"], "nucleus_area_px": v["area"]}
+                for k, v in sorted(_pre.items())
+            ])
+            _pre_ghost_ids = _seg.identify_ghost_nuclei(
+                _ghost_probe,
+                max_dapi_cv=float(getattr(cfg.nuclei, "reject_ghost_max_dapi_cv", 0.12)),
+                min_area_px=int(getattr(cfg.nuclei, "reject_ghost_min_area_px", 6000)),
+            )
+        _samp_res = _seg.resolve_nucleus_sampling(
+            _pre,
+            n_target=(
+                int(sampling_n_alloc) if sampling_n_alloc is not None
+                else int(_samp_rs.get("n_per_unit", 20))
+            ),
+            unit_key=(
+                str(sampling_unit_key) if sampling_unit_key
+                else f"{path.parent.name}/{path.name}"
+            ),
+            seed=int(_samp_rs.get("seed", 0)),
+            order=str(_samp_rs.get("order", "random")),
+            ghost_ids=_pre_ghost_ids,
+            on_short=str(_samp_rs.get("on_short", "keep")),
+            min_eligible=int(_samp_rs.get("min_eligible", 0)),
+            field_shape=labels.shape[:2],
+            # Empty when the batch pre-scan supplied the labels — it already
+            # segmented and area-filtered them, so these two counts are
+            # unrecoverable here and are reported as unknown, not as zero.
+            n_segmented=_seg_stats.get("n_segmented"),
+            n_area_excluded=_seg_stats.get("n_area_excluded"),
+            n_border_excluded=int(n_border_excluded),
+        )
+        _sampled_ids = _samp_res.selected_set
+        _restrict_rollups = bool(_samp_rs.get("apply_to_rollups", True))
+
     for nid in range(1, n_after + 1):
         rp = rp_by_id.get(nid, {})
         nucleus_area_px = int(rp.get("area", 0))
@@ -793,6 +876,14 @@ def run_one(
             "frac_spots_nuc_edge": float("nan"),
             "dapi_mean_in_nucleus": dapi_mean_in_nucleus,
         }
+        # GATED fixed-N sampling provenance (default OFF -> columns absent, so
+        # an unsampled run's nuclei_metrics.csv is byte-identical).
+        if _samp_on and _samp_res is not None:
+            nuc_row["eligible_for_sampling"] = bool(nid in _samp_res.rank)
+            nuc_row["sampled_in_analysis"] = bool(nid in _sampled_ids)
+            nuc_row["sampling_rank"] = (
+                int(_samp_res.rank[nid]) if nid in _samp_res.rank else float("nan")
+            )
         nuc_rows.append(nuc_row)
 
         # Morphology row (one per nucleus)
@@ -976,6 +1067,7 @@ def run_one(
     # behavior is byte-for-byte unchanged for every other dataset/preset. The
     # rule is POST-spot-detection: it needs rna_spot_count + dapi_cv (both
     # already on nuclei_df by here). See core.segmentation.identify_ghost_nuclei.
+    _n_ghost_dropped = 0
     if getattr(cfg.nuclei, "reject_ghost_nuclei", False) and len(nuclei_df) > 0:
         # dapi_cv is normally merged in the nucleolus block above; if nucleolus
         # is disabled, compute the per-nucleus chromatin metrics on the fly so
@@ -1012,6 +1104,25 @@ def run_one(
                     ].reset_index(drop=True)
                 print(f"  ghost-filter: dropped {len(_gset)} empty nucleus shell(s) "
                       f"on {img_name} (ids={sorted(_gset)})")
+                _n_ghost_dropped = len(_gset)
+
+    # ---- FIXED-N SAMPLING: restrict the rollups ----------------------------
+    # `nuclei_df_all` is RETURNED and written to nuclei_metrics.csv (every
+    # visited nucleus, each carrying its own verdict). `nuclei_df` is rebound
+    # to the sampled subset so every per-image rollup computed below reports
+    # the fixed-N numbers instead of the full-field numbers. Placed AFTER the
+    # ghost filter so the chain stays area -> border -> ghost -> sample.
+    # Report what the post-loop filter ACTUALLY dropped, not the pre-pass
+    # estimate used for eligibility. The two evaluate the same rule but read
+    # different tables (the post-loop one sees the per-nucleus spot counts after
+    # every spot filter), so publishing the pre-pass number could misstate the
+    # count by one or two nuclei.
+    _n_ghost_excluded = int(_n_ghost_dropped)
+    nuclei_df_all = nuclei_df
+    if _restrict_rollups and "sampled_in_analysis" in nuclei_df.columns:
+        nuclei_df = nuclei_df[
+            nuclei_df["sampled_in_analysis"].astype(bool)
+        ].reset_index(drop=True)
 
     # Per-image summary row (Fiji-compatible columns)
     if len(nuclei_df) > 0:
@@ -1130,6 +1241,15 @@ def run_one(
             "n_z": int(img.n_z),
         }
 
+    # ---- GATED fixed-N sampling per-image provenance ------------------------
+    # Injected after the populated/empty if/else so both paths carry the SAME
+    # key set. Absent entirely when sampling is off, so per_image_summary.csv
+    # stays byte-identical for every existing preset.
+    if _samp_on and _samp_res is not None:
+        per_image.update(
+            _seg.sampling_per_image_cols(_samp_res, n_ghost_excluded=_n_ghost_excluded)
+        )
+
     thresholds = {
         "image": img_name,
         "rna_threshold_used": thr_val,
@@ -1186,7 +1306,10 @@ def run_one(
         condition=condition,
         sec_only=sec_only,
         per_image=per_image,
-        nuclei=nuclei_df,
+        # Every visited nucleus, not the sampled subset — the rollups above used
+        # the restricted frame, but nuclei_metrics.csv keeps all rows with their
+        # sampled_in_analysis / sampling_rank verdicts so N stays revisitable.
+        nuclei=nuclei_df_all,
         spots=spots_out_df,
         morphology=morph_df,
         thresholds=thresholds,

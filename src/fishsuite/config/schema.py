@@ -382,6 +382,108 @@ class NucleiCfg(BaseModel):
     reject_ghost_min_area_px: int = 6000
 
 
+class SamplingCfg(BaseModel):
+    """Fixed-N nucleus sampling — quantify the same N in every field of view.
+
+    Without this, each condition's denominator is however many nuclei happened
+    to land in each frame, so a confluent field and a sparse one contribute
+    unequally. With it, every FOV in the run contributes an identical N and
+    conditions become directly comparable.
+
+    Sampling runs LAST in the filter chain (area -> border -> ghost -> sample)
+    over the nuclei that survived every quality filter, and it selects using
+    ONLY the DAPI channel and geometry — never the analysis channels. See
+    ``core.segmentation.resolve_nucleus_sampling``.
+
+    The well remains the biological replicate; fields of view within a well
+    are technical replicates.
+    """
+
+    enabled: bool = Field(
+        False,
+        description=(
+            "Master switch. DEFAULT OFF, and off means off: no selection, no "
+            "extra columns, no sampling_methods.txt — every existing preset "
+            "produces byte-identical output."
+        ),
+    )
+    n_per_unit: int = Field(
+        20,
+        description=(
+            "Nuclei to quantify per unit (see `unit`). Every field of view in "
+            "the run is equalized to this N."
+        ),
+    )
+    unit: Literal["per_image", "per_well"] = Field(
+        "per_image",
+        description=(
+            "'per_image': N nuclei from every field of view — the recommended "
+            "axis, since it equalizes the denominator at the level where "
+            "nucleus count actually varies. 'per_well': N nuclei per well, "
+            "allocated EQUALLY across the images beneath that well (a well is "
+            "one image folder in this lab's layout) so a single dense FOV "
+            "cannot supply most of the well's sample."
+        ),
+    )
+    order: Literal["random", "raster", "center_out"] = Field(
+        "random",
+        description=(
+            "How the eligible nuclei are ordered before the first N are taken. "
+            "'random' — seeded uniform draw without replacement; THE ONLY "
+            "UNBIASED OPTION and the one to use for any publication run. "
+            "'raster' — literal first-N by top-to-bottom scan order; BIASED, "
+            "because it is spatially systematic: illumination falloff, focus "
+            "tilt or edge-of-well confluency across the frame is sampled "
+            "non-uniformly. 'center_out' — nearest the field centre first; "
+            "DELIBERATELY CENTRE-BIASED and systematically excludes the "
+            "periphery (defensible for PSF / flat illumination, but it IS a "
+            "bias and must never be reported as unbiased). Ordering by DAPI "
+            "intensity or nuclear area is NOT offered on purpose: both track "
+            "cell-cycle stage, which correlates with total RNA, so they would "
+            "select on the outcome being measured."
+        ),
+    )
+    seed: Optional[int] = Field(
+        None,
+        description=(
+            "Seed for the 'random' order. None inherits the top-level `seed`. "
+            "Each unit draws from its own generator keyed on a hash of the "
+            "unit's name, so the selection is independent of the order the "
+            "parallel pool happens to process images in."
+        ),
+    )
+    on_short: Literal["keep", "drop_unit", "fail"] = Field(
+        "keep",
+        description=(
+            "What to do when a unit has fewer eligible nuclei than "
+            "`n_per_unit`. 'keep' quantifies all of them and flags the unit "
+            "short_of_target; 'drop_unit' quantifies none of them and records "
+            "the unit as dropped; 'fail' aborts the run."
+        ),
+    )
+    min_eligible: int = Field(
+        0,
+        description=(
+            "Eligible-nucleus floor below which an image is ANNOTATED as not "
+            "meeting the bar for statistics (per_image_summary column "
+            "`image_included_in_stats`). 0 inherits "
+            "`conditions.min_nuclei_for_stats`. ANNOTATION ONLY — nothing is "
+            "excluded on this flag."
+        ),
+    )
+    apply_to_rollups: bool = Field(
+        True,
+        description=(
+            "Restrict per-image rollups and the pooled coloc nulls to the "
+            "sampled nuclei, so the reported per-image numbers are the fixed-N "
+            "numbers. ONE DOCUMENTED EXCEPTION: pooled pixel-coloc thresholds "
+            "stay computed over ALL pooled pixels regardless of this setting — "
+            "a threshold that moved with the draw would make the "
+            "between-condition comparison depend on which nuclei were sampled."
+        ),
+    )
+
+
 class PixelColocCfg(BaseModel):
     threshold_mode: Literal["mad", "percentile", "costes"] = "mad"
     threshold_scope: Literal["batch", "per_image"] = "batch"
@@ -1128,6 +1230,7 @@ class FishsuiteConfig(BaseModel):
     channels: ChannelsCfg = Field(default_factory=ChannelsCfg)
     z_stack: ZStackCfg = Field(default_factory=ZStackCfg)
     nuclei: NucleiCfg = Field(default_factory=NucleiCfg)
+    sampling: SamplingCfg = Field(default_factory=SamplingCfg)
     pixel_coloc: PixelColocCfg = Field(default_factory=PixelColocCfg)
     spot_coloc: SpotColocCfg = Field(default_factory=SpotColocCfg)
     foci: FociCfg = Field(default_factory=FociCfg)
@@ -1155,6 +1258,36 @@ class FishsuiteConfig(BaseModel):
     # applies — selecting only files in subfolder X automatically keeps them
     # tagged with condition X. Populated from the GUI's per-file tree widget.
     input_file_subset: List[str] = Field(default_factory=list)
+
+    def resolved_sampling(self) -> Dict[str, Any]:
+        """Resolve the ``sampling`` block's inherited fields to concrete values.
+
+        Two fields inherit when left at their sentinel, and BOTH the runner and
+        the analysis modes need the same answer — resolving in one place is
+        what stops them drifting:
+          * ``sampling.seed is None``   -> the top-level ``seed``
+          * ``sampling.min_eligible==0`` -> ``conditions.min_nuclei_for_stats``
+
+        The returned dict is what gets written into ``run_config.json`` and
+        what the Methods sentence is generated from, so the recorded values are
+        the ones that actually ran.
+        """
+        s = self.sampling
+        return {
+            "enabled": bool(s.enabled),
+            "n_per_unit": int(s.n_per_unit),
+            "unit": str(s.unit),
+            "order": str(s.order),
+            "seed": int(self.seed if s.seed is None else s.seed),
+            "seed_inherited_from_top_level": s.seed is None,
+            "on_short": str(s.on_short),
+            "min_eligible": int(
+                self.conditions.min_nuclei_for_stats
+                if int(s.min_eligible) == 0 else s.min_eligible
+            ),
+            "min_eligible_inherited": int(s.min_eligible) == 0,
+            "apply_to_rollups": bool(s.apply_to_rollups),
+        }
 
     @classmethod
     def from_yaml(cls, path: Path | str) -> "FishsuiteConfig":

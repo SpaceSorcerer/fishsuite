@@ -913,8 +913,26 @@ def run_one(
     analysis_floors: Optional[Dict[str, float]] = None,
     precomputed_labels: Optional[np.ndarray] = None,
     rna2_is_antibody: bool = False,
+    sampling_unit_key: Optional[str] = None,
+    sampling_n_alloc: Optional[int] = None,
 ) -> ImageResult:
     """Run the rna_rna pipeline on a single image.
+
+    Parameters (fixed-N sampling)
+    -----------------------------
+    sampling_unit_key : str or None
+        Stable key identifying this image's SAMPLING UNIT — the input-relative
+        image path for ``sampling.unit='per_image'``, the well name for
+        ``per_well``. The per-unit RNG is derived from a hash of this string
+        rather than from a shared global stream, so the draw does not depend on
+        which worker processed which image first. The runner supplies it;
+        callers that do not (e.g. rna_protein delegating here) fall back to a
+        parent-dir/filename key, which is equally stable.
+    sampling_n_alloc : int or None
+        This image's share of the unit's N. Equals ``sampling.n_per_unit`` for
+        ``per_image``; for ``per_well`` the runner has already divided the
+        well's N equally across the images beneath it. None -> use
+        ``sampling.n_per_unit``.
 
     Parameters
     ----------
@@ -1240,6 +1258,7 @@ def run_one(
         cellpose_downsample_factor=cfg.nuclei.cellpose_downsample_factor,
         cellpose_device=getattr(cfg.nuclei, "cellpose_device", "cpu"),
     )
+    _seg_stats: Dict[str, Any] = {}
     if precomputed_labels is not None:
         # Batch threshold_scope pre-pass already segmented + border-excluded
         # this exact image; reuse those labels and SKIP re-segmentation so
@@ -1250,7 +1269,10 @@ def run_one(
         n_before = n_after
         n_border_excluded = 0
     else:
-        labels = _seg.segment_nuclei(dapi_2d, backend=cfg.nuclei.backend, params=seg_params)
+        labels = _seg.segment_nuclei(
+            dapi_2d, backend=cfg.nuclei.backend, params=seg_params,
+            stats=_seg_stats,
+        )
         n_before = int(labels.max())
         if cfg.nuclei.exclude_border:
             labels = _seg.exclude_border_labels(labels, margin_px=cfg.nuclei.border_margin_px)
@@ -1796,7 +1818,90 @@ def run_one(
             _tr_w_den = 0.0
             _tr_n_nuclei_used = 0
 
+    # ---- FIXED-N NUCLEUS SAMPLING: pre-loop pass ---------------------------
+    # Resolve WHICH nuclei this image quantifies BEFORE the loop runs, because
+    # the pooled nulls accumulate INSIDE the loop and the per-image rollups are
+    # built during the run — a post-hoc filter on nuclei_metrics.csv would
+    # leave every one of them computed over the full set.
+    #
+    # The loop below still VISITS every nucleus. Nothing is skipped: each one
+    # still gets its row and its per-nucleus columns, so no row is lost and N
+    # stays revisitable afterwards from `sampling_rank`. Only the pooled
+    # accumulators and the per-image rollups restrict to the selected set.
+    _samp_cfg = getattr(cfg, "sampling", None)
+    _samp_on = bool(getattr(_samp_cfg, "enabled", False))
+    _reject_ghosts = bool(getattr(cfg.nuclei, "reject_ghost_nuclei", False))
+    _samp_res = None
+    _samp_ghost_ids: List[int] = []
+    _sampled_ids: set = set()
+    _restrict_rollups = False
+    # No `n_after > 0` guard: when sampling is on, an image with ZERO nuclei
+    # must still emit the sampling columns (as honest zeros) or
+    # per_image_summary.csv would be ragged — some rows carrying the block and
+    # some not. The helpers below all handle an empty label image.
+    if _samp_on or (_reject_ghosts and n_after > 0):
+        _samp_rs = cfg.resolved_sampling() if hasattr(cfg, "resolved_sampling") else {}
+        # One cheap materialisation of the per-label keys the ghost rule and
+        # the sampler need. `area` / centroids duplicate rp_by_id, but going
+        # through the shared helper keeps ONE definition of dapi_cv and of the
+        # spot-count lookup for both consumers.
+        _spot_y, _spot_x = _seg.spot_xy_columns(spots1_df)
+        _pre = _seg.nucleus_pre_pass(
+            labels, dapi_2d, spot_y=_spot_y, spot_x=_spot_x,
+        )
+        # Ghost rejection, wired into rna_rna for the FIRST time (2026-08-09).
+        # `nuclei.reject_ghost_nuclei` was previously honoured only by
+        # rna_only, so rna_rna / rna_protein silently ignored it. The same
+        # composite rule now runs here, off the same pre-pass table, so the
+        # ghost verdict feeding sampling eligibility and the one dropping rows
+        # below are guaranteed to be the same verdict.
+        if _reject_ghosts and _pre:
+            _ghost_probe = pd.DataFrame([
+                {"nucleus_id": k, "rna_spot_count": v["spot_count"],
+                 "dapi_cv": v["dapi_cv"], "nucleus_area_px": v["area"]}
+                for k, v in sorted(_pre.items())
+            ])
+            _samp_ghost_ids = _seg.identify_ghost_nuclei(
+                _ghost_probe,
+                max_dapi_cv=float(getattr(cfg.nuclei, "reject_ghost_max_dapi_cv", 0.12)),
+                min_area_px=int(getattr(cfg.nuclei, "reject_ghost_min_area_px", 6000)),
+            )
+        if _samp_on:
+            _n_alloc = (
+                int(sampling_n_alloc) if sampling_n_alloc is not None
+                else int(_samp_rs.get("n_per_unit", 20))
+            )
+            _unit_key = (
+                str(sampling_unit_key) if sampling_unit_key
+                else f"{path.parent.name}/{path.name}"
+            )
+            _samp_res = _seg.resolve_nucleus_sampling(
+                _pre,
+                n_target=_n_alloc,
+                unit_key=_unit_key,
+                seed=int(_samp_rs.get("seed", 0)),
+                order=str(_samp_rs.get("order", "random")),
+                ghost_ids=_samp_ghost_ids,
+                on_short=str(_samp_rs.get("on_short", "keep")),
+                min_eligible=int(_samp_rs.get("min_eligible", 0)),
+                field_shape=labels.shape[:2],
+                # Empty when the batch pre-scan supplied the labels — it already
+                # segmented and area-filtered them, so these two counts are
+                # unrecoverable here and are reported as unknown, not as zero.
+                n_segmented=_seg_stats.get("n_segmented"),
+                n_area_excluded=_seg_stats.get("n_area_excluded"),
+                n_border_excluded=int(n_border_excluded),
+            )
+            _sampled_ids = _samp_res.selected_set
+            _restrict_rollups = bool(_samp_rs.get("apply_to_rollups", True))
+
     for nid in range(1, n_after + 1):
+        # Does this nucleus feed the pooled accumulators / per-image rollups?
+        # True for every nucleus when sampling is off, so the OFF path is
+        # unchanged. Note this gates only ACCUMULATION — the per-nucleus
+        # statistics and the RNG draws below run identically either way, so
+        # every per-nucleus column stays byte-identical to an unsampled run.
+        _nid_in_sample = (not _restrict_rollups) or (nid in _sampled_ids)
         rp = rp_by_id.get(nid, {})
         nucleus_area_px = int(rp.get("area", 0))
         perim_px = float(rp.get("perimeter", 0.0))
@@ -2272,11 +2377,12 @@ def run_one(
                             rna2_null_z_at_rna1_spots = (
                                 (_obs_stat - _nmean) / _nsd if _nsd > 0 else float("nan")
                             )
-                            _n_sp_used = int(_scy.size)
-                            _null_obs_num += _obs_stat * _n_sp_used
-                            _null_w_den += _n_sp_used
-                            _null_pool += _null_stats * _n_sp_used
-                            _null_n_nuclei_used += 1
+                            if _nid_in_sample:
+                                _n_sp_used = int(_scy.size)
+                                _null_obs_num += _obs_stat * _n_sp_used
+                                _null_w_den += _n_sp_used
+                                _null_pool += _null_stats * _n_sp_used
+                                _null_n_nuclei_used += 1
                     if compute_partner_radial:
                         # Per-ring (obs, null_mean, null_sd, n_spots); accumulate
                         # spot-count-weighted into the per-(image, ring) rollup.
@@ -2285,7 +2391,7 @@ def run_one(
                             _radial_stencils, _null_n, _radial_rng,
                         )
                         for _ri, (_ro, _rnm, _rnsd, _rnsp) in enumerate(_rad):
-                            if _rnsp > 0 and _ro == _ro:  # finite observed
+                            if _rnsp > 0 and _ro == _ro and _nid_in_sample:  # finite observed
                                 _radial_obs_num[_ri] += _ro * _rnsp
                                 _radial_nullmean_num[_ri] += _rnm * _rnsp
                                 _radial_nullsd_num[_ri] += _rnsd * _rnsp
@@ -2335,7 +2441,7 @@ def run_one(
                                 rna2_rotation_assoc_fraction_at_rna1_spots = float(
                                     (_obs_per_spot > _thr).mean())
                             # pool only rot-USABLE nuclei (full-length keep-N null)
-                            if rotation_null_usable and _rns.size == _rot_n:
+                            if rotation_null_usable and _rns.size == _rot_n and _nid_in_sample:
                                 _n_sp_rot = int(_scy.size)
                                 _rot_obs_num += _robs * _n_sp_rot
                                 _rot_w_den += _n_sp_rot
@@ -2360,7 +2466,8 @@ def run_one(
                                 (_tobs - _tnm) / _tnsd if _tnsd > 0 else float("nan")
                             )
                             if (translation_null_usable
-                                    and np.isfinite(rna2_translation_enrichment_at_rna1_spots)):
+                                    and np.isfinite(rna2_translation_enrichment_at_rna1_spots)
+                                    and _nid_in_sample):
                                 _n_sp_tr = int(_scy.size)
                                 _tr_enr_num += rna2_translation_enrichment_at_rna1_spots * _n_sp_tr
                                 if np.isfinite(rna2_translation_null_z_at_rna1_spots):
@@ -2585,6 +2692,18 @@ def run_one(
                 nuc_row["rna2_translation_enrichment_at_rna1_spots"] = rna2_translation_enrichment_at_rna1_spots
                 nuc_row["rna2_translation_null_z_at_rna1_spots"] = rna2_translation_null_z_at_rna1_spots
                 nuc_row["translation_null_usable"] = translation_null_usable
+        # GATED fixed-N sampling provenance (default OFF -> columns absent, so
+        # an unsampled run's nuclei_metrics.csv is byte-identical). Every
+        # visited nucleus carries its verdict, so nothing is silently
+        # discarded: an ineligible nucleus is still a row, and `sampling_rank`
+        # records the full applied order (not just the first N) so N can be
+        # revisited without re-running.
+        if _samp_on and _samp_res is not None:
+            nuc_row["eligible_for_sampling"] = bool(nid in _samp_res.rank)
+            nuc_row["sampled_in_analysis"] = bool(nid in _sampled_ids)
+            nuc_row["sampling_rank"] = (
+                int(_samp_res.rank[nid]) if nid in _samp_res.rank else float("nan")
+            )
         nuc_rows.append(nuc_row)
 
         # Morphology row (per-nucleus, single block — shape is channel-agnostic)
@@ -2946,6 +3065,46 @@ def run_one(
                 f"({type(_exc).__name__}: {_exc}); continuing without nucleolus cols.\n"
                 f"{_tb.format_exc()}"
             )
+
+    # ---- OPT-IN ghost-nucleus rejection (rna_rna) ---------------------------
+    # 2026-08-09: `nuclei.reject_ghost_nuclei` was honoured ONLY by rna_only —
+    # rna_rna and rna_protein (which delegates here) silently ignored it, so a
+    # preset that asked for ghost rejection in a two-RNA run never got it.
+    # Fixed here. DEFAULT OFF, so every other preset is unchanged.
+    #
+    # The ghost IDs come from the pre-loop pass, NOT from a second evaluation
+    # of the rule, so the set removed here is exactly the set that was excluded
+    # from sampling eligibility. Ghosts carry zero spots by definition, so they
+    # contributed zero weight to the spot-count-weighted pooled nulls above —
+    # dropping them here cannot change those rollups.
+    _n_ghost_excluded = 0
+    if _reject_ghosts and _samp_ghost_ids:
+        _gset = set(int(g) for g in _samp_ghost_ids)
+        _n_ghost_excluded = len(_gset)
+        if len(nuclei_df) and "nucleus_id" in nuclei_df.columns:
+            nuclei_df = nuclei_df[~nuclei_df["nucleus_id"].isin(_gset)].reset_index(drop=True)
+        if labels is not None and labels.size:
+            labels = labels.copy()
+            labels[np.isin(labels, list(_gset))] = 0
+        if len(spots_out_df) and "nucleus_id" in spots_out_df.columns:
+            spots_out_df = spots_out_df[
+                ~spots_out_df["nucleus_id"].isin(_gset)
+            ].reset_index(drop=True)
+        print(f"  ghost-filter: dropped {_n_ghost_excluded} empty nucleus shell(s) "
+              f"on {img_name} (ids={sorted(_gset)})")
+
+    # ---- FIXED-N SAMPLING: restrict the rollups ----------------------------
+    # `nuclei_df_all` is what gets RETURNED and written to nuclei_metrics.csv —
+    # every visited nucleus, selected or not. `nuclei_df` is rebound to the
+    # sampled subset so that every per-image rollup computed below (all of
+    # which read `nuclei_df`) reports the fixed-N numbers rather than the
+    # full-field numbers. Rebinding once here is what keeps the ~20 individual
+    # rollup expressions from each needing their own filter.
+    nuclei_df_all = nuclei_df
+    if _restrict_rollups and "sampled_in_analysis" in nuclei_df.columns:
+        nuclei_df = nuclei_df[
+            nuclei_df["sampled_in_analysis"].astype(bool)
+        ].reset_index(drop=True)
 
     # ---- Per-image summary -------------------------------------------------
     # 2026-05-22 Brian: image-level total_spots_rna1/rna2 report only in-cell
@@ -3428,6 +3587,16 @@ def run_one(
                 per_image["rna2_pooled_translation_null_z_at_rna1_spots"] = float("nan")
                 per_image["n_nuclei_partner_translation_null"] = 0
 
+    # ---- GATED fixed-N sampling per-image provenance ------------------------
+    # Injected after the populated/empty if/else so both paths get the SAME key
+    # set. Absent entirely when sampling is off, keeping per_image_summary.csv
+    # byte-identical for every existing preset. `n_nuclei_border_excluded` is
+    # already emitted above and is deliberately not duplicated here.
+    if _samp_on and _samp_res is not None:
+        per_image.update(
+            _seg.sampling_per_image_cols(_samp_res, n_ghost_excluded=_n_ghost_excluded)
+        )
+
     # ---- Thresholds row ----------------------------------------------------
     _kmad = float(pc_cfg.k_mad) if pc_cfg is not None else float("nan")
     _scope = getattr(pc_cfg, "threshold_scope", "") if pc_cfg is not None else ""
@@ -3546,7 +3715,12 @@ def run_one(
         condition=condition,
         sec_only=sec_only,
         per_image=per_image,
-        nuclei=nuclei_df,
+        # `nuclei_df_all` — EVERY visited nucleus, not the sampled subset. The
+        # rollups above were computed from the restricted frame, but
+        # nuclei_metrics.csv must keep every row (each carrying its
+        # sampled_in_analysis / sampling_rank verdict) so nothing is silently
+        # discarded and N stays revisitable.
+        nuclei=nuclei_df_all,
         spots=spots_out_df,
         morphology=morph_df,
         thresholds=thresholds,
