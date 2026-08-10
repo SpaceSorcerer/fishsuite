@@ -1,0 +1,94 @@
+# portable: true
+# Generic TWO-PROBE RNA-FISH starting point, 100x objective (~0.065 um/px).
+# PORTABLE: no machine-specific paths, no input_file_subset, no
+# z_stack.file_overrides, CPU device. Safe to run on any machine and
+# shipped inside the built wheel.
+#
+# Use this when you have two distinct FISH targets in one sample and want
+# spot-to-spot pairing plus whole-nucleus pixel colocalization. If your second
+# channel is a diffuse ANTIBODY rather than a second probe, use
+# generic_rna_protein_100x.yaml instead — the analysis is genuinely different,
+# and running a diffuse partner through this preset produces mask-based
+# coefficients computed on textured background.
+#
+# Three things to set for your own data, in order of how often they are wrong:
+#   1. channels.*        - confirm the indices against your own metadata.
+#   2. nuclei.min_area_px - PIXELS, so it depends on your objective and camera.
+#   3. foci.bigfish_spot_radius_nm - a PHYSICAL size, per probe.
+
+experiment:
+  name: generic_rna_rna_100x
+  description: "Two-probe RNA-FISH template. Retarget channels and scales before use."
+
+conditions:
+  # 'auto' derives conditions from the input layout rather than from a hard-coded
+  # folder map, so this preset works on a tree it has never seen. Switch to
+  # 'subfolders' plus a subfolder_conditions map once you know your own layout.
+  mode: auto
+
+channels:
+  analysis_mode: rna_rna
+  # 0-indexed. CONFIRM THESE AGAINST YOUR OWN FILE - do not trust a template.
+  # `fishsuite preview -c <this file> -i <dir>` prints the detected channel names
+  # and order for one image; -1 means "auto-detect from metadata", which is
+  # usually right but is a guess whenever channel names are non-standard.
+  dapi: 0
+  rna: 1
+  rna2: 2
+  # Pseudo-colour is assigned by EMISSION WAVELENGTH, not by probe identity, so
+  # the same target keeps its colour across panels.
+  dapi_lut: blue
+  rna_lut: yellow
+  rna2_lut: magenta
+  # These labels appear in output filenames and burned-in figure legends.
+  rna_label: "RNA1"
+  rna2_label: "RNA2"
+
+z_stack:
+  # One in-focus plane per image, chosen by var(laplace) on a mean-normalized
+  # plane. Prefer this over maxproj for spot counting: a projection stacks spots
+  # from different planes on top of each other and inflates apparent density.
+  mode: autofocus
+
+nuclei:
+  backend: stardist
+  prob_threshold: 0.5
+  stardist_gauss_sigma: 3.0
+  stardist_postprocess: watershed_otsu
+  # PIXELS, not um^2. At ~0.065 um/px a 13 um nucleus is ~200 px across, so this
+  # floor is deliberately generous; rescale it if your pixel size differs.
+  min_area_px: 5000
+  exclude_border: true
+  border_margin_px: 5
+  # cellpose_device is intentionally left at its default (cpu) so this preset
+  # runs anywhere. Set 'cuda' (NVIDIA) or 'directml' (AMD/Windows) yourself.
+
+cytoplasm:
+  # Voronoi-expanded cytoplasm, which is what makes the nuclear-vs-cytoplasmic
+  # split available. Turn off only if you care exclusively about nuclear counts.
+  enabled: true
+  measure_nc_ratio: true
+
+foci:
+  backend: bigfish
+  # PHYSICAL spot radius in nm; BigFISH converts it to a kernel using the image's
+  # own um/px. Set it per probe if the two differ appreciably.
+  bigfish_spot_radius_nm: 150.0
+  threshold_multiplier: 0.7
+
+spot_coloc:
+  # Two spots count as paired within this distance. 0.3 um is near the lateral
+  # diffraction limit at 100x, i.e. "as close as resolvable".
+  pair_distance_um: 0.3
+  report_nn_distance: true
+
+pixel_coloc:
+  # Whole-nucleus coefficients need a threshold for the mask-based ones (Manders,
+  # Jaccard, Dice). 'mad' with a batch scope applies one threshold across the run
+  # so images stay comparable; 'per_image' adapts per field but breaks that.
+  threshold_mode: mad
+  threshold_scope: batch
+  k_mad: 2.0
+
+parallel:
+  workers: auto

@@ -727,36 +727,87 @@ _CENTRES = [(35, 35), (35, 90), (35, 145), (90, 35),
             (90, 90), (90, 145), (145, 35), (145, 90)]
 
 
-def _no_bioio_reader() -> bool:
-    """True when bioio has no reader plugin, so NO image format is readable.
+_READER_PROBE = r'''
+import pathlib, sys, tempfile
+import numpy as np
+import tifffile
+from fishsuite.core.io import read_image
 
-    ``bioio`` is a dispatcher: it reads nothing on its own and delegates to a
-    reader plugin discovered through the ``bioio.readers`` entry-point group.
-    The only plugin this package declares is ``bioio-bioformats``, so in an
-    environment without it even a plain ``.tif`` fails to open and every
-    end-to-end test below reports zero processed images.
+# The same 2-plane layout _write_synthetic_tiffs produces.
+d = pathlib.Path(tempfile.mkdtemp())
+p = d / "probe.tif"
+tifffile.imwrite(str(p), np.stack([
+    np.full((180, 180), 200, np.uint16),
+    np.full((180, 180), 100, np.uint16),
+], axis=0))
+img = read_image(p)
+print(f"shape={img.shape} n_channels={img.n_channels} n_z={img.n_z}")
+sys.exit(0)
+'''
 
-    Detection is by entry point rather than by opening a file on purpose: the
-    bioformats plugin starts a JVM on first read, and on Windows that start can
-    raise a native access violation that no ``except`` can catch (see the note
-    in ``_run_batch``). Probing the registry costs nothing and cannot destabilise
-    the process.
+
+def _reader_probe_failure() -> str | None:
+    """None when a working reader is present; else a one-line reason to skip.
+
+    ``bioio`` is a dispatcher: it reads nothing itself and delegates to a reader
+    plugin. The only plugin this package declares is the optional ``bioformats``
+    extra, so in a light environment ``read_image`` raises on every format
+    including plain TIFF, and the end-to-end tests below report zero processed
+    images rather than skipping.
+
+    The probe OPENS A FILE rather than inspecting the ``bioio.readers`` entry-point
+    registry, because presence of a plugin is not the property that matters. It
+    deliberately asserts nothing about the axis layout: an earlier version
+    required ``n_channels == 2`` and was WRONG — Bio-Formats reads this ambiguous
+    2-plane TIFF as ``T=2, C=1, Z=1``, and the pipeline handles that fine (it
+    segments all eight synthetic nuclei). That version skipped five tests that
+    pass, in the author's own environment, which is worse than not guarding at
+    all: a silently-removed test looks like a passing one.
+
+    Not covered here, on purpose: a third-party reader such as ``bioio-tifffile``
+    opens the file but resolves the extra axis differently, and DAPI segmentation
+    then runs on the wrong plane and finds no nuclei. These tests FAIL rather than
+    skip in that case. That is the right outcome — it is a real misconfiguration
+    that would also silently corrupt a real run, so it should be loud. See the
+    warning in README.md; CI is explicitly instructed not to install one.
+
+    Runs in a SUBPROCESS: the bioformats plugin starts a JVM on first read, and on
+    Windows that start can raise a native access violation that no ``except``
+    catches and which corrupts JVM state for the rest of the process (see the note
+    in ``_run_batch``). A child process contains that.
     """
-    from importlib.metadata import entry_points
+    import subprocess
+    import sys
+
     try:
-        return not list(entry_points(group="bioio.readers"))
-    except TypeError:  # importlib.metadata < 3.10 selection API
-        return not list(entry_points().get("bioio.readers", []))
+        proc = subprocess.run(
+            [sys.executable, "-c", _READER_PROBE],
+            capture_output=True, text=True, timeout=300,
+        )
+    except (subprocess.TimeoutExpired, OSError) as exc:
+        return f"bioio reader probe could not run ({type(exc).__name__}: {exc})"
+    if proc.returncode == 0:
+        return None
+    tail = (proc.stderr or proc.stdout or "").strip().splitlines()
+    return (
+        "no working bioio reader plugin — bioio cannot open even a plain TIFF; "
+        "install the `bioformats` extra. Underlying error: "
+        + (tail[-1][:200] if tail else f"probe exited {proc.returncode}")
+    )
 
 
-# The end-to-end tests drive the real runner over real files on disk, so they
-# need a working reader. Marked rather than deselected by name so a light CI
-# environment reports them as skipped instead of silently not running them.
-needs_bioio_reader = pytest.mark.skipif(
-    _no_bioio_reader(),
-    reason="no bioio reader plugin installed (bioio.readers entry-point group "
-           "is empty) — bioio cannot open any image, including plain TIFF",
-)
+@pytest.fixture(scope="session")
+def working_image_reader():
+    """Skip the requesting test unless a bioio reader can actually open a file.
+
+    A session fixture rather than a module-level ``skipif`` so the probe (which
+    spawns a subprocess and may start a JVM) runs only when one of these tests is
+    actually selected, instead of on every collection of this file.
+    """
+    if not hasattr(working_image_reader, "_reason"):
+        working_image_reader._reason = _reader_probe_failure()
+    if working_image_reader._reason:
+        pytest.skip(working_image_reader._reason)
 
 
 def _write_synthetic_tiffs(root):
@@ -847,8 +898,8 @@ def _run_batch(root, outdir, *, parallel, seg_workers, sampling=None):
     )
 
 
-@needs_bioio_reader
-def test_end_to_end_selection_is_identical_at_1_and_12_workers(tmp_path):
+@pytest.mark.bioformats
+def test_end_to_end_selection_is_identical_at_1_and_12_workers(tmp_path, working_image_reader):
     """THE reproducibility test: the draw must not depend on worker count.
 
     Images are handed to a pool, so completion order varies with the worker
@@ -873,8 +924,8 @@ def test_end_to_end_selection_is_identical_at_1_and_12_workers(tmp_path):
     assert int(a["sampled_in_analysis"].astype(bool).sum()) == 12
 
 
-@needs_bioio_reader
-def test_end_to_end_disabled_adds_no_columns_and_no_methods_file(tmp_path):
+@pytest.mark.bioformats
+def test_end_to_end_disabled_adds_no_columns_and_no_methods_file(tmp_path, working_image_reader):
     """Sampling off must be invisible: no new columns, no new files.
 
     Byte-identity against the pre-feature code was verified separately by
@@ -896,8 +947,8 @@ def test_end_to_end_disabled_adds_no_columns_and_no_methods_file(tmp_path):
     assert not (out / "sampling_methods.txt").exists()
 
 
-@needs_bioio_reader
-def test_end_to_end_sampled_count_matches_the_per_nucleus_flags(tmp_path):
+@pytest.mark.bioformats
+def test_end_to_end_sampled_count_matches_the_per_nucleus_flags(tmp_path, working_image_reader):
     root = _write_synthetic_tiffs(tmp_path / "data")
     pi, nu, out = _run_batch(
         root, tmp_path / "out_on", parallel=1, seg_workers=1,
@@ -917,8 +968,8 @@ def test_end_to_end_sampled_count_matches_the_per_nucleus_flags(tmp_path):
     assert (out / "sampling_methods.txt").exists()
 
 
-@needs_bioio_reader
-def test_end_to_end_n_above_eligible_is_short_and_takes_everything(tmp_path):
+@pytest.mark.bioformats
+def test_end_to_end_n_above_eligible_is_short_and_takes_everything(tmp_path, working_image_reader):
     root = _write_synthetic_tiffs(tmp_path / "data")
     pi, nu, _ = _run_batch(
         root, tmp_path / "out_short", parallel=1, seg_workers=1,
@@ -929,8 +980,8 @@ def test_end_to_end_n_above_eligible_is_short_and_takes_everything(tmp_path):
     assert nu["sampled_in_analysis"].astype(bool).all()
 
 
-@needs_bioio_reader
-def test_end_to_end_run_config_records_the_resolved_sampling_block(tmp_path):
+@pytest.mark.bioformats
+def test_end_to_end_run_config_records_the_resolved_sampling_block(tmp_path, working_image_reader):
     import json
 
     root = _write_synthetic_tiffs(tmp_path / "data")

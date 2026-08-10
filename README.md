@@ -42,7 +42,7 @@
 
 ## Overview
 
-`fishsuite` is a standalone re-implementation of a Fiji image-analysis pipeline, written in pure Python so it can run headless, in parallel, and without ImageJ. It takes a folder of microscope images (`.vsi`, `.czi`, `.tif`/`.tiff`, `.lif`, `.nd2`, `.oib`/`.oif` — read through `bioio` + Bio-Formats) and produces a complete, condition-aware quantification of an RNA-FISH / IF experiment.
+`fishsuite` is a standalone re-implementation of a Fiji image-analysis pipeline, written in pure Python so it can run headless, in parallel, and without ImageJ. It takes a folder of microscope images (`.tif`/`.tiff` and OME-TIFF in a base install; `.vsi`, `.czi`, `.lif`, `.nd2`, `.oib`/`.oif` with the [`bioformats` extra](#which-file-formats-a-base-install-can-read)) and produces a complete, condition-aware quantification of an RNA-FISH / IF experiment.
 
 The pipeline is organized around four building blocks:
 
@@ -95,13 +95,34 @@ This installs the `fishsuite` console script (entry point `fishsuite.cli:cli`).
 
 Runtime dependencies (from `pyproject.toml`):
 
-`numpy>=1.24,<2.0`, `scipy>=1.10`, `scikit-image>=0.22`, `tifffile>=2024.1`, `stardist>=0.9`, `cellpose>=3.0`, `big-fish>=0.6`, `bioio>=3.0`, `bioio-bioformats>=2.0`, `pydantic>=2.5`, `click>=8.1`, `rich>=13.0`, `psutil>=5.9`, `pyyaml>=6.0`, `openpyxl>=3.1`, `pandas>=2.0`, `matplotlib>=3.7`.
+`numpy>=1.24,<2.0`, `scipy>=1.10`, `scikit-image>=0.22`, `tifffile>=2024.1`, `stardist>=0.9`, `cellpose>=3.0,<4.0`, `torch>=2.0`, `big-fish>=0.6`, `pillow>=10.0`, `roifile>=2023.8`, `bioio>=3.0`, `pydantic>=2.5`, `click>=8.1`, `rich>=13.0`, `psutil>=5.9`, `pyyaml>=6.0`, `openpyxl>=3.1`, `pandas>=2.0`, `matplotlib>=3.7`.
+
+### Which file formats a base install can read
+
+**A base install reads TIFF and OME-TIFF only.** Proprietary microscope formats — `.vsi`, `.czi`, `.lif`, `.nd2`, `.oib`/`.oif` — go through Bio-Formats, which is an optional extra:
+
+```bash
+pip install fishsuite                 # TIFF / OME-TIFF
+pip install "fishsuite[bioformats]"   # + .vsi .czi .lif .nd2 .oib/.oif
+```
+
+Bio-Formats runs on the JVM, so `[bioformats]` needs a **JDK installed**, and the Bio-Formats jars are downloaded on first use (so the first read needs network access). That is why it is opt-in: it is the single largest install-failure surface, and a user who only has TIFFs should not have to clear it.
+
+It is also opt-in for a harder reason. `bioio-bioformats` depends on `bffile`, which declares `numpy>=2.1.0`, and fishsuite pins `numpy<2.0` because StarDist/TensorFlow require it. While `bioio-bioformats` sat in the base dependencies, **`pip install fishsuite` failed with `ResolutionImpossible` on every Python version.** The extra's floor is `>=1.3` rather than `>=2.0` so that pip can backtrack past that conflict to a version that resolves.
 
 Optional extras:
 
-- `dev` — `pytest`, `hypothesis`, `ruff`, `build`, `twine`
-- `gui` — `PySide6>=6.6` (needed for `fishsuite gui`)
-- `directml` — `torch-directml>=0.2` (Windows only; AMD GPU cellpose)
+| Extra | Installs | For |
+|---|---|---|
+| `bioformats` | `bioio-bioformats>=1.3` | `.vsi`, `.czi`, `.lif`, `.nd2`, `.oib`/`.oif`. Needs a JDK. |
+| `gui` | `PySide6>=6.6` | `fishsuite gui` |
+| `directml` | `torch-directml>=0.2` | AMD GPU cellpose (Windows only) |
+| `all` | `bioformats` + `gui` | a normal interactive workstation |
+| `dev` | pytest, hypothesis, ruff, build, twine | development |
+
+> **Install the reader via the extra, not as a separate command.** `pip install "fishsuite[bioformats]"` resolves everything together and lands on numpy 1.26.4. Running `pip install bioio-bioformats` *afterwards* as its own command lets pip satisfy that package in isolation — observed to upgrade numpy to 2.2.6 and break the `numpy<2.0` pin that StarDist/TensorFlow need, silently, in an environment that had been working.
+
+> **Do not install `bioio-tifffile` or another third-party bioio reader plugin to work around the above.** `bioio` picks a plugin per file, and a tifffile-based plugin resolves an ambiguous multi-plane TIFF's extra axis as **Z or T instead of C**. Channel indices then point at the wrong planes: DAPI segmentation runs on the RNA plane and **finds zero nuclei**, silently, with no error. If a run reports 0 nuclei on a multi-plane TIFF that clearly has nuclei, suspect reader axis inference first — check `n_channels` for the file and confirm it matches the channels you expect. Use the `bioformats` extra instead. (A guard that warns when a channel count looks like a mis-inferred time or z axis would be worth adding; it is not implemented yet.)
 
 Python `>=3.10,<3.13`. The upper bound is forced by `numpy<2.0` (a TensorFlow/StarDist transitive constraint): there are no numpy 1.x wheels for CPython 3.13, so installing there tries to build numpy from source and fails.
 
@@ -121,7 +142,7 @@ The two GPU paths are **not** interchangeable internally. DirectML has no sparse
 
 DirectML targets a single AMD GPU — run one GPU job at a time.
 
-> **Notes on numpy/Bio-Formats:** numpy is pinned `<2.0` for TensorFlow/StarDist compatibility. On import, `fishsuite` forces a headless matplotlib backend (`MPLBACKEND=Agg`) and applies a small `bffile` numpy-1 compatibility monkeypatch so `bioio` works under numpy 1.x. Bio-Formats runs under a JVM; truncated/0-byte image files (`<512` bytes) are rejected before reaching it (a guard against native JVM crashes).
+> **Notes on numpy/Bio-Formats:** numpy is pinned `<2.0` for TensorFlow/StarDist compatibility. On import, `fishsuite` forces a headless matplotlib backend (`MPLBACKEND=Agg`) and applies a small `bffile` numpy-1 compatibility monkeypatch (`_apply_bffile_compat_patch` in `__init__.py`) so `bioio` works under numpy 1.x — that patch is *why* `bffile` runs fine on numpy 1.26.4 despite declaring `numpy>=2.1.0`, and it is a no-op when `bffile` is absent. Bio-Formats runs under a JVM; truncated/0-byte image files (`<512` bytes) are rejected before reaching it (a guard against native JVM crashes).
 
 ---
 
@@ -531,16 +552,22 @@ fishsuite presets show bin1_d8cmyo_100x > my_new_preset.yaml
 
 The presets folder holds two different kinds of file, and confusing them wastes time.
 
-**Four presets are portable starting points.** They are marked with a `# portable: true` comment on line 1 and are the only ones shipped inside the built wheel:
+**Six presets are portable starting points.** They are marked with a `# portable: true` comment on line 1 and are the only ones shipped inside the built wheel:
 
 | Portable preset | Mode | Use when |
 |---|---|---|
-| `generic_100x_0p065.yaml` | rna_only | 100× objective, ~0.065 µm/px. |
-| `generic_60x_0p108.yaml` | rna_only | 60× objective, ~0.108 µm/px. |
+| `generic_100x_0p065.yaml` | rna_only | One FISH target. 100× objective, ~0.065 µm/px. |
+| `generic_60x_0p108.yaml` | rna_only | One FISH target. 60× objective, ~0.108 µm/px. |
 | `u2os_100x.yaml` | rna_only | U2OS, 100×. |
 | `hek293_60x.yaml` | rna_only | HEK293, 60×. |
+| `generic_rna_rna_100x.yaml` | rna_rna | **Two FISH probes.** Spot-to-spot pairing + whole-nucleus pixel coloc. |
+| `generic_rna_protein_100x.yaml` | rna_protein | **FISH × diffuse antibody.** The diffuse-partner path: `detect_antibody_spots: false`, partner-intensity statistic, position + rotation nulls, and the radial profile all enabled. |
 
-**Everything else is a run record** — the provenance of a specific figure, kept so that a published result can be traced back to the exact settings that produced it. They are not templates. Most carry an `input_file_subset` listing the author's own image filenames, `z_stack.file_overrides` keyed to literal filenames, or `cellpose_device: directml` (AMD-only), so running one unchanged on another machine will discover zero images or fail on the device. They stay in the repository for provenance but are **excluded from the built wheel**, so a `pip install fishsuite` ships only the four portable ones.
+The last two are written from scratch as templates rather than stripped from a lab run, and they are commented at length — particularly `generic_rna_protein_100x.yaml`, which explains *why* a nucleoplasm-filling protein must not be spot-detected. If you are doing colocalization with an abundant nuclear protein, read that file before configuring anything: it is the case the tool is best at and the one most easily gotten wrong.
+
+**Everything else is a run record** — the provenance of a specific figure, kept so that a published result can be traced back to the exact settings that produced it. They are not templates. Most carry an `input_file_subset` listing the author's own image filenames, `z_stack.file_overrides` keyed to literal filenames, or `cellpose_device: directml` (AMD-only), so running one unchanged on another machine will discover zero images or fail on the device. They stay in the repository for provenance but are **excluded from the built wheel**, so a `pip install fishsuite` ships only the six portable ones.
+
+`h9_rna_rna_test.yaml` and `h9_rna_rna_test_labeled.yaml` deserve a specific warning, because they look portable and are not: they carry no absolute paths and no file subset, but their `subfolder_conditions` are keyed to the author's folder names, and **their `rna2` channel contains no probe** — the headers say so, and the labelled variant names it `Empty-Cy3`. They are two-channel infrastructure checks, not two-probe experiments. Use `generic_rna_rna_100x.yaml`.
 
 If you cloned the repository rather than pip-installing, `fishsuite presets list` will show all of them. Read the header comment before reusing one.
 
@@ -562,8 +589,10 @@ Shipped presets live in `src/fishsuite/config/presets/`. Representative ones (al
 | `miat_qki_coloc_ud_g2_rna_protein_2026-06-04.yaml` | rna_protein | Earlier g2 MIAT × QKI coloc pilot. |
 | `miat_qki_coloc_d4CM_decon_2026-06-20.yaml`, `..._d8CM_...`, `..._d15CM_...` | rna_protein | MIAT × QKI coloc on d4/d8/d15 cardiomyocytes (deconvolved). |
 | `miat_qki_EXPLORATORY_qkifoci_*` | rna_protein | Exploratory QKI-foci tuning variants. |
-| `generic_60x_0p108.yaml`, `generic_100x_0p065.yaml` | rna_only | Generic single-FISH starting points at the named pixel sizes. |
-| `hek293_60x.yaml`, `u2os_100x.yaml` | rna_only | Generic cell-line single-FISH templates. |
+| `generic_60x_0p108.yaml`, `generic_100x_0p065.yaml` | rna_only | **Portable.** Generic single-FISH starting points at the named pixel sizes. |
+| `hek293_60x.yaml`, `u2os_100x.yaml` | rna_only | **Portable.** Generic cell-line single-FISH templates. |
+| `generic_rna_rna_100x.yaml` | rna_rna | **Portable.** Generic two-probe template. |
+| `generic_rna_protein_100x.yaml` | rna_protein | **Portable.** Generic FISH × diffuse-antibody template with the nulls and radial profile on. |
 
 > `presets list` prints every `*.yaml` in the presets folder, which may include local scratch presets (e.g. `_tmp_*`); those are not official shipped presets.
 
@@ -651,7 +680,7 @@ Run the suite with pytest from the repo root (in either env):
 "C:\Users\ambur\miniconda3\envs\fishproc_dml\python.exe" -m pytest -q
 ```
 
-The current pass count is whatever the CI badge at the top of this file reports — a number written into prose here goes stale, so it is deliberately not repeated. Tests that need a GPU, the full ML stack, or a JVM are marked (`gpu` / `heavy` / `bioformats` / `lab`) and skip when unavailable; the light subset that CI runs is `-k "not stardist and not cellpose"`. See `CONTRIBUTING.md` for what each marker means.
+The current pass count is whatever the CI badge at the top of this file reports — a number written into prose here goes stale, so it is deliberately not repeated. Tests that need a GPU, the full ML stack, a working image reader, or the author's lab tree are marked (`gpu` / `heavy` / `bioformats` / `lab`) and skip when unavailable. CI runs `-m "not heavy"`. See `CONTRIBUTING.md` for what each marker means.
 
 Coverage areas (one test file each): autofocus z-lock, fixed-N focus window, partner-intensity performance, position-randomization null coloc, partner radial profile, rotation null, threshold-intensity feature, output/Excel schema, reproducibility (`repro`), QC flags, nucleolus performance-equivalence, rna_protein depth, coloc backfill, CLI post-run subcommands, walkthrough figure, and a general smoke test.
 
@@ -742,7 +771,9 @@ The colocalization design follows the "coefficient-with-an-explicit-null" tradit
 - **Radial profile promoted to first class** — per-nucleus and per-image columns (spot-weighted pool and equal-weight rollup) plus a mean ± 95% CI table and figure; fails loudly rather than silently rescaling distance bins on an untrusted pixel size.
 - **Spot-callability diagnostic** — sample-vs-secondary-only spot rate and their ratio, per punctate channel, so a channel with no thresholdable object is visible before its mask-based coefficients get interpreted.
 - **CUDA support for cellpose** — `nuclei.cellpose_device: cuda` for NVIDIA hardware, alongside the existing DirectML path, without applying DirectML's CPU flow-dynamics workaround to it.
-- **Continuous integration** — Linux and Windows, Python 3.10 and 3.12, including a clean-venv install of the built wheel.
+- **`pip install fishsuite` works again** — `bioio-bioformats` moved to an optional `bioformats` extra. In the base dependencies it made the package impossible to install on any Python version (`bffile` requires `numpy>=2.1.0` against the `numpy<2.0` pin StarDist/TensorFlow force). A base install now reads TIFF/OME-TIFF; proprietary formats need the extra. New `all` extra bundles `bioformats` + `gui`.
+- **Two portable colocalization presets** — `generic_rna_rna_100x.yaml` and `generic_rna_protein_100x.yaml`, written as templates rather than stripped from a lab run. The tool previously shipped no portable example of two-channel coloc at all.
+- **Continuous integration** — Linux and Windows, Python 3.10 and 3.12, including a clean-venv install of the built wheel and a blocking dependency-resolution gate.
 - **Rotation "proper-background" null** — native, default-off rotation/translation nulls (`compute_partner_rotation_null` / `partner_rotation_*`), validated against an adversarial prototype; the headline control for spot-vs-diffuse-protein association beyond shared compartmentalization.
 - **Self-sufficient coloc outputs** — the canonical MIAT/QKI presets emit `coloc_null_draws.csv` + `coloc_radial_profile.csv` themselves, so `backfill` is only needed to retrofit older runs.
 - **Post-run utilities** — `backfill`, `walkthrough`, `postrun` as friendly CPU-only wrappers over the standalone modules, with plain-English errors.

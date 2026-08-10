@@ -12,8 +12,11 @@ archived output cannot distinguish a real difference from run-to-run variation.
 Comparing the two implementations side by side on identical input in one process
 does isolate the move itself.
 
-Skipped entirely when the original tree is absent, which is the normal state on
-CI and on any other machine.
+The comparison tests are marked ``lab`` and skip when the original tree is absent,
+which is the normal state on CI and on any other machine. The checksum test is
+NOT: it hashes only files inside this repository, so it runs everywhere — and it
+is the guardrail that matters most on CI, where an accidental `_vendor/` edit
+would otherwise sail through.
 """
 from __future__ import annotations
 
@@ -26,10 +29,13 @@ import pytest
 
 ORIGINAL_TREE = Path(r"F:\Image Analysis Work\image-analysis-pipeline\python")
 
-pytestmark = pytest.mark.skipif(
-    not ORIGINAL_TREE.is_dir(),
-    reason=f"original source tree not present at {ORIGINAL_TREE}",
-)
+# NOT a module-level skipif. The comparison tests below genuinely need the
+# external tree, but ``test_vendored_checksums_match_provenance`` does not — it
+# only hashes files inside this repository. A module-level mark used to hide it
+# whenever the tree was absent, i.e. it skipped on CI, which is precisely where
+# an accidental `_vendor/` edit would otherwise go unnoticed. The requirement now
+# lives on the `originals` fixture, so only its consumers skip.
+_needs_original_tree = pytest.mark.lab
 
 
 def _load_by_path(module_name: str, file_path: Path):
@@ -48,6 +54,8 @@ def _load_by_path(module_name: str, file_path: Path):
 
 @pytest.fixture(scope="module")
 def originals():
+    if not ORIGINAL_TREE.is_dir():
+        pytest.skip(f"original source tree not present at {ORIGINAL_TREE}")
     seg = _load_by_path(
         "_orig_segment_image", ORIGINAL_TREE / "segmentation" / "segment_image.py"
     )
@@ -91,7 +99,14 @@ def _synthetic_spots(seed: int = 1) -> np.ndarray:
     return np.clip(img, 0, 65535).astype(np.uint16)
 
 
-@pytest.mark.parametrize("backend", ["otsu", "stardist", "cellpose"])
+@_needs_original_tree
+@pytest.mark.parametrize("backend", [
+    "otsu",
+    # stardist pulls TensorFlow and cellpose pulls torch + a ~1.2 GB model, so
+    # both are `heavy` and are excluded from the light CI run by marker.
+    pytest.param("stardist", marks=pytest.mark.heavy),
+    pytest.param("cellpose", marks=pytest.mark.heavy),
+])
 def test_run_backend_is_bitwise_identical(originals, vendored, backend):
     orig_seg, _ = originals
     vend_seg, _ = vendored
@@ -119,6 +134,7 @@ def test_run_backend_is_bitwise_identical(originals, vendored, backend):
     )
 
 
+@_needs_original_tree
 def test_detect_spots_bigfish_is_bitwise_identical(originals, vendored):
     _, orig_spots = originals
     _, vend_spots = vendored
@@ -137,6 +153,7 @@ def test_detect_spots_bigfish_is_bitwise_identical(originals, vendored):
     )
 
 
+@_needs_original_tree
 def test_detect_spots_log_is_bitwise_identical(originals, vendored):
     _, orig_spots = originals
     _, vend_spots = vendored

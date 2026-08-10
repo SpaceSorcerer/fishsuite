@@ -41,7 +41,10 @@ dependencies = [
     # ImageJ ROI export in core/_vendor/segmentation/segment_image.py.
     "roifile>=2023.8",
     "bioio>=3.0",
-    "bioio-bioformats>=2.0",
+    # NOTE: bioio-bioformats is NOT here — it is the `bioformats` extra below.
+    # Keeping it in the base set made `pip install fishsuite` IMPOSSIBLE to
+    # resolve on every Python version: bioio-bioformats pulls bffile, which
+    # requires numpy>=2.1.0, against the numpy<2.0 pin above. See the extra.
     "pydantic>=2.5",
     "click>=8.1",
     "rich>=13.0",
@@ -68,13 +71,44 @@ gui = [
 directml = [
     "torch-directml>=0.2 ; sys_platform == 'win32'",
 ]
+# Bio-Formats reader, for the proprietary microscope formats: .vsi, .czi, .lif,
+# .nd2, .oib/.oif. Moved OUT of the base dependencies on 2026-08-10 because it
+# made the package uninstallable: bioio-bioformats -> bffile requires
+# numpy>=2.1.0, which contradicts the numpy<2.0 pin that StarDist/TensorFlow
+# force, so `pip install fishsuite` failed with ResolutionImpossible on every
+# Python version. It is also the single largest install-failure surface for an
+# outside user, because it needs a JVM: a JDK must be present, and the
+# Bio-Formats jars are downloaded on first use.
+#
+# Consequence, stated plainly: a base install reads TIFF / OME-TIFF only. Any
+# proprietary format needs `pip install "fishsuite[bioformats]"`.
+# The floor is 1.3 rather than 2.0 SO THAT PIP CAN SOLVE THIS AT ALL. pip tries
+# 2.0.0 first, hits the bffile/numpy wall, and backtracks to 1.3.2, which does
+# not depend on bffile and accepts numpy>=1.21. Pinning >=2.0 here would leave
+# the extra as uninstallable as the base set was.
+#
+# UNVALIDATED VERSION SKEW, read before publishing numbers: the author's own
+# environment runs bioio-bioformats 2.0.0 (with bffile 0.1.1 on numpy 1.26.4 —
+# it works in practice, so bffile's declared numpy>=2.1.0 floor is stricter than
+# reality). An outside user resolving this extra gets 1.3.2 instead. Whether the
+# two reader versions return byte-identical pixels has NOT been checked. That is
+# a parity question, not a packaging one — see CONTRIBUTING.md on changes that
+# can move a computed number.
+bioformats = [
+    "bioio-bioformats>=1.3",
+]
+# Everything an interactive workstation wants. Deliberately EXCLUDES `directml`,
+# which is AMD-and-Windows-only, and `dev`.
+all = [
+    "fishsuite[bioformats,gui]",
+]
 
 [project.scripts]
 fishsuite = "fishsuite.cli:cli"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/fishsuite"]
-# Of the 46 presets in the repository, 42 are RUN RECORDS, not templates: they
+# Of the 48 presets in the repository, 42 are RUN RECORDS, not templates: they
 # carry `input_file_subset` naming the author's own .vsi files, or
 # `z_stack.file_overrides` keyed to literal filenames, or `cellpose_device:
 # directml` (AMD-only). An external user who ran one would discover zero images
@@ -95,6 +129,11 @@ exclude = [
 "src/fishsuite/config/presets/generic_60x_0p108.yaml" = "fishsuite/config/presets/generic_60x_0p108.yaml"
 "src/fishsuite/config/presets/u2os_100x.yaml" = "fishsuite/config/presets/u2os_100x.yaml"
 "src/fishsuite/config/presets/hek293_60x.yaml" = "fishsuite/config/presets/hek293_60x.yaml"
+# Written from scratch for the release rather than stripped from a lab preset,
+# because the tool's headline capability is two-channel colocalization and every
+# other portable preset is rna_only.
+"src/fishsuite/config/presets/generic_rna_rna_100x.yaml" = "fishsuite/config/presets/generic_rna_rna_100x.yaml"
+"src/fishsuite/config/presets/generic_rna_protein_100x.yaml" = "fishsuite/config/presets/generic_rna_protein_100x.yaml"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

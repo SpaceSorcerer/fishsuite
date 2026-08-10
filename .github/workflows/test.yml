@@ -46,13 +46,15 @@ jobs:
 
       # -- (a) install + light test run ------------------------------------
       #
-      # Installed WITHOUT the heavy ML stack. This is deliberate and it is not
-      # just about runtime: `pip install fishsuite` with the full declared
-      # dependency set currently FAILS TO RESOLVE, because bioio-bioformats
-      # pulls bffile, which requires numpy>=2.1, while fishsuite pins numpy<2.0
-      # for StarDist/TensorFlow. The `deps-resolve` job below reports that
-      # non-blockingly instead of hiding it. Until it is fixed, the light set is
-      # the only installable set.
+      # Installed WITHOUT the heavy ML stack, to keep the blocking job fast.
+      #
+      # Do NOT add a bioio reader plugin here, and in particular NOT
+      # `bioio-tifffile`. With it installed, the ambiguous 2-plane TIFF the
+      # end-to-end tests write is inferred as Z rather than C, so the RNA channel
+      # becomes unreachable and DAPI segmentation runs on the wrong plane. It does
+      # not fix those tests; it converts them from an honest skip into a failure,
+      # and it is a silent wrong-plane result rather than a crash. The
+      # `bioformats` extra is the supported reader.
       #
       # Excluded here: cellpose, stardist, tensorflow, torch, torch-directml,
       # bioio-bioformats, PySide6. None is needed at import time — verified.
@@ -65,12 +67,15 @@ jobs:
       - name: Install fishsuite (editable, no deps)
         run: python -m pip install -e . --no-deps
 
-      # The `lab` / `gpu` / `heavy` / `bioformats` markers guard everything that
-      # needs hardware or the lab image tree; the two ML-backend tests are
-      # deselected by name. Anything else that cannot run here must SKIP, so a
-      # failure in this step is a real failure.
+      # `-m "not heavy"` deselects the StarDist/TensorFlow and cellpose/torch
+      # parity params by MARKER, not by matching their names. The `lab` and
+      # `bioformats` tests are left in deliberately: they skip themselves (the
+      # `originals` fixture skips without the lab tree; the reader probe skips
+      # without a working bioio plugin), and a reported skip is evidence the test
+      # exists. Anything else that cannot run here must skip too, so a failure in
+      # this step is a real failure.
       - name: Run tests (light)
-        run: python -m pytest tests/ -q -p no:cacheprovider -k "not stardist and not cellpose"
+        run: python -m pytest tests/ -q -p no:cacheprovider -m "not heavy"
 
       # -- (b) lint --------------------------------------------------------
       # Rule selection lives in pyproject.toml [tool.ruff.lint] and passes clean.
@@ -143,7 +148,7 @@ jobs:
 
       # -- (f) the wheel must not carry non-portable presets -----------------
       #
-      # 42 of the 46 presets are run records naming the author's own image files.
+      # 42 of the 48 presets are run records naming the author's own image files.
       # pyproject excludes them deny-all-then-allow, so this asserts the policy
       # actually held rather than trusting the build config.
       - name: Wheel ships only the portable presets
@@ -161,6 +166,8 @@ jobs:
               "fishsuite/config/presets/generic_60x_0p108.yaml",
               "fishsuite/config/presets/u2os_100x.yaml",
               "fishsuite/config/presets/hek293_60x.yaml",
+              "fishsuite/config/presets/generic_rna_rna_100x.yaml",
+              "fishsuite/config/presets/generic_rna_protein_100x.yaml",
           }
           shipped = {n for n in names if "/presets/" in n and n.endswith(".yaml")}
 
@@ -196,28 +203,43 @@ jobs:
           path: dist/
 
   # ---------------------------------------------------------------------------
-  # Non-blocking: does the FULL declared dependency set even resolve?
+  # BLOCKING: `pip install fishsuite` must actually resolve.
   #
-  # As of 2026-08-10 it does NOT — bioio-bioformats -> bffile requires
-  # numpy>=2.1, which contradicts fishsuite's numpy<2.0 pin (itself forced by
-  # StarDist/TensorFlow). `--dry-run` reports that in seconds without downloading
-  # gigabytes. Non-blocking so the defect is visible without every pull request
-  # inheriting it; it must be fixed before v1.0.0 is tagged.
+  # This is a gate rather than an advisory note because it was broken and nobody
+  # noticed: until 2026-08-10 `bioio-bioformats` sat in the base dependencies and
+  # pulled `bffile`, which requires numpy>=2.1 against the numpy<2.0 pin that
+  # StarDist/TensorFlow force — so `pip install fishsuite` failed with
+  # ResolutionImpossible on EVERY Python version. Verification at the time used
+  # `--no-deps`, which never runs the resolver, so it looked fine.
+  #
+  # `--dry-run` runs the real resolver in seconds without downloading anything.
+  # Both the base set and the `bioformats` extra are checked, on both ends of the
+  # supported Python range.
   # ---------------------------------------------------------------------------
   deps-resolve:
     if: github.event_name != 'schedule'
-    name: full dependency set resolves (advisory)
+    name: pip install resolves (py${{ matrix.python-version }})
     runs-on: ubuntu-latest
-    continue-on-error: true
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.12"]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
-      - name: pip install --dry-run .
+          python-version: ${{ matrix.python-version }}
+      - name: Base set resolves
         run: |
           python -m pip install --upgrade pip
-          python -m pip install --dry-run . 2>&1 | tail -40
+          python -m pip install --dry-run . 2>&1 | tail -5
+      # The bioformats extra needs its own check: it is the piece that was
+      # unresolvable, and its floor is 1.3 rather than 2.0 precisely so pip can
+      # backtrack past the bffile/numpy wall. A stricter pin silently breaks it.
+      - name: bioformats extra resolves
+        run: python -m pip install --dry-run ".[bioformats]" 2>&1 | tail -5
+      - name: gui + bioformats (all) resolves
+        run: python -m pip install --dry-run ".[all]" 2>&1 | tail -5
 
   # ---------------------------------------------------------------------------
   # Weekly, non-blocking: install the heavy stack and run the tests it unlocks,
@@ -241,13 +263,15 @@ jobs:
       - name: Install the full stack
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -e ".[dev,gui]"
+          python -m pip install -e ".[dev,all]"
 
       - name: Report what actually got installed
         run: python -m pip list
 
-      # No -k exclusion here: the heavy backends are the point of this job.
+      # No marker exclusion here: the heavy backends are the point of this job.
       # `lab`-marked tests still skip — that tree exists only on the author's
-      # machine and is not part of the package.
+      # machine and is not part of the package. The `bioformats` tests should
+      # RUN here, since [all] brings the reader; if they skip, the extra failed
+      # to give a working reader and the log above will say which version landed.
       - name: Run the full test suite
-        run: python -m pytest tests/ -q -p no:cacheprovider
+        run: python -m pytest tests/ -q -p no:cacheprovider -rs

@@ -1,0 +1,169 @@
+# portable: true
+# Generic RNA-FISH x DIFFUSE-ANTIBODY starting point, 100x objective (~0.065 um/px).
+# PORTABLE: no machine-specific paths, no input_file_subset, no
+# z_stack.file_overrides, CPU device. Safe to run on any machine and
+# shipped inside the built wheel.
+#
+# This is the case the tool is genuinely good at, and the one most easily gotten
+# wrong: a sparse punctate RNA target versus an abundant nuclear protein that
+# fills the nucleoplasm. It enables the spot-centric statistic with its nulls and
+# the radial profile, because for a diffuse partner those are the readouts that
+# mean something and the whole-nucleus mask-based coefficients are not.
+#
+# Three things to set for your own data, in order of how often they are wrong:
+#   1. channels.*        - confirm the indices against your own metadata.
+#   2. nuclei.min_area_px - PIXELS, so it depends on your objective and camera.
+#   3. foci.bigfish_spot_radius_nm - a PHYSICAL size, for the RNA probe.
+#
+# Runtime note: the nulls below are 1000 draws per nucleus each. That is not free.
+# Start with one condition to check the settings before running a whole plate.
+
+experiment:
+  name: generic_rna_protein_100x
+  description: "RNA-FISH x diffuse antibody template, nulls on. Retarget channels and scales before use."
+
+conditions:
+  # 'auto' derives conditions from the input layout rather than from a hard-coded
+  # folder map, so this preset works on a tree it has never seen.
+  mode: auto
+
+channels:
+  # rna_protein routes through the two-channel core: the antibody is mapped into
+  # the rna2 slot, the full analysis runs, and every rna2_* output is relabelled
+  # protein_*. So "rna2" columns you see in the code are your protein columns.
+  analysis_mode: rna_protein
+  # 0-indexed. CONFIRM THESE AGAINST YOUR OWN FILE - do not trust a template.
+  # `fishsuite preview -c <this file> -i <dir>` prints the detected channel names
+  # for one image. Auto-detect (-1) frequently swaps two red-ish channels when
+  # their metadata names are non-standard, which silently transposes the RNA and
+  # antibody roles, so assigning them explicitly is the safer default.
+  dapi: 0
+  rna: 1
+  antibody: 2
+  dapi_lut: blue
+  rna_lut: yellow
+  antibody_lut: green
+  rna_label: "RNA"
+  antibody_label: "Protein"
+
+z_stack:
+  # A single in-focus plane. This matters more here than in a counting-only run:
+  # the partner intensity is sampled on the SAME z-locked plane as each spot, so
+  # a projection would compare a spot against protein signal from other planes.
+  mode: autofocus
+
+nuclei:
+  backend: stardist
+  prob_threshold: 0.5
+  stardist_gauss_sigma: 3.0
+  stardist_postprocess: watershed_otsu
+  # PIXELS, not um^2. Rescale for your pixel size.
+  min_area_px: 5000
+  exclude_border: true
+  border_margin_px: 5
+  # cellpose_device intentionally left at its default (cpu) so this runs anywhere.
+
+cytoplasm:
+  enabled: true
+  measure_nc_ratio: true
+
+foci:
+  backend: bigfish
+  # PHYSICAL radius for the RNA probe.
+  bigfish_spot_radius_nm: 150.0
+  threshold_multiplier: 0.7
+
+  # --- WHY THIS IS false -------------------------------------------------
+  # A nucleoplasm-filling protein has NO THRESHOLDABLE OBJECT. Run a spot
+  # detector on it and it returns puncta at essentially the same rate from a
+  # no-probe secondary-only control as from a real sample - it is finding
+  # texture in background, not molecules. Every mask-based colocalization
+  # coefficient computed from those "spots" (Manders M1/M2, Li ICQ, Jaccard,
+  # Dice) then quantifies background overlap and will happily report a
+  # confident-looking number.
+  #
+  # With this false, the antibody channel is treated as an INTENSITY LAYER:
+  # spot detection is skipped for it, and the analysis instead asks how much
+  # protein signal sits at the RNA spots versus a null. Threshold-free
+  # correlation (Pearson/Spearman) and the radial profile stay valid because
+  # neither needs an object in the partner channel.
+  #
+  # Do not try to fix a diffuse channel with threshold_multiplier. Raising it
+  # only rescales the auto-threshold; it cannot manufacture specificity where
+  # there is no object, and it silently changes the RNA channel's meaning too
+  # if applied globally. If you genuinely do have punctate antibody foci and
+  # want them detected, set this true and use an ABSOLUTE floor instead:
+  #     antibody_overrides:
+  #       min_spot_peak_intensity: <value in your own intensity units>
+  # which drops sub-floor puncta right after detection and is decoupled from
+  # both the display floor and the auto-threshold.
+  #
+  # To check which case you are in: set detect_in_sec_only: true, include your
+  # secondary-only images, and read spot_rate_signal_to_control_* in the
+  # per-image sheet. A ratio near 1 means no discrimination - keep this false.
+  detect_antibody_spots: false
+
+  # --- the spot-centric statistic and its nulls --------------------------
+  # Mean partner intensity in a small disk around each RNA spot, on the spot's own
+  # z-locked plane, using RAW intensity so the value does not move when a display
+  # floor moves. Required by every null below.
+  compute_partner_intensity: true
+
+  # (a) Position-randomization null: re-place the same number of spots uniformly
+  # in the nucleus. Controls for spot count and nuclear geometry. It does NOT
+  # control for co-distribution - if both channels favour the same sub-nuclear
+  # regions, this null reads as enrichment. That is why (b) exists.
+  compute_partner_null_enrichment: true
+  partner_null_n: 1000
+  # Canonical sampling disk. Deliberately NOT tied to the spot radius above: a
+  # radius-sized disk is ~1 px at this pixel size and would not reproduce the
+  # published method.
+  partner_null_disk_px: 3.0
+  partner_null_seed: 0
+
+  # (b) Rotation "proper-background" null - the headline control. Rotates the
+  # whole RNA spot constellation rigidly about its own centroid, preserving the
+  # pattern's internal geometry while destroying its registration to the fixed
+  # protein field. observed > rotation null therefore means the protein is
+  # concentrated at the spots BEYOND shared sub-nuclear compartmentalization,
+  # which is the claim you actually want to make.
+  compute_partner_rotation_null: true
+  partner_rotation_n: 1000
+  partner_rotation_seed: 0
+  # A nucleus contributes only if at least this fraction of spots stay inside the
+  # mask on the first pass; low-retention nuclei would bias enrichment downward.
+  partner_rotation_min_retention: 0.5
+  partner_rotation_assoc_percentile: 95.0
+
+  # (c) Radial profile - the 2-D analogue of a line scan, and the metric that
+  # fits a diffuse partner best because it needs no threshold in either channel:
+  # just protein intensity as a function of distance from an RNA spot. Emits
+  # per-nucleus and per-image columns plus a mean +/- 95% CI table and figure.
+  compute_partner_radial_profile: true
+  # Outer-edge radii of the concentric annuli, in MICRONS.
+  partner_radial_bins_um: [0.25, 0.5, 0.75, 1.0]
+
+  # Uncomment together with nucleolus.enabled below to exclude nucleolar voids.
+  # exclude_nucleolus_from_partner_null: true
+
+nucleolus:
+  # Off by default. Turn this on together with
+  # foci.exclude_nucleolus_from_partner_null when the protein is excluded from
+  # nucleoli: an abundant nuclear protein and a nuclear RNA often both avoid the
+  # DAPI-poor nucleolar volume, and mutual avoidance alone inflates enrichment.
+  enabled: false
+
+spot_coloc:
+  pair_distance_um: 0.3
+  report_nn_distance: true
+
+pixel_coloc:
+  # Reported, but read them knowing the caveat: with a diffuse partner the
+  # threshold-free coefficients (Pearson, Spearman) are the interpretable ones and
+  # the mask-based ones (Manders, Jaccard, Dice) wash out or measure background.
+  threshold_mode: mad
+  threshold_scope: batch
+  k_mad: 2.0
+
+parallel:
+  workers: auto
