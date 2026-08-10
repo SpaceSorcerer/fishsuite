@@ -7,9 +7,15 @@ name = "fishsuite"
 version = "0.1.0"
 description = "Standalone Python pipeline for RNA-FISH / IF quantification & colocalization (Fiji-free)"
 readme = "README.md"
-# Upper bound is forced by numpy<2.0 (itself required by TensorFlow/StarDist):
-# there are no numpy 1.x wheels for CPython 3.13, so an install there tries to
-# build numpy from source and fails. Verified 2026-08-09.
+# Upper bound is forced by numpy<2.0, which is itself a TensorFlow/StarDist
+# transitive constraint and NOT a requirement of fishsuite's own code (the suite
+# is green on numpy 2.5.2 in a light environment). There are no numpy 1.x wheels
+# for CPython 3.13, so installing there tries to build numpy from source and
+# fails. Verified 2026-08-09.
+# Relaxing this means moving stardist (and the numpy cap with it) into an extra,
+# which also means nuclei.backend can no longer default to stardist in a base
+# install. Deferred deliberately rather than shipping a default backend the base
+# install cannot run.
 requires-python = ">=3.10,<3.13"
 license = { text = "MIT" }
 authors = [
