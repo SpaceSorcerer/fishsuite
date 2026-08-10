@@ -113,9 +113,18 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python -m venv /tmp/cleanvenv || python -m venv "$RUNNER_TEMP/cleanvenv"
+          # Create and locate the venv via the SAME variable. An earlier version
+          # created it at /tmp/cleanvenv but resolved $RUNNER_TEMP/cleanvenv,
+          # which is set on both runners, so it looked for a venv that was never
+          # created there and every job died with exit 127.
           VENV="${RUNNER_TEMP:-/tmp}/cleanvenv"
+          rm -rf "$VENV"
+          python -m venv "$VENV"
+          # Windows venvs put executables in Scripts/, POSIX in bin/.
           if [ -d "$VENV/Scripts" ]; then BIN="$VENV/Scripts"; else BIN="$VENV/bin"; fi
+          echo "clean venv: $VENV  (bin dir: $BIN)"
+          test -x "$BIN/python" || test -x "$BIN/python.exe" || {
+            echo "::error::no interpreter at $BIN"; ls -la "$VENV"; exit 1; }
           "$BIN/python" -m pip install --upgrade pip
           "$BIN/python" -m pip install "numpy>=1.24,<2.0" "scipy>=1.10" "scikit-image>=0.22" "tifffile>=2024.1" "big-fish>=0.6" "pillow>=10.0" "roifile>=2023.8" "bioio>=3.0" "pydantic>=2.5" "click>=8.1" "rich>=13.0" "psutil>=5.9" "pyyaml>=6.0" "openpyxl>=3.1" "pandas>=2.0" "matplotlib>=3.7"
           WHEEL=$(ls dist/*.whl)
