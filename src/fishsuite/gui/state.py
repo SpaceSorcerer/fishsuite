@@ -16,8 +16,10 @@ from __future__ import annotations
 
 import copy
 import json
+import os
 import re
 import shutil
+import sys
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -27,11 +29,27 @@ import yaml
 
 SETTINGS_PATH = Path.home() / ".fishsuite_gui.json"
 
-DEFAULT_OUTPUT_BASE = Path(r"F:\Image Analysis Work\fishsuite-runs")
-DEFAULT_PYTHON_EXE = Path(r"C:\Users\ambur\miniconda3\envs\fishproc\python.exe")
-DEFAULT_DOWNSTREAM_CWD = Path(r"F:\Image Analysis Work\image-analysis-pipeline\python")
-DEFAULT_DOWNSTREAM_MODULE = "analysis.single_condition_plots"
-DEFAULT_PRESET_STEM = "h9_hesc_100x"
+def _default_output_base() -> Path:
+    """Where the GUI proposes writing runs.
+
+    ``$FISHSUITE_OUTPUT_BASE`` wins; otherwise a per-user directory that exists
+    on any machine. Previously hard-coded to a drive only present on one
+    workstation, which left every other user staring at a path that does not
+    exist.
+    """
+    env = os.environ.get("FISHSUITE_OUTPUT_BASE")
+    if env:
+        return Path(env)
+    return Path.home() / "fishsuite-runs"
+
+
+DEFAULT_OUTPUT_BASE = _default_output_base()
+DEFAULT_PYTHON_EXE = Path(sys.executable)
+# The figure module now ships inside the package, so no working directory needs
+# to be set. $FISHSUITE_DOWNSTREAM_PATH selects an external checkout instead.
+DEFAULT_DOWNSTREAM_CWD = None
+DEFAULT_DOWNSTREAM_MODULE = "fishsuite.core._vendor.analysis.single_condition_plots"
+DEFAULT_PRESET_STEM = "generic_100x_0p065"
 
 
 # ---------------------------------------------------------------------------

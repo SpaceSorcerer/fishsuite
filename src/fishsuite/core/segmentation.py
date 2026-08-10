@@ -17,12 +17,10 @@ from typing import Dict, Any
 import numpy as np
 
 
-# Inject the Fiji pipeline 'python/' folder onto sys.path so we can import
-# its segmentation module. The package never modifies that source — read-only
-# reuse.
-_FIJI_PY = Path(r"F:\Image Analysis Work\image-analysis-pipeline\python")
-if str(_FIJI_PY) not in sys.path:
-    sys.path.insert(0, str(_FIJI_PY))
+# The segmentation backends now ship inside this package at
+# ``core/_vendor/segmentation/`` — see ``_vendor/PROVENANCE.md`` for the source
+# repository, commit and per-file checksums. They are copied verbatim; change
+# behaviour by wrapping here, never by editing the vendored file.
 
 
 def _smooth_label_boundaries(labels: np.ndarray, radius: int) -> np.ndarray:
@@ -110,7 +108,7 @@ def segment_nuclei(
         label_smoothing_radius_px,
         diameter, flow_threshold, cellprob_threshold, cellpose_model_type
     """
-    from segmentation.segment_image import run_backend
+    from ._vendor.segmentation.segment_image import run_backend
     p = dict(params or {})
     # 2026-05-13: separate the AUTHORITATIVE min/max area filter from the
     # backend's internal filter. The backend uses a coarse floor (1/2 of

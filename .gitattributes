@@ -2,3 +2,10 @@
 *.py text eol=lf
 *.yaml text eol=lf
 *.md text eol=lf
+
+# Vendored code is copied verbatim from another repository and its SHA-256
+# checksums are recorded in src/fishsuite/core/_vendor/PROVENANCE.md (and
+# enforced by tests/test_vendor_parity.py). End-of-line conversion would change
+# those bytes on checkout and make the provenance record unverifiable, so these
+# files are exempt from the eol=lf rule above and stored byte-for-byte.
+src/fishsuite/core/_vendor/** -text

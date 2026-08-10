@@ -74,3 +74,6 @@ _staging_UD_ALLARMS/
 *.vsi
 *.ets
 *.oex
+
+# Parameter-sweep scratch presets — tuning artefacts, not release content
+src/fishsuite/config/presets_archive_scratch_2026-07-09/

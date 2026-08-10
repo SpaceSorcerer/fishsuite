@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import os
 import sys
+import warnings
 from pathlib import Path
 from typing import Callable, List, Optional, Sequence
 
@@ -71,15 +72,29 @@ def order_conditions_control_first(conditions: Sequence[str]) -> List[str]:
 def get_locked_drawer() -> Optional[Callable]:
     """Import and return the LOCKED ``_superplot_into_axes`` callable, or None.
 
-    Never raises: a missing/broken external tree just yields None so the caller
-    falls back to the vendored drawer."""
-    # (1) already importable?
+    Never raises. Returning None means the caller falls back to the vendored
+    drawer, which produces a DIFFERENT figure — so the fallback is warned about
+    loudly rather than taken silently.
+
+    Resolution order: the in-package copy first, then
+    ``$FISHSUITE_SUPERPLOT_PATH``, then the original lab tree. The latter two
+    exist only for comparing against a different revision of the figure code.
+    """
+    # (1) the in-package copy — the normal path (core/_vendor/analysis/)
+    try:
+        from ._vendor.analysis.single_condition_plots import _superplot_into_axes  # type: ignore
+        return _superplot_into_axes
+    except Exception as exc:
+        _first_failure = exc
+
+    # (2) already importable as a top-level module?
     try:
         from analysis.single_condition_plots import _superplot_into_axes  # type: ignore
         return _superplot_into_axes
     except Exception:
         pass
-    # (2) env override, then (3) the lab default
+
+    # (3) env override, then (4) the original lab tree
     candidates = []
     env = os.environ.get("FISHSUITE_SUPERPLOT_PATH")
     if env:
@@ -94,6 +109,16 @@ def get_locked_drawer() -> Optional[Callable]:
                 return _superplot_into_axes
         except Exception:
             continue
+
+    warnings.warn(
+        "SuperPlot: the locked drawer could not be imported from the package "
+        f"(core/_vendor/analysis/single_condition_plots.py): {_first_failure!r}. "
+        "Falling back to the built-in drawer, which does NOT reproduce the "
+        "locked figure recipe — the resulting panels are not directly "
+        "comparable with previously published ones.",
+        RuntimeWarning,
+        stacklevel=2,
+    )
     return None
 
 
