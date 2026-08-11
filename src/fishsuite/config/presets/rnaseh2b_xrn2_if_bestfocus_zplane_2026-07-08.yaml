@@ -67,9 +67,10 @@ nuclei:
 
 if_intensity:
   # --- plate map (biology source of truth) ---------------------------------
-  # Machine-specific path scrubbed for release — set this to your own plate map
-  # (columns: well, genotype, staining_arm|arm, secondary) before running.
-  plate_layout_csv: "<SET_ME>"
+  # A DATED RUN RECORD: this absolute path is the provenance of a published
+  # figure, not a template for someone else's machine. The wheel excludes every
+  # dated preset (pyproject deny-all-then-allow), so nothing ships it.
+  plate_layout_csv: "F:/Image Analysis Work/RNASEH2B-BIN1/RNaseH2B_XRN2_IF_bestfocus_zplane_20260708-161629/bestfocus_plane_input/plate_layout.csv"
   well_secondary_overrides: {}   # no conflict wells in this plate
 
   # --- input discovery -----------------------------------------------------

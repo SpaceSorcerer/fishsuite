@@ -294,7 +294,18 @@ def flag_overdetect_outliers(rows, cfg) -> int:
 # channel suffix is whatever follows it (rna1 / rna2, or protein / antibody once
 # rna_protein has relabelled), so discovering channels from the keys keeps this
 # working across modes without a hard-coded channel list.
-_SPOTS_PER_NUCLEUS_PREFIX = "mean_spots_per_nucleus_"
+#
+# BUT the single-channel modes emit the key WITHOUT a suffix: rna_only writes the
+# bare ``mean_spots_per_nucleus`` and nothing else, so a prefix-only match found
+# no channels, returned an empty channel list, and made this whole diagnostic a
+# silent no-op for the most common configuration in the repository (every shipped
+# portable preset but two is rna_only). Handled below as the single-channel case.
+# The same fallback already exists in ``compute_qc_flags`` — the bare key IS the
+# RNA1 channel — and the emitted column names stay ``*_rna1`` in both modes so
+# downstream tooling sees one schema.
+_SPOTS_PER_NUCLEUS_BARE = "mean_spots_per_nucleus"
+_SPOTS_PER_NUCLEUS_PREFIX = _SPOTS_PER_NUCLEUS_BARE + "_"
+_BARE_KEY_CHANNEL = "rna1"
 
 
 def _mean_finite(values) -> float:
@@ -304,17 +315,46 @@ def _mean_finite(values) -> float:
 
 
 def spot_callability_channels(rows) -> list:
-    """Punctate channel suffixes present in ``rows``, sorted for stable output."""
+    """Punctate channel suffixes present in ``rows``, sorted for stable output.
+
+    A bare ``mean_spots_per_nucleus`` with no suffixed sibling is the
+    single-channel (rna_only) case and reports as ``rna1``. rna_rna emits the
+    bare key AND ``_rna1``, where the two are the same number, so the guard is on
+    ``rna1`` being absent rather than on the set being empty — that way a mode
+    emitting the bare key alongside only a non-rna1 channel still gets both.
+    """
     found = set()
+    saw_bare = False
     for r in rows:
         if not isinstance(r, dict):
             continue
         for k in r.keys():
-            if isinstance(k, str) and k.startswith(_SPOTS_PER_NUCLEUS_PREFIX):
+            if not isinstance(k, str):
+                continue
+            if k == _SPOTS_PER_NUCLEUS_BARE:
+                saw_bare = True
+            elif k.startswith(_SPOTS_PER_NUCLEUS_PREFIX):
                 suffix = k[len(_SPOTS_PER_NUCLEUS_PREFIX):]
                 if suffix:
                     found.add(suffix)
+    if saw_bare and _BARE_KEY_CHANNEL not in found:
+        found.add(_BARE_KEY_CHANNEL)
     return sorted(found)
+
+
+def _spots_per_nucleus(row: dict, ch: str) -> float:
+    """This row's spots-per-nucleus for channel ``ch``: suffixed key, then bare.
+
+    Same precedence as ``compute_qc_flags``: the channel-specific key wins where
+    it exists, and the unsuffixed key stands in for rna1 in the single-channel
+    modes that are the only ones to emit it alone.
+    """
+    key = f"{_SPOTS_PER_NUCLEUS_PREFIX}{ch}"
+    if key in row:
+        return row.get(key, float("nan"))
+    if ch == _BARE_KEY_CHANNEL:
+        return row.get(_SPOTS_PER_NUCLEUS_BARE, float("nan"))
+    return float("nan")
 
 
 def flag_spot_callability(rows, cfg) -> list:
@@ -371,9 +411,8 @@ def flag_spot_callability(rows, cfg) -> list:
 
     warnings = []
     for ch in spot_callability_channels(rows):
-        key = f"{_SPOTS_PER_NUCLEUS_PREFIX}{ch}"
-        sample_rate = _mean_finite(r.get(key, float("nan")) for r in sample_rows)
-        seconly_rate = _mean_finite(r.get(key, float("nan")) for r in seconly_rows)
+        sample_rate = _mean_finite(_spots_per_nucleus(r, ch) for r in sample_rows)
+        seconly_rate = _mean_finite(_spots_per_nucleus(r, ch) for r in seconly_rows)
         ratio = (
             sample_rate / seconly_rate
             if (np.isfinite(sample_rate) and np.isfinite(seconly_rate)

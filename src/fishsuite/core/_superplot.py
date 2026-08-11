@@ -80,9 +80,18 @@ def get_locked_drawer() -> Optional[Callable]:
     drawer, which produces a DIFFERENT figure — so the fallback is warned about
     loudly rather than taken silently.
 
-    Resolution order: the in-package copy first, then
-    ``$FISHSUITE_SUPERPLOT_PATH``, then the original lab tree. The latter two
-    exist only for comparing against a different revision of the figure code.
+    Resolution order: the in-package copy first, then an EXPLICIT
+    ``$FISHSUITE_SUPERPLOT_PATH``, which exists only for comparing against a
+    different revision of the figure code.
+
+    There is deliberately no "whatever ``analysis`` happens to be importable"
+    candidate. One used to sit between the two, and it is the same hazard that got
+    the hard-coded lab path removed: ``analysis`` is a generic top-level name, so
+    on any machine where an unrelated package or a stray directory of that name is
+    on ``sys.path``, a third party's function would have been imported and used to
+    draw locked figures — silently, since the fallback warning only fires when
+    NOTHING resolves. An intentional external drawer has to be named via the
+    environment variable.
     """
     # (1) the in-package copy — the normal path (core/_vendor/analysis/)
     try:
@@ -91,14 +100,7 @@ def get_locked_drawer() -> Optional[Callable]:
     except Exception as exc:
         _first_failure = exc
 
-    # (2) already importable as a top-level module?
-    try:
-        from analysis.single_condition_plots import _superplot_into_axes  # type: ignore
-        return _superplot_into_axes
-    except Exception:
-        pass
-
-    # (3) explicit env override — the only remaining external candidate
+    # (2) explicit env override — the only external candidate
     candidates = []
     env = os.environ.get("FISHSUITE_SUPERPLOT_PATH")
     if env:
@@ -108,8 +110,25 @@ def get_locked_drawer() -> Optional[Callable]:
             if cand and Path(cand).is_dir():
                 if cand not in sys.path:
                     sys.path.insert(0, cand)
-                from analysis.single_condition_plots import _superplot_into_axes  # type: ignore
-                return _superplot_into_axes
+                import importlib
+
+                mod = importlib.import_module("analysis.single_condition_plots")
+                # Putting the directory on sys.path does not guarantee the import
+                # came FROM it: an `analysis` already in sys.modules, or one
+                # earlier on the path, wins. Say so instead of drawing locked
+                # figures with a stranger's function under the user's own name.
+                origin = Path(getattr(mod, "__file__", "") or "").resolve()
+                if Path(cand).resolve() not in origin.parents:
+                    warnings.warn(
+                        f"SuperPlot: FISHSUITE_SUPERPLOT_PATH={cand!r} was "
+                        f"requested but 'analysis.single_condition_plots' "
+                        f"resolved to {str(origin)!r} instead — another "
+                        f"'analysis' package shadows it. The figures below are "
+                        f"drawn with THAT module.",
+                        RuntimeWarning,
+                        stacklevel=2,
+                    )
+                return mod._superplot_into_axes
         except Exception:
             continue
 

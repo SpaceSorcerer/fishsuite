@@ -145,6 +145,70 @@ def _write_masks(mask_dir: Path, stem: str, *,
 # Fixed-N nucleus sampling: run-level plan + Methods sentence.
 # ---------------------------------------------------------------------------
 
+# Modes whose entry point accepts (and forwards) `sampling_unit_key` /
+# `sampling_n_alloc`, and which therefore actually implement fixed-N sampling.
+# ONE list, read by both the kwarg forwarding below and the pre-run validation,
+# because those two drifting apart is the whole defect: the Methods paragraph is
+# generated from the resolved config, so a mode that silently ignores sampling
+# emits a paragraph asserting that nuclei were sampled when none were. A
+# fabricated methods statement is worse than a crash, so an unsupported mode
+# raises before any image is read.
+#
+# `if_intensity` is the one registered mode absent here: it has its own
+# per-nucleus loop and no sampling support at all.
+SAMPLING_SUPPORTED_MODES = (
+    "rna_only", "rna_rna", "rna_protein", "ab_ab", "protein_only", "pub_images",
+)
+
+
+def check_sampling_supported(analysis_mode: str, samp: Dict[str, Any]) -> None:
+    """Raise when ``sampling.enabled`` meets something that cannot honour it.
+
+    Two conditions, both of which would otherwise produce a sampling_methods.txt
+    describing a selection that did not happen. Checked before the first image is
+    read, so the run costs nothing before it stops.
+    """
+    if not samp.get("enabled"):
+        return
+    if str(analysis_mode) not in SAMPLING_SUPPORTED_MODES:
+        raise ValueError(
+            f"sampling.enabled is True but channels.analysis_mode="
+            f"{analysis_mode!r} does not implement fixed-N nucleus sampling. "
+            f"The run would emit sampling_methods.txt describing a selection that "
+            f"never happened, and per_image_summary.csv would carry none of the "
+            f"sampling provenance columns. Set sampling.enabled: false, or use one "
+            f"of: {', '.join(SAMPLING_SUPPORTED_MODES)}."
+        )
+    # `unit: per_well` is NOT IMPLEMENTED, and the reason it raises rather than
+    # doing its best is that its best is indistinguishable from success. It
+    # exists to give every well an identical denominator of N. `allocate_per_unit`
+    # divides N across the well's images before ANY nucleus count is known, and
+    # nothing redistributes an unused share, so a well containing one sparse field
+    # of view returns fewer than N even when its sibling fields had spare eligible
+    # nuclei — an unequal denominator, silently, under a Methods paragraph
+    # asserting an equal one. `on_short` compounds it: it is evaluated per IMAGE
+    # inside resolve_nucleus_sampling, so `drop_unit` drops a single field of view
+    # and records a "unit" whose name is an image.
+    #
+    # Implementing it properly needs the per-image eligible counts BEFORE
+    # allocation, i.e. segment the whole well, then allocate, then quantify — a
+    # two-phase run. The optional batch threshold pre-scan already segments every
+    # image, so that is where a real implementation would hook in. The helpers
+    # (`allocate_per_unit`, `_resolve_sampling_plan`) are left in place and tested
+    # as the building blocks for it.
+    if str(samp.get("unit")) == "per_well":
+        raise ValueError(
+            "sampling.unit='per_well' is not implemented. It cannot deliver the "
+            "equal per-well denominator it exists for: N is divided across a "
+            "well's images before any nucleus count is known and an unused share "
+            "is never redistributed, so a well with one sparse field of view "
+            "quantifies fewer than n_per_unit nuclei while sampling_methods.txt "
+            "states that each well contributed n_per_unit. Use "
+            "sampling.unit='per_image', which equalizes the denominator at the "
+            "level where nucleus count actually varies."
+        )
+
+
 def _sampling_unit_key(path, input_dir, unit: str) -> str:
     """Stable key naming the sampling unit an image belongs to.
 
@@ -168,10 +232,15 @@ def _sampling_unit_key(path, input_dir, unit: str) -> str:
 def _resolve_sampling_plan(images, input_dir, samp: Dict[str, Any]) -> Dict[str, Any]:
     """Map each image path -> (unit_key, n_alloc) for this run.
 
-    ``per_image``: every field of view gets the full ``n_per_unit``.
-    ``per_well``: the well's N is divided EQUALLY across the images beneath it
-    (see ``core.segmentation.allocate_per_unit``) rather than drawn flat from a
-    pooled well, so one dense field of view cannot supply most of the sample.
+    ``per_image``: every field of view gets the full ``n_per_unit``, and its unit
+    key is its path relative to the input root — so ``sampling_unit`` in
+    per_image_summary.csv names an image, which is what it is.
+
+    ``per_well``: divides the well's N across the images beneath it and keys each
+    on the composite ``well|image``. NOT REACHED BY A RUN — the unit raises in
+    ``check_sampling_supported`` because the division has no redistribution step
+    (see there). Retained and tested as the building block for a two-phase
+    implementation.
     """
     from .core.segmentation import allocate_per_unit
 
@@ -191,8 +260,18 @@ def _resolve_sampling_plan(images, input_dir, samp: Dict[str, Any]) -> Dict[str,
         img_keys = {p: _sampling_unit_key(p, input_dir, "per_image") for p in paths}
         alloc = allocate_per_unit(list(img_keys.values()), n)
         for p, ik in img_keys.items():
-            # The RNG is keyed on the WELL for per_well, so every image beneath
-            # one well draws from that well's single stream.
+            # The unit key is the COMPOSITE `well|image`, so each image gets its
+            # OWN RNG stream (derive_unit_rng hashes the whole key) that is
+            # namespaced under its well. An earlier version of this comment said
+            # every image in a well shared one stream — it does not, and could
+            # not: the images are dispatched to a parallel pool, so a shared
+            # stream would make each image's draw depend on which sibling was
+            # processed first, which is exactly what per-unit keying prevents.
+            #
+            # Consequence for consumers: per_image_summary.csv's `sampling_unit`
+            # holds `well|image`, NOT a well, so grouping by it recovers images.
+            # Split on the last '|' to get the well (image keys are POSIX
+            # relative paths and cannot contain '|').
             plan[p] = (f"{well}|{ik}", int(alloc.get(ik, 0)))
     return plan
 
@@ -381,6 +460,11 @@ def run_batch(
     Returns a dict with summary stats.
     """
     cfg = FishsuiteConfig.from_yaml(config_path)
+    # FIRST thing after the config loads, before an output directory is made or a
+    # single image is read: refuse a sampling request this run cannot honour. Put
+    # any later and a `threshold_scope: batch` run segments the whole plate before
+    # discovering it was going to abort.
+    check_sampling_supported(cfg.channels.analysis_mode, cfg.resolved_sampling())
     # 2026-06-10: ADDITIVE reproducibility — lock the broad global RNG state at
     # the VERY START (before any discovery/stochastic step) and log what was
     # seeded. Wrapped so a seeding failure can never abort the run. cfg.seed
@@ -1512,17 +1596,15 @@ def run_batch(
                 # N. Only forwarded when sampling is enabled, so every other
                 # path is untouched.
                 #
-                # rna_protein is deliberately NOT in this list. Its run_one has
-                # an explicit keyword-only signature with no **kwargs, so
-                # forwarding these would raise TypeError on every image. It
-                # delegates to rna_rna.run_one, which applies sampling using its
-                # own defaults — the per-image unit key falls back to
-                # parent-dir/filename (equally stable) and n_alloc falls back to
-                # sampling.n_per_unit. Consequence: per_image sampling works for
-                # rna_protein, but unit='per_well' does NOT get the per-well
-                # split there. Add the two optional kwargs to rna_protein.run_one
-                # to close that gap.
-                if cfg.channels.analysis_mode in ("rna_only", "rna_rna"):
+                # 2026-08-10: this used to list only rna_only + rna_rna. The four
+                # modes that DELEGATE to them (rna_protein via the antibody->rna2
+                # shim; ab_ab / protein_only / pub_images via rna_only) still
+                # sampled — they inherit the callee's fallback unit key — but that
+                # fallback is per-IMAGE, so `sampling.unit: per_well` quietly
+                # became per_image while sampling_methods.txt described a per-well
+                # equal split. All four now accept and pass through the two
+                # kwargs, so the plan reaches them and the Methods text is true.
+                if cfg.channels.analysis_mode in SAMPLING_SUPPORTED_MODES:
                     _plan = _sampling_plan.get(str(dimg.path))
                     if _plan is not None:
                         _mode_kwargs["sampling_unit_key"] = _plan[0]
@@ -2286,11 +2368,23 @@ def run_batch(
         # spot-count-weighted pool in the CSV above, so the ribbon is an interval
         # on the replicate-level mean. Crash-proof: a failed figure must never
         # cost a completed run its CSVs.
+        #
+        # `nuclei_df` here is the RUN-WIDE concatenation, so the figure is handed
+        # `condition` and splits on it itself — one panel per condition, no
+        # pooling. `restrict_to_sampled` mirrors sampling.apply_to_rollups so the
+        # figure's mean and its on-chart n describe the SAME nucleus set as
+        # per_image_summary.csv's mean_*_radial_enrichment_at_* columns; passing
+        # it unconditionally would filter a run whose rollups were deliberately
+        # left unrestricted.
         try:
             from .core.radial_profile_figure import plot_radial_profile_ci
 
             _rad_png = plot_radial_profile_ci(
-                nuclei_df, output_dir / f"{prefix}coloc_radial_profile_ci.png"
+                nuclei_df, output_dir / f"{prefix}coloc_radial_profile_ci.png",
+                restrict_to_sampled=bool(
+                    _sampling_rs.get("enabled")
+                    and _sampling_rs.get("apply_to_rollups", True)
+                ),
             )
             if _rad_png is not None:
                 _console.print(f"  radial profile figure: {_rad_png.name}")

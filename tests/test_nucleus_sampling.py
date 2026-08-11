@@ -643,43 +643,110 @@ class _FakeImg:
         self.sec_only = sec_only
 
 
-def test_sampling_kwargs_are_only_sent_to_modes_that_accept_them():
-    """Guard against a TypeError on every image of an rna_protein run.
+def test_every_mode_the_runner_forwards_to_accepts_the_kwargs():
+    """The forwarding list and the signatures must agree in both directions.
 
-    The runner forwards `sampling_unit_key` / `sampling_n_alloc`, but only
-    rna_only and rna_rna declare them. rna_protein.run_one is keyword-only with
-    no **kwargs, so forwarding to it would raise TypeError per image. It reaches
-    the sampler anyway by delegating to rna_rna.run_one, which supplies its own
-    defaults.
+    Forward to a mode that does not declare them and every image raises
+    TypeError. Omit a mode that does and it falls back to a per-IMAGE unit key,
+    so `unit: per_well` silently becomes per_image — which is how the Methods
+    paragraph came to describe a per-well split that did not happen.
     """
     import inspect
 
-    from fishsuite.core.modes import rna_only, rna_protein, rna_rna
+    from fishsuite.core.modes import MODE_REGISTRY
+    from fishsuite.runner import SAMPLING_SUPPORTED_MODES
 
-    for mod in (rna_only, rna_rna):
-        params = inspect.signature(mod.run_one).parameters
-        assert "sampling_unit_key" in params, mod.__name__
-        assert "sampling_n_alloc" in params, mod.__name__
-        # Optional, so every existing caller keeps working untouched.
-        assert params["sampling_unit_key"].default is None
-        assert params["sampling_n_alloc"].default is None
-
-    rp = inspect.signature(rna_protein.run_one).parameters
-    accepts_kwargs = any(
-        p.kind is inspect.Parameter.VAR_KEYWORD for p in rp.values()
-    )
-    if not accepts_kwargs and "sampling_unit_key" not in rp:
-        # Then the runner MUST NOT forward to it. Read the guard back out of the
-        # source so this test fails if someone widens the mode list.
-        from pathlib import Path
-
-        import fishsuite.runner as _r
-
-        src = Path(_r.__file__).read_text(encoding="utf-8")
-        assert 'in ("rna_only", "rna_rna"):\n                    _plan' in src, (
-            "runner forwards sampling kwargs to a mode whose run_one cannot "
-            "accept them"
+    for name in SAMPLING_SUPPORTED_MODES:
+        fn = MODE_REGISTRY[name]
+        params = inspect.signature(fn).parameters
+        accepts_kwargs = any(
+            p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values()
         )
+        assert accepts_kwargs or (
+            "sampling_unit_key" in params and "sampling_n_alloc" in params
+        ), f"{name} is in SAMPLING_SUPPORTED_MODES but cannot accept the plan"
+        if not accepts_kwargs:
+            # Optional, so every existing caller keeps working untouched.
+            assert params["sampling_unit_key"].default is None
+            assert params["sampling_n_alloc"].default is None
+
+
+def test_the_runner_forwards_to_exactly_that_list():
+    """Read the guard out of the source, so widening one list without the other
+    fails here rather than at runtime."""
+    import inspect
+
+    import fishsuite.runner as _r
+
+    src = inspect.getsource(_r.run_batch)
+    assert "in SAMPLING_SUPPORTED_MODES:\n                    _plan" in src
+
+
+def test_sampling_on_an_unsupported_mode_raises_instead_of_lying():
+    """if_intensity has its own per-nucleus loop and no sampling support, so the
+    run would have written a sampling_methods.txt describing a selection that
+    never happened. A fabricated methods paragraph is worse than a crash."""
+    from fishsuite.runner import check_sampling_supported
+
+    with pytest.raises(ValueError, match="does not implement fixed-N"):
+        check_sampling_supported(
+            "if_intensity", {"enabled": True, "unit": "per_image"}
+        )
+    # Off is off: an unsupported mode with sampling disabled is fine.
+    check_sampling_supported("if_intensity", {"enabled": False})
+
+
+def test_every_supported_mode_passes_the_check():
+    from fishsuite.runner import SAMPLING_SUPPORTED_MODES, check_sampling_supported
+
+    for name in SAMPLING_SUPPORTED_MODES:
+        check_sampling_supported(name, {"enabled": True, "unit": "per_image"})
+
+
+def test_the_supported_list_names_only_real_modes():
+    from fishsuite.core.modes import MODE_REGISTRY
+    from fishsuite.runner import SAMPLING_SUPPORTED_MODES
+
+    assert set(SAMPLING_SUPPORTED_MODES) <= set(MODE_REGISTRY)
+
+
+def test_per_well_raises_because_it_cannot_deliver_an_equal_denominator():
+    """Not implemented, and it raises rather than doing its best, because its
+    best is indistinguishable from success: the allocation happens before any
+    nucleus count is known and no unused share is redistributed, so a well with
+    one sparse FOV quantifies fewer than n_per_unit under a Methods paragraph
+    stating that it quantified n_per_unit."""
+    from fishsuite.runner import check_sampling_supported
+
+    with pytest.raises(ValueError, match="per_well.* is not implemented"):
+        check_sampling_supported(
+            "rna_rna", {"enabled": True, "unit": "per_well"}
+        )
+    check_sampling_supported("rna_rna", {"enabled": True, "unit": "per_image"})
+    # Disabled sampling never reaches the unit at all.
+    check_sampling_supported("rna_rna", {"enabled": False, "unit": "per_well"})
+
+
+def test_the_schema_says_per_well_is_unimplemented():
+    """The field help is what a user reads before setting it."""
+    desc = FishsuiteConfig.model_fields["sampling"].annotation \
+        .model_fields["unit"].description
+    assert "NOT IMPLEMENTED" in desc
+
+
+def test_run_batch_validates_before_doing_any_work():
+    """A run that is going to abort must abort before the first read. With
+    `threshold_scope: batch` the pre-scan segments the WHOLE plate before the
+    per-image loop, so 'before the loop' is not early enough."""
+    import inspect
+
+    import fishsuite.runner as _r
+
+    src = inspect.getsource(_r.run_batch)
+    at = src.index("check_sampling_supported(")
+    assert at < src.index("output_dir.mkdir("), "runs after making output dirs"
+    assert at < src.index("with Progress("), "runs after the batch pre-scan"
+    assert at < src.index("_io.discover_inputs("), "runs after image discovery"
 
 
 def test_plan_keys_are_input_relative_so_the_draw_survives_a_move(tmp_path):
@@ -711,9 +778,39 @@ def test_per_well_plan_divides_n_across_the_images_beneath_each_well(tmp_path):
     b = [v[1] for k, v in plan.items() if "WellB" in k]
     assert sum(a) == 20 and sorted(a) == [6, 7, 7]
     assert b == [20]
-    # Every image beneath one well shares that well's RNG stream.
+    # Every image beneath one well is NAMESPACED under that well...
     a_units = {v[0].split("|")[0] for k, v in plan.items() if "WellA" in k}
     assert a_units == {"WellA"}
+    # ...but each gets its OWN stream, because the key is the composite
+    # `well|image` and derive_unit_rng hashes the whole key. An earlier comment
+    # here claimed one shared stream per well; it could not be true, since the
+    # images go to a parallel pool and a shared stream would make each image's
+    # draw depend on which sibling finished first.
+    a_keys = {v[0] for k, v in plan.items() if "WellA" in k}
+    assert len(a_keys) == 3
+    draws = {
+        _seg.derive_unit_rng(0, k).integers(0, 10 ** 9, 3).tolist()[0]
+        for k in a_keys
+    }
+    assert len(draws) == 3, "per-image streams must be independent"
+
+
+def test_the_per_well_unit_key_is_a_composite_not_a_well_name():
+    """Documented consequence: `sampling_unit` in per_image_summary.csv holds
+    `well|image`, so a consumer cannot group by it to recover wells."""
+    from fishsuite.runner import _resolve_sampling_plan
+    from pathlib import Path as _P
+
+    root = _P("root")
+    imgs = [_FakeImg(root / "WellA" / "img0.tif"),
+            _FakeImg(root / "WellA" / "img1.tif")]
+    plan = _resolve_sampling_plan(
+        imgs, root, {"unit": "per_well", "n_per_unit": 10})
+    for unit_key, _ in plan.values():
+        well, _, image = unit_key.rpartition("|")
+        assert well == "WellA"
+        assert image.startswith("WellA/img")
+        assert unit_key != well
 
 
 # ---------------------------------------------------------------------------

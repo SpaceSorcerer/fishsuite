@@ -333,6 +333,14 @@ def identify_ghost_nuclei(
     safety margin and ZERO false drops in WT / z-stacks. A nucleus is required to
     satisfy ALL THREE conditions — each alone is intentionally insufficient.
 
+    IN A TWO-CHANNEL MODE, ``spot_count_col`` MUST BE THE TOTAL OVER EVERY
+    PUNCTATE CHANNEL, not channel 1's count. The rule reads "carries no detected
+    signal at all"; fed only rna1, it deletes a nucleus that is dark in rna1 but
+    full of rna2 / protein spots — which for a knockdown is the phenotype, not
+    debris. ``spot_counts_per_label`` exists so the caller can sum the channels
+    cheaply. Nothing here can detect the mistake, because a total and a
+    single-channel count are both just a number.
+
     Parameters
     ----------
     nuclei_df : pandas.DataFrame with per-nucleus rows including the spot-count,
@@ -457,6 +465,44 @@ class NucleusSampling:
         return set(self.selected_ids)
 
 
+def spot_counts_per_label(
+    labels: np.ndarray,
+    spot_y: np.ndarray | Sequence[float] | None,
+    spot_x: np.ndarray | Sequence[float] | None,
+) -> Dict[int, int]:
+    """``{label_id: n_spots}`` by looking the label image up at each spot centre.
+
+    A plain lookup at the rounded pixel coordinate; spots landing on background
+    (label 0) are ignored, and a label with no spots is simply absent from the
+    dict rather than present as 0.
+
+    Split out of ``nucleus_pre_pass`` so a SECOND punctate channel can be counted
+    against the same labels without re-running the DAPI / geometry statistics.
+    The two-channel modes need that: the ghost rule asks whether a nucleus is
+    empty, and "empty" cannot mean "empty in channel 1" when channel 2 was also
+    measured. See ``identify_ghost_nuclei``.
+    """
+    counts: Dict[int, int] = {}
+    if labels is None or getattr(labels, "size", 0) == 0:
+        return counts
+    if spot_y is None or spot_x is None:
+        return counts
+    sy = np.asarray(spot_y, dtype=np.float64)
+    sx = np.asarray(spot_x, dtype=np.float64)
+    if not sy.size or sy.size != sx.size:
+        return counts
+    h, w = labels.shape[:2]
+    yi = np.clip(np.rint(sy).astype(np.int64), 0, h - 1)
+    xi = np.clip(np.rint(sx).astype(np.int64), 0, w - 1)
+    lab_at_spot = np.asarray(labels)[yi, xi]
+    lab_at_spot = lab_at_spot[lab_at_spot != 0]
+    if lab_at_spot.size:
+        bc = np.bincount(lab_at_spot.astype(np.int64))
+        for k in np.nonzero(bc)[0]:
+            counts[int(k)] = int(bc[k])
+    return counts
+
+
 def nucleus_pre_pass(
     labels: np.ndarray,
     dapi_2d: np.ndarray,
@@ -504,23 +550,7 @@ def nucleus_pre_pass(
         dapi_means = _ndi.mean(dapi_f, labels, ids)
         dapi_sds = _ndi.standard_deviation(dapi_f, labels, ids)
 
-    # Spot count per label: a plain lookup of the label image at each detected
-    # spot's rounded pixel coordinate. Spots landing on background (label 0)
-    # are ignored.
-    spot_counts: Dict[int, int] = {}
-    if spot_y is not None and spot_x is not None:
-        sy = np.asarray(spot_y, dtype=np.float64)
-        sx = np.asarray(spot_x, dtype=np.float64)
-        if sy.size and sy.size == sx.size:
-            h, w = labels.shape[:2]
-            yi = np.clip(np.rint(sy).astype(np.int64), 0, h - 1)
-            xi = np.clip(np.rint(sx).astype(np.int64), 0, w - 1)
-            lab_at_spot = np.asarray(labels)[yi, xi]
-            lab_at_spot = lab_at_spot[lab_at_spot != 0]
-            if lab_at_spot.size:
-                bc = np.bincount(lab_at_spot.astype(np.int64))
-                for k in np.nonzero(bc)[0]:
-                    spot_counts[int(k)] = int(bc[k])
+    spot_counts = spot_counts_per_label(labels, spot_y, spot_x)
 
     areas = np.atleast_1d(areas)
     dapi_means = np.atleast_1d(dapi_means)
@@ -751,13 +781,19 @@ def sampling_per_image_cols(
 def allocate_per_unit(unit_keys: Sequence[str], n_total: int) -> Dict[str, int]:
     """Split ``n_total`` equally across the images beneath one well.
 
-    Used only by ``sampling.unit="per_well"``. Drawing flat from a pooled well
-    would let one dense field of view supply most of the sample, which is the
-    variable denominator the feature exists to remove — one crowded FOV would
-    dominate its own well. Instead every image under the well gets
-    ``n_total // k``, and the remainder goes to the first ``n_total % k``
-    images in SORTED KEY ORDER (not processing order), so the split is
-    identical at any worker count.
+    Every image under the well gets ``n_total // k``, and the remainder goes to
+    the first ``n_total % k`` images in SORTED KEY ORDER (not processing order),
+    so the split is identical at any worker count.
+
+    NOT REACHED BY A RUN: ``sampling.unit="per_well"`` raises in
+    ``runner.check_sampling_supported``, because this allocation is only half of
+    what per-well sampling needs. It runs before any nucleus count is known and
+    has NO REDISTRIBUTION step, so a well whose sparse field of view cannot fill
+    its share yields fewer than ``n_total`` even when its siblings had spare
+    eligible nuclei — an unequal denominator, which is the one thing per-well
+    sampling exists to prevent. This function is kept, and tested, as the
+    building block for a real two-phase implementation (segment the well, count
+    eligible nuclei, THEN allocate and redistribute).
     """
     keys = sorted(str(k) for k in unit_keys)
     k = len(keys)

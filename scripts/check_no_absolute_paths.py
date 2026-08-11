@@ -17,6 +17,20 @@ What counts as an ACTIVE value, and what does not:
   they need no special handling.
 * ``core/_vendor/`` is skipped. It is copied verbatim and checksum-pinned in
   ``_vendor/PROVENANCE.md``; it cannot be edited to satisfy this check.
+* DATED RUN-RECORD PRESETS are skipped, because for them the absolute path IS the
+  artifact. ``pyproject.toml`` keeps 42 of the 48 presets in the repository
+  precisely as the provenance of published figures, and the wheel excludes every
+  one of them (deny-all-then-allow), so the hazard this gate exists to prevent —
+  an outside user's machine silently reading a same-named directory — cannot
+  reach them. Scrubbing their paths to ``<SET_ME>`` destroyed the record without
+  making anything safer, and it was reverted.
+
+  The exempt set is DERIVED from the wheel allowlist rather than listed here: a
+  preset under ``config/presets/`` is checked if and only if pyproject
+  force-includes it into the wheel. That way adding a new PORTABLE preset puts it
+  under the gate automatically, and neither list can drift from the other. If the
+  allowlist cannot be read the gate checks everything and says so — it never
+  silently exempts.
 
 Run it directly (``python scripts/check_no_absolute_paths.py``) or let CI do it.
 Exit status 0 = clean, 1 = findings, 2 = the check itself could not run.
@@ -45,6 +59,53 @@ BAD_SUBSTRINGS = (
 )
 
 SKIP_DIR_PARTS = ("_vendor",)
+
+# Presets live here. Only the ones the wheel ships are gated; see the module
+# docstring for why the rest are provenance, not template.
+PRESET_DIR_PARTS = ("config", "presets")
+_FORCE_INCLUDE_HEADER = "[tool.hatch.build.targets.wheel.force-include]"
+
+
+def shipped_preset_names(pyproject: Path) -> set[str] | None:
+    """Basenames of the presets the wheel force-includes, or None if unreadable.
+
+    Deliberately a line scan of the flat ``force-include`` table rather than a
+    TOML parse: ``tomllib`` is 3.11+, this gate must run on the 3.10 CI leg, and
+    ``tomli`` is not a declared dependency. Returning None means "could not tell",
+    which the caller turns into checking everything.
+    """
+    try:
+        text = pyproject.read_text(encoding="utf-8")
+    except Exception:
+        return None
+    if _FORCE_INCLUDE_HEADER not in text:
+        return None
+    body = text.split(_FORCE_INCLUDE_HEADER, 1)[1]
+    names: set[str] = set()
+    for raw in body.splitlines():
+        line = raw.strip()
+        if line.startswith("["):
+            break
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        lhs = line.split("=", 1)[0].strip().strip('"').strip("'")
+        if lhs.endswith((".yaml", ".yml")):
+            names.add(Path(lhs).name)
+    return names or None
+
+
+def is_gated_preset(path: Path, shipped: set[str] | None) -> bool:
+    """Should this preset file be checked? Non-presets are always checked."""
+    parts = path.parts
+    is_preset = any(
+        parts[i:i + len(PRESET_DIR_PARTS)] == PRESET_DIR_PARTS
+        for i in range(len(parts))
+    )
+    if not is_preset:
+        return True
+    if shipped is None:
+        return True  # fail closed: cannot tell what ships, so check it
+    return path.name in shipped
 
 
 def _offending(text: str) -> str | None:
@@ -136,6 +197,16 @@ def _self_test() -> None:
     assert _offending("<SET_ME>") is None
     assert _offending("") is None
 
+    # And prove the preset exemption cannot swallow a preset that DOES ship.
+    shipped = {"generic_100x_0p065.yaml"}
+    presets = Path("src/fishsuite/config/presets")
+    assert is_gated_preset(presets / "generic_100x_0p065.yaml", shipped)
+    assert not is_gated_preset(presets / "panqki_if_wtko_2026-07-03.yaml", shipped)
+    # Unreadable allowlist -> check everything, never silently exempt.
+    assert is_gated_preset(presets / "panqki_if_wtko_2026-07-03.yaml", None)
+    # A non-preset file is never exempt.
+    assert is_gated_preset(Path("src/fishsuite/core/_superplot.py"), shipped)
+
 
 def main(argv: list[str]) -> int:
     _self_test()
@@ -144,8 +215,14 @@ def main(argv: list[str]) -> int:
         print(f"error: {root} does not exist", file=sys.stderr)
         return 2
 
+    shipped = shipped_preset_names(Path("pyproject.toml"))
+    if shipped is None:
+        print("WARNING: could not read the wheel preset allowlist from "
+              "pyproject.toml — checking EVERY preset, including the dated run "
+              "records.", file=sys.stderr)
+
     findings: list[str] = []
-    n_py = n_yaml = 0
+    n_py = n_yaml = n_exempt = 0
     for path in sorted(root.rglob("*")):
         if any(part in SKIP_DIR_PARTS for part in path.parts):
             continue
@@ -153,11 +230,15 @@ def main(argv: list[str]) -> int:
             n_py += 1
             findings += check_python(path)
         elif path.suffix in (".yaml", ".yml"):
+            if not is_gated_preset(path, shipped):
+                n_exempt += 1
+                continue
             n_yaml += 1
             findings += check_yaml(path)
 
     print(f"scanned {n_py} .py and {n_yaml} .yaml files under {root} "
-          f"(skipped {'/'.join(SKIP_DIR_PARTS)})")
+          f"(skipped {'/'.join(SKIP_DIR_PARTS)}; exempted {n_exempt} dated "
+          f"run-record preset(s) the wheel does not ship)")
     if findings:
         print(f"\nFAIL: {len(findings)} machine-specific absolute path(s) as "
               f"active values:\n", file=sys.stderr)

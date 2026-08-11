@@ -248,12 +248,14 @@ The `sampling` block (opt-in, `enabled: false` by default) quantifies the **same
 |---|---|---|
 | `enabled` | `false` | Master switch. Off means off — no selection, no extra columns, no `sampling_methods.txt`, byte-identical output to before. |
 | `n_per_unit` | `20` | Nuclei to keep per unit. |
-| `unit` | `per_image` | `per_image` or `per_well`. |
+| `unit` | `per_image` | `per_image`. `per_well` is **not implemented** and raises at the start of a run — the allocation happens before any nucleus count is known and never redistributes an unused share, so it cannot deliver the equal per-well denominator it exists for. |
 | `order` | `random` | `random`, `raster`, or `center_out`. |
 | `seed` | `None` | Falls back to the run's global `seed`. |
 | `on_short` | `keep` | What to do with a unit holding fewer than `n_per_unit`: `keep` it, `drop_unit`, or `fail` the run. |
 | `min_eligible` | `0` | Units with fewer eligible nuclei than this are not sampled. |
 | `apply_to_rollups` | `true` | Restrict the per-image rollups and pooled coloc nulls to the sampled set too, rather than sampling only the per-nucleus table. |
+
+Supported in `rna_only`, `rna_rna`, `rna_protein`, `ab_ab`, `protein_only` and `pub_images`. `if_intensity` has its own per-nucleus loop and does not sample; enabling `sampling` there raises at the start of the run rather than writing a `sampling_methods.txt` describing a selection that never happened.
 
 Two properties make it defensible. Sampling runs **last** in the filter chain (area → border → ghost → sample), so it selects among nuclei that already passed every quality filter rather than competing with them. And it selects using **only the DAPI channel and geometry — never the analysis channels**, so the choice of which nuclei to measure cannot be influenced by the quantity being measured. The selection is seeded and the criteria are written to `sampling_methods.txt` in the run directory.
 
@@ -521,7 +523,7 @@ For anything real, start from the closest shipped portable preset instead — se
 
 **`nuclei`** — `backend` (`stardist`; or `cellpose`/`otsu`); `prob_threshold` (0.5); `nms_threshold` (0.5); `stardist_model` (`2D_versatile_fluo`, free string); `cellpose_model_type` (`cpsam`, free string); `cellpose_diameter_px` (0.0 = auto); `cellpose_downsample_factor` (1.0); `cellpose_device` (`cpu`; or `directml` for AMD, `cuda` for NVIDIA — see [GPU acceleration](#gpu-acceleration)); `min_area_px` (10000); `max_area_px` (1e12); `label_smoothing_radius_px` (0); `exclude_border` (True) / `border_margin_px` (5); `reject_ghost_nuclei` (False) / `reject_ghost_max_dapi_cv` (0.12) / `reject_ghost_min_area_px` (6000).
 
-**`sampling`** — fixed-N nucleus sampling; `enabled` (False), `n_per_unit` (20), `unit` (`per_image`; or `per_well`), `order` (`random`; or `raster`/`center_out`), `seed` (None = the run seed), `on_short` (`keep`; or `drop_unit`/`fail`), `min_eligible` (0), `apply_to_rollups` (True). See [Fixed-N nucleus sampling](#fixed-n-nucleus-sampling).
+**`sampling`** — fixed-N nucleus sampling; `enabled` (False), `n_per_unit` (20), `unit` (`per_image`; `per_well` is not implemented and raises), `order` (`random`; or `raster`/`center_out`), `seed` (None = the run seed), `on_short` (`keep`; or `drop_unit`/`fail`), `min_eligible` (0), `apply_to_rollups` (True). See [Fixed-N nucleus sampling](#fixed-n-nucleus-sampling).
 
 **`pixel_coloc`** — `threshold_mode` (`mad`; or `percentile`/`costes`); `threshold_scope` (`batch`; or `per_image`); `k_mad` (2.0); `percentile` (80.0).
 
@@ -633,7 +635,7 @@ A run writes a complete, condition-aware output tree. Per-image files are condit
 
 ### Master CSVs and key columns
 
-- **`per_image_summary.csv`** (the replicate-level table): per-image spot totals and per-nucleus rollups — `total_spots`, `total_spots_rna1/rna2`, `mean/median/cv_spots_per_nucleus(_rna1/_rna2)`, `frac_nuclear_rna1/rna2`, `frac_nuclei_with_ge_{1,5,10}_spot(s)`, intensity rollups, pairing (`paired_fraction_*_at_0p3um`, `median_nn_distance_*_um`), and — when the partner-null features are on — the **pooled null summary columns** (e.g. `rna2_pooled_enrichment_vs_null_at_rna1_spots`, `rna2_pooled_rotation_enrichment_at_rna1_spots`, with their pooled null mean / z / empirical p; relabeled `protein_*` in `rna_protein`).
+- **`per_image_summary.csv`** (the replicate-level table): per-image spot totals and per-nucleus rollups — `total_spots`, `total_spots_rna1/rna2`, `mean/median/cv_spots_per_nucleus(_rna1/_rna2)`, `frac_nuclear_rna1/rna2`, `frac_nuclei_with_ge_{1,5,10}_spot(s)`, intensity rollups, pairing (`paired_fraction_*_at_0p3um`, `median_nn_distance_*_um_all_spots_in_frame` — the bare `median_nn_distance_*_um` name survives per nucleus only, alongside the `mean/median/sd_median_nn_distance_*_um_per_nucleus` rollups), and — when the partner-null features are on — the **pooled null summary columns** (e.g. `rna2_pooled_enrichment_vs_null_at_rna1_spots`, `rna2_pooled_rotation_enrichment_at_rna1_spots`, with their pooled null mean / z / empirical p; relabeled `protein_*` in `rna_protein`).
 - **`nuclei_metrics.csv`** (per nucleus): `rna_spot_count`, `nuclear_spot_count`, `cyto_spot_count`, **`nuclear_spot_fraction`**, `nuclear_spot_density_per_um2`, raw intensities and `rna_nc_ratio` / `nc_ratio_total_intensity_*`, spot peak-intensity aggregates, the thresholded-compartment columns (`rna_thresh_total/mean_intensity_*`, `_pos_area_px_*`, `_pos_fraction_*`, `rna_thresh_floor`, plus `rna2_thresh_*`/`protein_thresh_*`), pairing, the Manders/Pearson/etc. per-nucleus coloc columns, and — when on — the per-nucleus partner columns (`rna2_enrichment_vs_null_at_rna1_spots`, `rna2_rotation_enrichment_at_rna1_spots`, `rna2_rotation_assoc_fraction_at_rna1_spots`, `rotation_null_usable`).
 - **`spot_metrics.csv`** (per spot): `channel` (`rna1`/`rna2`/`protein`), `spot_id`, `nucleus_id`, `in_nucleus`, `in_cytoplasm`, `x_px`/`y_px`/`z_slice`, `spot_peak_intensity`, measured `spot_fwhm_px`/`spot_diameter_um`/`spot_area_px`, `nn_distance_um`, `paired_at_0p3um`.
 - **`cell_morphology.csv`**: per-nucleus `area_um2`, `perimeter_um`, `circularity`, `aspect_ratio`, `roundness`, `elongation`, `solidity`, `feret_max_um`/`feret_min_um`.

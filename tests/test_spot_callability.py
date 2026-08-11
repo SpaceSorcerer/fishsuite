@@ -66,6 +66,89 @@ def test_channel_discovery_reads_the_keys_not_a_hard_coded_list():
 
 
 # ---------------------------------------------------------------------------
+# THE BARE KEY — rna_only (2026-08-10)
+#
+# rna_only emits the UNSUFFIXED `mean_spots_per_nucleus` and nothing else, so a
+# prefix-only match found no channels at all: the guardrail returned [], added no
+# rate columns and warned about nothing. Every shipped portable preset but two is
+# rna_only, so the diagnostic was a silent no-op for the most common case.
+# ---------------------------------------------------------------------------
+def _bare_row(image, *, sec_only, rate):
+    return {
+        "image": image,
+        "secondary_only": sec_only,
+        "mean_spots_per_nucleus": rate,   # rna_only's ONLY spots-per-nucleus key
+    }
+
+
+def test_the_bare_key_is_discovered_as_the_single_channel():
+    assert spot_callability_channels([_bare_row("a.tif", sec_only=False, rate=5.0)]) \
+        == ["rna1"]
+
+
+def test_the_bare_key_is_not_double_counted_when_rna1_is_also_present():
+    """rna_rna emits BOTH, and they are the same number — reporting the channel
+    twice would put two identical series in the diagnostic."""
+    rows = [{
+        "mean_spots_per_nucleus": 7.0,
+        "mean_spots_per_nucleus_rna1": 7.0,
+        "mean_spots_per_nucleus_rna2": 3.0,
+    }]
+    assert spot_callability_channels(rows) == ["rna1", "rna2"]
+
+
+def test_rna_only_gets_its_rate_columns_and_its_warning():
+    """The end the defect actually broke: an rna_only run with a no-probe control
+    now produces the three rate columns and warns when the detector does not
+    discriminate."""
+    rows = [
+        _bare_row("sample.tif", sec_only=False, rate=200.0),
+        _bare_row("seconly.tif", sec_only=True, rate=218.0),
+    ]
+    warnings = flag_spot_callability(rows, _cfg())
+    assert rows[0]["spot_rate_sample_per_nucleus_rna1"] == pytest.approx(200.0)
+    assert rows[0]["spot_rate_seconly_per_nucleus_rna1"] == pytest.approx(218.0)
+    assert rows[0]["spot_rate_signal_to_control_rna1"] == pytest.approx(200.0 / 218.0)
+    assert len(warnings) == 1 and "[rna1]" in warnings[0]
+
+
+def test_rna_only_callable_channel_still_does_not_warn():
+    rows = [
+        _bare_row("sample.tif", sec_only=False, rate=60.0),
+        _bare_row("seconly.tif", sec_only=True, rate=3.0),
+    ]
+    assert flag_spot_callability(rows, _cfg()) == []
+    assert rows[0]["spot_rate_signal_to_control_rna1"] == pytest.approx(20.0)
+
+
+def test_the_suffixed_key_wins_where_both_exist():
+    """rna_rna's bare key duplicates rna1, but if they ever diverged the
+    channel-specific value is the authority — same precedence as compute_qc_flags."""
+    rows = [
+        {"secondary_only": False, "mean_spots_per_nucleus": 999.0,
+         "mean_spots_per_nucleus_rna1": 40.0},
+        {"secondary_only": True, "mean_spots_per_nucleus": 999.0,
+         "mean_spots_per_nucleus_rna1": 4.0},
+    ]
+    flag_spot_callability(rows, _cfg())
+    assert rows[0]["spot_rate_sample_per_nucleus_rna1"] == pytest.approx(40.0)
+    assert rows[0]["spot_rate_signal_to_control_rna1"] == pytest.approx(10.0)
+
+
+def test_rna_only_really_emits_only_the_bare_key():
+    """Guards the premise. If rna_only ever starts emitting the suffixed key the
+    fallback above becomes dead code, and this says so rather than leaving a test
+    that passes for the wrong reason."""
+    import inspect
+
+    from fishsuite.core.modes import rna_only
+
+    src = inspect.getsource(rna_only)
+    assert '"mean_spots_per_nucleus":' in src
+    assert '"mean_spots_per_nucleus_rna1":' not in src
+
+
+# ---------------------------------------------------------------------------
 # WHEN THE DIAGNOSTIC DOES NOT APPLY
 # ---------------------------------------------------------------------------
 def test_no_seconly_images_means_no_diagnostic():

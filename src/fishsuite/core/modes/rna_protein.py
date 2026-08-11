@@ -166,11 +166,20 @@ def run_one(
     precomputed_rna2_threshold: Optional[float] = None,
     precomputed_labels: Optional[np.ndarray] = None,
     analysis_floors: Optional[Dict[str, Any]] = None,
+    sampling_unit_key: Optional[str] = None,
+    sampling_n_alloc: Optional[int] = None,
 ) -> ImageResult:
     """Run the upgraded rna_protein pipeline on a single image.
 
     Delegates the full two-channel analysis to ``rna_rna.run_one`` via the
     antibody->rna2 config shim, then relabels rna2-* outputs to protein-*.
+
+    ``sampling_unit_key`` / ``sampling_n_alloc`` are the fixed-N sampling plan for
+    this image and are passed straight through. They were previously ABSENT from
+    this signature, so the runner could not forward them and rna_rna fell back to
+    its per-image defaults — which meant ``sampling.unit: per_well`` silently
+    behaved as ``per_image`` here while sampling_methods.txt asserted a per-well
+    equal split. Keep them forwarded, or that false Methods statement returns.
 
     The ``precomputed_rna2_threshold`` kwarg (forwarded by the batch runner)
     is the pooled PROTEIN-channel pixel-coloc threshold — the runner pools the
@@ -195,6 +204,8 @@ def run_one(
         precomputed_rna2_threshold=precomputed_rna2_threshold,
         analysis_floors=floors2,
         precomputed_labels=precomputed_labels,
+        sampling_unit_key=sampling_unit_key,
+        sampling_n_alloc=sampling_n_alloc,
         # 2026-06-05 Brian: the rna2 slot here IS the antibody/protein channel.
         # When cfg.foci.detect_antibody_spots is False, rna_rna SKIPS rna2
         # spot detection (diffuse QKI IF carpet fix). The flag rides on the

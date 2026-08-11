@@ -40,6 +40,8 @@ from fishsuite.core.radial_profile_figure import (
     find_ring_columns,
     plot_radial_profile_ci,
     radial_profile_ci_table,
+    restrict_to_analysis_set,
+    _series_plan,
 )
 
 
@@ -189,6 +191,158 @@ def test_figure_returns_none_rather_than_drawing_empty_axes(tmp_path):
     assert plot_radial_profile_ci(pd.DataFrame({"a": [1]}), tmp_path / "x.png") is None
     allnan = pd.DataFrame({"rna2_radial_enrichment_at_0p5um": [np.nan, np.nan]})
     assert plot_radial_profile_ci(allnan, tmp_path / "y.png") is None
+
+
+# ---------------------------------------------------------------------------
+# CONDITIONS ARE NEVER POOLED (2026-08-10)
+#
+# The runner hands this the RUN-WIDE concatenation of nuclei_metrics. Averaging
+# a 6-condition preset into one ribbon labelled "mean across nuclei" produces a
+# number describing no experiment — an over-expression arm, its non-targeting
+# control and a no-probe control in one line. These are the regression tests for
+# that; the figure-level ones assert the plan, because a PNG cannot be read back.
+# ---------------------------------------------------------------------------
+def _cond_frame():
+    """Two conditions with clearly different enrichment, plus a sec-only well."""
+    return pd.DataFrame({
+        "condition": ["NT"] * 4 + ["MIAT-OE"] * 4 + ["NT"] * 2,
+        "secondary_only": [False] * 8 + [True] * 2,
+        "rna2_radial_enrichment_at_0p25um": [1.0, 1.0, 1.0, 1.0,
+                                             3.0, 3.0, 3.0, 3.0,
+                                             0.5, 0.5],
+    })
+
+
+def test_ci_table_groups_on_condition_instead_of_pooling():
+    tab = radial_profile_ci_table(_cond_frame(), group_col="condition")
+    assert set(tab["condition"]) == {"NT", "MIAT-OE"}
+    # NT here is 4 real + 2 sec-only rows; the TABLE groups only (the sec-only
+    # split is the figure's job), so this asserts grouping, not the split.
+    oe = tab.loc[tab["condition"] == "MIAT-OE"].iloc[0]
+    assert oe["mean"] == pytest.approx(3.0) and oe["n_nuclei"] == 4
+    # Pooling would land between the arms and describe neither.
+    pooled = radial_profile_ci_table(_cond_frame()).iloc[0]
+    assert 1.0 < pooled["mean"] < 3.0
+
+
+def test_ci_table_ungrouped_is_unchanged_without_the_column():
+    """The old single-series call must keep working byte-for-byte."""
+    df = pd.DataFrame({"rna2_radial_enrichment_at_0p5um": [1.0, 2.0, 3.0]})
+    a = radial_profile_ci_table(df)
+    b = radial_profile_ci_table(df, group_col="condition")  # column absent
+    assert a.equals(b)
+    assert "condition" not in a.columns
+
+
+def test_one_panel_per_condition_and_seconly_is_its_own_series():
+    plan = _series_plan(_cond_frame(), group_col="condition", confidence=0.95)
+    labels = [e["label"] for e in plan]
+    # Control-first ordering, then the pooled background control LAST.
+    assert labels[0] == "NT" and "MIAT-OE" in labels
+    assert plan[-1]["is_seconly"] and "secondary-only" in labels[-1]
+    assert sum(1 for e in plan if e["is_seconly"]) == 1
+
+
+def test_seconly_nuclei_are_excluded_from_the_condition_they_sit_in():
+    """A no-primary / no-probe well carries a `condition` of its own — the arm it
+    was acquired alongside. Grouping before splitting would fold background into
+    that arm's ribbon."""
+    plan = _series_plan(_cond_frame(), group_col="condition", confidence=0.95)
+    nt = next(e for e in plan if e["label"] == "NT")
+    row = nt["table"].iloc[0]
+    assert row["n_nuclei"] == 4          # the 2 sec-only rows are NOT in here
+    assert row["mean"] == pytest.approx(1.0)   # not dragged toward 0.5
+
+
+def test_every_condition_gets_a_distinct_colour_and_none_is_the_reference_colour():
+    from fishsuite.core.radial_profile_figure import _REFERENCE_COLOR
+
+    df = pd.DataFrame({
+        "condition": [f"c{i}" for i in range(6)],
+        "rna2_radial_enrichment_at_0p25um": [1.0, 1.2, 1.4, 1.6, 1.8, 2.0],
+    })
+    plan = _series_plan(df, group_col="condition", confidence=0.95)
+    colors = [e["color"] for e in plan]
+    assert len(plan) == 6
+    assert len(set(colors)) == 6, "a repeated colour makes two arms one series"
+    assert _REFERENCE_COLOR not in colors
+
+
+def test_multi_condition_figure_is_written(tmp_path):
+    out = plot_radial_profile_ci(_cond_frame(), tmp_path / "by_cond.png")
+    assert out is not None and out.exists() and out.stat().st_size > 0
+
+
+# ---------------------------------------------------------------------------
+# THE FIGURE AND THE TABLE IT VISUALISES MUST COVER THE SAME NUCLEI (2026-08-10)
+#
+# The modes RETURN `nuclei_df_all` (every visited nucleus) while the per-image
+# rollups are restricted to the sampled set, so an unfiltered figure reported a
+# mean and an n over nuclei that per_image_summary.csv had excluded.
+# ---------------------------------------------------------------------------
+def _sampled_frame():
+    return pd.DataFrame({
+        "sampled_in_analysis": [True, True, False, False],
+        "rna2_radial_enrichment_at_0p25um": [2.0, 2.0, 10.0, 10.0],
+    })
+
+
+def test_restrict_drops_the_non_sampled_nuclei_and_says_so():
+    kept, label = restrict_to_analysis_set(_sampled_frame())
+    assert len(kept) == 2
+    assert "sampled" in label and "per_image_summary" in label
+
+
+def test_restrict_is_a_no_op_when_apply_to_rollups_is_off():
+    """There the rollups covered ALL eligible nuclei, so filtering the figure
+    would MANUFACTURE the mismatch this exists to prevent."""
+    kept, label = restrict_to_analysis_set(
+        _sampled_frame(), restrict_to_sampled=False
+    )
+    assert len(kept) == 4
+    assert "all analysed nuclei" in label
+
+
+def test_restrict_is_a_no_op_when_sampling_never_ran():
+    df = pd.DataFrame({"rna2_radial_enrichment_at_0p25um": [1.0, 2.0]})
+    kept, label = restrict_to_analysis_set(df)
+    assert len(kept) == 2 and label == "all analysed nuclei"
+
+
+def test_the_figures_mean_matches_the_restricted_set_not_the_full_one():
+    kept, _ = restrict_to_analysis_set(_sampled_frame())
+    row = radial_profile_ci_table(kept).iloc[0]
+    assert row["n_nuclei"] == 2
+    assert row["mean"] == pytest.approx(2.0)     # not 6.0, the unfiltered mean
+
+
+def test_verdict_columns_survive_a_csv_round_trip(tmp_path):
+    """`Series.astype(bool)` reads the STRING 'False' as True, so a frame that
+    came back through a CSV would have selected every nucleus while claiming to
+    have selected the sample."""
+    p = tmp_path / "nuclei_metrics.csv"
+    _sampled_frame().to_csv(p, index=False)
+    kept, _ = restrict_to_analysis_set(pd.read_csv(p, dtype={"sampled_in_analysis": str}))
+    assert len(kept) == 2
+
+    secs = _cond_frame()
+    secs["secondary_only"] = secs["secondary_only"].map({True: "True", False: "False"})
+    plan = _series_plan(secs, group_col="condition", confidence=0.95)
+    nt = next(e for e in plan if e["label"] == "NT")
+    assert nt["table"].iloc[0]["n_nuclei"] == 4
+
+
+def test_runner_ties_the_figures_nucleus_set_to_apply_to_rollups():
+    """Passing restrict unconditionally would filter a run whose rollups were
+    deliberately left unrestricted — the same mismatch, reversed."""
+    import inspect
+
+    import fishsuite.runner as runner
+
+    src = inspect.getsource(runner.run_batch)
+    call = src[src.index("plot_radial_profile_ci("):]
+    assert "restrict_to_sampled" in call[:600]
+    assert "apply_to_rollups" in call[:600]
 
 
 # ---------------------------------------------------------------------------

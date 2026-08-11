@@ -8,7 +8,11 @@ between-channel spot-to-spot colocalization metrics:
   - per-image and per-nucleus ``paired_fraction_at_<X>um`` (fraction of spots
     in each channel with a partner-channel spot within X µm; X is
     configurable via ``cfg.spot_coloc.pair_distance_um``, default 0.3 µm)
-  - per-image and per-nucleus ``median_nn_distance_um``
+  - ``median_nn_distance_um`` — per NUCLEUS under the bare name; per IMAGE as
+    ``median_nn_distance_<ch>_um_all_spots_in_frame``, because the per-image
+    value pools every in-frame spot rather than averaging nuclei (the
+    nucleus-level rollups of it are ``mean/median/sd_median_nn_distance_<ch>_um_
+    per_nucleus``)
 
 Channels are loaded as DAPI / RNA1 / RNA2. Nuclear segmentation runs once on
 DAPI (same single step as rna_only). Pixel-coloc MAD thresholds are computed
@@ -2089,13 +2093,30 @@ def run_one(
         # ghost verdict feeding sampling eligibility and the one dropping rows
         # below are guaranteed to be the same verdict.
         if _reject_ghosts and _pre:
+            # The ghost rule means "this shell carries no detected signal at
+            # all", so in a TWO-channel mode it has to see BOTH channels.
+            # `_pre["spot_count"]` is rna1 only (the pre-pass was handed rna1's
+            # coordinates), so a nucleus with zero rna1 and abundant rna2 —
+            # exactly the MIAT-knockdown phenotype, and a legitimate biological
+            # observation — was being deleted as an empty shell: its row left
+            # nuclei_df, its label was zeroed, and its rna2 spots were dropped
+            # from spot_metrics.csv. Sum the channels so a nucleus must be empty
+            # in BOTH before it can be called a ghost. In rna_protein the second
+            # channel is the antibody channel (mapped into the rna2 slot), which
+            # is the same requirement.
+            _spot2_counts = _seg.spot_counts_per_label(
+                labels, *_seg.spot_xy_columns(spots2_df)
+            )
             _ghost_probe = pd.DataFrame([
-                {"nucleus_id": k, "rna_spot_count": v["spot_count"],
+                {"nucleus_id": k,
+                 "total_spot_count": float(v["spot_count"])
+                 + float(_spot2_counts.get(int(k), 0)),
                  "dapi_cv": v["dapi_cv"], "nucleus_area_px": v["area"]}
                 for k, v in sorted(_pre.items())
             ])
             _samp_ghost_ids = _seg.identify_ghost_nuclei(
                 _ghost_probe,
+                spot_count_col="total_spot_count",
                 max_dapi_cv=float(getattr(cfg.nuclei, "reject_ghost_max_dapi_cv", 0.12)),
                 min_area_px=int(getattr(cfg.nuclei, "reject_ghost_min_area_px", 6000)),
             )
@@ -3139,12 +3160,21 @@ def run_one(
             coloc_radial_df = pd.DataFrame(_rad_rows)
 
     # ---- Per-spot rows (combined into one DataFrame with ``channel`` col) --
+    # spots_out_df's `spot_id` is a GLOBAL running id assigned here; the source
+    # frames' own `spot_id` is a per-channel 0-based detector index. The two are
+    # DIFFERENT ID SPACES, so a filter applied to spots_out_df cannot be mirrored
+    # back onto spots1_df / spots2_df by intersecting `spot_id` — that is how
+    # total_spots_rna2 came to be structurally 0 (see _mirror_to_channel_frames).
+    # This records global id -> source ROW POSITION, which is unambiguous.
+    _emitted_pos: Dict[str, Dict[int, int]] = {"rna1": {}, "rna2": {}}
+
     def _emit_spot_rows(df: pd.DataFrame, label: str):
         nonlocal spot_global_id
         if df is None or len(df) == 0:
             return
-        for _, r in df.iterrows():
+        for _pos, (_, r) in enumerate(df.iterrows()):
             spot_global_id += 1
+            _emitted_pos.setdefault(label, {})[int(spot_global_id)] = int(_pos)
             x_px = int(r.get("x_px", 0))
             y_px = int(r.get("y_px", 0))
             z_slice = int(r.get("z_slice", 0))
@@ -3214,6 +3244,48 @@ def run_one(
     spots_out_df = pd.DataFrame(spot_rows)
     morph_df = pd.DataFrame(morph_rows)
 
+    # The exact frames _emit_spot_rows walked. Every mirror below re-derives from
+    # THESE, never from an already-mirrored frame, because _emitted_pos indexes
+    # positions in the original — mirroring a mirror would misalign them.
+    _spots1_src, _spots2_src = spots1_df, spots2_df
+
+    def _mirror_to_channel_frames():
+        """Restrict spots1_df / spots2_df to the rows still in spots_out_df.
+
+        Every filter in this section (speck, floater, ghost) removes rows from
+        spots_out_df, and the per-channel frames have to follow or the per-image
+        totals stop describing the rows the run actually writes. They are also
+        read by the QC renderers, which would otherwise draw deleted spots.
+
+        2026-08-10: this replaces three near-identical blocks that each did
+        ``spots1_df.spot_id.isin(<global ids from spots_out_df>)``. Those compared
+        a per-channel 0-based detector index against a 1-based global running id —
+        two unrelated integer spaces — so the intersection was arbitrary. With the
+        DEFAULT drop_floater_spots=True the rna2 comparison was disjoint outright,
+        which made per_image_summary.csv's `total_spots_rna2` structurally 0 and
+        `total_spots_rna1` a wrong number rather than a missing one. Keying on the
+        recorded row position is exact.
+        """
+        nonlocal spots1_df, spots2_df
+        if not len(spots_out_df) or "channel" not in spots_out_df.columns \
+                or "spot_id" not in spots_out_df.columns:
+            return
+        for _label, _src, _set in (
+            ("rna1", _spots1_src, "1"), ("rna2", _spots2_src, "2"),
+        ):
+            if _src is None or len(_src) == 0:
+                continue
+            alive = spots_out_df.loc[
+                spots_out_df["channel"] == _label, "spot_id"
+            ].astype(int).tolist()
+            pos_map = _emitted_pos.get(_label, {})
+            keep = sorted(pos_map[g] for g in alive if g in pos_map)
+            mirrored = _src.iloc[keep].reset_index(drop=True)
+            if _set == "1":
+                spots1_df = mirrored
+            else:
+                spots2_df = mirrored
+
     # ---- Drop floater spots (optional, default True) -----------------------
     # 2026-05-21 Brian: spots with in_nucleus=False AND in_cytoplasm=False
     # are bare-field detections (off any segmented cell). Typically
@@ -3253,13 +3325,7 @@ def run_one(
                 except Exception:
                     pass
             # Mirror to channel-specific dataframes
-            if "channel" in spots_out_df.columns and "spot_id" in spots_out_df.columns:
-                _k1 = set(spots_out_df.loc[spots_out_df.channel == "rna1", "spot_id"].tolist())
-                _k2 = set(spots_out_df.loc[spots_out_df.channel == "rna2", "spot_id"].tolist())
-                if "spot_id" in spots1_df.columns:
-                    spots1_df = spots1_df.loc[spots1_df.spot_id.isin(_k1), :].reset_index(drop=True)
-                if "spot_id" in spots2_df.columns:
-                    spots2_df = spots2_df.loc[spots2_df.spot_id.isin(_k2), :].reset_index(drop=True)
+            _mirror_to_channel_frames()
 
     _drop_floaters = getattr(cfg.foci, "drop_floater_spots", True)
     if _drop_floaters and len(spots_out_df) and "in_nucleus" in spots_out_df.columns and "in_cytoplasm" in spots_out_df.columns:
@@ -3280,13 +3346,7 @@ def run_one(
         # Also filter the per-channel detection-source dataframes so any
         # subsequent ops downstream see the same set. spots1_df / spots2_df
         # are referenced by qc rendering — keep them aligned.
-        if "channel" in spots_out_df.columns:
-            _keep1_ids = set(spots_out_df.loc[spots_out_df.channel == "rna1", "spot_id"].tolist()) if "spot_id" in spots_out_df.columns else None
-            _keep2_ids = set(spots_out_df.loc[spots_out_df.channel == "rna2", "spot_id"].tolist()) if "spot_id" in spots_out_df.columns else None
-            if _keep1_ids is not None and "spot_id" in spots1_df.columns:
-                spots1_df = spots1_df.loc[spots1_df.spot_id.isin(_keep1_ids), :].reset_index(drop=True)
-            if _keep2_ids is not None and "spot_id" in spots2_df.columns:
-                spots2_df = spots2_df.loc[spots2_df.spot_id.isin(_keep2_ids), :].reset_index(drop=True)
+        _mirror_to_channel_frames()
 
     # ---- Nucleolus + chromatin (optional) ----------------------------------
     # 2026-05-21 Brian: when cfg.nucleolus.enabled, detect DAPI-low subnuclear
@@ -3352,9 +3412,10 @@ def run_one(
     #
     # The ghost IDs come from the pre-loop pass, NOT from a second evaluation
     # of the rule, so the set removed here is exactly the set that was excluded
-    # from sampling eligibility. Ghosts carry zero spots by definition, so they
-    # contributed zero weight to the spot-count-weighted pooled nulls above —
-    # dropping them here cannot change those rollups.
+    # from sampling eligibility. Ghosts carry zero spots IN BOTH CHANNELS by
+    # definition (see the probe above), so they contributed zero weight to the
+    # spot-count-weighted pooled nulls above — dropping them here cannot change
+    # those rollups.
     _n_ghost_excluded = 0
     if _reject_ghosts and _samp_ghost_ids:
         _gset = set(int(g) for g in _samp_ghost_ids)
@@ -3368,6 +3429,15 @@ def run_one(
             spots_out_df = spots_out_df[
                 ~spots_out_df["nucleus_id"].isin(_gset)
             ].reset_index(drop=True)
+            # Mirror into the per-channel frames, the same way the speck and
+            # floater filters above do. Without this, total_spots_rna1/rna2 are
+            # computed from the UNFILTERED frames while spot_metrics.csv is
+            # ghost-filtered, so per_image_summary could report more RNA2 spots
+            # than the run actually wrote out. The nuclear label-lookup rule that
+            # produced the ghost verdict and the nucleus_id association here are
+            # not the same rule (the latter can attach a CYTOPLASMIC spot), so
+            # the difference is small but real, not zero by construction.
+            _mirror_to_channel_frames()
         print(f"  ghost-filter: dropped {_n_ghost_excluded} empty nucleus shell(s) "
               f"on {img_name} (ids={sorted(_gset)})")
 

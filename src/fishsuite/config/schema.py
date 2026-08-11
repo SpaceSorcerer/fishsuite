@@ -425,10 +425,11 @@ class SamplingCfg(BaseModel):
         description=(
             "'per_image': N nuclei from every field of view — the recommended "
             "axis, since it equalizes the denominator at the level where "
-            "nucleus count actually varies. 'per_well': N nuclei per well, "
-            "allocated EQUALLY across the images beneath that well (a well is "
-            "one image folder in this lab's layout) so a single dense FOV "
-            "cannot supply most of the well's sample."
+            "nucleus count actually varies. 'per_well' is NOT IMPLEMENTED and "
+            "RAISES at the start of a run: N is divided across a well's images "
+            "before any nucleus count is known and an unused share is never "
+            "redistributed, so it cannot deliver the equal per-well denominator "
+            "that is its whole purpose (see runner.check_sampling_supported)."
         ),
     )
     order: Literal["random", "raster", "center_out"] = Field(
