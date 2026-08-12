@@ -14,7 +14,7 @@ import os as _os
 # is honored.
 _os.environ.setdefault("MPLBACKEND", "Agg")
 
-__version__ = "0.1.0"
+__version__ = "1.0.0"
 
 # Apply the bffile numpy-1 compatibility monkeypatch as soon as the package
 # is imported. Bioio depends on bffile, which calls
