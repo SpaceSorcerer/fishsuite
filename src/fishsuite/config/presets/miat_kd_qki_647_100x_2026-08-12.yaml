@@ -1,0 +1,454 @@
+# ############################################################################
+# ##                                                                        ##
+# ##   MUST VERIFY BEFORE RUNNING — 3 THINGS, FROM THE OME METADATA         ##
+# ##                                                                        ##
+# ##   1. CHANNEL INDICES. This preset ships an INFERENCE, not a fact:      ##
+# ##        rna: 0  (MIAT-647)   antibody: 1  (QKI-568)   dapi: 2  (405)    ##
+# ##      Open one .vsi per SET and read channels.channel_names from the     ##
+# ##      OME metadata. On the 2026-07 acquisition the on-disk order was     ##
+# ##      C0="640 CSU", C1="561 CSU", C2="405 CSU" — REVERSED vs ascending   ##
+# ##      wavelength, and the written brief that time was ALSO reversed vs   ##
+# ##      the actual file. Confirm, then edit the three integers below.      ##
+# ##      *** DO NOT "FIX" THIS BY SETTING -1 (auto-detect). SEE §CHANNELS   ##
+# ##          — auto-detect is WRONG BY CONSTRUCTION for a 647-RNA /         ##
+# ##          568-protein acquisition and would SWAP MIAT with the protein.  ##
+# ##   2. PIXEL SIZE. foci.bigfish_voxel_size_nm is PINNED to 130.0 nm       ##
+# ##      (0.130 um/px, 2x2 binning). Unbinned 100x is ~0.065 um/px -> set   ##
+# ##      65.0 AND re-scale every *_px param (see §PIXEL SIZE).              ##
+# ##   3. Z-WINDOW + SPOT FLOOR are TO TUNE. Nothing here has been run.      ##
+# ##                                                                        ##
+# ############################################################################
+# ============================================================================
+# MIAT (647 RNA-FISH) x QKI (568 IF) ASSOCIATION — MIAT-ASO KD vs NT + full-
+# omission control — 100x — rna_protein
+# Date: 2026-08-12  |  fishsuite-config subagent for MASTER CONTROL
+# DO-NOT-RUN artifact: config only; no GPU was used to build this file.
+# Dry-run FIRST (fishsuite-rna-fish skill hard rule).
+# ============================================================================
+# PURPOSE
+#   Association of MIAT (RNA-FISH) with QKI (IF) per nucleus, MIAT-ASO
+#   knockdown (KD) vs non-targeting (NT), plus a FULL-OMISSION control.
+#   Human / Homo sapiens. QKI primary = rabbit, Fortis.
+#
+#   Metric stack is the canonical association stack, carried over VERBATIM from
+#   miat_qki_ASSOC_singleplane_2026-07-06.yaml: footprint enrichment, capacity,
+#   association ratio, threshold-free Pearson, MOC/ICQ, random-position null,
+#   rotation ("proper background") null, radial profile. Layered on top is the
+#   joint-autofocus / pinned-plane machinery from
+#   miat_qki_Rb_100x_FULL_pinned_2026-07-19.yaml, which the 07-06 preset
+#   predates.
+#
+# ── ★ THE CHANGE THAT MATTERS: MIAT MOVED 561 -> 647 ────────────────────────
+#   In EVERY prior dataset MIAT was the 561-line channel and the protein was
+#   the 640-line channel (C0=640, C1=561, C2=405). The channel ROLES are
+#   therefore SWAPPED versus every existing preset in this folder. Nothing
+#   about the old 561-vs-640 role assignment carries over.
+#
+#   WHY it was moved: the prior sessions' single largest problem was that bulk
+#   nuclear 561 is a diffuse haze that does not track the knockdown, which
+#   diluted a clean MIAT drop measured by spot count into a much smaller
+#   apparent drop in the intensity readouts. Putting MIAT on 647 is aimed
+#   squarely at that. Whether it worked is an OPEN QUESTION this run answers —
+#   do not write it up as settled.
+#
+# ── §CHANNELS — WHY `-1` (AUTO-DETECT) IS UNSAFE HERE ───────────────────────
+#   CODE-VERIFIED against core/io.py autodetect_channels (2026-08-12). The
+#   wavelength->role tables are hard-wired to the OLD convention:
+#       _RNA_NAME_PATTERNS = ("488","fitc","gfp","555","tritc","cy3","561")
+#       _AB_NAME_PATTERNS  = ("647","cy5","far red","far-red","640")
+#   "647" and "640" are in the ANTIBODY table; neither "568" nor "565" appears
+#   anywhere. So on THIS acquisition auto-detect resolves:
+#       dapi -> the 405 channel        (correct)
+#       ab   -> the 647/640 channel    = MIAT          <-- WRONG SLOT
+#       rna  -> the remaining channel  = the protein   <-- WRONG SLOT
+#   i.e. MIAT and the protein land in each other's analysis slots. That holds
+#   whether the OME names are laser lines ("640 CSU"/"561 CSU") or dye names
+#   ("647"/"568") — both resolve reversed.
+#
+#   In THIS mode the mistake is loud, not silent: rna_protein shims
+#   channels.antibody into rna2 and rna_rna._resolve_channels RAISES on
+#   rna2 < 0 ("rna_protein mode requires ... rna2"). But it raises only AFTER
+#   the batch threshold pre-scan has already autodetected a channel, and the
+#   sibling rna_only count preset has no antibody slot to raise on, so it
+#   would silently count spots in the protein channel. Explicit indices
+#   everywhere. This is the fix for the failure mode the banner describes.
+#
+#   LUTs are assigned by WAVELENGTH per the locked convention (NOT by role):
+#       647 -> yellow      568/565 -> magenta      405 -> blue
+#   Note this INVERTS the rna_lut/antibody_lut pairing of every 561-MIAT
+#   preset in this folder, and it is correct: the convention follows the
+#   wavelength, and MIAT is now the long-wavelength channel.
+#
+# ── §PIXEL SIZE / SPOT RADIUS ───────────────────────────────────────────────
+#   ASSUMED 0.130 um/px (100x, 2x2 binning) — the same pixel size as the
+#   2026-07 100x roster, so every PIXEL-unit parameter is reused unchanged
+#   (cellpose diameter, min_area_px, border_margin_px, min_sep_px,
+#   voronoi_max_expansion_px, partner_null_disk_px). VERIFY against the OME
+#   metadata. If the acquisition is UNBINNED (~0.065 um/px) the scale ratio is
+#   0.5 and every *_px value above must be DOUBLED, plus
+#   bigfish_voxel_size_nm -> 65.0. Physical-unit params (*_nm, *_um) are
+#   scale-invariant and need no change.
+#
+#   bigfish_spot_radius_nm: 120.0 (see foci). Derivation: MIAT was detectable
+#   at 100x with 100-150 nm at 0.130 um/px (100 nm = 0.77 px) and FAILED at
+#   60x (0.46 px — sub-pixel). MIAT is now on 647 rather than 561, a LONGER
+#   wavelength, so the diffraction-limited spot is slightly LARGER: scaling
+#   100 nm by 647/561 = 1.15 gives ~115 nm, rounded to 120.0 (= 0.92 px at
+#   0.130 um/px). Comfortably inside the range that worked and off the
+#   sub-pixel floor that broke 60x.
+#
+# ── §DIFFUSE PARTNER PATH — WHY detect_antibody_spots IS OFF ────────────────
+#   QKI is a nucleoplasm-filling protein. It has no thresholdable object, so
+#   there is nothing for a spot-caller to find: measured on the prior 100x
+#   roster, a loose LoG on such a channel returned background at essentially
+#   the same rate as a no-antibody control (~200 "spots"/nucleus vs ~218 in
+#   secondary-only). A detector that fires equally on signal and on nothing is
+#   not measuring specificity, and NO value of threshold_multiplier fixes it —
+#   tm rescales an auto-threshold derived from the same background. The
+#   ABSOLUTE INTENSITY FLOOR is the specificity lever (foci.assoc_qki_floor
+#   for the gated association-ratio variant; output manual floors for the
+#   above-floor intensity columns). Hence: spot-detect MIAT only, and read QKI
+#   as a continuous intensity field at/around the MIAT puncta, against two
+#   nulls.
+#
+# ── §NUCLEOLUS CARVE-OUT — PARTNER-SPECIFIC RATIONALE ──────────────────────
+#   nucleolus.enabled + foci.exclude_nucleolus_from_partner_null. QKI is
+#   nucleoplasmic and holds ~zero nucleolar signal, so random/rotated null
+#   points landing inside the nucleolus sample a DARK VOID, pull the null mean
+#   DOWN, and inflate apparent enrichment. Carving the nucleolus out of the
+#   null makes it nucleoplasm-matched to where the MIAT puncta actually are.
+#   (The XRN2 sibling preset needs the SAME carve-out for the MIRROR-IMAGE
+#   reason — XRN2 is nucleolar-enriched, so the un-carved null is inflated and
+#   enrichment is DEFLATED. Same setting, opposite direction; do not copy this
+#   paragraph across without reading it.)
+#
+# ── §Z: SINGLE BEST IN-FOCUS PLANE ─────────────────────────────────────────
+#   mode:autofocus + autofocus_channel:joint picks the ONE plane jointly in
+#   focus for DAPI + MIAT + QKI and locks ALL channels to it, so coloc is
+#   measured on one physical optical section (the honest-coloc invariant).
+#
+#   focus_central_fraction: 1.0 — NO central cap. This is load-bearing: 0.6
+#   capped the pick mid-stack (~z23, blurry) on fields that actually focus
+#   high (z28-29), which MANUFACTURED a fake NT<KD anomaly. The nuclear mask +
+#   intensity weighting + min-intensity-fraction guards are what keep the pick
+#   off dim stack edges — not a central-fraction cap.
+#
+#   The search window is the FULL stack. end_slice is deliberately null rather
+#   than a literal plane count: n_z for this acquisition is UNKNOWN at
+#   write-time, and a hard number smaller than n_z would cap the search and
+#   re-create exactly the bug above. io.py resolves z_end=None -> the last
+#   plane, so null cannot cap whatever the depth turns out to be.
+#
+#   FOR THE FINAL FIGURE RUN: do not ship autofocus. Build a z-montage, read
+#   the best plane F per file, and PIN each file via z_stack.file_overrides
+#   with a degenerate window {start_slice: F, end_slice: F} — the pattern in
+#   miat_qki_Rb_100x_FULL_pinned_2026-07-19.yaml. Autofocus is the first pass.
+#
+# ── §ACQUISITION / DESIGN (Brian, 2026-08-12) ──────────────────────────────
+#   100x. DAPI + MIAT RNA-FISH in 647 + one protein per set in 568/565.
+#   Three protein partners, each against MIAT: QKI (rabbit, Fortis) — THIS
+#   preset — plus XRN2 and hnRNPD (sibling presets, same day, same MIAT probe).
+#   Wells: QKI = >=3 wells each for MIAT-NT and MIAT-KD ASO. ~3 FOV per well.
+#   Full-omission controls omit BOTH the primary probe AND the primary
+#   antibody.
+#
+#   STATISTICS — WELL IS THE BIOLOGICAL REPLICATE, FOV is technical. This QKI
+#   set is the well-replicated one (>=3 wells/arm). The XRN2 and hnRNPD sets
+#   have 2 wells/arm; adding FOV per well there raises TECHNICAL replication
+#   and does NOT raise biological n. Keep that distinction in the write-up.
+#   The condition labels below are per-ARM (NT / KD), which pools wells within
+#   an arm; switch to per-WELL labels (NT_w1, NT_w2, ...) if the downstream
+#   test is on well means, exactly as the 07-06 preset did.
+#
+# ── §FULL-OMISSION CONTROL ─────────────────────────────────────────────────
+#   These wells omit the probe AND the antibody, so they are a floor for BOTH
+#   channels at once — a stronger control than a secondary-only well, which
+#   still carries the probe. Route them through the sec-only mechanism
+#   (conditions.sec_only_folders / sec_only_files): the runner forces them to
+#   the "Sec-Only" label and keeps them OUT of the biological comparison, and
+#   foci.detect_in_sec_only: true makes the run REPORT their spot rate rather
+#   than subtract it. That reported rate is the calibration target for the
+#   MIAT floor (see foci).
+#
+#   RUN WITH:  -p 1   (fishproc_dml conda env; --dry-run FIRST; ONE GPU run at
+#   a time). -p 1 is REQUIRED, not advisory: compute_partner_intensity runs an
+#   in-process per-spot loop that HANGS the parallel pool.
+# ============================================================================
+
+experiment:
+  name: "MIAT_KD_QKI_647_100x_2026-08-12"
+  description: "MIAT(647 RNA-FISH) x QKI(568 IF, rabbit/Fortis) rna_protein association, 100x, MIAT-ASO KD vs NT + full-omission control (probe AND antibody omitted). Acquired 2026-08-12. MIAT MOVED FROM 561 TO 647: channel roles are swapped versus every prior preset, so no 561-vs-640 assumption carries over. Metric stack carried verbatim from miat_qki_ASSOC_singleplane_2026-07-06 (footprint enrichment, capacity, association ratio, threshold-free Pearson, MOC/ICQ, random-position null, rotation null, radial profile) with the joint-autofocus machinery from miat_qki_Rb_100x_FULL_pinned_2026-07-19 layered on. Diffuse-partner path: detect_antibody_spots FALSE (a nucleoplasm-filling protein has no thresholdable object; loose LoG returns background at the no-antibody rate, so the absolute intensity floor is the specificity lever, not threshold_multiplier), partner intensity + position null + rotation null + radial profile all ON, nucleolus carved out of the nulls. Single best in-focus plane by JOINT autofocus with NO central-fraction cap and the full stack as the search window. Fixed-N sampling 10 nuclei per FOV, random, seed 0, on_short fail. CHANNEL INDICES ARE AN INFERENCE (rna=0/647, antibody=1/568, dapi=2/405) AND MUST BE CONFIRMED FROM OME METADATA PER SET — auto-detect (-1) is wrong by construction here and would swap MIAT with the protein. Spot radius 120 nm assumes 0.130 um/px. Human/Homo sapiens."
+  cell_line: "H9 hESC (undifferentiated)"
+  date: "2026-08-12"
+
+conditions:
+  mode: subfolders
+  # ── TO VERIFY: EXACT FOLDER NAMES ─────────────────────────────────────────
+  # The keys below are PLACEHOLDERS following the established naming pattern
+  # ("Folder<ARM>-<targets>_Experiment_<tag>_<date>"). They MUST be replaced
+  # with the actual on-disk folder names before the run — a key that matches
+  # nothing contributes nothing, and the arm silently comes back empty.
+  # Confirm with a directory listing of the -i root, then paste the names in.
+  #
+  # Two wiring options; this preset uses the first:
+  #   (a) mode: subfolders  — one folder per arm (used here).
+  #   (b) mode: filenames   — set mode: filenames and use filename_conditions
+  #       below instead, e.g. [["-NT_", "NT"], ["-MIAT-KD_", "KD"]], when all
+  #       fields sit in one folder and the arm is encoded in the filename.
+  #
+  # Labels are per-ARM (wells pooled within an arm). For a well-level test,
+  # switch to one key per well with per-well labels (NT_w1, NT_w2, ... /
+  # KD_w1, ...) and list them all in condition_order — see the 07-06 preset.
+  subfolder_conditions:
+    "FolderNT-MIAT647-QKI568_Experiment_TO_VERIFY_20260812": "NT"
+    "FolderKD-MIAT647-QKI568_Experiment_TO_VERIFY_20260812": "KD"
+  # FULL-OMISSION control (probe AND antibody omitted). NOT a biological
+  # condition — the runner forces these to the "Sec-Only" label and excludes
+  # them from the NT-vs-KD comparison. Use sec_only_files instead if the
+  # omission fields live alongside the stained ones rather than in their own
+  # folder.
+  sec_only_folders:
+    - "FolderOmission-noProbe-noAb_Experiment_TO_VERIFY_20260812"
+  sec_only_files: []
+  filename_conditions: []
+  condition_order:
+    - "NT"
+    - "KD"
+  min_nuclei_for_stats: 6
+
+# NO input_file_subset. Deliberate: the roster is not known at write-time, and
+# an allowlist of guessed basenames would filter the run to ZERO images while
+# looking like it worked. Add one only to EXCLUDE a specific bad field, and
+# then list every keeper (it is an inclusion allowlist, matched by bare
+# basename, not an exclusion list).
+
+channels:
+  analysis_mode: rna_protein
+  # ★★★ INFERENCE — CONFIRM FROM OME METADATA PER SET (see banner + §CHANNELS).
+  # Do NOT replace these with -1: auto-detect swaps MIAT and the protein here.
+  dapi: 2                       # 405 -> DAPI
+  rna: 0                        # 647 -> MIAT RNA-FISH  (PUNCTATE slot)
+  antibody: 1                   # 568 -> QKI IF         (DIFFUSE partner slot)
+  rna2: -1                      # unused; rna_protein shims antibody into rna2
+  one_indexed: false            # indices above are 0-indexed
+  dapi_label: "DAPI"
+  rna_label: "MIAT-647"
+  antibody_label: "QKI-568"     # rabbit anti-QKI, Fortis
+  # LUTs BY WAVELENGTH (locked convention), NOT by role. This is inverted vs
+  # every 561-MIAT preset in this folder, and that is correct — MIAT is now
+  # the long-wavelength channel.
+  dapi_lut: "blue"              # 405 -> blue
+  rna_lut: "yellow"             # 647 -> yellow  (MIAT)
+  antibody_lut: "magenta"       # 568 -> magenta (QKI)
+
+z_stack:
+  # JOINT multi-channel autofocus -> ONE plane, all channels locked to it.
+  mode: autofocus
+  autofocus_channel: joint
+  autofocus_joint_reduce: product        # favors planes where EVERY channel is in focus
+  autofocus_joint_nuclear_mask: true     # score focus ONLY inside the DAPI mask, so
+                                         # cytoplasmic MIAT haze cannot hijack the pick
+  autofocus_intensity_weighted: true     # weight sharpness by brightness (pulls off dim edges)
+  focus_central_fraction: 1.0            # NO CENTRAL CAP — load-bearing. 0.6 capped the pick
+                                         # mid-stack (~z23) on fields focusing at z28-29 and
+                                         # MANUFACTURED a fake NT<KD anomaly.
+  focus_min_intensity_frac_of_peak: 0.3  # drop z-slices dimmer than 30% of peak-mean before scoring
+  # FULL search window. end_slice: null = "to the last plane, whatever n_z is"
+  # (io.py: z_end None -> nz). A literal number below the true n_z would cap
+  # the search and re-create the bug above; n_z is unknown at write-time.
+  start_slice: 1
+  end_slice: null
+  # FOR THE FINAL FIGURE RUN: pin each file from a validated z-montage, e.g.
+  #   file_overrides:
+  #     "<file>.vsi": {start_slice: 22, end_slice: 22}
+  # (degenerate 1-plane window; bypasses the search for that file).
+
+nuclei:
+  # 100x params @ 0.130 um/px, carried unchanged from the 07-19 100x preset.
+  # DOUBLE every *_px value if the acquisition turns out to be unbinned
+  # (~0.065 um/px) — see §PIXEL SIZE.
+  backend: cellpose
+  cellpose_model_type: cpsam
+  cellpose_diameter_px: 100.0          # ~13 um nucleus @ 0.130 um/px
+  cellpose_flow_threshold: 0.4
+  cellpose_cellprob_threshold: 0.0
+  cellpose_downsample_factor: 2.0      # ds2 -> ~0.26 um/px seg grid; on-grid diameter 50 px
+  cellpose_device: directml            # AMD RX 6750 XT; REQUIRES the fishproc_dml env
+  min_area_px: 4000
+  max_area_px: 1000000000000.0
+  exclude_border: true
+  border_margin_px: 10
+  stardist_model: 2D_versatile_fluo
+  prob_threshold: 0.5
+  nms_threshold: 0.5
+  stardist_gauss_sigma: 3.0
+  stardist_postprocess: none
+  label_smoothing_radius_px: 0
+  reject_ghost_nuclei: false
+
+# ── FIXED-N NUCLEUS SAMPLING (ON) ───────────────────────────────────────────
+# Equalizes the denominator across FOVs: without it a confluent field
+# contributes many more nuclei than a sparse one and the arms are not
+# comparable. Runs LAST in the filter chain (area -> border -> ghost -> sample)
+# and selects on DAPI + geometry ONLY, never on the analysis channels.
+sampling:
+  enabled: true
+  n_per_unit: 10        # 10 came from the 75 prior 100x FOVs: 0 of 75 fell short of 10,
+                        # and the sparsest field held 13 nuclei. Headroom, not a guess.
+  unit: per_image       # per_well RAISES as unimplemented (runner.check_sampling_supported):
+                        # it divides N before any nucleus count is known and never
+                        # redistributes an unused share.
+  order: random         # THE ONLY UNBIASED OPTION. raster is spatially systematic;
+                        # center_out deliberately excludes the periphery.
+  seed: 0
+  on_short: fail        # A field with <10 eligible nuclei ABORTS THE RUN rather than
+                        # quietly reporting a smaller denominator. If a sparse field
+                        # legitimately needs keeping, exclude it via input_file_subset
+                        # or switch to on_short: keep (which flags the unit
+                        # short_of_target) — do not lower n_per_unit to dodge it.
+
+pixel_coloc:
+  threshold_mode: mad
+  threshold_scope: batch    # VERIFY EXPOSURE IDENTITY across wells for this NEW stain
+                            # (647 probe + 568 primary are both first-time here). If a
+                            # well-to-well offset shows up, switch to per_image. Pearson
+                            # and Li-ICQ are threshold-free either way.
+  k_mad: 2.5
+
+spot_coloc:
+  # INERT while detect_antibody_spots is false — spot-to-spot pairing needs
+  # spots in BOTH channels. Kept so the value is documented if the diffuse
+  # partner ever gets a calibrated object detector.
+  pair_distance_um: 0.3     # ~2.3 px @ 0.130 um/px (~diffraction limit)
+  report_nn_distance: true
+
+foci:
+  enabled: true
+  backend: bigfish
+  bigfish_voxel_size_nm: 130.0         # PINNED, not auto — see §PIXEL SIZE. Set 65.0 if unbinned.
+  bigfish_voxel_z_nm: 0.0              # 0 = auto; moot for single-plane 2D detection
+  # ── MIAT (rna / 647) spot detection ──
+  bigfish_spot_radius_nm: 120.0        # 100 nm scaled by 647/561 = 1.15 -> ~115, rounded to 120.
+                                       # = 0.92 px @ 0.130 um/px. Inside the 100-150 nm range that
+                                       # worked at 100x; off the sub-pixel floor that broke 60x.
+                                       # RE-CHECK against the OME pixel size.
+  bigfish_spot_radius_z_nm: 300.0      # moot (single-plane 2D detection)
+  threshold_multiplier: 1.0            # __TO TUNE__ MIAT strictness (t = auto_thr * tm; higher = stricter).
+                                       # 1.0 is the validated 100x starting point; 2.0 was too strict
+                                       # (~3.6 puncta/nucleus). Expect roughly 15-40/nucleus.
+  only_nuclear_spots: true             # MIAT is nuclear-retained; cytoplasmic textured autofluorescence
+                                       # is gated out. TRADEOFF: this makes the SPOT-based % nuclear
+                                       # retention degenerate (it is 100% by construction). The
+                                       # intensity-based N/C ratio below still measures it. Set false
+                                       # if a spot-based % nuclear number is wanted.
+  min_sep_px: 1
+  # ── __TO TUNE__ MIAT SPOT FLOOR — THE PROCEDURE, NOT A NUMBER ─────────────
+  # Intentionally NOT set: no MIAT-647 image has been measured, and a floor
+  # carried over from the 561 era would be meaningless on a different dye at a
+  # different exposure. On the 561 roster a floor of 3500 killed dim-but-real
+  # puncta and had to be removed, so the default (no floor) is the safer start:
+  # nuclear gating + LoG local-maxima detection already reject smooth haze,
+  # which has no local maxima.
+  #
+  # TUNE IT AGAINST THE FULL-OMISSION CONTROL (which omits the probe, so every
+  # spot it yields is non-specific):
+  #   1. Run with no floor. Read the omission wells' MIAT spot peak intensities
+  #      from nuclei_metrics.csv / the spots CSV (detect_in_sec_only: true
+  #      makes them appear).
+  #   2. Set the floor just above the omission distribution's bright tail.
+  #   3. ACCEPTANCE CHECK afterwards: the omission control's MEDIAN spot peak
+  #      must sit WELL UNDER ~40% of the real-probe median. If it does not, the
+  #      probe is not clearing background and no floor rescues that — stop and
+  #      raise it rather than tuning until the number looks right.
+  # To apply, uncomment:
+  #   rna_overrides:
+  #     min_spot_peak_intensity: <value from step 2>
+  #
+  # CRITICAL specificity guard: report (NEVER subtract) the non-specific spot
+  # rate in the omission wells.
+  detect_in_sec_only: true
+  # ── DIFFUSE PARTNER PATH (see §DIFFUSE PARTNER PATH) ─────────────────────
+  detect_antibody_spots: false             # QKI is a nucleoplasm-filling protein: no thresholdable
+                                           # object. A loose LoG on such a channel returned ~200
+                                           # "spots"/nucleus vs ~218 in a no-antibody control — it
+                                           # fires on nothing at the same rate as on signal, and no
+                                           # threshold_multiplier fixes that (tm rescales an
+                                           # auto-threshold built from the same background). The
+                                           # absolute intensity floor is the specificity lever.
+  # No antibody_overrides block: every field in it is inert while
+  # detect_antibody_spots is false.
+  compute_partner_intensity: true          # QKI raw local intensity at each MIAT spot (in-process -> -p 1)
+  compute_partner_null_enrichment: true    # per-nucleus RANDOM-POSITION null
+  partner_null_n: 1000
+  partner_null_disk_px: 3.0                # canonical validated disk (~0.39 um @ 0.130 um/px)
+  partner_null_seed: 0
+  exclude_nucleolus_from_partner_null: true  # see §NUCLEOLUS CARVE-OUT (QKI: dark nucleolar void
+                                             # would deflate the null and inflate enrichment)
+  save_partner_null_draws: true            # writes coloc_null_draws.csv (self-sufficient; no backfill needed)
+  compute_partner_radial_profile: true     # writes coloc_radial_profile.csv (QKI-around-MIAT rings)
+  partner_radial_bins_um: [0.25, 0.5, 0.75, 1.0]
+  # ── Stricter "proper background" ROTATION null ──
+  compute_partner_rotation_null: true      # rotates the MIAT constellation about its centroid,
+                                           # preserving its spatial statistics
+  partner_rotation_n: 1000
+  partner_rotation_seed: 0
+  partner_rotation_min_retention: 0.5
+  partner_rotation_assoc_percentile: 95.0
+  save_partner_rotation_null_draws: true   # writes coloc_rotation_null.csv for the null-overlay figure
+  # ── footprint-association metrics ──
+  compute_footprint_enrichment: true       # continuous, floor-ROBUST at-the-punctum association metric
+                                           # (plus capacity + association ratio)
+  # assoc_qki_floor: __TO TUNE__ — deliberately unset (None => OFF). This is the
+  # genuine-partner intensity floor for the SECONDARY floor-GATED
+  # association-ratio variant only; the primary continuous metric above is
+  # floor-free and unaffected. Calibrate it off THIS dataset's omission wells
+  # (the QKI intensity distribution with no primary antibody), not off the
+  # 561-era 4000.0, which was calibrated on a different dye, primary and
+  # exposure and does not transfer.
+
+cytoplasm:
+  enabled: true
+  voronoi_max_expansion_px: 40         # ~5.2 um @ 0.130 um/px
+  measure_nc_ratio: true               # intensity-based % nuclear MIAT (the retention readout that
+                                       # survives only_nuclear_spots: true)
+
+nucleolus:
+  enabled: true                        # DAPI-poor nucleolus detection; carved out of the partner nulls
+
+output:
+  save_qc_overlays: true
+  save_per_image_csv: true
+  save_masks: true
+  save_publication_images: true
+  save_publication_tifs: false
+  # ── DISPLAY/ANALYSIS FLOORS: auto_batch for the FIRST PASS ───────────────
+  # DELIBERATELY NOT manual. Every manual floor in this folder was calibrated
+  # on MIAT-561 + a 640 primary; this is a 647 probe with a 568 primary at
+  # first-time exposures, so those numbers describe a different measurement.
+  # Inventing replacements would be worse. auto_batch derives them from batch
+  # percentiles instead.
+  # AFTER the first pass, pin them: set pub_contrast_mode: manual and add
+  # manual_rna_min/_max (MIAT-647), manual_antibody_min/_max (protein-568) and
+  # manual_rna2_min/_max (mirror of the antibody pair — the renderer may read
+  # the rna2 slot), plus manual_dapi_min/_max.
+  pub_contrast_mode: auto_batch
+  apply_pub_contrast_floor_to_analysis: true   # emit the *_above_floor_intensity_* per-nucleus columns.
+                                               # NOTE: under auto_batch the floor is percentile-derived
+                                               # PER BATCH, so those columns are NOT comparable across
+                                               # runs until manual floors are pinned. Kept true for
+                                               # column parity with every prior preset.
+  apply_pub_contrast_floor_to_spots: false     # never gate spot COUNTS by a display floor
+  prefix: ""
+  scalebar_um: 25.0
+  scalebar_font_px: 52
+
+parallel:
+  # -p 1 is REQUIRED, not advisory: compute_partner_intensity runs an
+  # in-process per-spot loop that HANGS the parallel pool. DirectML: one 12 GB
+  # GPU -> one segmentation worker.
+  workers: 1
+  seg_workers: 1
+  main_workers: 1
+  threads_per_worker: 4
+
+seed: 0
