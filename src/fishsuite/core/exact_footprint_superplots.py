@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import sys
 import textwrap
 from dataclasses import dataclass
@@ -25,10 +26,14 @@ import pandas as pd
 ARM_ORDER = ("NT", "KD")
 ARM_LABELS = {"NT": "NT", "KD": "MIAT-KD"}
 ARM_COLORS = {"NT": "#0072B2", "KD": "#D55E00"}
-STYLE_DIR = Path(
-    r"F:\RNA-SEQ-ANALYSIS\MIAT-KD-RNAseq\committee_june_figures"
-    r"\_REBUILD_v49_2026-06-12\_style"
-)
+def _style_dir() -> Path:
+    """Locked figure-style directory, resolved lazily from FISHSUITE_STYLE_DIR.
+
+    Machine-specific; the 2026-08-28 production run used
+    committee_june_figures\\_REBUILD_v49_2026-06-12\\_style on the acquisition
+    machine. The literal lives outside src so the no-absolute-paths gate holds.
+    """
+    return Path(os.environ.get("FISHSUITE_STYLE_DIR", "<SET_ME>"))
 
 
 class FigureDataError(ValueError):
@@ -925,8 +930,12 @@ def _fmt_effect(value: float, unit: str) -> str:
 
 
 def _load_style():
-    if not (STYLE_DIR / "fig_style.py").is_file():
-        raise FigureDataError(f"locked MIAT/QKI style module is missing: {STYLE_DIR}")
+    style_root = _style_dir()
+    if not (style_root / "fig_style.py").is_file():
+        raise FigureDataError(
+            f"locked MIAT/QKI style module is missing: {style_root} "
+            "(set FISHSUITE_STYLE_DIR to the locked style directory)"
+        )
     import matplotlib
 
     matplotlib.use("Agg", force=True)
@@ -937,7 +946,7 @@ def _load_style():
             import tomli
 
             sys.modules["tomllib"] = tomli
-    style_dir = str(STYLE_DIR)
+    style_dir = str(style_root)
     if style_dir not in sys.path:
         sys.path.insert(0, style_dir)
     import fig_style as fs  # type: ignore

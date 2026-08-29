@@ -22,6 +22,19 @@ from fishsuite.core.exact_footprint_superplots import (
     select_primary_inference,
 )
 
+# Machine-local: the locked MIAT/QKI figure style lives outside the repo. The
+# production literal moved here from exact_footprint_superplots.STYLE_DIR so the
+# no-absolute-paths gate holds on src; render tests need the real style assets.
+_LOCKED_STYLE_DIR = (
+    r"F:\RNA-SEQ-ANALYSIS\MIAT-KD-RNAseq\committee_june_figures"
+    r"\_REBUILD_v49_2026-06-12\_style"
+)
+
+
+@pytest.fixture(autouse=True)
+def _locked_style_env(monkeypatch):
+    monkeypatch.setenv("FISHSUITE_STYLE_DIR", _LOCKED_STYLE_DIR)
+
 
 def _synthetic_tables() -> tuple[
     pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame
