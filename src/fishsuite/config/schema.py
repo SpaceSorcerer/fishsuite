@@ -560,14 +560,17 @@ class SpotColocCfg(BaseModel):
 
 
 class FociChannelOverrideCfg(BaseModel):
-    """Optional per-channel BigFISH parameter overrides for rna_rna mode.
+    """Optional per-channel spot-analysis overrides.
 
     Every field defaults to ``None`` meaning "inherit from FociCfg". When a
     field is set, it replaces the shared FociCfg value for that channel only.
-    The set of overrideable fields intentionally tracks the knobs Brian most
-    often differs between RNA1 and RNA2 (different probe brightness or spot
-    size); voxel-size / backend / LoG knobs stay shared to keep the override
-    set small and the YAML readable.
+    ``rna_overrides`` applies in rna_only, rna_rna, and rna_protein;
+    ``rna2_overrides`` applies to the second channel in rna_rna; and
+    ``antibody_overrides`` is mapped to that second-channel path in
+    rna_protein. Effective XY/Z radii drive detection and nominal fallback
+    geometry, while the threshold, nuclear gate, and peak floor drive the
+    channel's analyzed spot set. Voxel-size / backend / LoG knobs stay shared
+    to keep the override set small and the YAML readable.
 
     2026-09-03 Brian: ``threshold_override`` moved OUT of the shared-only set.
     The antibody/protein channel often needs its OWN fixed BigFISH LoG
@@ -646,10 +649,10 @@ class FociCfg(BaseModel):
     # the same config drives the Fiji launcher consistently. Default 1 ≈
     # disabled.
     min_sep_px: int = 1
-    # Per-channel overrides (used by rna_rna mode). When a field on either
-    # override is None, the shared FociCfg value is used. ``rna_overrides``
-    # applies to the first RNA channel (``channels.rna``); ``rna2_overrides``
-    # applies to ``channels.rna2``.
+    # Per-channel overrides. When a field is None, the shared FociCfg value is
+    # used. ``rna_overrides`` applies to ``channels.rna`` in rna_only,
+    # rna_rna, and rna_protein; ``rna2_overrides`` applies to
+    # ``channels.rna2`` in rna_rna.
     rna_overrides: FociChannelOverrideCfg = Field(default_factory=FociChannelOverrideCfg)
     rna2_overrides: FociChannelOverrideCfg = Field(default_factory=FociChannelOverrideCfg)
     # 2026-05-28 Brian: per-channel overrides for the PROTEIN/antibody channel

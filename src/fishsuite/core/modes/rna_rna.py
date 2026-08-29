@@ -1683,6 +1683,24 @@ def run_one(
         if len(spots2_df) > 0:
             spots2_df = _morph.stratify_spots(spots2_df, labels)
 
+    # Enforce the resolved per-channel nuclear-only contract immediately after
+    # compartment assignment.  This must precede pairing, partner sampling,
+    # footprint enrichment, and every null model: cytoplasmic spots receive a
+    # parent nucleus_id during stratification, so filtering only at export time
+    # would still contaminate the nuclear association calculations.
+    if bool(rna1_params.get("only_nuclear_spots", False)) and len(spots1_df):
+        spots1_df = spots1_df.loc[
+            pd.to_numeric(spots1_df["in_nucleus"], errors="coerce")
+            .fillna(0)
+            .astype(bool)
+        ].reset_index(drop=True)
+    if bool(rna2_params.get("only_nuclear_spots", False)) and len(spots2_df):
+        spots2_df = spots2_df.loc[
+            pd.to_numeric(spots2_df["in_nucleus"], errors="coerce")
+            .fillna(0)
+            .astype(bool)
+        ].reset_index(drop=True)
+
     # ---- Pixel-coloc thresholds (independent per channel) ------------------
     pc_cfg = getattr(cfg, "pixel_coloc", None)
     rna_thr_value = _compute_pixel_coloc_thr(
@@ -1760,10 +1778,10 @@ def run_one(
     # fails for edge-clipped or all-zero crops). The actual reported
     # ``spot_diameter_um`` per spot is MEASURED below via a moment-based
     # 2D Gaussian estimator on a local crop — see ``_measure_spot_diameter_um``.
-    spot_radius_um = float(cfg.foci.bigfish_spot_radius_nm) / 1000.0
-    default_spot_diameter_um = 2.0 * spot_radius_um
-    default_spot_fwhm_px = default_spot_diameter_um / max(voxel_xy_um, 1e-6)
-    default_spot_area_px = math.pi * (default_spot_fwhm_px / 2.0) ** 2
+    rna1_spot_radius_um = float(rna1_params["bigfish_spot_radius_nm"]) / 1000.0
+    rna2_spot_radius_um = float(rna2_params["bigfish_spot_radius_nm"]) / 1000.0
+    rna1_default_spot_diameter_um = 2.0 * rna1_spot_radius_um
+    rna2_default_spot_diameter_um = 2.0 * rna2_spot_radius_um
 
     # Per-spot diameter measurement on the 2D plane used for detection.
     # Resulting column ``spot_diameter_um`` is a per-spot FWHM diameter (µm).
@@ -1771,13 +1789,13 @@ def run_one(
         spots1_df = spots1_df.copy() if not isinstance(spots1_df, pd.DataFrame) else spots1_df
         spots1_df["spot_diameter_um"] = _measure_spot_diameter_um(
             rna_2d, spots1_df, voxel_xy_um,
-            fallback_diam_um=default_spot_diameter_um,
+            fallback_diam_um=rna1_default_spot_diameter_um,
         )
     if len(spots2_df) > 0:
         spots2_df = spots2_df.copy() if not isinstance(spots2_df, pd.DataFrame) else spots2_df
         spots2_df["spot_diameter_um"] = _measure_spot_diameter_um(
             rna2_2d, spots2_df, voxel_xy_um,
-            fallback_diam_um=default_spot_diameter_um,
+            fallback_diam_um=rna2_default_spot_diameter_um,
         )
 
     # ---- Intensity-based, spot-centric, FLOOR-ROBUST coloc (Brian 2026-05-29)
@@ -1802,14 +1820,19 @@ def run_one(
         getattr(cfg.foci, "compute_partner_intensity", False)
     )
     if compute_partner_intensity:
-        partner_disk_radius_px = max(1.0, spot_radius_um / max(voxel_xy_um, 1e-6))
+        rna1_partner_disk_radius_px = max(
+            1.0, rna1_spot_radius_um / max(voxel_xy_um, 1e-6)
+        )
+        rna2_partner_disk_radius_px = max(
+            1.0, rna2_spot_radius_um / max(voxel_xy_um, 1e-6)
+        )
         if len(spots1_df) > 0:
             spots1_df["partner_local_mean_intensity"] = _sample_partner_local_intensity(
-                rna2_2d, spots1_df, partner_disk_radius_px,
+                rna2_2d, spots1_df, rna1_partner_disk_radius_px,
             )
         if len(spots2_df) > 0:
             spots2_df["partner_local_mean_intensity"] = _sample_partner_local_intensity(
-                rna_2d, spots2_df, partner_disk_radius_px,
+                rna_2d, spots2_df, rna2_partner_disk_radius_px,
             )
 
     # ---- MIAT x QKI ASSOCIATION: footprint-based per-spot QKI (Brian 2026-07-07)
@@ -1853,7 +1876,7 @@ def run_one(
         if len(spots1_df) > 0:
             _fp_qki, _fp_area, _miat_footprint_union = _sample_qki_at_miat_footprint(
                 rna_2d, rna2_2d, spots1_df, voxel_xy_um,
-                default_spot_diameter_um=default_spot_diameter_um,
+                default_spot_diameter_um=rna1_default_spot_diameter_um,
             )
             spots1_df["qki_at_miat_footprint"] = _fp_qki
             spots1_df["miat_footprint_area_px"] = _fp_area
@@ -2743,7 +2766,7 @@ def run_one(
                         _cap_dia = np.where(
                             np.isfinite(_cap_dia) & (_cap_dia > 0),
                             _cap_dia,
-                            float(default_spot_diameter_um),
+                            float(rna1_default_spot_diameter_um),
                         )
                         _cap_area = math.pi * ((_cap_dia / max(float(voxel_xy_um), 1e-6)) / 2.0) ** 2
                         _mass = _cap_pk * _cap_area
@@ -3516,7 +3539,9 @@ def run_one(
     # This records global id -> source ROW POSITION, which is unambiguous.
     _emitted_pos: Dict[str, Dict[int, int]] = {"rna1": {}, "rna2": {}}
 
-    def _emit_spot_rows(df: pd.DataFrame, label: str):
+    def _emit_spot_rows(
+        df: pd.DataFrame, label: str, default_spot_diameter_um: float
+    ):
         nonlocal spot_global_id
         if df is None or len(df) == 0:
             return
@@ -3616,8 +3641,8 @@ def run_one(
                 )
             spot_rows.append(spot_row)
 
-    _emit_spot_rows(spots1_df, "rna1")
-    _emit_spot_rows(spots2_df, "rna2")
+    _emit_spot_rows(spots1_df, "rna1", rna1_default_spot_diameter_um)
+    _emit_spot_rows(spots2_df, "rna2", rna2_default_spot_diameter_um)
 
     nuclei_df = pd.DataFrame(nuc_rows)
     spots_out_df = pd.DataFrame(spot_rows)
@@ -4492,7 +4517,9 @@ def run_one(
         "segmentation_backend": cfg.nuclei.backend,
         "stardist_prob_threshold": cfg.nuclei.prob_threshold,
         "spot_backend": cfg.foci.backend,
-        "bigfish_spot_radius_nm": cfg.foci.bigfish_spot_radius_nm,
+        # Legacy unsuffixed radius records the effective primary-RNA value.
+        # It is byte-identical to the shared value when no override is set.
+        "bigfish_spot_radius_nm": rna1_params["bigfish_spot_radius_nm"],
         "bigfish_voxel_size_nm": voxel_xy_nm,
         "bigfish_voxel_z_nm": voxel_z_nm,
         # ---- Per-channel resolved BigFISH params (overrides applied) ----
@@ -4511,6 +4538,8 @@ def run_one(
         "rna2_only_nuclear_spots": rna2_params["only_nuclear_spots"],
         "rna_min_sep_px": rna1_params["min_sep_px"],
         "rna2_min_sep_px": rna2_params["min_sep_px"],
+        "rna_min_spot_peak_intensity": rna1_params["min_spot_peak_intensity"],
+        "rna2_min_spot_peak_intensity": rna2_params["min_spot_peak_intensity"],
     }
     # ---- GATED per-image rna1 pedestal provenance (2026-09-04) -------------
     # Added only when the feature is REQUESTED, so thresholds.csv stays

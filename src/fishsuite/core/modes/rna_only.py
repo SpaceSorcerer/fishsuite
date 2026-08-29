@@ -423,6 +423,7 @@ def run_one(
     # ---- spot detection -----------------------------------------------------
     spots_df = pd.DataFrame()
     thr_val = float("nan")
+    rna_params = cfg.foci.resolved_for("rna")
     # 2026-05-25 Brian: optionally also detect spots on secondary-only control
     # images (foci.detect_in_sec_only). Sec-only spot counts are REPORTED
     # (flow through per_image_summary + per-nucleus CSV like any image) for
@@ -441,9 +442,9 @@ def run_one(
                 backend=cfg.foci.backend,
                 voxel_xy_nm=float(vx),
                 voxel_z_nm=float(vz),
-                spot_radius_nm=cfg.foci.bigfish_spot_radius_nm,
-                spot_radius_z_nm=cfg.foci.bigfish_spot_radius_z_nm,
-                threshold_multiplier=cfg.foci.threshold_multiplier,
+                spot_radius_nm=rna_params["bigfish_spot_radius_nm"],
+                spot_radius_z_nm=rna_params["bigfish_spot_radius_z_nm"],
+                threshold_multiplier=rna_params["threshold_multiplier"],
                 threshold=cfg.foci.threshold_override,
                 log_threshold=cfg.foci.log_threshold,
                 log_spot_radius_px=cfg.foci.log_spot_radius_px,
@@ -452,6 +453,22 @@ def run_one(
         except Exception:
             spots_df = pd.DataFrame()
             thr_val = float("nan")
+
+    # Apply the channel-specific absolute peak floor before compartment
+    # assignment so counts and all later outputs share the analyzed spot set.
+    _min_peak = rna_params.get("min_spot_peak_intensity")
+    _spots_dropped_below_min_peak = 0
+    if _min_peak is not None and float(_min_peak) > 0 and len(spots_df):
+        from .rna_rna import _filter_spots_by_floor as _ffbf
+        _n_before_min_peak = len(spots_df)
+        spots_df = _ffbf(spots_df, float(_min_peak), rna_2d)
+        _spots_dropped_below_min_peak = _n_before_min_peak - len(spots_df)
+        if _spots_dropped_below_min_peak:
+            print(
+                f"  [spot-floor] {path.name} rna: dropped "
+                f"{_spots_dropped_below_min_peak}/{_n_before_min_peak} spots below "
+                f"min_spot_peak_intensity={float(_min_peak):.1f}"
+            )
 
     # ---- Pub-contrast floor as HARD spot-detection floor -------------------
     # rna_only parity with rna_rna (2026-05-25 Brian): when
@@ -484,16 +501,38 @@ def run_one(
     # radius doubled, i.e. a single constant per image — was an error noted
     # by Brian; the resulting ``spot_diameter_um`` column had no variability,
     # which broke spot-size figures (figures/25,26).
-    spot_radius_um = float(cfg.foci.bigfish_spot_radius_nm) / 1000.0
+    spot_radius_xy_nm = float(rna_params["bigfish_spot_radius_nm"])
+    spot_radius_z_nm = float(rna_params["bigfish_spot_radius_z_nm"])
+    spot_radius_um = spot_radius_xy_nm / 1000.0
     default_spot_diameter_um = 2.0 * spot_radius_um
     default_spot_fwhm_px = default_spot_diameter_um / max(voxel_xy_um, 1e-6)
     default_spot_area_px = math.pi * (default_spot_fwhm_px / 2.0) ** 2
+    nominal_spot_volume_vox = (
+        4.0 / 3.0 * math.pi * (default_spot_fwhm_px / 2.0) ** 2
+        * (spot_radius_z_nm / voxel_z_nm)
+    )
+    nominal_spot_volume_um3 = (
+        4.0 / 3.0 * math.pi * (default_spot_diameter_um / 2.0) ** 2
+        * (spot_radius_z_nm / 1000.0)
+    )
+    nominal_spot_anisotropy = spot_radius_z_nm / spot_radius_xy_nm
+    nominal_sigma_z_px = spot_radius_z_nm / voxel_z_nm
+    nominal_fwhm_z_px = spot_radius_z_nm * 2.355 / voxel_z_nm
 
     # Stratify spots vs nuclei / cytoplasm
     if cyt_labels is not None and len(spots_df) > 0:
         spots_df = _morph.stratify_spots(spots_df, labels, cytoplasm_labels=cyt_labels)
     elif len(spots_df) > 0:
         spots_df = _morph.stratify_spots(spots_df, labels)
+
+    # The nuclear-only gate requires the real compartment labels, but must run
+    # before diameter measurement, aggregation, overlays, and spot export.
+    if bool(rna_params.get("only_nuclear_spots", False)) and len(spots_df):
+        spots_df = spots_df.loc[
+            pd.to_numeric(spots_df["in_nucleus"], errors="coerce")
+            .fillna(0)
+            .astype(bool)
+        ].reset_index(drop=True)
 
     # Measured per-spot diameter (µm). Attach as a column so the per-nucleus
     # aggregator and the per-spot row both see real per-spot values.
@@ -805,17 +844,14 @@ def run_one(
             median_spot_fwhm_px = float("nan")
             mean_spot_area_px = float("nan")
         mean_spot_volume_vox = (
-            4.0 / 3.0 * math.pi * (default_spot_fwhm_px / 2.0) ** 2
-            * (cfg.foci.bigfish_spot_radius_z_nm / voxel_z_nm)
-        ) if rna_spot_count > 0 else float("nan")
+            nominal_spot_volume_vox if rna_spot_count > 0 else float("nan")
+        )
         mean_spot_volume_um3 = (
-            4.0 / 3.0 * math.pi
-            * (default_spot_diameter_um / 2.0) ** 2
-            * (2.0 * cfg.foci.bigfish_spot_radius_z_nm / 1000.0 / 2.0)
-        ) if rna_spot_count > 0 else float("nan")
+            nominal_spot_volume_um3 if rna_spot_count > 0 else float("nan")
+        )
         mean_spot_anisotropy = (
-            (cfg.foci.bigfish_spot_radius_z_nm / cfg.foci.bigfish_spot_radius_nm)
-        ) if rna_spot_count > 0 else float("nan")
+            nominal_spot_anisotropy if rna_spot_count > 0 else float("nan")
+        )
         mean_spot_local_snr = float("nan")
 
         nuc_row = {
@@ -955,22 +991,22 @@ def run_one(
                 "quality": ipeak,
                 "spot_fwhm_px": spot_fwhm_px_val,
                 "fwhm_xy_px_fit": spot_fwhm_px_val,
-                "fwhm_z_px_fit": (cfg.foci.bigfish_spot_radius_z_nm * 2.355 / voxel_z_nm),
+                "fwhm_z_px_fit": nominal_fwhm_z_px,
                 "sigma_xy_px_fit": spot_fwhm_px_val / 2.355,
-                "sigma_z_px_fit": (cfg.foci.bigfish_spot_radius_z_nm / voxel_z_nm),
+                "sigma_z_px_fit": nominal_sigma_z_px,
                 "spot_diameter_um": spot_diam_um,
                 "spot_area_px": spot_area_px_val,
                 "spot_volume_vox": (
                     4.0 / 3.0 * math.pi * (spot_fwhm_px_val / 2.0) ** 2
-                    * (cfg.foci.bigfish_spot_radius_z_nm / voxel_z_nm)
+                    * nominal_sigma_z_px
                 ),
                 "spot_volume_um3": (
                     4.0 / 3.0 * math.pi
                     * (spot_diam_um / 2.0) ** 2
-                    * (cfg.foci.bigfish_spot_radius_z_nm / 1000.0)
+                    * (spot_radius_z_nm / 1000.0)
                 ),
                 "spot_anisotropy": (
-                    cfg.foci.bigfish_spot_radius_z_nm / cfg.foci.bigfish_spot_radius_nm
+                    nominal_spot_anisotropy
                 ),
                 "peak_intensity": ipeak,
                 "rna_mean_raw_disk": ipeak,
@@ -987,7 +1023,7 @@ def run_one(
                 "local_snr": float("nan"),
                 "fit_ok": 1,
                 "n_voxels_sampled": int(spot_area_px_val),
-                "z_fwhm_slices": float(cfg.foci.bigfish_spot_radius_z_nm * 2.355 / voxel_z_nm),
+                "z_fwhm_slices": float(nominal_fwhm_z_px),
                 "colocalized": 0,
                 "coloc_partner_id": -1,
                 "coloc_partner_dist_px": float("nan"),
@@ -1183,9 +1219,9 @@ def run_one(
             "mean_cell_total_peak_intensity": round(sum(cell_total_int_fit) / float(len(cell_total_int_fit)), 2) if cell_total_int_fit else float("nan"),
             "median_cell_total_peak_intensity": round(_median(cell_total_int_fit), 2) if cell_total_int_fit else float("nan"),
             "cv_cell_total_peak_intensity": round(tcv, 4) if tcv == tcv else float("nan"),
-            "mean_spot_volume_um3": round(default_spot_diameter_um, 5) if cell_total_int_fit else float("nan"),
+            "mean_spot_volume_um3": round(nominal_spot_volume_um3, 5) if cell_total_int_fit else float("nan"),
             "mean_spot_anisotropy": round(
-                cfg.foci.bigfish_spot_radius_z_nm / cfg.foci.bigfish_spot_radius_nm, 3
+                nominal_spot_anisotropy, 3
             ) if cell_total_int_fit else float("nan"),
             "n_nuclei_border_excluded": int(n_border_excluded),
             "total_spots": int(len(spots_out_df)),
@@ -1242,6 +1278,15 @@ def run_one(
             "n_z": int(img.n_z),
         }
 
+    # The absolute peak floor is opt-in. Keep the legacy per-image schema
+    # unchanged when it is off, but make an active floor and its dropped count
+    # travel with the image-level result when configured.
+    if _min_peak is not None and float(_min_peak) > 0:
+        per_image["rna_min_spot_peak_intensity"] = float(_min_peak)
+        per_image["spots_dropped_below_rna_min_peak"] = int(
+            _spots_dropped_below_min_peak
+        )
+
     # ---- GATED fixed-N sampling per-image provenance ------------------------
     # Injected after the populated/empty if/else so both paths carry the SAME
     # key set. Absent entirely when sampling is off, so per_image_summary.csv
@@ -1285,9 +1330,19 @@ def run_one(
         "segmentation_backend": cfg.nuclei.backend,
         "stardist_prob_threshold": cfg.nuclei.prob_threshold,
         "spot_backend": cfg.foci.backend,
-        "bigfish_spot_radius_nm": cfg.foci.bigfish_spot_radius_nm,
+        # Legacy unsuffixed radius now records the effective RNA value. With no
+        # override this remains identical to the shared FociCfg value.
+        "bigfish_spot_radius_nm": spot_radius_xy_nm,
+        "bigfish_spot_radius_z_nm": spot_radius_z_nm,
         "bigfish_voxel_size_nm": voxel_xy_nm,
         "bigfish_voxel_z_nm": voxel_z_nm,
+        # Full resolved RNA-channel spot provenance.
+        "rna_bigfish_spot_radius_nm": spot_radius_xy_nm,
+        "rna_bigfish_spot_radius_z_nm": spot_radius_z_nm,
+        "rna_threshold_multiplier": rna_params["threshold_multiplier"],
+        "rna_only_nuclear_spots": rna_params["only_nuclear_spots"],
+        "rna_min_sep_px": rna_params["min_sep_px"],
+        "rna_min_spot_peak_intensity": rna_params["min_spot_peak_intensity"],
         "trackmate_threshold": "",
         "rna_detect_blur_sigma": "",
         "rna_detect_rollingball": "",
