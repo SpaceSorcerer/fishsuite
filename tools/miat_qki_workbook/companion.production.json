@@ -1,0 +1,26 @@
+{
+  "companionWorkbooks": {
+    "analysisFilename": "MIAT_QKI_analysis_QC.xlsx",
+    "spotsFilename": "MIAT_QKI_spots_exact_complete.xlsx",
+    "nucleusFilename": "MIAT_QKI_nucleus_endpoints_complete.xlsx",
+    "analysisKeys": [
+      "summary",
+      "fov",
+      "set",
+      "endpoint_inference",
+      "cartesian",
+      "ratio_of_ratios",
+      "fov_correlations",
+      "set_correlations",
+      "correlation_inference",
+      "representatives",
+      "controls",
+      "sampling_audit",
+      "image_qc",
+      "nucleus_qc",
+      "threshold_sensitivity"
+    ],
+    "spotKey": "spots",
+    "nucleusKey": "nucleus"
+  }
+}

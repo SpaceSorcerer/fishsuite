@@ -1,0 +1,139 @@
+{
+  "sources": {
+    "spots": "corrected_spot_exact_footprint_metrics.csv.gz",
+    "nucleus": "nucleus_exact_footprint_endpoints.csv",
+    "fov": "fov_endpoint_means.csv",
+    "set": "biological_set_endpoint_means.csv",
+    "endpointInference": "endpoint_inference.csv",
+    "cartesian": "cartesian_contrasts.csv",
+    "ratioOfRatios": "ratio_of_ratios.csv",
+    "fovCorrelations": "fov_correlations.csv",
+    "setCorrelations": "biological_set_correlations.csv",
+    "correlationInference": "correlation_inference.csv",
+    "imageQc": "renderer_image_audit.csv",
+    "nucleusQc": "renderer_nucleus_qc_roster.csv",
+    "thresholdSensitivity": "FIGURES_V2\\threshold_sensitivity_summary.csv",
+    "representatives": "FIGURES_V2\\representative_selection_manifest.csv",
+    "controls": "CONTROL_DIAGNOSTICS_V2\\omission_control_ledger.csv",
+    "samplingAudit": "sampling_correction_audit.json",
+    "postrunManifest": "postrun_manifest.json"
+  },
+  "outputs": {
+    "summary": "summary.csv",
+    "spots": "corrected_spots_exact.csv",
+    "nucleus": "nucleus_endpoints.csv",
+    "fov": "fov_endpoints_wide.csv",
+    "set": "set_endpoints_wide.csv",
+    "endpointInference": "endpoint_inference.csv",
+    "cartesian": "cartesian_contrasts.csv",
+    "ratioOfRatios": "ratio_of_ratios.csv",
+    "fovCorrelations": "fov_correlations.csv",
+    "setCorrelations": "set_correlations.csv",
+    "correlationInference": "correlation_inference.csv",
+    "representatives": "representatives.csv",
+    "controls": "controls.csv",
+    "samplingAudit": "sampling_audit.csv",
+    "imageQc": "image_qc.csv",
+    "nucleusQc": "nucleus_qc.csv",
+    "thresholdSensitivity": "threshold_sensitivity.csv"
+  },
+  "adapterManifest": "adapter_manifest.json",
+  "expected": {
+    "spots": {"rows": 23829, "columns": 130},
+    "nucleus": {"rows": 1682, "columns": 417},
+    "fov": {"rows": 9176, "columns": 13},
+    "set": {"rows": 2976, "columns": 12},
+    "endpointInference": {"rows": 369, "columns": 40},
+    "cartesian": {"rows": 5136, "columns": 23},
+    "ratioOfRatios": {"rows": 12, "columns": 17},
+    "fovCorrelations": {"rows": 1184, "columns": 19},
+    "setCorrelations": {"rows": 384, "columns": 17},
+    "correlationInference": {"rows": 32, "columns": 44},
+    "representatives": {"rows": 4, "columns": 25},
+    "controls": {"rows": 7, "columns": 16},
+    "imageQc": {"rows": 44, "columns": 305},
+    "nucleusQc": {"rows": 1682, "columns": 5},
+    "thresholdSensitivity": {"rows": 12, "columns": 12},
+    "pixelRows": 707446
+  },
+  "pivots": {
+    "fov": {
+      "keyColumns": [
+        "cohort", "image", "image_key", "slide", "arm", "replicate", "fov",
+        "biological_set", "is_control", "n_nuclei_total"
+      ],
+      "endpointMetadataColumns": ["n_nuclei_finite"]
+    },
+    "set": {
+      "keyColumns": [
+        "cohort", "slide", "arm", "replicate", "biological_set",
+        "n_fovs_total", "n_nuclei_total"
+      ],
+      "endpointMetadataColumns": [
+        "n_fovs_finite", "n_nuclei_finite", "complete_for_inference"
+      ]
+    }
+  },
+  "summary": {
+    "endpointRows": [
+      {
+        "endpoint": "n_spots_all",
+        "displayLabel": "All detected MIAT spots per nucleus",
+        "section": "Global MIAT",
+        "note": "Observed KD-versus-NT change in all detected MIAT spots."
+      },
+      {
+        "endpoint": "threshold_positive_spots_per_nucleus_q95",
+        "displayLabel": "q95 QKI-associated MIAT spots per nucleus",
+        "section": "q95 associated MIAT",
+        "note": "Observed change in MIAT spots whose detected pixels exceeded the q95 local QKI null threshold."
+      },
+      {
+        "endpoint": "miat_footprint_mass_all_union_deduplicated",
+        "displayLabel": "All-detected MIAT spot-pixel intensity per nucleus",
+        "section": "Global MIAT",
+        "note": "Union-deduplicated MIAT spot-pixel intensity across all detected MIAT spots."
+      },
+      {
+        "endpoint": "miat_footprint_mass_q95_positive_union_deduplicated",
+        "displayLabel": "q95-associated MIAT spot-pixel intensity per nucleus",
+        "section": "q95 associated MIAT",
+        "note": "Union-deduplicated MIAT spot-pixel intensity across q95-positive MIAT spots."
+      },
+      {
+        "endpoint": "association_fraction_among_usable_q95",
+        "displayLabel": "q95 association fraction among null-usable MIAT spots",
+        "section": "q95 association fraction",
+        "note": "Interpret together with the conservative all-floor denominator because null usability differs between arms."
+      },
+      {
+        "endpoint": "association_fraction_among_all_floor_spots_q95",
+        "displayLabel": "q95 association fraction among all floor-passing MIAT spots",
+        "section": "q95 association fraction",
+        "note": "Conservative denominator containing every floor-passing MIAT spot, including null-unusable spots."
+      },
+      {
+        "endpoint": "threshold_usability_coverage_q95",
+        "displayLabel": "q95 null-usability coverage",
+        "section": "q95 denominator context",
+        "note": "Fraction of floor-detected MIAT spots with a usable q95 null call; shown to expose differential unusability."
+      }
+    ],
+    "ratioRows": [
+      {
+        "numeratorEndpoint": "threshold_positive_spots_per_nucleus_q95",
+        "denominatorEndpoint": "n_spots_floor",
+        "displayLabel": "q95-associated spot-count change relative to floor-passing spot-count change",
+        "section": "q95 associated/global ratio",
+        "note": "Ratio of the KD/NT q95-positive spot-count ratio to the KD/NT floor-passing spot-count ratio."
+      },
+      {
+        "numeratorEndpoint": "miat_footprint_mass_q95_positive_union_deduplicated",
+        "denominatorEndpoint": "miat_footprint_mass_floor_union_deduplicated",
+        "displayLabel": "q95-associated MIAT spot-pixel intensity change relative to floor-passing MIAT spot-pixel intensity change",
+        "section": "q95 associated/global ratio",
+        "note": "Ratio of the KD/NT q95-associated MIAT spot-pixel intensity ratio to the KD/NT floor-passing MIAT spot-pixel intensity ratio."
+      }
+    ]
+  }
+}

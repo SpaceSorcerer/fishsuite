@@ -1,0 +1,7 @@
+check_name,scope,status,observed,expected,notes
+run_complete,full_run,PASS,44,44,All manifest images completed
+spot_pixel_parity,full_run,PASS,707446,707446,Footprint pixel rows equal spot area sum
+input_immutability,full_run,PASS,unchanged,unchanged,Raw inputs were not modified
+population_reconciliation,biological,PASS,23512,23512,Biological spot population reconciled
+authoritative_sample_join,sampled_primary,PASS,6267,6267,Spot membership follows authoritative nucleus keys
+laser_power_metadata,full_run,REVIEW,unverified,verified,Laser power absent from accessible metadata
