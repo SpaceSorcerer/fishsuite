@@ -1266,6 +1266,7 @@ def run_batch(
                             flow_threshold=cfg.nuclei.cellpose_flow_threshold,
                             cellprob_threshold=cfg.nuclei.cellpose_cellprob_threshold,
                             cellpose_model_type=cfg.nuclei.cellpose_model_type,
+                            cellpose_preclip_dapi_otsu=cfg.nuclei.cellpose_preclip_dapi_otsu,
                             cellpose_device=getattr(cfg.nuclei, "cellpose_device", "cpu"),
                         )
                         labels = _seg.segment_nuclei(

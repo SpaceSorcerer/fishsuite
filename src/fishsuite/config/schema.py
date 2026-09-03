@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Optional, List, Dict, Any, Literal
 
 import yaml
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class ExperimentCfg(BaseModel):
@@ -323,6 +323,22 @@ class ZStackCfg(BaseModel):
 
 
 class NucleiCfg(BaseModel):
+    """Nucleus segmentation.
+
+    2026-09-03: this block REJECTS unknown keys (``extra="forbid"``). It used to
+    inherit pydantic's default ``extra="ignore"``, and that silently discarded
+    ``cellpose_preclip_dapi_otsu`` from every preset naming it while the feature
+    was unmerged — so a run asserted a segmentation step it never performed and
+    still exited 0. A hard load-time error naming the key is the only version of
+    that check that cannot be missed. All 63 configs in this repository and in
+    the RNASEH2B_BIN1introns analysis tree validate under it.
+
+    NOTE: the other config blocks still inherit ``extra="ignore"`` and remain
+    exposed to the same failure.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
     backend: Literal["stardist", "cellpose", "otsu"] = "stardist"
     prob_threshold: float = 0.5
     nms_threshold: float = 0.5
@@ -353,6 +369,10 @@ class NucleiCfg(BaseModel):
     # (same scale as the cardiomyocyte runs) ≈ 4× faster, no quality loss.
     # Applies to the cellpose backend only.
     cellpose_downsample_factor: float = 1.0
+    # OPT-IN: zero pixels below a per-image Otsu threshold before Cellpose.
+    # This changes the model input (not the returned labels post hoc) and is
+    # useful when dim extranuclear DAPI haze is otherwise segmented as tails.
+    cellpose_preclip_dapi_otsu: bool = False
     # 2026-05-27: OPT-IN GPU acceleration for the cpsam transformer via
     # torch-directml (Brian's AMD RX 6750 XT — no CUDA). DEFAULT "cpu" keeps
     # the production CPU path byte-for-byte unchanged. "directml" builds the

@@ -158,3 +158,59 @@ entries for whoever owns it:
 - `docs/ENGINE_CHANGE_2026-09-03_per_channel_threshold_and_partner_anchored_rotation_null.md`
   — NEW: *this change note, with the verification table and the run-11
   non-reproducibility finding.*
+
+
+---
+
+# ADDENDUM 2026-09-03 - stage-09 DAPI Otsu pre-clip merged
+
+Ported verbatim from the stage-09 proposal worktree
+`F:\Image Analysis Work\RNASEH2B_BIN1introns_2026_08_25\09_CODE_PROPOSAL_FISHSUITE_DAPI_FLOOR_2026-09-01\src\fishsuite`,
+the engine that produced run 11. Credit for the implementation belongs to that
+proposal; this change only merges it and adds tests.
+
+`nuclei.cellpose_preclip_dapi_otsu` (default `False`) zeroes DAPI pixels below a
+per-image Otsu threshold **before** Cellpose inference. It changes the model
+input, not the returned labels, and applies only to the cellpose backend. The
+floor is recorded per image as `cellpose_dapi_otsu_floor` in `thresholds.csv`.
+
+**Scope correction.** The feature spans **7 files**, not the 2 estimated
+earlier: `core/segmentation.py` is the consumer, so porting only `rna_rna.py`
+and `schema.py` would have raised `TypeError` on an unexpected kwarg. Ported:
+`core/segmentation.py` (+12/-2), `config/schema.py` (+4), `core/modes/rna_rna.py`
+(+12), `core/modes/rna_only.py` (+12), `core/modes/if_intensity.py` (+1),
+`runner.py` (+1), `core/excel_report.py` (+4). A guard asserted that each file's
+only difference from `HEAD` was this feature before it was copied.
+
+## NucleiCfg rejects unknown keys
+
+`model_config = ConfigDict(extra="forbid")`. It previously inherited
+`extra="ignore"`, which silently discarded `cellpose_preclip_dapi_otsu` from
+every preset naming it while the feature was unmerged, so a run asserted a
+segmentation step it never performed and exited 0.
+
+Rejection, not a warning: a warning in several hundred lines of run output is
+missable, and this failure mode produced wrong science silently. Verified safe
+against all 63 configs in this repository and the RNASEH2B analysis tree - zero
+carry unknown keys. The error names the offending key.
+
+Only `NucleiCfg` was in scope. Every other block still inherits
+`extra="ignore"` and remains exposed to the same failure.
+
+## Verification
+
+| check | result |
+|---|---|
+| `tests/test_cellpose_preclip_dapi_otsu.py`, 9 tests | 9 passed, 4.64 s |
+| pre-clip OFF passes raw DAPI to the backend | asserted array-equal |
+| pre-clip ON zeroes exactly the sub-Otsu pixels | asserted, non-Otsu pixels untouched |
+| ignored for non-cellpose backends | asserted |
+| unknown `nuclei` key rejected and named in the message | asserted |
+| run-11 preset, pre-clip ON, 2 real images | 37 nuclei vs run 11's 36 - closer than 41, still not equal |
+
+The residual is a **cellpose downgrade**, not this code: run 11 used cellpose
+4.2.1.1, the current `fishproc_dml` environment has 4.1.1, and every other
+package version matches. `nucleus_area_px` differs for every nucleus by at most
+3.05 %, spot assignment is unchanged, and the preset asks for the 4.2-era model
+`cpsam_v2` which 4.1.1 cannot resolve. Restoring 4.2.1.1 is a system-state
+decision for Brian. Full comparison in `REPRO_RESULT.md`.

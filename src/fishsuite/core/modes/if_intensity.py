@@ -344,6 +344,7 @@ def _segment_dapi(dapi_f32, cfg):
         flow_threshold=cfg.nuclei.cellpose_flow_threshold,
         cellprob_threshold=cfg.nuclei.cellpose_cellprob_threshold,
         cellpose_model_type=cfg.nuclei.cellpose_model_type,
+        cellpose_preclip_dapi_otsu=cfg.nuclei.cellpose_preclip_dapi_otsu,
         cellpose_downsample_factor=cfg.nuclei.cellpose_downsample_factor,
         cellpose_device=cfg.nuclei.cellpose_device,
     )

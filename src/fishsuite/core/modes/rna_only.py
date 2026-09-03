@@ -388,6 +388,7 @@ def run_one(
         flow_threshold=cfg.nuclei.cellpose_flow_threshold,
         cellprob_threshold=cfg.nuclei.cellpose_cellprob_threshold,
         cellpose_model_type=cfg.nuclei.cellpose_model_type,
+        cellpose_preclip_dapi_otsu=cfg.nuclei.cellpose_preclip_dapi_otsu,
         cellpose_downsample_factor=cfg.nuclei.cellpose_downsample_factor,
         cellpose_device=getattr(cfg.nuclei, "cellpose_device", "cpu"),
     )
@@ -1265,6 +1266,16 @@ def run_one(
         "rna_threshold_scope": getattr(pc_cfg, "threshold_scope", "") if pc_cfg is not None else "",
         "dapi_threshold_method": "Otsu dark",
         "dapi_threshold_value": dapi_thr_val,
+        "cellpose_preclip_dapi_otsu": bool(
+            cfg.nuclei.backend == "cellpose"
+            and cfg.nuclei.cellpose_preclip_dapi_otsu
+        ),
+        "cellpose_dapi_otsu_floor": (
+            dapi_thr_val
+            if cfg.nuclei.backend == "cellpose"
+            and cfg.nuclei.cellpose_preclip_dapi_otsu
+            else float("nan")
+        ),
         "watershed": cfg.nuclei.stardist_postprocess in ("watershed_otsu", "watershed_triangle"),
         "nuc_min_area_px": cfg.nuclei.min_area_px,
         "exclude_border_nuclei": cfg.nuclei.exclude_border,
@@ -1496,6 +1507,7 @@ def collect_nuclear_rna_pixels(path, *, cfg) -> Tuple[np.ndarray, np.ndarray]:
         flow_threshold=cfg.nuclei.cellpose_flow_threshold,
         cellprob_threshold=cfg.nuclei.cellpose_cellprob_threshold,
         cellpose_model_type=cfg.nuclei.cellpose_model_type,
+        cellpose_preclip_dapi_otsu=cfg.nuclei.cellpose_preclip_dapi_otsu,
         cellpose_downsample_factor=cfg.nuclei.cellpose_downsample_factor,
         cellpose_device=getattr(cfg.nuclei, "cellpose_device", "cpu"),
     )

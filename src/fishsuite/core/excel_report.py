@@ -753,6 +753,10 @@ THRESHOLDS_GLOSSARY: Dict[str, Tuple[str, str, str]] = {
                              "DAPI thresholding method for the nuclei mask "
                              "(e.g. 'Otsu dark', 'Triangle')."),
     "dapi_threshold_value": ("int", "AU", "DAPI mask threshold intensity value."),
+    "cellpose_preclip_dapi_otsu": ("bool", "—",
+                                    "Whether pixels below the per-image DAPI Otsu threshold were zeroed before Cellpose inference."),
+    "cellpose_dapi_otsu_floor": ("float", "AU",
+                                  "Per-image DAPI Otsu intensity floor applied before Cellpose inference; missing when disabled."),
     "spot_coloc_pair_distance_um": ("float", "um",
                                    "Maximum xy center-to-center distance used to call RNA1-RNA2 'paired'."),
     "watershed": ("bool", "—",

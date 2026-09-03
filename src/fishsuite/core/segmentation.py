@@ -169,7 +169,8 @@ def segment_nuclei(
         stardist_postprocess_dilate_px, stardist_postprocess_otsu_sigma,
         stardist_postprocess_mask_closing_px,
         label_smoothing_radius_px,
-        diameter, flow_threshold, cellprob_threshold, cellpose_model_type
+        diameter, flow_threshold, cellprob_threshold, cellpose_model_type,
+        cellpose_preclip_dapi_otsu
     """
     from ._vendor.segmentation.segment_image import run_backend
     p = dict(params or {})
@@ -227,6 +228,11 @@ def segment_nuclei(
     _ds = float(p.get("cellpose_downsample_factor", 1.0))
     _do_ds = (_ds > 1.0)
     seg_img = dapi_2d
+    _cellpose_dapi_otsu_floor = None
+    if backend == "cellpose" and bool(p.get("cellpose_preclip_dapi_otsu", False)):
+        from skimage.filters import threshold_otsu as _threshold_otsu
+        _cellpose_dapi_otsu_floor = float(_threshold_otsu(dapi_2d))
+        seg_img = np.where(dapi_2d < _cellpose_dapi_otsu_floor, 0, dapi_2d)
     if backend == "cellpose":
         try:
             import os as _os, torch as _torch
@@ -235,7 +241,7 @@ def segment_nuclei(
             pass
     if _do_ds:
         from skimage.transform import rescale as _rescale
-        seg_img = _rescale(dapi_2d.astype(np.float32), 1.0 / _ds, order=1,
+        seg_img = _rescale(seg_img.astype(np.float32), 1.0 / _ds, order=1,
                            anti_aliasing=True, preserve_range=True)
         kwargs["diameter"] = float(kwargs.get("diameter", 0.0)) / _ds
         kwargs["min_area"] = max(1, int(kwargs["min_area"] / (_ds * _ds)))
@@ -276,6 +282,8 @@ def segment_nuclei(
     if stats is not None:
         stats["n_segmented"] = _n_segmented
         stats["n_area_excluded"] = _n_area_excluded
+        if _cellpose_dapi_otsu_floor is not None:
+            stats["cellpose_dapi_otsu_floor"] = _cellpose_dapi_otsu_floor
     return labels
 
 
