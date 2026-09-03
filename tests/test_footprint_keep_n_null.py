@@ -358,3 +358,147 @@ def test_keep_n_rejects_min_valid_draws_above_requested_draws():
             n_null=2,
             min_valid_draws=3,
         )
+
+
+def test_keep_n_explicit_none_placement_masks_is_byte_identical_to_legacy():
+    """Catches the optional extension changing the established default path."""
+    api = _api()
+    kwargs = dict(
+        partner_2d=np.arange(49, dtype=float).reshape(7, 7),
+        footprints=[
+            _footprint(api, 0, (3, 2), [[3, 2], [4, 2]]),
+            _footprint(api, 1, (3, 4), [[3, 4]]),
+        ],
+        valid_mask=np.ones((7, 7), dtype=bool),
+        n_null=7,
+        min_valid_draws=2,
+    )
+    legacy = api.keep_n_footprint_rotation_null(
+        **kwargs,
+        rng=np.random.default_rng(12345),
+    )
+    explicit_none = api.keep_n_footprint_rotation_null(
+        **kwargs,
+        rng=np.random.default_rng(12345),
+        placement_masks=None,
+    )
+
+    for field in (
+        "null_qki_raw",
+        "initial_angles_deg",
+        "placement_angles_deg",
+        "first_pass_valid",
+        "redraw_counts",
+        "valid_draw_counts",
+        "valid_draw_fractions",
+    ):
+        legacy_value = getattr(legacy, field)
+        explicit_value = getattr(explicit_none, field)
+        assert explicit_value.tobytes() == legacy_value.tobytes()
+        assert np.array_equal(explicit_value, legacy_value, equal_nan=True)
+    for field in (
+        "placement_geometry",
+        "mean_first_pass_retention",
+        "median_first_pass_retention",
+        "unplaceable_count",
+        "unplaceable_fraction",
+        "usable",
+        "invalid_reason",
+    ):
+        assert getattr(explicit_none, field) == getattr(legacy, field)
+    for explicit_spot, legacy_spot in zip(
+        explicit_none.spots, legacy.spots, strict=True
+    ):
+        assert explicit_spot.spot_index == legacy_spot.spot_index
+        assert explicit_spot.null_usable is legacy_spot.null_usable
+        assert explicit_spot.association_call is legacy_spot.association_call
+        assert explicit_spot.null_threshold_raw == pytest.approx(
+            legacy_spot.null_threshold_raw
+        )
+        assert explicit_spot.null_p_empirical == pytest.approx(
+            legacy_spot.null_p_empirical
+        )
+
+
+def test_keep_n_uses_each_footprints_mask_for_initial_and_redraw_placements():
+    """Catches pooled domains or using the wrong spot's mask during redraw."""
+    api = _api()
+    first_mask = np.zeros((5, 5), dtype=bool)
+    first_mask[3, 2] = True  # left spot at shared 90-degree angle
+    second_mask = np.zeros((5, 5), dtype=bool)
+    second_mask[2, 1] = True  # right spot only after 180-degree redraw
+
+    result = api.keep_n_footprint_rotation_null(
+        np.add.outer(np.arange(5) * 10.0, np.arange(5, dtype=float)),
+        _two_single_pixel_footprints(api),
+        np.ones((5, 5), dtype=bool),
+        n_null=1,
+        rng=_SequenceRng([180.0]),
+        placement_masks=[first_mask, second_mask],
+        min_valid_draws=1,
+    )
+
+    assert result.initial_angles_deg.tolist() == [90.0]
+    assert result.first_pass_valid.tolist() == [[True], [False]]
+    assert result.placement_angles_deg.tolist() == [[90.0], [180.0]]
+    assert result.redraw_counts.tolist() == [[0], [1]]
+    assert result.null_qki_raw.tolist() == [[32.0], [21.0]]
+
+
+def test_keep_n_per_footprint_empty_domain_marks_only_that_spot_unplaceable():
+    """Catches dropping the spot, falling back to observed, or failing siblings."""
+    api = _api()
+    first_mask = np.zeros((5, 5), dtype=bool)
+    first_mask[3, 2] = True
+    second_mask = np.zeros((5, 5), dtype=bool)
+
+    result = api.keep_n_footprint_rotation_null(
+        np.add.outer(np.arange(5) * 10.0, np.arange(5, dtype=float)),
+        _two_single_pixel_footprints(api),
+        np.ones((5, 5), dtype=bool),
+        n_null=1,
+        rng=_SequenceRng([180.0]),
+        placement_masks=[first_mask, second_mask],
+        max_redraw=1,
+        min_valid_draws=1,
+    )
+
+    assert result.null_qki_raw[0, 0] == pytest.approx(32.0)
+    assert np.isnan(result.null_qki_raw[1, 0])
+    assert result.redraw_counts.tolist() == [[0], [1]]
+    assert result.unplaceable_count == 1
+    assert result.spots[0].null_usable is True
+    assert result.spots[1].null_usable is False
+    assert result.spots[1].invalid_reason == "insufficient_valid_null_draws"
+    assert result.spots[1].association_call is None
+    assert result.usable is True
+
+
+@pytest.mark.parametrize(
+    ("placement_masks", "message"),
+    [
+        ([np.ones((5, 5), dtype=bool)], "one mask per footprint"),
+        (
+            [
+                np.ones((5, 5), dtype=bool),
+                np.ones((4, 5), dtype=bool),
+            ],
+            "same shape as partner_2d",
+        ),
+    ],
+)
+def test_keep_n_rejects_invalid_per_footprint_mask_sequences(
+    placement_masks, message
+):
+    """Catches silent mask reuse when compartment metadata are malformed."""
+    api = _api()
+
+    with pytest.raises(ValueError, match=message):
+        api.keep_n_footprint_rotation_null(
+            np.ones((5, 5), dtype=float),
+            _two_single_pixel_footprints(api),
+            np.ones((5, 5), dtype=bool),
+            n_null=1,
+            placement_masks=placement_masks,
+            min_valid_draws=1,
+        )

@@ -15,9 +15,123 @@ bit-identical thresholds.
 from __future__ import annotations
 
 import math
+from dataclasses import dataclass
 from typing import Iterable, Optional, Tuple
 
 import numpy as np
+
+
+@dataclass(frozen=True)
+class CostesThresholdStatus:
+    """Auditable status for the exact legacy FishSuite Costes candidate scan.
+
+    The legacy implementation scans ``unique_r_descending[::step]`` where
+    ``step=max(1, n_unique//256)``. Consequently this is not an exhaustive
+    all-unique-threshold search whenever ``step > 1``.
+    """
+
+    r_threshold: float
+    a_threshold: float
+    criterion_reached: bool
+    legacy_mad_fallback_used: bool
+    n_paired_pixels: int
+    candidate_total_unique: int
+    candidate_step: int
+    candidate_count: int
+    candidates_evaluated: int
+    candidate_scan_exhaustive: bool
+    non_estimable_reason: Optional[str]
+    algorithm: str = "legacy_fishsuite_costes_candidate_scan"
+
+
+def costes_threshold_with_status(rvals, avals) -> CostesThresholdStatus:
+    """Run the legacy algorithm while exposing convergence and fallback.
+
+    Pixels and masks are never changed or downsampled. Candidate thresholds
+    follow the historical FishSuite scan exactly; ``candidate_step`` records
+    the algorithm's threshold-candidate thinning.
+    """
+
+    rvals = list(rvals)
+    avals = list(avals)
+    n = len(rvals)
+    if len(avals) != n:
+        return CostesThresholdStatus(
+            float("inf"), float("inf"), False, False, n, 0, 0, 0, 0,
+            True, "paired_channel_length_mismatch",
+        )
+    if n < 20:
+        return CostesThresholdStatus(
+            float("inf"), float("inf"), False, False, n, 0, 0, 0, 0,
+            True, "fewer_than_20_paired_pixels",
+        )
+    if not all(math.isfinite(float(x)) for x in rvals + avals):
+        return CostesThresholdStatus(
+            float("inf"), float("inf"), False, False, n, 0, 0, 0, 0,
+            True, "non_finite_paired_pixels",
+        )
+
+    r_mean = sum(rvals) / float(n)
+    a_mean = sum(avals) / float(n)
+    num = 0.0
+    den = 0.0
+    for i in range(n):
+        dr = rvals[i] - r_mean
+        num += dr * (avals[i] - a_mean)
+        den += dr * dr
+    if den == 0:
+        return CostesThresholdStatus(
+            float("inf"), float("inf"), False, False, n, 1, 1, 1, 0,
+            True, "zero_rna_variance",
+        )
+    slope = num / den
+    intercept = a_mean - slope * r_mean
+
+    r_sorted = sorted(set(rvals), reverse=True)
+    step = max(1, len(r_sorted) // 256)
+    thresholds = r_sorted[::step]
+    evaluated = 0
+    for r_t in thresholds:
+        evaluated += 1
+        a_t = slope * r_t + intercept
+        br = []
+        ba = []
+        for i in range(n):
+            if rvals[i] < r_t and avals[i] < a_t:
+                br.append(rvals[i])
+                ba.append(avals[i])
+        if len(br) < 10:
+            continue
+        bm_r = sum(br) / float(len(br))
+        bm_a = sum(ba) / float(len(ba))
+        bnum = 0.0
+        bd_r = 0.0
+        bd_a = 0.0
+        for i in range(len(br)):
+            dr = br[i] - bm_r
+            da = ba[i] - bm_a
+            bnum += dr * da
+            bd_r += dr * dr
+            bd_a += da * da
+        if bd_r > 0 and bd_a > 0:
+            bp = bnum / math.sqrt(bd_r * bd_a)
+            if bp <= 0:
+                return CostesThresholdStatus(
+                    float(r_t), float(max(0.0, a_t)), True, False, n,
+                    len(r_sorted), step, len(thresholds), evaluated,
+                    step == 1, None,
+                )
+
+    r_med = median(rvals)
+    r_mad = mad(rvals, center=r_med)
+    a_med = median(avals)
+    a_mad = mad(avals, center=a_med)
+    r_fb = (r_med + 2.0 * 1.4826 * r_mad) if r_mad > 0 else r_med
+    a_fb = (a_med + 2.0 * 1.4826 * a_mad) if a_mad > 0 else a_med
+    return CostesThresholdStatus(
+        float(r_fb), float(a_fb), False, True, n, len(r_sorted), step,
+        len(thresholds), evaluated, step == 1, None,
+    )
 
 
 def median(vals) -> float:

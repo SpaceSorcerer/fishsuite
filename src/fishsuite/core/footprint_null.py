@@ -108,6 +108,54 @@ class KeepNFootprintRotationNullResult:
     invalid_reason: str | None
 
 
+@dataclass(frozen=True)
+class ExactFootprintPositionNullResult:
+    """Uniform-center position null for one unchanged exact footprint."""
+
+    spot: FootprintNullSpotResult
+    placement_geometry: str
+    requested_draw_count: int
+    candidate_center_count: int
+    valid_center_count: int
+    rejected_center_count: int
+    valid_draw_count: int
+    null_mean_raw: float
+    null_sd_raw: float
+    null_median_raw: float
+    null_min_raw: float
+    null_max_raw: float
+    null_qki_raw: np.ndarray | None
+    sampled_centers_yx: np.ndarray | None
+    usable: bool
+    invalid_reason: str | None
+
+
+@dataclass(frozen=True)
+class ExactFootprintCandidateDomain:
+    """Row-major true-pixel centers cached once for one placement mask."""
+
+    mask_shape: tuple[int, int]
+    centers_yx: np.ndarray
+    placement_pixel_count: int
+
+
+def build_exact_footprint_candidate_domain(
+    placement_mask: np.ndarray,
+) -> ExactFootprintCandidateDomain:
+    """Cache ``np.argwhere(mask)`` without changing its row-major ordering."""
+
+    mask = np.asarray(placement_mask, dtype=bool)
+    if mask.ndim != 2:
+        raise ValueError("placement_mask must be two-dimensional")
+    centers = np.argwhere(mask).astype(np.intp, copy=False)
+    centers.setflags(write=False)
+    return ExactFootprintCandidateDomain(
+        mask_shape=(int(mask.shape[0]), int(mask.shape[1])),
+        centers_yx=centers,
+        placement_pixel_count=int(centers.shape[0]),
+    )
+
+
 def _as_spot_yx(spot_yx: Any) -> np.ndarray:
     arr = np.asarray(spot_yx, dtype=np.float64)
     if arr.size == 0:
@@ -804,6 +852,245 @@ def _validated_footprint_offsets(
     return dy, dx, True, None
 
 
+def exact_footprint_position_null(
+    partner_2d: np.ndarray,
+    footprint: MiatFootprint,
+    placement_mask: np.ndarray,
+    *,
+    n_null: int,
+    rng: np.random.Generator | None = None,
+    observed_mask: np.ndarray | None = None,
+    passes_miat_floor: bool = True,
+    threshold_percentile: float = 95.0,
+    retain_raw_draws: bool = False,
+    candidate_domain: ExactFootprintCandidateDomain | None = None,
+) -> ExactFootprintPositionNullResult:
+    """Sample unchanged footprint placements uniformly over valid centers.
+
+    Candidate centers are the true pixels of ``placement_mask``. A center is
+    valid only when translating every stored dy/dx offset keeps the complete
+    footprint in the placement mask and on finite partner pixels. Sampling is
+    with replacement over that exact valid-center set. ``observed_mask`` may
+    be wider than the placement domain so observed signal can be retained
+    while a cross-compartment footprint is explicitly marked non-estimable.
+    """
+    partner = np.asarray(partner_2d)
+    placement = np.asarray(placement_mask, dtype=bool)
+    if partner.ndim != 2:
+        raise ValueError("partner_2d must be two-dimensional")
+    if placement.shape != partner.shape:
+        raise ValueError(
+            "placement_mask must have the same shape as partner_2d"
+        )
+    if n_null <= 0:
+        raise ValueError("n_null must be positive")
+    if not (0.0 <= float(threshold_percentile) <= 100.0):
+        raise ValueError("threshold_percentile must be in [0, 100]")
+    if observed_mask is None:
+        observed = placement
+    else:
+        observed = np.asarray(observed_mask, dtype=bool)
+        if observed.shape != partner.shape:
+            raise ValueError(
+                "observed_mask must have the same shape as partner_2d"
+            )
+
+    partner_f = partner.astype(np.float64, copy=False)
+    if candidate_domain is None:
+        candidate_centers = np.argwhere(placement).astype(np.intp, copy=False)
+    else:
+        if tuple(candidate_domain.mask_shape) != tuple(placement.shape):
+            raise ValueError(
+                "candidate_domain mask shape must match placement_mask"
+            )
+        candidate_centers = np.asarray(
+            candidate_domain.centers_yx, dtype=np.intp
+        )
+        if candidate_centers.ndim != 2 or candidate_centers.shape[1] != 2:
+            raise ValueError("candidate_domain centers_yx must have shape (n, 2)")
+        if candidate_centers.shape[0] != int(
+            candidate_domain.placement_pixel_count
+        ):
+            raise ValueError("candidate_domain placement pixel count mismatch")
+        if candidate_centers.size:
+            cy = candidate_centers[:, 0]
+            cx = candidate_centers[:, 1]
+            in_bounds = (
+                (cy >= 0) & (cy < placement.shape[0])
+                & (cx >= 0) & (cx < placement.shape[1])
+            )
+            if not bool(in_bounds.all()) or not bool(
+                placement[cy, cx].all()
+            ):
+                raise ValueError(
+                    "candidate_domain contains centers outside placement_mask"
+                )
+    candidate_center_count = int(candidate_centers.shape[0])
+    y_px, x_px, observed_valid, observed_reason = _validated_pixel_arrays(
+        footprint.y_px,
+        footprint.x_px,
+        observed,
+    )
+    dy_px, dx_px, offsets_valid, offsets_reason = (
+        _validated_footprint_offsets(footprint)
+    )
+    if observed_valid and not offsets_valid:
+        observed_valid = False
+        observed_reason = offsets_reason
+
+    observed_qki_raw = float("nan")
+    if observed_valid:
+        observed_values = partner_f[y_px, x_px]
+        if bool(np.isfinite(observed_values).all()):
+            observed_qki_raw = float(observed_values.mean())
+        else:
+            observed_reason = "nonfinite_observed_qki"
+
+    def unusable(
+        reason: str,
+        *,
+        valid_center_count: int = 0,
+    ) -> ExactFootprintPositionNullResult:
+        retained_null = (
+            np.empty(0, dtype=np.float64) if retain_raw_draws else None
+        )
+        retained_centers = (
+            np.empty((0, 2), dtype=np.intp) if retain_raw_draws else None
+        )
+        spot = _make_spot_result(
+            footprint,
+            full_mask_valid=bool(observed_valid),
+            invalid_reason=reason,
+            observed_qki_raw=observed_qki_raw,
+            null_threshold_raw=float("nan"),
+            null_p_empirical=float("nan"),
+            null_usable=False,
+            association_call=None,
+            passes_miat_floor=bool(passes_miat_floor),
+        )
+        return ExactFootprintPositionNullResult(
+            spot=spot,
+            placement_geometry="uniform_center_translated_exact_footprint",
+            requested_draw_count=int(n_null),
+            candidate_center_count=candidate_center_count,
+            valid_center_count=int(valid_center_count),
+            rejected_center_count=(
+                candidate_center_count - int(valid_center_count)
+            ),
+            valid_draw_count=0,
+            null_mean_raw=float("nan"),
+            null_sd_raw=float("nan"),
+            null_median_raw=float("nan"),
+            null_min_raw=float("nan"),
+            null_max_raw=float("nan"),
+            null_qki_raw=retained_null,
+            sampled_centers_yx=retained_centers,
+            usable=False,
+            invalid_reason=reason,
+        )
+
+    if not observed_valid:
+        return unusable(observed_reason or "invalid_observed_footprint")
+    if not np.isfinite(observed_qki_raw):
+        return unusable("nonfinite_observed_qki")
+    placement_valid, _placement_reason = _mask_validity(
+        y_px,
+        x_px,
+        placement,
+    )
+    if not placement_valid:
+        return unusable("observed_footprint_crosses_placement_mask")
+
+    candidate_y = candidate_centers[:, 0]
+    candidate_x = candidate_centers[:, 1]
+    center_valid = np.ones(candidate_centers.shape[0], dtype=bool)
+    height, width = partner_f.shape
+    for dy, dx in zip(dy_px, dx_px, strict=True):
+        translated_y = candidate_y + int(dy)
+        translated_x = candidate_x + int(dx)
+        in_bounds = (
+            (translated_y >= 0)
+            & (translated_y < height)
+            & (translated_x >= 0)
+            & (translated_x < width)
+        )
+        allowed = np.zeros(candidate_centers.shape[0], dtype=bool)
+        if bool(in_bounds.any()):
+            in_y = translated_y[in_bounds]
+            in_x = translated_x[in_bounds]
+            allowed[in_bounds] = (
+                placement[in_y, in_x]
+                & np.isfinite(partner_f[in_y, in_x])
+            )
+        center_valid &= allowed
+
+    valid_centers = candidate_centers[center_valid]
+    valid_center_count = int(valid_centers.shape[0])
+    if valid_center_count == 0:
+        return unusable("no_valid_null_centers")
+
+    center_values = np.zeros(valid_center_count, dtype=np.float64)
+    for dy, dx in zip(dy_px, dx_px, strict=True):
+        center_values += partner_f[
+            valid_centers[:, 0] + int(dy),
+            valid_centers[:, 1] + int(dx),
+        ]
+    center_values /= float(dy_px.size)
+
+    generator = np.random.default_rng() if rng is None else rng
+    sampled_indices = np.asarray(
+        generator.integers(valid_center_count, size=int(n_null)),
+        dtype=np.intp,
+    )
+    sampled_centers = valid_centers[sampled_indices]
+    null_qki = center_values[sampled_indices]
+    threshold = float(np.percentile(
+        null_qki,
+        float(threshold_percentile),
+        method="linear",
+    ))
+    empirical_p = float(
+        (1.0 + np.count_nonzero(null_qki >= observed_qki_raw))
+        / (1.0 + null_qki.size)
+    )
+    association_call = (
+        bool(observed_qki_raw > threshold)
+        if bool(passes_miat_floor)
+        else None
+    )
+    spot = _make_spot_result(
+        footprint,
+        full_mask_valid=True,
+        invalid_reason=None,
+        observed_qki_raw=observed_qki_raw,
+        null_threshold_raw=threshold,
+        null_p_empirical=empirical_p,
+        null_usable=True,
+        association_call=association_call,
+        passes_miat_floor=bool(passes_miat_floor),
+    )
+    return ExactFootprintPositionNullResult(
+        spot=spot,
+        placement_geometry="uniform_center_translated_exact_footprint",
+        requested_draw_count=int(n_null),
+        candidate_center_count=candidate_center_count,
+        valid_center_count=valid_center_count,
+        rejected_center_count=candidate_center_count - valid_center_count,
+        valid_draw_count=int(n_null),
+        null_mean_raw=float(null_qki.mean()),
+        null_sd_raw=float(null_qki.std(ddof=0)),
+        null_median_raw=float(np.median(null_qki)),
+        null_min_raw=float(null_qki.min()),
+        null_max_raw=float(null_qki.max()),
+        null_qki_raw=(null_qki.copy() if retain_raw_draws else None),
+        sampled_centers_yx=(
+            sampled_centers.copy() if retain_raw_draws else None
+        ),
+        usable=True,
+        invalid_reason=None,
+    )
+
+
 def _rotated_center_translated_footprint_pixels(
     footprint: MiatFootprint,
     dy_px: np.ndarray,
@@ -899,6 +1186,7 @@ def keep_n_footprint_rotation_null(
     min_valid_draw_fraction: float = 1.0,
     min_valid_draws: int = 2,
     max_redraw: int = 1000,
+    placement_masks: Sequence[np.ndarray] | None = None,
 ) -> KeepNFootprintRotationNullResult:
     """Authoritative exact-footprint KEEP-N rotation null.
 
@@ -913,6 +1201,9 @@ def keep_n_footprint_rotation_null(
 
     The primary valid-draw gate requires every requested draw by default.
     A lower fraction is available only as an explicit sensitivity setting.
+    ``placement_masks`` can explicitly supply one placement domain per
+    footprint; the shared ``valid_mask`` remains the observed-footprint domain.
+    Omitting it preserves the original single-mask path exactly.
     """
     partner = np.asarray(partner_2d)
     mask = np.asarray(valid_mask, dtype=bool)
@@ -939,6 +1230,20 @@ def keep_n_footprint_rotation_null(
     initial_angles = _keep_n_initial_angles(n_null, generator)
     footprints = tuple(footprints)
     n_spots = len(footprints)
+    per_footprint_masks: tuple[np.ndarray, ...] | None = None
+    if placement_masks is not None:
+        raw_placement_masks = tuple(placement_masks)
+        if len(raw_placement_masks) != n_spots:
+            raise ValueError("placement_masks must contain one mask per footprint")
+        converted_masks = []
+        for placement_mask in raw_placement_masks:
+            converted = np.asarray(placement_mask, dtype=bool)
+            if converted.shape != partner.shape:
+                raise ValueError(
+                    "each placement mask must have the same shape as partner_2d"
+                )
+            converted_masks.append(converted)
+        per_footprint_masks = tuple(converted_masks)
     if passes_miat_floor is None:
         floor_flags = np.ones(n_spots, dtype=bool)
     else:
@@ -1017,7 +1322,16 @@ def keep_n_footprint_rotation_null(
             centroid,
             float(angle_deg),
         )
-        valid, _invalid_reason = _mask_validity(y_px, x_px, mask)
+        placement_mask = (
+            mask
+            if per_footprint_masks is None
+            else per_footprint_masks[spot_index]
+        )
+        valid, _invalid_reason = _mask_validity(
+            y_px,
+            x_px,
+            placement_mask,
+        )
         if not valid:
             return None
         partner_pixels = partner_f[y_px, x_px]
@@ -1222,13 +1536,17 @@ def summarize_footprint_null_populations(
 
 
 __all__ = [
+    "ExactFootprintCandidateDomain",
+    "ExactFootprintPositionNullResult",
     "FootprintNullSpotResult",
     "FootprintRotationNullResult",
     "KeepNFootprintRotationNullResult",
     "MiatFootprint",
+    "build_exact_footprint_candidate_domain",
     "build_miat_footprints",
     "decode_footprint_rle",
     "encode_footprint_rle",
+    "exact_footprint_position_null",
     "full_footprint_is_valid",
     "keep_n_footprint_rotation_null",
     "rigid_footprint_rotation_null",
