@@ -516,8 +516,14 @@ class FociChannelOverrideCfg(BaseModel):
     field is set, it replaces the shared FociCfg value for that channel only.
     The set of overrideable fields intentionally tracks the knobs Brian most
     often differs between RNA1 and RNA2 (different probe brightness or spot
-    size); voxel-size / backend / threshold_override / LoG knobs stay shared
-    to keep the override set small and the YAML readable.
+    size); voxel-size / backend / LoG knobs stay shared to keep the override
+    set small and the YAML readable.
+
+    2026-09-03 Brian: ``threshold_override`` moved OUT of the shared-only set.
+    The antibody/protein channel often needs its OWN fixed BigFISH LoG
+    threshold, and pinning the shared ``FociCfg.threshold_override`` would pin
+    the RNA channel too. When this field is None the shared value still applies
+    to this channel, so every existing YAML behaves exactly as before.
     """
     bigfish_spot_radius_nm: Optional[float] = None
     bigfish_spot_radius_z_nm: Optional[float] = None
@@ -534,6 +540,12 @@ class FociChannelOverrideCfg(BaseModel):
     # before stratification/pairing. None = no floor (current behavior, byte-
     # identical). Used to enforce the QKI antibody specificity floor.
     min_spot_peak_intensity: Optional[float] = None
+    # 2026-09-03 Brian: per-channel FIXED BigFISH LoG detection threshold.
+    # None => inherit the shared ``FociCfg.threshold_override`` (which may
+    # itself be None => per-image auto threshold). Set it on
+    # ``antibody_overrides`` to pin the antibody channel while the RNA channel
+    # keeps its per-image auto threshold.
+    threshold_override: Optional[float] = None
 
 
 class FociCfg(BaseModel):
@@ -750,6 +762,21 @@ class FociCfg(BaseModel):
     # compute_partner_rotation_null. DEFAULT FALSE -> the key is never added to
     # extra (byte-identical carrier).
     save_partner_rotation_null_draws: bool = False
+    # 2026-09-03 Brian: SECOND rotation null, anchored on the PARTNER
+    # (rna2 / antibody) spots with the RNA1 channel as the sampled field — the
+    # reciprocal of the rna1-anchored null above. Requires
+    # ``compute_partner_intensity`` AND ``compute_partner_rotation_null`` (it is
+    # computed right after the rna1-anchored call and shares its disk radius, n,
+    # seed root, min-retention and association percentile; only the RNG stream
+    # differs). Emits per nucleus ``rna1_rotation_enrichment_at_rna2_spots`` +
+    # ``rna1_rotation_null_z_at_rna2_spots`` + ``rna1_rotation_null_p_at_rna2_spots``
+    # + ``rna1_rotation_assoc_fraction_at_rna2_spots`` + ``rotation_null_usable_at_rna2_spots``,
+    # plus the spot-count-weighted per-image pooled rollup. NaN for a nucleus
+    # with no partner spots (so it is all-NaN when
+    # ``detect_antibody_spots: false``). rna_protein relabels rna2 -> protein.
+    # DEFAULT FALSE -> the columns are never emitted and the output is
+    # byte-equivalent to the pre-feature path.
+    compute_partner_anchored_rotation_null: bool = False
     # 2026-07-07 Brian: PIPELINE-NATIVE MIAT x QKI ASSOCIATION metrics (approved
     # spec _SPEC_association_analysis_2026-07-06.md). Continuous, floor-robust,
     # AT-THE-PUNCTUM replacements for the binary "QKI-associated MIAT spots"
@@ -802,7 +829,8 @@ class FociCfg(BaseModel):
         FociCfg values. Unset (``None``) overrides fall back to the shared
         value. Returned keys: ``bigfish_spot_radius_nm``,
         ``bigfish_spot_radius_z_nm``, ``threshold_multiplier``,
-        ``only_nuclear_spots``, ``min_sep_px``, ``min_spot_peak_intensity``.
+        ``only_nuclear_spots``, ``min_sep_px``, ``min_spot_peak_intensity``,
+        ``threshold_override``.
 
         Unknown channel names raise ``ValueError`` (callers should pass only
         ``"rna"``, ``"rna2"``, or ``"antibody"``).
@@ -851,6 +879,19 @@ class FociCfg(BaseModel):
                 float(ov.min_spot_peak_intensity)
                 if ov.min_spot_peak_intensity is not None
                 else None
+            ),
+            # 2026-09-03 Brian: per-channel fixed LoG threshold, falling back to
+            # the SHARED FociCfg.threshold_override (itself possibly None => the
+            # per-image auto threshold). An unset channel override therefore
+            # reproduces the legacy shared-value path exactly.
+            "threshold_override": (
+                float(ov.threshold_override)
+                if ov.threshold_override is not None
+                else (
+                    float(self.threshold_override)
+                    if self.threshold_override is not None
+                    else None
+                )
             ),
         }
 

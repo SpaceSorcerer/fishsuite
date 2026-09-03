@@ -1497,7 +1497,11 @@ def run_one(
                 spot_radius_nm=float(params["bigfish_spot_radius_nm"]),
                 spot_radius_z_nm=float(params["bigfish_spot_radius_z_nm"]),
                 threshold_multiplier=float(params["threshold_multiplier"]),
-                threshold=cfg.foci.threshold_override,
+                # 2026-09-03: per-channel FIXED LoG threshold. resolved_for()
+                # falls back to the shared cfg.foci.threshold_override when the
+                # channel override is unset, so this is the legacy value unless
+                # a channel carries its own.
+                threshold=params["threshold_override"],
                 log_threshold=cfg.foci.log_threshold,
                 log_spot_radius_px=cfg.foci.log_spot_radius_px,
             )
@@ -1882,6 +1886,27 @@ def run_one(
         compute_partner_intensity
         and bool(getattr(cfg.foci, "compute_partner_rotation_null", False))
     )
+    # 2026-09-03 Brian: PARTNER-ANCHORED rotation null — the reciprocal of the
+    # rna1-anchored null: the CONSTELLATION is this nucleus's rna2/antibody
+    # spots and the SAMPLED FIELD is the rna1 plane. It reuses the SAME
+    # ``_rotation_null_for_nucleus`` with the same disk radius / n / seed root /
+    # min-retention / association percentile; only the RNG stream and the
+    # (field, constellation) pair differ, so the rna1-anchored draws are
+    # bit-for-bit unchanged when this is turned on.
+    compute_partner_anchored_rotation = (
+        compute_partner_rotation
+        and bool(getattr(cfg.foci, "compute_partner_anchored_rotation_null", False))
+    )
+    if (bool(getattr(cfg.foci, "compute_partner_anchored_rotation_null", False))
+            and not compute_partner_anchored_rotation):
+        # Say so LOUDLY instead of silently emitting nothing — the exact failure
+        # mode the standalone translation-null gate was fixed for on 2026-08-10.
+        print(
+            "  NOTE: compute_partner_anchored_rotation_null is ON but its "
+            "prerequisites are NOT (it needs compute_partner_intensity AND "
+            "compute_partner_rotation_null) -> the partner-anchored rotation "
+            "columns will NOT be emitted."
+        )
     # 2026-08-10: the translation null now has its OWN gate. It used to require
     # ``compute_partner_rotation_null`` as well, so asking for translation alone
     # silently produced nothing. Un-nesting it can only ADD output to a config
@@ -2043,6 +2068,15 @@ def run_one(
         _rot_w_den = 0.0
         _rot_pool = np.zeros(_rot_n, dtype=np.float64)
         _rot_n_nuclei_used = 0
+    if compute_partner_anchored_rotation:
+        # Distinct RNG streams (seed root + 303 / + 606) so the partner-anchored
+        # null is independent of, and cannot perturb, the rna1-anchored draws.
+        _prot_rng = np.random.default_rng(_rot_seed + 303)
+        _prot_assoc_rng = np.random.default_rng(_rot_seed + 606)
+        _prot_obs_num = 0.0
+        _prot_w_den = 0.0
+        _prot_pool = np.zeros(_rot_n, dtype=np.float64)
+        _prot_n_nuclei_used = 0
     if compute_partner_translation:
         # Translation drops out-of-mask points -> variable-length null arrays
         # per iter, so we pool the per-nucleus ENRICHMENT (spot-weighted),
@@ -2589,6 +2623,13 @@ def run_one(
         rna2_rotation_assoc_fraction_at_rna1_spots = float("nan")
         rotation_null_usable = False
         rotation_median_retention = float("nan")
+        # Partner-anchored rotation null (2026-09-03); NaN/False unless the
+        # feature is on AND this nucleus has partner spots.
+        rna1_rotation_enrichment_at_rna2_spots = float("nan")
+        rna1_rotation_null_z_at_rna2_spots = float("nan")
+        rna1_rotation_null_p_at_rna2_spots = float("nan")
+        rna1_rotation_assoc_fraction_at_rna2_spots = float("nan")
+        rotation_null_usable_at_rna2_spots = False
         rna2_translation_enrichment_at_rna1_spots = float("nan")
         rna2_translation_null_z_at_rna1_spots = float("nan")
         translation_null_usable = False
@@ -2597,18 +2638,24 @@ def run_one(
         # sampling pixels, or the feature is off). Emitted per nucleus below.
         _radial_per_nuc = None
         if _need_partner_block and nuc_mask.any():
+            # Sampling pixels = nucleus minus nucleoli (when on). SHARED by the
+            # disk null, the radial profile AND (2026-09-03) the partner-anchored
+            # rotation null, so all of them sample identically. HOISTED out of
+            # the rna1-spot branch below because the partner-anchored null is
+            # anchored on the rna2 spots and must still be computable for a
+            # nucleus that has no rna1 spots. It depends only on ``nuc_mask`` /
+            # ``nid`` / the precomputed nucleolus labels, so the values the
+            # rna1-anchored path sees are unchanged.
+            _samp_mask = nuc_mask
+            _nucleolus_in_nuc = None
+            if nucleolus_labels_precomputed is not None:
+                _nucleolus_in_nuc = (nucleolus_labels_precomputed == nid) & nuc_mask
+                _nucleoplasm = nuc_mask & (~_nucleolus_in_nuc)
+                if _nucleoplasm.any():
+                    _samp_mask = _nucleoplasm
+            _nys, _nxs = np.where(_samp_mask)
             sub1 = spots1_by_nid.get(nid)
             if sub1 is not None and len(sub1) > 0 and {"y_px", "x_px"}.issubset(sub1.columns):
-                # Sampling pixels = nucleus minus nucleoli (when on). SHARED by
-                # the disk null AND the radial profile so they sample identically.
-                _samp_mask = nuc_mask
-                _nucleolus_in_nuc = None
-                if nucleolus_labels_precomputed is not None:
-                    _nucleolus_in_nuc = (nucleolus_labels_precomputed == nid) & nuc_mask
-                    _nucleoplasm = nuc_mask & (~_nucleolus_in_nuc)
-                    if _nucleoplasm.any():
-                        _samp_mask = _nucleoplasm
-                _nys, _nxs = np.where(_samp_mask)
                 _scy = np.rint(sub1["y_px"].astype(float).to_numpy()).astype(np.intp)
                 _scx = np.rint(sub1["x_px"].astype(float).to_numpy()).astype(np.intp)
                 _scy = np.clip(_scy, 0, rna2_2d.shape[0] - 1)
@@ -2738,6 +2785,75 @@ def run_one(
                                     _tr_z_num += rna2_translation_null_z_at_rna1_spots * _n_sp_tr
                                 _tr_w_den += _n_sp_tr
                                 _tr_n_nuclei_used += 1
+            # ---- PARTNER-ANCHORED ROTATION NULL (2026-09-03, Brian) --------
+            # Reciprocal of the rna1-anchored null above: CONSTELLATION = this
+            # nucleus's rna2/antibody spots, SAMPLED FIELD = the rna1 plane.
+            # Same ``_rotation_null_for_nucleus``, same disk stencil, same n /
+            # seed root / min-retention / association percentile — only the RNG
+            # stream and the (field, constellation) pair differ. Deliberately a
+            # SIBLING of the rna1-spot branch, not nested inside it: a nucleus
+            # with partner spots but no rna1 spots still yields a value. Stays
+            # NaN when the nucleus has no partner spots — which is EVERY nucleus
+            # when ``detect_antibody_spots`` is False.
+            if compute_partner_anchored_rotation:
+                sub2 = spots2_by_nid.get(nid)
+                if (sub2 is not None and len(sub2) > 0
+                        and {"y_px", "x_px"}.issubset(sub2.columns)
+                        and _nys.size > 0):
+                    _pcy = np.rint(sub2["y_px"].astype(float).to_numpy()).astype(np.intp)
+                    _pcx = np.rint(sub2["x_px"].astype(float).to_numpy()).astype(np.intp)
+                    _pcy = np.clip(_pcy, 0, rna_2d.shape[0] - 1)
+                    _pcx = np.clip(_pcx, 0, rna_2d.shape[1] - 1)
+                    # Drop observed partner spots centred in a nucleolus — the
+                    # same rule the rna1-anchored null applies to its own
+                    # constellation, so the two remain comparable.
+                    if _nucleolus_in_nuc is not None:
+                        _keep_p = ~_nucleolus_in_nuc[_pcy, _pcx]
+                        _pcy = _pcy[_keep_p]
+                        _pcx = _pcx[_keep_p]
+                    if _pcy.size > 0:
+                        _rna1_2d_f = rna_2d.astype(np.float64, copy=False)
+                        _pcy0 = float(_pcy.mean())
+                        _pcx0 = float(_pcx.mean())
+                        _prot = _rotation_null_for_nucleus(
+                            _rna1_2d_f, _pcy, _pcx, _samp_mask, (_pcy0, _pcx0),
+                            _rot_dy, _rot_dx, _rot_n, _prot_rng,
+                            min_retention=_rot_min_ret,
+                        )
+                        rotation_null_usable_at_rna2_spots = bool(_prot["usable"])
+                        _pns = _prot["null_stats"]
+                        if _pns.size:
+                            _pnm = float(_pns.mean())
+                            _pnsd = float(_pns.std(ddof=1)) if _pns.size > 1 else 0.0
+                            _pobs = _prot["obs"]
+                            rna1_rotation_enrichment_at_rna2_spots = (
+                                _pobs / _pnm if _pnm > 0 else float("nan")
+                            )
+                            rna1_rotation_null_z_at_rna2_spots = (
+                                (_pobs - _pnm) / _pnsd if _pnsd > 0 else float("nan")
+                            )
+                            rna1_rotation_null_p_at_rna2_spots = float(
+                                (np.sum(_pns >= _pobs) + 1) / (_pns.size + 1)
+                            )
+                            _psingle = _rotation_single_position_dist(
+                                _rna1_2d_f, _pcy, _pcx, _samp_mask, (_pcy0, _pcx0),
+                                _rot_dy, _rot_dx,
+                                n_iters=min(200, _rot_n), rng=_prot_assoc_rng,
+                            )
+                            if _psingle.size >= 20:
+                                _pthr = float(np.percentile(_psingle, _rot_assoc_pct))
+                                _pobs_per_spot = _disk_means_at(
+                                    _rna1_2d_f, _pcy, _pcx, _rot_dy, _rot_dx)
+                                rna1_rotation_assoc_fraction_at_rna2_spots = float(
+                                    (_pobs_per_spot > _pthr).mean())
+                            # pool only rot-USABLE nuclei (full-length keep-N null)
+                            if (rotation_null_usable_at_rna2_spots
+                                    and _pns.size == _rot_n and _nid_in_sample):
+                                _n_sp_prot = int(_pcy.size)
+                                _prot_obs_num += _pobs * _n_sp_prot
+                                _prot_w_den += _n_sp_prot
+                                _prot_pool += _pns * _n_sp_prot
+                                _prot_n_nuclei_used += 1
 
         # Per-nucleus row — column ordering: rna_only-compatible fields first
         # (so anything reading rna_only output still finds its columns), then
@@ -2974,6 +3090,16 @@ def run_one(
             nuc_row["rna2_rotation_assoc_fraction_at_rna1_spots"] = rna2_rotation_assoc_fraction_at_rna1_spots
             nuc_row["rotation_median_retention"] = rotation_median_retention
             nuc_row["rotation_null_usable"] = rotation_null_usable
+        # GATED partner-anchored rotation columns (default OFF -> absent, so the
+        # OFF path stays byte-equivalent). rna_protein's rna2->protein relabel
+        # turns these into ``*_at_protein_spots``; the leading ``rna1`` token
+        # carries no rna2 substring and is deliberately left alone.
+        if compute_partner_anchored_rotation:
+            nuc_row["rna1_rotation_enrichment_at_rna2_spots"] = rna1_rotation_enrichment_at_rna2_spots
+            nuc_row["rna1_rotation_null_z_at_rna2_spots"] = rna1_rotation_null_z_at_rna2_spots
+            nuc_row["rna1_rotation_null_p_at_rna2_spots"] = rna1_rotation_null_p_at_rna2_spots
+            nuc_row["rna1_rotation_assoc_fraction_at_rna2_spots"] = rna1_rotation_assoc_fraction_at_rna2_spots
+            nuc_row["rotation_null_usable_at_rna2_spots"] = rotation_null_usable_at_rna2_spots
         # GATED translation-null per-nucleus columns. Un-nested from the rotation
         # block 2026-08-10 so translation can be requested on its own; the emitted
         # key set for a rotation+translation run is unchanged.
@@ -3078,6 +3204,12 @@ def run_one(
     pooled_rot_obs = float("nan")
     pooled_rot_mean = float("nan")
     pooled_rot_assoc = float("nan")
+    pooled_prot_enrichment = float("nan")
+    pooled_prot_z = float("nan")
+    pooled_prot_p_empirical = float("nan")
+    pooled_prot_obs = float("nan")
+    pooled_prot_mean = float("nan")
+    pooled_prot_assoc = float("nan")
     pooled_tr_enrichment = float("nan")
     pooled_tr_z = float("nan")
     if compute_partner_rotation and _rot_w_den > 0:
@@ -3113,6 +3245,29 @@ def run_one(
                     "pooled_obs": float(_ro_pool),
                 }
             )
+    if compute_partner_anchored_rotation and _prot_w_den > 0:
+        # Same spot-count-weighted pooling as the rna1-anchored rollup above,
+        # over the nuclei whose PARTNER constellation was rotation-usable.
+        _po_pool = _prot_obs_num / _prot_w_den
+        _pp_pool = _prot_pool / _prot_w_den
+        _pp_mean = float(_pp_pool.mean())
+        _pp_sd = float(_pp_pool.std(ddof=1)) if _pp_pool.size > 1 else 0.0
+        pooled_prot_obs = float(_po_pool)
+        pooled_prot_mean = _pp_mean
+        pooled_prot_enrichment = (_po_pool / _pp_mean) if _pp_mean > 0 else float("nan")
+        pooled_prot_z = ((_po_pool - _pp_mean) / _pp_sd) if _pp_sd > 0 else float("nan")
+        pooled_prot_p_empirical = float(
+            (np.sum(_pp_pool >= _po_pool) + 1) / (_rot_n + 1)
+        )
+        _passoc_vals = [
+            r.get("rna1_rotation_assoc_fraction_at_rna2_spots")
+            for r in nuc_rows
+            if r.get("rotation_null_usable_at_rna2_spots")
+        ]
+        _passoc_vals = [float(a) for a in _passoc_vals
+                        if a is not None and float(a) == float(a)]
+        pooled_prot_assoc = (float(np.mean(_passoc_vals)) if _passoc_vals
+                             else float("nan"))
     if compute_partner_translation and _tr_w_den > 0:
         pooled_tr_enrichment = float(_tr_enr_num / _tr_w_den)
         pooled_tr_z = float(_tr_z_num / _tr_w_den)
@@ -3806,6 +3961,15 @@ def run_one(
             per_image["n_nuclei_partner_rotation_null"] = int(_rot_n_nuclei_used)
             per_image["partner_rotation_n"] = int(_rot_n)
             per_image["partner_rotation_disk_px"] = float(_rot_disk_px)
+        # GATED PARTNER-ANCHORED rotation per-image pooled rollup (default OFF).
+        if compute_partner_anchored_rotation:
+            per_image["rna1_pooled_rotation_enrichment_at_rna2_spots"] = round(pooled_prot_enrichment, 4) if pooled_prot_enrichment == pooled_prot_enrichment else float("nan")
+            per_image["rna1_pooled_rotation_null_z_at_rna2_spots"] = round(pooled_prot_z, 3) if pooled_prot_z == pooled_prot_z else float("nan")
+            per_image["rna1_pooled_rotation_null_p_empirical_at_rna2_spots"] = pooled_prot_p_empirical
+            per_image["rna1_pooled_rotation_obs_at_rna2_spots"] = round(pooled_prot_obs, 3) if pooled_prot_obs == pooled_prot_obs else float("nan")
+            per_image["rna1_pooled_rotation_null_mean_at_rna2_spots"] = round(pooled_prot_mean, 3) if pooled_prot_mean == pooled_prot_mean else float("nan")
+            per_image["rna1_mean_rotation_assoc_fraction_at_rna2_spots"] = round(pooled_prot_assoc, 4) if pooled_prot_assoc == pooled_prot_assoc else float("nan")
+            per_image["n_nuclei_partner_rotation_null_at_rna2_spots"] = int(_prot_n_nuclei_used)
     else:
         per_image = {
             "image": img_name,
@@ -3942,6 +4106,16 @@ def run_one(
             per_image["n_nuclei_partner_rotation_null"] = 0
             per_image["partner_rotation_n"] = int(_rot_n)
             per_image["partner_rotation_disk_px"] = float(_rot_disk_px)
+        # Partner-anchored rollup — empty-image fallback (mirror the populated
+        # branch's KEY SET so the schema stays image-invariant).
+        if compute_partner_anchored_rotation:
+            per_image["rna1_pooled_rotation_enrichment_at_rna2_spots"] = float("nan")
+            per_image["rna1_pooled_rotation_null_z_at_rna2_spots"] = float("nan")
+            per_image["rna1_pooled_rotation_null_p_empirical_at_rna2_spots"] = float("nan")
+            per_image["rna1_pooled_rotation_obs_at_rna2_spots"] = float("nan")
+            per_image["rna1_pooled_rotation_null_mean_at_rna2_spots"] = float("nan")
+            per_image["rna1_mean_rotation_assoc_fraction_at_rna2_spots"] = float("nan")
+            per_image["n_nuclei_partner_rotation_null_at_rna2_spots"] = 0
 
     # ---- GATED translation-null per-image pooled rollup ---------------------
     # Un-nested from the rotation block 2026-08-10 and moved after the
