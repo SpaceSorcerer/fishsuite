@@ -173,3 +173,14 @@ Standalone Python re-implementation of the Fiji image-analysis pipeline.
 | `tests/test_report_reproduces_reference.py` | Opt-in regression comparing a rebuilt report against a known-good reference report. Skips unless `FISHSUITE_TEST_RUN_DIR` and `FISHSUITE_TEST_REFERENCE_DIR` are set, because both directories live outside the repository. |
 
 Modified the same day: `src/fishsuite/config/schema.py` (`ConditionsCfg.groups`, `group_order`, `group_of()`, `resolved_group_order()`); `src/fishsuite/runner.py` (attaches `group` to every master CSV carrying `condition`, and writes `figures/by_group/` through the report code path); `src/fishsuite/cli.py` (the `report` subcommand); `README.md` (new section, CLI-reference entry, statistics convention).
+
+## Per-spot Gaussian size fit — 2026-09-04
+
+| Path | Description |
+|---|---|
+| `src/fishsuite/core/spot_size.py` | Real per-spot size measurement: a 2-D Gaussian plus constant background fitted around every detected spot by batched Levenberg-Marquardt, with adaptive window escalation for spots wider than their crop. Also converts a stored `miat_footprint_area_px` to um^2 and to an equivalent diameter, and rolls medians up per nucleus and per image. |
+| `src/fishsuite/core/sizefit_backfill.py` | CPU backfill of that fit onto a finished run. Re-opens each source image, re-extracts the recorded z-plane, fits every spot, and writes `spot_metrics_sizefit.csv`, `sizefit_per_nucleus.csv`, `sizefit_per_image.csv`, `sizefit_command.log` and `sizefit_versions.txt` beside the run's tables without modifying them. |
+| `tests/test_spot_size_fit.py` | Recovery of known sigma within 5 % on synthetic Gaussians, agreement with `scipy.optimize.curve_fit`, adaptive-window recovery of an over-wide spot, the rejection flags, footprint unit conversion, and a test that documents the saturation of the legacy moment estimator. |
+| `docs/SPOT_SIZE_FIT_2026-09-04.md` | Why `spot_diameter_um` / `spot_fwhm_px` / `spot_area_px` are near-constant, with the exact file and line numbers and a measured saturation table; the fit's model, window choice, columns and flags; and the backfill command. |
+
+Modified the same day: `src/fishsuite/config/schema.py` (`FociCfg.compute_size_fit`, `FociCfg.size_fit_window_px`); `src/fishsuite/core/modes/rna_rna.py` (fits both channels after detection, emits the `size_fit_*` columns per spot, and adds the per-nucleus and per-image size rollups); `src/fishsuite/cli.py` (the `sizefit` subcommand); `README.md` (the punctum-size section now points at the implemented fit).
