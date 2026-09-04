@@ -405,3 +405,55 @@ Every fishsuite run before 2026-09-03 that used `cellpose_model_type: cpsam_v2`
 outside the vendored environment segmented with `cpsam`, not `cpsam_v2`, and
 recorded `cellpose: 4.1.1`. Those runs are internally consistent but are not
 comparable to runs on the standing stack. `versions.txt` distinguishes them.
+
+
+---
+
+# INCIDENT 2026-09-03 - a live sweep arm was disturbed mid-run
+
+## What happened
+
+| time | event |
+|---|---|
+| 19:03:31 | orchestrator launched `run_sweep.ps1` (pid 74964) |
+| 19:03:39 | T30 real run started (pid 56260), `-o ...\T30_2026-09-03_1903` |
+| ~19:15 | I moved `T30_2026-09-03_1903` into `_preflight_stubs_2026-09-03\` **while that arm was running**, having misread it as a leftover dry-run stub |
+| same window | I also ran `pip install cellpose==4.2.1.1` into `fishproc_dml` and edited `run_sweep.ps1`, both under the live job |
+| - | orchestrator killed the sweep |
+| ~19:25 | relaunched with the corrected launcher |
+
+**The 19:03 arm is COMPROMISED and DISCARDED. The ~19:25 relaunch is the sweep
+of record.** Nothing from the 19:03 arm may be compared, pooled or cited.
+
+## Why the check I did make was not a check
+
+The directory held no CSVs, so I classified it as a dry-run stub. That is
+consistent with a stub **and** with an arm 11 minutes into a run that writes its
+master CSVs only at the end. Absence of output does not distinguish "never ran"
+from "still running"; only the process table does. I had also just written the
+launcher and assumed it had not been launched yet.
+
+## Rule (2026-09-03)
+
+Before touching any file, directory or environment that a run may be using:
+
+1. **Check for a live run first.** `Get-CimInstance Win32_Process` filtered for
+   `fishsuite run`, and read its `-o` argument out of the command line.
+2. **Never move or rename a directory that a live process was given as `-o`**,
+   however empty it looks. An in-progress run dir and an abandoned stub are
+   indistinguishable by content.
+3. **Never `pip install` into an environment with a live run.** Packages are
+   replaced under the running interpreter, and the failure surfaces much later
+   as something unrelated.
+4. **Never edit a script a live job is executing** - the shell resumes by byte
+   offset.
+5. **Treat "the orchestrator will launch it" as "may already have launched it."**
+   Absence of a completion message is not evidence of an idle machine.
+
+One command that answers 1 and 2 together:
+
+```powershell
+Get-CimInstance Win32_Process -Filter "Name='python.exe' OR Name='fishsuite.exe'" |
+  Where-Object { $_.CommandLine -match 'fishsuite.*\brun\b' } |
+  Select-Object ProcessId, CreationDate, CommandLine | Format-List
+```
