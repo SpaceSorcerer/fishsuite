@@ -228,11 +228,21 @@ With `detect_antibody_spots: false` **and** `rna2_is_antibody` (i.e. in `rna_pro
 
 ### Segmentation
 
+> **Standing stack, decided 2026-09-03:** cellpose **4.2.1.1** with model
+> **`cpsam_v2`**, plus the DAPI Otsu pre-clip
+> (`nuclei.cellpose_preclip_dapi_otsu`, available but **default off**). Note that
+> cellpose **4.1.1 does not know the name `cpsam_v2`**: it silently substitutes
+> `cpsam` and logs only a warning naming the substitute, so a downgraded
+> environment segments with the wrong model and still exits 0. Check
+> `versions.txt` and pin 4.2.1.1.
+
 `segment_nuclei(dapi_2d, backend, params)` dispatches to one of three backends:
 
 - **StarDist** (`backend: stardist`, default model `2D_versatile_fluo`) — knobs: `prob_threshold`, `nms_threshold`, `n_tiles`, `stardist_gauss_sigma`, and an optional post-process (`stardist_postprocess` ∈ `none`/`dilate`/`watershed_otsu`/`watershed_triangle`). StarDist ignores diameter.
 - **Cellpose** (`backend: cellpose`, default model `cpsam`) — knobs: `cellpose_diameter_px` (0 = auto), `cellpose_flow_threshold`, `cellpose_cellprob_threshold`. `cellpose_device: directml` enables the torch-DirectML GPU path; `cpu` is the legacy path.
 - **Otsu** (`backend: otsu`) — pure thresholding.
+
+**DAPI Otsu pre-clip** (`cellpose_preclip_dapi_otsu`, opt-in, default off, cellpose only) — zeroes DAPI pixels below a per-image Otsu threshold **before** model inference, so dim extranuclear haze is not segmented as tails. It changes the model input, not the returned labels, and the applied floor is recorded per image as `cellpose_dapi_otsu_floor` in `thresholds.csv`.
 
 > `stardist_model` and `cellpose_model_type` are plain strings in the schema (not restricted enums) — any model name is accepted; the defaults are `2D_versatile_fluo` / `cpsam`.
 

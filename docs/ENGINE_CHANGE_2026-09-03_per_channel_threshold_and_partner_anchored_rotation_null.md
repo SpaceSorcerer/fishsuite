@@ -300,3 +300,108 @@ resolves locally with no network access, verified before running.
 Same shape as the other traps in this project: a check that cannot fire, so it
 passes confidently. Anyone reading `versions.txt` alone cannot tell which model
 ran; only the warning line distinguishes them, and it names the wrong model.
+
+
+---
+
+# ADDENDUM 3 (2026-09-03) - fishproc_dml upgraded to cellpose 4.2.1.1 (standing stack)
+
+Brian's decision: cellpose 4.2.1.1 + `cpsam_v2` is the standing model going
+forward, permanently. `fishproc_dml` itself was upgraded. **No clone was ever
+created**, so there is no rollback environment; the rollback record is the
+pre-upgrade freeze.
+
+| artifact | path |
+|---|---|
+| pre-upgrade freeze | `E:\Claude\fishsuite\docs\env_freeze_fishproc_dml_pre_cellpose_4.2.1.1_2026-09-03.txt` |
+| post-upgrade freeze | `E:\Claude\fishsuite\docs\env_freeze_fishproc_dml_post_cellpose_4.2.1.1_2026-09-03.txt` |
+
+## Deviation: `--no-deps`, because a plain install would have moved numpy
+
+`pip install cellpose==4.2.1.1 --dry-run` reported it would also install
+**numpy 2.2.6**, replacing numpy 1.26.4:
+
+```
+Would install cellpose-4.2.1.1 numpy-2.2.6
+```
+
+That is far outside the requested change. numpy 1.26.4 is what every run of
+record used, fishsuite's package init carries a numpy<2 compatibility patch, and
+bioio-bioformats / stardist / big-fish sit on that pin. Moving the array library
+under the whole stack to obtain a segmentation-model upgrade is not a trade worth
+making silently, so the install was `--no-deps`. Every other cellpose 4.2.1.1
+requirement was already satisfied, and 4.2.1.1 had already been proven to run
+correctly against numpy 1.26.4 in the vendored-environment reproduction.
+
+`pip freeze` before and after differ by **exactly one line** across 142 packages:
+
+```
+9c9
+< cellpose==4.1.1
+---
+> cellpose==4.2.1.1
+```
+
+torch 2.4.1, torch-directml 0.2.5.dev240914, numpy 1.26.4 all unchanged.
+
+## Weights
+
+`cpsam_v2` was not in the default cache, so a plain run would have downloaded
+~1.2 GB from HuggingFace. Instead the vendored copy already on disk was placed in
+the default model directory and verified byte-identical:
+
+| item | value |
+|---|---|
+| destination | `C:\Users\ambur\.cellpose\models\cpsam_v2` |
+| bytes | 1,233,586,851 |
+| SHA-256 | `0f1cc3f7ecdd8a037a57c6c48d9d8921391be4cbce3fa9f13c3e3a2e1253c667` |
+| source | stage 09 `_models\cellpose_4_2_1_1\cpsam_v2`, same hash |
+
+`cache_model_path('cpsam_v2')` now resolves there with **no environment
+variables set and no network access**. `PowerShell Get-FileHash` is unavailable
+in this shell and returned empty strings, so the hashes were taken with
+`sha256sum`; the earlier `MATCH: True` it printed was comparing two empty
+strings and proved nothing.
+
+## Reproduction in the upgraded environment
+
+`RUN_repro_preclip_on_envupgrade_2026-09-03_2110\`, run with **no** `PYTHONPATH`
+or `CELLPOSE_LOCAL_MODELS_PATH`, run-11 preset unchanged, pre-clip ON, both
+2026-09-03 fields unset.
+
+**36 nuclei (16 WT + 20 KO), equal to run 11.** Spot counts identical
+(83 / 7219, 324 / 5362). All nine compared per-nucleus columns equal for all 36
+nuclei at max absolute difference 0: `nucleus_area_px`, `nuclear_spot_fraction`,
+`rna_spot_count`, `nuclear_spot_count`, `protein_nuclear_mean`,
+`protein_enrichment_at_rna1_spots`, `protein_rotation_enrichment_at_rna1_spots`,
+`protein_rotation_null_z_at_rna1_spots`,
+`protein_rotation_assoc_fraction_at_rna1_spots`.
+
+Against the vendored-environment run: **163 of 163 columns identical, 0 differ.**
+The upgraded environment and the vendored one are the same stack.
+
+## Launcher
+
+`run_sweep.ps1` now calls the plain `fishproc_dml` `fishsuite.exe` with no
+environment injection. It still asserts `cellpose.version == 4.2.1.1` and that
+the `cpsam_v2` weights exist before any arm, because a downgrade would segment
+with the wrong model and still exit 0. Pre-flight re-run, all five arms:
+
+```
+cellpose: 4.2.1.1 (fishproc_dml, standing stack); model cpsam_v2 at C:\Users\ambur\.cellpose\models\cpsam_v2
+[T30] roster: 12 biological + 7 secondary-only (expect 12 + 7)
+[T33] roster: 12 biological + 7 secondary-only (expect 12 + 7)
+[T36] roster: 12 biological + 7 secondary-only (expect 12 + 7)
+[T40] roster: 12 biological + 7 secondary-only (expect 12 + 7)
+[T45] roster: 12 biological + 7 secondary-only (expect 12 + 7)
+PRE-FLIGHT OK - all 5 arms passed the environment + roster gate; nothing was run
+```
+
+The sweep has still **not** been launched.
+
+## Consequence for older runs
+
+Every fishsuite run before 2026-09-03 that used `cellpose_model_type: cpsam_v2`
+outside the vendored environment segmented with `cpsam`, not `cpsam_v2`, and
+recorded `cellpose: 4.1.1`. Those runs are internally consistent but are not
+comparable to runs on the standing stack. `versions.txt` distinguishes them.
