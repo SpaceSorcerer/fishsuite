@@ -493,18 +493,20 @@ def build_image_manifest(
             merged.at[index, "companion_ets_path"] = str(ets_path)
             merged.at[index, "companion_ets_size_bytes"] = ets_size
 
-    if validate_expected_design:
-        n_control = int(merged["is_control"].sum())
-        n_biological = int((~merged["is_control"]).sum())
-        n_sets = int(
-            merged.loc[~merged["is_control"], "biological_set"].replace("", np.nan).nunique()
+    n_control = int(merged["is_control"].sum())
+    n_biological = int((~merged["is_control"]).sum())
+    n_sets = int(
+        merged.loc[~merged["is_control"], "biological_set"].replace("", np.nan).nunique()
+    )
+    observed_design = (len(merged), n_biological, n_control, n_sets)
+    if validate_expected_design and observed_design != (44, 37, 7, 12):
+        raise ValueError(
+            "audited design must be 44 images, 37 biological, 7 controls, "
+            f"and 12 sets; found {observed_design}"
         )
-        if (len(merged), n_biological, n_control, n_sets) != (44, 37, 7, 12):
-            raise ValueError(
-                "audited design must be 44 images, 37 biological, 7 controls, "
-                f"and 12 sets; found {(len(merged), n_biological, n_control, n_sets)}"
-            )
-    return merged.reset_index(drop=True)
+    result = merged.reset_index(drop=True)
+    result.attrs["observed_design"] = observed_design
+    return result
 
 
 def read_exact_selected_planes(
@@ -2882,6 +2884,9 @@ def run_exact_footprint_backfill(
                 "source_run_dir": str(source_run.resolve()),
                 "hierarchy_path": str(hierarchy_file.resolve()),
                 "two_phase_full_parity_before_null": True,
+                "design_check_skipped": not bool(validate_expected_design),
+                "observed_design": list(manifest.attrs.get("observed_design", ())),
+                "audited_design": [44, 37, 7, 12],
                 "source_table_fingerprint": source_fingerprint,
                 "execution_fingerprint": execution_fingerprint,
                 "selected_image_keys": selected_image_keys,
@@ -3484,6 +3489,9 @@ def run_exact_footprint_backfill(
         "full_parity_gate_pass": analysis_scope == "full_manifest",
         "eligible_for_biological_inference": biological_inference_output,
         "execution_fingerprint": execution_fingerprint,
+        "design_check_skipped": not bool(validate_expected_design),
+        "observed_design": list(manifest.attrs.get("observed_design", ())),
+        "audited_design": [44, 37, 7, 12],
         "output_dir": str(output.resolve()),
         **provenance,
     }
@@ -3517,6 +3525,16 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Stop after exact-footprint parity; do not calculate KEEP-N nulls.",
     )
+    parser.add_argument(
+        "--skip-design-check",
+        action="store_true",
+        help=(
+            "Skip the audited MIAT/QKI design assertion (44 images, 37 biological, "
+            "7 controls, 12 sets) so a run with a different design can be processed. "
+            "Validation is ON by default. The observed design tuple is logged and "
+            "recorded in the output provenance."
+        ),
+    )
     parser.add_argument("--dry-run", action="store_true", help="Validate roster/paths without reading pixels")
     parser.add_argument("--resume", type=Path, help="Resume an existing exact-footprint output directory")
     return parser
@@ -3540,15 +3558,22 @@ def main(argv: Sequence[str] | None = None) -> int:
     if missing:
         parser.error(f"missing required inputs: {missing}")
     run_config = json.loads((run_dir / "run_config.json").read_text(encoding="utf-8"))
+    validate_design = not args.skip_design_check
     manifest = build_image_manifest(
         pd.read_csv(run_dir / "per_image_summary.csv"),
         pd.read_csv(hierarchy_path),
         pd.read_csv(run_dir / "spot_metrics.csv"),
         run_config=run_config,
         run_dir=run_dir,
-        validate_expected_design=True,
+        validate_expected_design=validate_design,
         resolve_paths=True,
     )
+    if not validate_design:
+        print(
+            "DESIGN CHECK SKIPPED (--skip-design-check): observed design "
+            f"(images, biological, controls, sets) = {manifest.attrs.get('observed_design')}; "
+            "audited MIAT/QKI design is (44, 37, 7, 12)"
+        )
     selected_image_keys, analysis_scope = _select_execution_keys(
         manifest, args.image_key
     )
@@ -3606,7 +3631,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         output,
         parameters=parameters,
         resume=resume,
-        validate_expected_design=True,
+        validate_expected_design=validate_design,
         image_keys=args.image_key,
         phase1_only=args.phase1_only,
     )
