@@ -54,6 +54,50 @@ def _make_output_dirs(output_dir: Path, cfg: FishsuiteConfig) -> Dict[str, Path]
     return out
 
 
+# Group label given to sec-only images. They are a detection-floor control and
+# are never a biological condition group.
+_REPORT_SEC_ONLY_GROUP = "Secondary-only"
+
+
+def _write_by_group_figures(output_dir: Path, cfg) -> int:
+    """SuperPlots of this run's own data, one panel per condition GROUP.
+
+    Wells are the replicate points inside their group: nuclei are shaded by well,
+    field means are open circles, well means are the tested diamonds. Drawn from
+    the run's own CSVs by the same code path ``fishsuite report`` uses, so the
+    numbers on a run figure and on a report figure cannot drift apart.
+    Returns the number of PNGs written.
+    """
+    from .report import aggregate as _ragg
+    from .report import build as _rbuild
+    from .report import endpoints as _rep
+    from .report import figures as _rfig
+
+    groups = {str(g): [str(w) for w in (m or [])]
+              for g, m in (getattr(cfg.conditions, "groups", None) or {}).items()}
+    specs = [f"{g}={','.join(m)}" for g, m in groups.items() if m]
+    well_to_group, declared = _ragg.parse_groups(specs)
+    declared = cfg.conditions.resolved_group_order() or declared
+    data = _ragg.load_run(Path(output_dir), well_to_group, {})
+    order = _ragg.resolve_group_order(data["labels"], declared)
+    if len(order) < 1:
+        return 0
+    labels = _rep.channel_labels(data["cfg"])
+    endpoints, absent = _rep.resolve(data["nuclei"], data["per_image"])
+    field = _ragg.per_field_long(data["nuclei"], data["per_image"], endpoints,
+                                 data["labels"], int(cfg.conditions.min_nuclei_for_stats))
+    well = _ragg.per_well_long(field)
+    contrasts = _ragg.build_contrasts(well, field, endpoints, absent, order, order[0],
+                                      labels)
+    per_nuc = data["nuclei"]
+    per_nuc = per_nuc[~per_nuc["secondary_only"]] if "secondary_only" in per_nuc else per_nuc
+    out = Path(output_dir) / "figures" / "by_group"
+    made = _rbuild.render_figures(out, Path(output_dir), data, endpoints, absent, well,
+                                  field, per_nuc, contrasts, order, order[0], {},
+                                  labels, _rbuild.ALPHA)
+    return len(list(out.glob("*.png"))) if out.is_dir() else len(made)
+
+
 def _stem_with_condition(stem: str, condition: str | None) -> str:
     """Compose ``<condition_sanitized>__<stem>`` for per-image output files.
 
@@ -2343,15 +2387,37 @@ def run_batch(
 
     # ---- Write master CSVs (Fiji column order via union of per-image cols) -
     per_image_df = pd.DataFrame(per_image_rows)
-    per_image_df.to_csv(output_dir / f"{prefix}per_image_summary.csv", index=False)
 
     nuclei_df = pd.concat(nuclei_dfs, ignore_index=True) if nuclei_dfs else pd.DataFrame()
-    nuclei_df.to_csv(output_dir / f"{prefix}nuclei_metrics.csv", index=False)
-
     spots_df = pd.concat(spots_dfs, ignore_index=True) if spots_dfs else pd.DataFrame()
-    spots_df.to_csv(output_dir / f"{prefix}spot_metrics.csv", index=False)
-
     morph_df = pd.concat(morph_dfs, ignore_index=True) if morph_dfs else pd.DataFrame()
+
+    # 2026-09-04 Brian: CONDITION GROUPS. A condition is one WELL; a group is the
+    # condition several wells belong to. When conditions.groups is set, every
+    # master CSV that carries a `condition` column gains a `group` column right
+    # beside it, so downstream figures can treat the WELL as the replicate inside
+    # its group instead of pooling wells. Sec-only rows are never placed in a
+    # biological group. With no groups configured the column is not written at
+    # all, so legacy runs are byte-identical.
+    _groups_cfg = getattr(cfg.conditions, "groups", None) or {}
+    if _groups_cfg:
+        for _df in (per_image_df, nuclei_df, spots_df, morph_df):
+            if not len(_df) or "condition" not in _df.columns:
+                continue
+            _sec = (_df["secondary_only"].astype(bool)
+                    if "secondary_only" in _df.columns
+                    else pd.Series(False, index=_df.index))
+            _grp = _df["condition"].astype(str).map(cfg.conditions.group_of)
+            _df["group"] = _grp.where(~_sec, _REPORT_SEC_ONLY_GROUP)
+        _console.print(
+            "[green]Condition groups applied: "
+            + "; ".join(f"{g} = {', '.join(map(str, w))}"
+                        for g, w in _groups_cfg.items())
+            + "[/green]")
+
+    per_image_df.to_csv(output_dir / f"{prefix}per_image_summary.csv", index=False)
+    nuclei_df.to_csv(output_dir / f"{prefix}nuclei_metrics.csv", index=False)
+    spots_df.to_csv(output_dir / f"{prefix}spot_metrics.csv", index=False)
     morph_df.to_csv(output_dir / f"{prefix}cell_morphology.csv", index=False)
 
     # NATIVE coloc-figure CSVs — written ONLY when the gating flags produced
@@ -2643,6 +2709,25 @@ def run_batch(
             )
     except Exception as _exc:
         _console.print(f"[yellow]downstream failed[/yellow]: {_exc!r}")
+
+    # ── By-group SuperPlots, when conditions.groups is set ─────────────────
+    # The run's native figure step splits on `condition`, which is one WELL, so
+    # with groups configured it draws one panel per well and never shows the
+    # condition. These add the missing view: one panel per condition GROUP with
+    # its wells as the replicate points inside it. Written alongside the native
+    # figures, never in place of them. Best effort: a failure here never fails
+    # the run.
+    if _groups_cfg:
+        try:
+            _n_bg = _write_by_group_figures(output_dir, cfg)
+            _console.print(
+                f"[dim]by-group figures: {_n_bg} PNG(s) under "
+                f"{output_dir / 'figures' / 'by_group'}[/dim]"
+                if _n_bg else
+                "[yellow]by-group figures produced nothing; the run is "
+                "unaffected[/yellow]")
+        except Exception as _exc:
+            _console.print(f"[yellow]by-group figures failed[/yellow]: {_exc!r}")
 
     return dict(
         n_images=len(images),

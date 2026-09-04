@@ -782,5 +782,112 @@ def postrun(run_dir, staging, input_dir, image_key, seed):
     click.echo("\n[postrun] all post-run utilities completed.")
 
 
+@cli.command()
+@click.option("--run", "run_dir", required=True,
+              type=click.Path(exists=True, file_okay=False),
+              help="Finished fishsuite output directory to report on. It is READ, "
+                   "never modified.")
+@click.option("--groups", "groups", multiple=True, metavar="NAME=well1,well2,...",
+              help="Condition GROUP definition, repeatable. A condition is one WELL; "
+                   "a group is the condition several wells belong to and is what gets "
+                   "compared. e.g. --groups WT=WT_1,WT_2,WT_3 "
+                   "--groups QKI-KO=KO_1,KO_2,KO_3. The FIRST group given is the "
+                   "reference unless --reference says otherwise. Omit this and the "
+                   "groups recorded in the run's own config are used; failing that, "
+                   "every well is its own group.")
+@click.option("--reference", default=None, metavar="NAME",
+              help="Group every other group is compared against. Default: the first "
+                   "group.")
+@click.option("--out", "out_dir", default=None, type=click.Path(file_okay=False),
+              help="Where to write the report. Default: <run>/report_<timestamp>/.")
+@click.option("--exclude-field", "exclude_field", multiple=True, metavar="NAME",
+              help="Drop one field of view (the image name as it appears in "
+                   "per_image_summary.csv), repeatable. Each --exclude-field must be "
+                   "followed by its own --reason; the pair is recorded in the workbook "
+                   "and in every figure's filter line.")
+@click.option("--reason", "reason", multiple=True, metavar="TEXT",
+              help="Why the preceding --exclude-field was dropped. Given in the same "
+                   "order as the --exclude-field flags, one each.")
+@click.option("--style", type=click.Choice(["brian", "plain"]), default="brian",
+              show_default=True,
+              help="Figure style. 'brian' is the locked lab style: Okabe-Ito colours, "
+                   "600-dpi PNG plus editable-text SVG, filter line and single "
+                   "croppable footnote on every chart.")
+@click.option("--alpha", default=0.05, show_default=True, type=float,
+              help="Significance level for the Welch gate and the Holm family.")
+@click.option("--qc-min-nuclei", default=5, show_default=True, type=int,
+              help="Fields with fewer nuclei than this are FLAGGED in the Per field "
+                   "sheet. Nothing is dropped by this flag.")
+@click.option("--sec-min-nuclei", default=10, show_default=True, type=int,
+              help="Secondary-only control fields with fewer nuclei than this are "
+                   "excluded by rule, with the rule recorded in the workbook.")
+@click.option("--engine-repo", default=None, type=click.Path(exists=True, file_okay=False),
+              help="fishsuite checkout whose git HEAD is recorded in Run provenance.")
+@click.option("--preset", default=None, type=click.Path(exists=True, dir_okay=False),
+              help="Preset YAML the run used; its md5 is recorded in Run provenance.")
+@click.option("--no-figures", is_flag=True,
+              help="Write the workbook and readout only; skip every figure.")
+@click.option("--no-coloc-panel", is_flag=True,
+              help="Skip the standard colocalization panel on an rna_rna or "
+                   "rna_protein run.")
+@click.option("--stamp", default="", metavar="TEXT",
+              help="Timestamp used in the default output directory name. Defaults to "
+                   "now.")
+def report(run_dir, groups, reference, out_dir, exclude_field, reason, style, alpha,
+           qc_min_nuclei, sec_min_nuclei, engine_repo, preset, no_figures,
+           no_coloc_panel, stamp):
+    """Build the condition-versus-condition report for a finished run.
+
+    Wells are the biological replicates and the condition GROUP is what gets
+    compared. Every gate is a Welch t on well means with Hedges g, a Holm
+    adjustment within its endpoint family, and the minimum detectable effect at
+    that number of wells. Figures carry the star from the RAW p and print the
+    adjusted p and the minimum detectable effect in the footnote.
+
+    Writes REPORT.xlsx with plain sheet names, READOUT.md, figures/, per_well.csv,
+    contrasts.csv, versions.txt and command.log. The run directory is read only.
+    """
+    from .report.build import build_report
+    from .report.aggregate import ReportInputError
+
+    if len(reason) != len(exclude_field):
+        click.echo(
+            f"--exclude-field was given {len(exclude_field)} time(s) but --reason "
+            f"{len(reason)} time(s). Every excluded field needs its own reason, in "
+            f"the same order.", err=True)
+        sys.exit(2)
+    excludes = dict(zip(exclude_field, reason))
+    try:
+        r = build_report(
+            run_dir=Path(run_dir),
+            out_dir=Path(out_dir) if out_dir else None,
+            groups=list(groups),
+            reference=reference,
+            exclude_fields=excludes,
+            qc_min_nuclei=qc_min_nuclei,
+            sec_min_nuclei=sec_min_nuclei,
+            alpha=alpha,
+            engine_repo=Path(engine_repo) if engine_repo else None,
+            preset=Path(preset) if preset else None,
+            style=style,
+            make_figures=not no_figures,
+            coloc_panel=not no_coloc_panel,
+            stamp=stamp,
+        )
+    except ReportInputError as exc:
+        click.echo(f"fishsuite report: {exc}", err=True)
+        sys.exit(2)
+    click.echo(f"report      : {r['out_dir']}")
+    click.echo(f"workbook    : {r['xlsx']}")
+    click.echo(f"readout     : {r['out_dir'] / 'READOUT.md'}")
+    click.echo(f"figures     : {len(r['figures'])} figure(s) in {r['out_dir'] / 'figures'}")
+    click.echo(f"groups      : {', '.join(r['group_order'])} "
+               f"(reference {r['reference']})")
+    if r["absent"]:
+        click.echo(f"absent from this run (reported as NA): {', '.join(r['absent'])}")
+    if r.get("coloc_panel"):
+        click.echo(f"coloc panel : {r['coloc_panel']}")
+
+
 if __name__ == "__main__":
     cli()

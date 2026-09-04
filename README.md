@@ -25,18 +25,19 @@
 5. [Analysis modes](#analysis-modes)
 6. [The pipeline in depth](#the-pipeline-in-depth)
 7. [Colocalization](#colocalization)
-8. [CLI reference](#cli-reference)
-9. [The desktop GUI](#the-desktop-gui)
-10. [Configuration and presets](#configuration-and-presets)
-11. [Outputs and metrics](#outputs-and-metrics)
-12. [Statistics conventions](#statistics-conventions)
-13. [Reproducibility](#reproducibility)
-14. [Testing](#testing)
-15. [Repository layout](#repository-layout)
-16. [Citations and methods grounding](#citations-and-methods-grounding)
-17. [Scope and limitations](#scope-and-limitations)
-18. [Changelog / recent additions](#changelog--recent-additions)
-19. [Contributing](#contributing)
+8. [Condition groups and the report layer](#condition-groups-and-the-report-layer)
+9. [CLI reference](#cli-reference)
+10. [The desktop GUI](#the-desktop-gui)
+11. [Configuration and presets](#configuration-and-presets)
+12. [Outputs and metrics](#outputs-and-metrics)
+13. [Statistics conventions](#statistics-conventions)
+14. [Reproducibility](#reproducibility)
+15. [Testing](#testing)
+16. [Repository layout](#repository-layout)
+17. [Citations and methods grounding](#citations-and-methods-grounding)
+18. [Scope and limitations](#scope-and-limitations)
+19. [Changelog / recent additions](#changelog--recent-additions)
+20. [Contributing](#contributing)
 
 ---
 
@@ -351,6 +352,28 @@ Supporting control: **nucleolus exclusion** (`exclude_nucleolus_from_partner_nul
 
 All nulls use fixed seeds with separate RNG streams (position `partner_null_seed`; rotation offset +101; association +404; partner-anchored rotation +303; partner-anchored association +606), so toggling one never perturbs another, and the post-run `backfill` reproduces the engine's draws bit-for-bit.
 
+#### Reporting rules (Brian, 2026-09-04) — authoritative copy in the `fishsuite-rna-fish` skill
+
+Two rules govern how these nulls are *reported*, independent of how the engine computes them. The
+binding statement lives in `fishsuite-rna-fish` SKILL.md, §Diffuse antibody / protein partner; this is
+a pointer, not a second source of truth.
+
+1. **Sampling region = the exact punctum footprint.** `partner_null_disk_px` (3.0 px) is the engine's
+   run-time default and is retained for backwards compatibility only. The reported
+   partner-at-punctum enrichment, the called-colocalized rule and every null (position-randomization,
+   rotation, partner-anchored) use each punctum's **exact segmented footprint**, supplied by the
+   exact-footprint backfill (`fishsuite.core.exact_footprint_backfill`, worktree
+   `E:\Claude\fishsuite-codex-miat-qki-footprint\`, commit `937626ec`) until the engine exposes a footprint
+   option natively. **Disk-based columns are labelled legacy in reports.**
+2. **The standard colocalization panel is required alongside any null-based enrichment.** Per-nucleus
+   Pearson and Manders M1/M2 with a Costes auto-threshold (fallback median+k·MAD, flagged), Li ICQ, a
+   pooled-nuclear-pixel cytofluorogram with both thresholds drawn, straight-line intensity profiles
+   through representative nuclei with each channel in its LUT colour, an object-based called-coloc
+   fraction with a translated-footprint shuffle control, and QC overlays colouring every detected
+   punctum by its call. Tool: `E:\Claude\fishsuite\scripts\coloc_standard_panel.py`. **The rotation null is a
+   randomisation control presented alongside, never the sole number; where the two families disagree,
+   the disagreement is the finding.**
+
 ### 4. Radial profile — the metric that fits a diffuse partner
 
 `compute_partner_radial_profile` measures the partner channel's enrichment in concentric annuli around each RNA1 spot (`partner_radial_bins_um`, outer-edge radii in µm, default `[0.25, 0.5, 0.75, 1.0]`). It is the 2-D analogue of a line scan, and it is the one metric here that needs **no thresholdable object in the partner channel** — only the partner's intensity as a function of distance from an object in the punctate channel. For a diffuse, abundant partner, that makes it the appropriate readout rather than a supporting one.
@@ -377,6 +400,83 @@ These methods follow the colocalization-with-an-explicit-null tradition: pixel c
 
 ---
 
+## Condition groups and the report layer
+
+A fishsuite **condition** is one WELL. A **condition group** is the condition several
+wells belong to, and is what gets compared. Wells inside a group are biological
+replicates; fields of view inside a well are technical replicates; nuclei are the
+measurement unit and are pseudoreplicates.
+
+### Declaring groups
+
+```yaml
+conditions:
+  mode: subfolders
+  subfolder_conditions: {WT_1: WT_1, WT_2: WT_2, WT_3: WT_3,
+                         KO_1: KO_1, KO_2: KO_2, KO_3: KO_3}
+  sec_only_folders: ["Sec-Only"]
+  groups:
+    WT:     ["WT_1", "WT_2", "WT_3"]
+    QKI-KO: ["KO_1", "KO_2", "KO_3"]
+  group_order: ["WT", "QKI-KO"]      # first entry is the default reference group
+```
+
+With `groups` set, every master CSV that carries `condition` gains a `group`
+column beside it, and the run additionally writes `figures/by_group/` — one panel
+per condition group with its wells as the replicate points inside it. The run's
+own `figures/` directory, which splits on `condition`, is untouched.
+
+* A well named in no group keeps its own label as its group, so an unlisted well
+  is visible rather than pooled silently.
+* Secondary-only images are never placed in a biological group; they are labelled
+  `Secondary-only`.
+* With `groups` empty no column is written and behaviour is unchanged.
+
+### `fishsuite report`
+
+Builds the condition-versus-condition workbook, readout and figures for a
+FINISHED run. The run directory is read, never modified.
+
+```powershell
+fishsuite report --run "F:\out\UD_run" `
+  --groups WT=WT_1,WT_2,WT_3 --groups QKI-KO=KO_1,KO_2,KO_3 `
+  --reference WT --engine-repo "E:\Claude\fishsuite" --preset preset.yaml
+```
+
+Writes `<run>\report_<stamp>\` containing:
+
+| File | Contents |
+|---|---|
+| `REPORT.xlsx` | Read me / Spots per nucleus by group / Nuclear fraction by group / Partner at puncta by group / Per well / Per field / Per nucleus / Contrasts / Secondary-only / Run provenance. Every sheet opens with a two-to-three sentence description row |
+| `READOUT.md` | Ten plain lines, agnostic framing, first line the run path |
+| `figures/` | One SuperPlot per endpoint, representative micrographs, `FIG_MAIN`, `FIGURE_INDEX.md`. PNG at 600 dpi plus editable-text SVG |
+| `per_well.csv`, `contrasts.csv` | The tested points and every statistic |
+| `versions.txt`, `command.log` | Library versions, seed, and the exact command |
+
+The gate is a **Welch t on well means** with Hedges g and a 95 percent interval,
+Holm-adjusted within an endpoint family (a family is one by-group sheet), with the
+**minimum detectable effect** in Hedges g units carried next to every p. Exact
+permutation of well labels and Tukey on field means are sensitivity columns, never
+the gate.
+
+**The star on a figure is the RAW Welch p.** The Holm-adjusted p and the minimum
+detectable effect are printed in the same footnote, so neither the unadjusted nor
+the adjusted result is hidden.
+
+Endpoints are declared in ROLE terms (rna1 / rna2 / protein) and resolved against
+whatever columns a run emitted. An endpoint whose column is absent is reported as
+not available with a note, never dropped.
+
+On an `rna_rna` or `rna_protein` run the subcommand also calls
+`scripts/coloc_standard_panel.py` and writes `coloc_standard_panel/` beside the
+workbook. Pass `--no-coloc-panel` to skip it, `--no-figures` for the workbook only.
+
+Full detail, including the provenance of the ported algorithms and the reproduction
+check against the report builders this replaces:
+`docs/REPORT_SUBCOMMAND_2026-09-04.md`.
+
+---
+
 ## CLI reference
 
 The console script is **`fishsuite`** (entry point `fishsuite.cli:cli`). It exposes `--version` and the subcommands below. Quoting paths with spaces is required on Windows.
@@ -397,6 +497,33 @@ Run the full pipeline on a folder of images.
 
 ```powershell
 fishsuite run -c preset.yaml -i "F:\Raw Images\UD" -o "F:\out\UD_run" --dry-run
+```
+
+### `fishsuite report`
+
+Build the condition-versus-condition report for a finished run. Reads the run
+directory; never writes to it.
+
+| Option | Required | Default | Meaning |
+|---|---|---|---|
+| `--run` | yes | — | Finished fishsuite output directory to report on. |
+| `--groups` | no | run config | `NAME=well1,well2,...`, repeatable. First group is the reference unless `--reference` says otherwise. |
+| `--reference` | no | first group | Group every other group is compared against. |
+| `--out` | no | `<run>/report_<stamp>/` | Where to write the report. |
+| `--exclude-field` | no | none | One image name to drop, repeatable. Each needs its own `--reason`. |
+| `--reason` | no | none | Why the matching `--exclude-field` was dropped, same order. |
+| `--style` | no | `brian` | `brian` is the locked lab style; `plain` reserved. |
+| `--alpha` | no | `0.05` | Significance level for the Welch gate and the Holm family. |
+| `--qc-min-nuclei` | no | `5` | Fields below this are FLAGGED in the Per field sheet. Nothing is dropped. |
+| `--sec-min-nuclei` | no | `10` | Secondary-only fields below this are excluded by rule. |
+| `--engine-repo` | no | — | fishsuite checkout whose git HEAD is recorded in Run provenance. |
+| `--preset` | no | — | Preset YAML the run used; its md5 is recorded. |
+| `--no-figures` | no | off | Workbook and readout only. |
+| `--no-coloc-panel` | no | off | Skip the standard colocalization panel. |
+| `--stamp` | no | now | Timestamp used in the default output directory name. |
+
+```powershell
+fishsuite report --run "F:\out\UD_run" --groups WT=WT_1,WT_2,WT_3 --groups QKI-KO=KO_1,KO_2,KO_3 --reference WT
 ```
 
 ### `fishsuite preview`
@@ -670,9 +797,10 @@ Records identity/provenance (`package`, `version`, `python_version`, `platform`,
 ## Statistics conventions
 
 - **The per-image mean is the replicate unit.** Per-nucleus values are pseudoreplicated (Lord 2020); inference is at the image/replicate level. SuperPlots show per-nucleus points shaded by image, with image-means as the tested replicates.
+- **When `conditions.groups` is set the WELL is the replicate unit and the condition GROUP is what gets compared.** Fields of view become technical replicates within a well. `fishsuite report` tests well means; its SuperPlots shade nuclei by well and draw well means as the tested points. See [Condition groups and the report layer](#condition-groups-and-the-report-layer).
 - **Report `nuclear_spot_fraction` / N:C as the headline** for nuclear-retention experiments ("at floor N"); absolute counts/intensities are floor-sensitive support, robust in direction but not magnitude.
 - **Never compare absolute antibody/RNA intensity across conditions or sections** when laser power was re-tuned per section. Report counts, fractions, and within-nucleus ratios only.
-- **Colocalization is reported with its null** — effect size (observed vs null) plus an empirical p, never a bare coefficient; for diffuse-partner cases the rotation-null columns are the headline.
+- **Colocalization is reported with its null** — effect size (observed vs null) plus an empirical p, never a bare coefficient; for diffuse-partner cases the rotation-null columns are reported ALONGSIDE the standard colocalization panel (Brian's rule 2026-09-04; see Reporting rules above), never as the sole number.
 
 ---
 

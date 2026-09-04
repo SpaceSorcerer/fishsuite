@@ -42,6 +42,36 @@ class ConditionsCfg(BaseModel):
     filename_conditions: List[List[str]] = Field(default_factory=list)
     condition_order: List[str] = Field(default_factory=list)
     min_nuclei_for_stats: int = 6
+    # 2026-09-04 Brian: CONDITION GROUPS. A condition (above) is one WELL. A
+    # group is the condition several wells belong to, and is what gets compared.
+    # ``{group_label: [condition_label, ...]}``, e.g.
+    #   groups:
+    #     WT:      ["WT_1", "WT_2", "WT_3"]
+    #     QKI-KO:  ["KO_1", "KO_2", "KO_3"]
+    # When set, every image gains a ``group`` column alongside its ``condition``
+    # in the master CSVs, and the run's by-group SuperPlots treat the WELL as the
+    # replicate inside its group (nuclei shaded by well, well means as the tested
+    # points). Sec-only images are never placed in a biological group: they are
+    # labelled "Secondary-only". A condition not named here keeps its own label
+    # as its group, so an unlisted well is visible rather than silently pooled.
+    # Default empty = legacy behaviour, no group column, unchanged figures.
+    groups: Dict[str, List[str]] = Field(default_factory=dict)
+    # Plotting / reporting order of the group labels. Groups present in the data
+    # but absent from this list are appended in sorted order. The FIRST entry is
+    # the default reference group for ``fishsuite report``.
+    group_order: List[str] = Field(default_factory=list)
+
+    def group_of(self, condition: str) -> str:
+        """Group label for one condition, falling back to the condition itself."""
+        for group, members in (self.groups or {}).items():
+            if condition in (members or []):
+                return str(group)
+        return str(condition)
+
+    def resolved_group_order(self) -> List[str]:
+        declared = list(self.group_order or [])
+        known = list((self.groups or {}).keys())
+        return declared + [g for g in known if g not in declared]
 
 
 class ChannelsCfg(BaseModel):
