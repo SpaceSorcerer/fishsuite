@@ -214,3 +214,89 @@ package version matches. `nucleus_area_px` differs for every nucleus by at most
 3.05 %, spot assignment is unchanged, and the preset asks for the 4.2-era model
 `cpsam_v2` which 4.1.1 cannot resolve. Restoring 4.2.1.1 is a system-state
 decision for Brian. Full comparison in `REPRO_RESULT.md`.
+
+
+---
+
+# ADDENDUM 2 (2026-09-03) - run 11 reproduced exactly; the earlier version claim was wrong
+
+**The merged engine reproduces run 11 exactly**: 36 nuclei (16 WT + 20 KO),
+identical spot counts, and `nucleus_area_px`, `nuclear_spot_fraction`,
+`rna_spot_count`, `nuclear_spot_count`, `protein_nuclear_mean` and all three
+`protein_rotation_*_at_rna1_spots` columns equal for all 36 nuclei with maximum
+absolute difference 0. 148 of 163 shared per-nucleus columns are bit-identical;
+the 15 that differ are all downstream of the batch-pooled pixel-coloc threshold,
+which pools 2 images instead of run 11's 26. Full tables in `REPRO_RESULT.md`.
+
+No engine code changed for this result. It required only running the merged
+engine in run 11's environment.
+
+## Correction: there was no cellpose downgrade
+
+The earlier addendum blamed a cellpose 4.2.1.1 -> 4.1.1 downgrade of
+`fishproc_dml`. **That was wrong.** `fishproc_dml` has never held 4.2.1.1:
+
+| evidence | finding |
+|---|---|
+| `site-packages\cellpose-*.dist-info` | exactly one, `4.1.1`, dated 2026-05-27 |
+| `conda-meta\history` | one transaction, 2026-05-27 14:25:51, no cellpose entry (pip-installed) |
+| `importlib.metadata` + `cellpose.version` today | both 4.1.1, one distribution only |
+| every cellpose install on this machine | 4.1.1 in `fishproc`, `fishproc_dml`, `dml_test`, all May 2026 |
+| every other fishsuite run 2026-08-13 to 2026-09-03 | records `cellpose: 4.1.1` |
+
+A pip downgrade would have stamped a new dist-info mtime. It did not.
+
+## Where run 11's 4.2.1.1 actually came from
+
+It is **vendored inside the stage-09 proposal**, alongside its weights:
+
+| path | contents |
+|---|---|
+| `09_CODE_PROPOSAL_FISHSUITE_DAPI_FLOOR_2026-09-01\_deps\cellpose_4_2_1_1\` | the cellpose 4.2.1.1 package + dist-info |
+| `09_CODE_PROPOSAL_FISHSUITE_DAPI_FLOOR_2026-09-01\_models\cellpose_4_2_1_1\cpsam_v2` | the cpsam_v2 weights, 1,233,586,851 bytes |
+
+Injected per process with `PYTHONPATH` and `CELLPOSE_LOCAL_MODELS_PATH`, which is
+why `sys.executable` still recorded `fishproc_dml`. Corroborated within one day
+and one folder: stage 10's `CP411_CPSAM_OTSU` arm records 4.1.1 while its
+`CP421_CPSAMV2` and `CP421_CPSAMV2_OTSU` arms and run 11 record 4.2.1.1.
+
+**No environment was created and `fishproc_dml` was not modified.** Cloning it
+and pip-installing 4.2.1.1 was unnecessary once the vendored copy was found, and
+would have pulled ~1.2 GB of weights over the network for a model already on
+disk.
+
+## FOOTGUN: cellpose 4.1.1 silently substitutes a different model for cpsam_v2
+
+`cellpose/models.py` in 4.1.1 defines `MODEL_NAMES = ["cpsam"]`. `cpsam_v2` is
+not in that list and is not a path, so it falls to the `else` branch:
+
+```python
+pretrained_model = os.path.join(MODEL_DIR, "cpsam")
+models_logger.warning(
+    f"pretrained model {pretrained_model} not found, using default model")
+```
+
+Observed verbatim in the merged-pre-clip repro run:
+
+```
+pretrained model C:\Users\ambur\.cellpose\models\cpsam not found, using default model
+```
+
+Three ways that line misleads:
+
+1. It names `...\cpsam`, the **substitute**, not `cpsam_v2`, the model actually
+   requested. The requested name never appears.
+2. It says "not found" about a path that **does exist** (1,233,587,898 bytes,
+   present since 2026-05-09), so the message is false as written.
+3. It is a WARNING. Segmentation proceeds with the wrong model and the run exits
+   0 with a complete, plausible output tree.
+
+4.2.1.1 has `MODEL_NAMES = ["cpsam_v2", "cpdino", "cpdino-vitb", "cpsam"]` and
+resolves `cpsam_v2` through `cache_model_path`, which returns the cached file
+under `MODEL_DIR` and downloads only if absent. With
+`CELLPOSE_LOCAL_MODELS_PATH` pointed at the vendored `_models` directory it
+resolves locally with no network access, verified before running.
+
+Same shape as the other traps in this project: a check that cannot fire, so it
+passes confidently. Anyone reading `versions.txt` alone cannot tell which model
+ran; only the warning line distinguishes them, and it names the wrong model.
