@@ -625,12 +625,24 @@ def test_nuclear_anchors_flag_defaults_off():
     assert FociCfg().partner_anchored_null_nuclear_anchors_only is False
 
 
-def test_only_nuclear_spots_does_not_filter_the_spot_table(fake_img_outside, monkeypatch):
-    """DOCUMENTS A FOOTGUN, and the reason the new flag exists.
+def test_only_nuclear_spots_does_filter_the_spot_table(fake_img_outside, monkeypatch):
+    """INVERTED 2026-09-05. This test used to assert the opposite.
 
-    ``FociChannelOverrideCfg.only_nuclear_spots`` is resolved and written to
-    thresholds.csv but never filters the spot table in rna_rna / rna_protein,
-    so a preset that sets it asserts a restriction the engine does not apply.
+    It was written against a main branch that had never carried the
+    ``only_nuclear_spots`` filter - the implementation lived unmerged on
+    ``codex/fix-only-nuclear-spots`` (da5b350, 2026-08-29) and was merged on
+    2026-09-05 - so it characterised a regression rather than a requirement.
+    Its own failure message called this out: "if this ever fails,
+    only_nuclear_spots started filtering and this note ... should be revisited".
+    It did, so it was.
+
+    The two restrictions are different and compose:
+      * ``only_nuclear_spots`` drops extra-nuclear spots from the channel's
+        spot table outright, before pairing, partner sampling and every null;
+      * ``partner_anchored_null_nuclear_anchors_only`` leaves the spot table
+        alone and restricts only the partner-anchored null's constellation, so
+        it still does something when ``only_nuclear_spots`` is off, which is
+        the case it exists for.
     """
     from fishsuite.config.schema import FociChannelOverrideCfg
 
@@ -639,10 +651,14 @@ def test_only_nuclear_spots_does_not_filter_the_spot_table(fake_img_outside, mon
     res = _run(cfg, fake_img_outside, monkeypatch)
     assert res.thresholds["rna2_only_nuclear_spots"] is True
     sp2 = res.spots[res.spots["channel"] == "rna2"]
-    assert (sp2["in_nucleus"].astype(int) == 0).any(), (
-        "if this ever fails, only_nuclear_spots started filtering and this note "
-        "and the new flag should be revisited"
+    assert len(sp2) > 0, "fixture produced no rna2 spots, the assertion would be vacuous"
+    assert (sp2["in_nucleus"].astype(int) == 1).all(), (
+        "only_nuclear_spots is set on rna2 but %d extra-nuclear rows survived"
+        % int((sp2["in_nucleus"].astype(int) == 0).sum())
     )
+    # NOTE: this fixture places out-of-nucleus spots in rna2 only, so there is
+    # no ungated-channel counterpart to assert here. The scoped-versus-shared
+    # behaviour is covered in test_only_nuclear_spots_regression_2026_09_05.py.
 
 
 def test_nuclear_anchor_restriction_drops_out_of_nucleus_anchors(

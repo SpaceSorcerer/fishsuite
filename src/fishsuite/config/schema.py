@@ -856,11 +856,18 @@ class FociCfg(BaseModel):
     # support the null never samples. In the QKI x BIN1-intron arm-2 run 20.5 %
     # of QKI anchors (spot-weighted) lay outside the nucleus mask.
     #
-    # ``FociChannelOverrideCfg.only_nuclear_spots`` does NOT do this: in
-    # ``rna_rna`` / ``rna_protein`` that field is resolved and written to
-    # thresholds.csv but never filters the spot table, so a preset setting it
-    # asserts a restriction the engine does not apply. This flag is the
-    # restriction, scoped to the partner-anchored null only.
+    # ``only_nuclear_spots`` is a DIFFERENT restriction and the two compose.
+    # That field drops extra-nuclear spots from the channel's spot table
+    # outright, before pairing / partner sampling / every null. This flag
+    # leaves the spot table alone and restricts only which anchors the
+    # partner-anchored null's constellation uses, so it still does something
+    # when ``only_nuclear_spots`` is off - which is the case it exists for.
+    #
+    # 2026-09-05: the comment here used to state that ``only_nuclear_spots``
+    # never filters in rna_rna / rna_protein. That was measured on a main
+    # branch which had never carried the filter; the filter lived unmerged on
+    # ``codex/fix-only-nuclear-spots`` and is now merged, so the statement no
+    # longer holds.
     #
     # When on, ``n_partner_anchors_at_rna2_spots`` records the anchor count the
     # null actually used, per nucleus. Default False -> byte-identical output.
