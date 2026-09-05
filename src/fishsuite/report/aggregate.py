@@ -159,7 +159,8 @@ def spot_derived_per_nucleus(run_dir: Path, thresholds: Optional[pd.DataFrame],
     head = pd.read_csv(path, nrows=0)
     want = ["image", "channel", "nucleus_id", "in_nucleus", "spot_fwhm_px",
             "spot_diameter_um", "qki_at_miat_footprint", "qki_footprint_enrichment",
-            "miat_footprint_area_px"]
+            "miat_footprint_area_px", "in_cytoplasm", "nn_distance_um",
+            "paired_at_0p3um"]
     cols = [c for c in want if c in head.columns]
     if not {"image", "channel", "nucleus_id", "in_nucleus"} <= set(cols):
         return pd.DataFrame(columns=["image", "nucleus_id"])
@@ -169,12 +170,21 @@ def spot_derived_per_nucleus(run_dir: Path, thresholds: Optional[pd.DataFrame],
 
 def _spot_aggregates(spots: pd.DataFrame, thresholds: Optional[pd.DataFrame],
                      voxel_xy_um: Optional[float]) -> pd.DataFrame:
-    """Per-nucleus aggregates over the NUCLEAR rna1 puncta of ``spots``."""
+    """Per-nucleus aggregates over the rna1 puncta of ``spots``.
+
+    Size and footprint use the NUCLEAR puncta only, which is the set those
+    measurements are defined on. The pairing endpoints use every punctum of the
+    nucleus, nuclear and cytoplasmic, because that is the denominator the engine
+    uses and the one the report's definition row states.
+    """
     rna = spots[spots["channel"].eq("rna1") & spots["in_nucleus"].astype(bool)].copy()
     if rna.empty:
         return pd.DataFrame(columns=["image", "nucleus_id"])
 
     agg: Dict[str, tuple] = {}
+    # Pairing endpoints, recomputed per nucleus over the SAME spot set the counts
+    # use. The denominator is every anchor punctum of that nucleus, nuclear and
+    # cytoplasmic, matching the engine's own aggregation.
     if "spot_fwhm_px" in rna.columns:
         agg["rna1_spot_fwhm_px"] = ("spot_fwhm_px", "mean")
     if "spot_diameter_um" in rna.columns:
@@ -200,9 +210,29 @@ def _spot_aggregates(spots: pd.DataFrame, thresholds: Optional[pd.DataFrame],
         rna["_fp_eqdiam_um"] = 2.0 * np.sqrt(area_um2 / np.pi)
         agg["rna1_punctum_footprint_area_um2"] = ("_fp_area_um2", "mean")
         agg["rna1_punctum_equivalent_diameter_um"] = ("_fp_eqdiam_um", "mean")
-    if not agg:
-        return pd.DataFrame(columns=["image", "nucleus_id"])
-    return (rna.groupby(["image", "nucleus_id"], sort=False).agg(**agg).reset_index())
+    out = (rna.groupby(["image", "nucleus_id"], sort=False).agg(**agg).reset_index()
+           if agg else pd.DataFrame(columns=["image", "nucleus_id"]))
+
+    # Pairing is aggregated over EVERY anchor punctum of the nucleus, nuclear and
+    # cytoplasmic, which is the denominator the engine uses and the one the
+    # workbook's definition row states. Restricting it to nuclear puncta gives a
+    # different number for the same name.
+    allr = spots[spots["channel"].eq("rna1")].copy()
+    pair_col = next((c for c in allr.columns if c.startswith("paired_at_")), None)
+    pagg: Dict[str, tuple] = {}
+    if pair_col:
+        allr["_paired"] = pd.to_numeric(allr[pair_col], errors="coerce")
+        pagg["paired_fraction_rna1_at_0p3um"] = ("_paired", "mean")
+    if "nn_distance_um" in allr.columns:
+        allr["_nn"] = pd.to_numeric(allr["nn_distance_um"], errors="coerce").replace(
+            [np.inf, -np.inf], np.nan)
+        pagg["median_nn_distance_rna1_um"] = ("_nn", "median")
+    if pagg and len(allr):
+        pair = (allr.groupby(["image", "nucleus_id"], sort=False).agg(**pagg)
+                .reset_index())
+        out = (pair if not len(out)
+               else out.merge(pair, on=["image", "nucleus_id"], how="outer"))
+    return out
 
 
 def load_run(run_dir: Path, well_to_group: Dict[str, str],
@@ -238,9 +268,11 @@ def load_run(run_dir: Path, well_to_group: Dict[str, str],
     if vox is not None and not vox.isna().all() and "nucleus_area_px" in nuc.columns:
         nuc["nucleus_area_um2"] = pd.to_numeric(nuc["nucleus_area_px"],
                                                 errors="coerce") * vox ** 2
-        if "n_spots_rna1" in nuc.columns:
-            nuc["rna1_spots_per_um2"] = (pd.to_numeric(nuc["n_spots_rna1"], errors="coerce")
-                                         / nuc["nucleus_area_um2"])
+        for src_col, out_col in (("n_spots_rna1", "rna1_spots_per_um2"),
+                                 ("n_spots_rna2", "rna2_spots_per_um2")):
+            if src_col in nuc.columns:
+                nuc[out_col] = (pd.to_numeric(nuc[src_col], errors="coerce")
+                                / nuc["nucleus_area_um2"])
     for flag in ("rotation_null_usable", "rotation_null_usable_at_protein_spots"):
         if flag in nuc.columns:
             nuc[flag] = nuc[flag].astype(str).str.strip().str.lower().isin(
@@ -547,12 +579,13 @@ def family_sheet(contrasts: pd.DataFrame, well: pd.DataFrame, family: str,
 
 def secondary_only_table(nuc: pd.DataFrame, per_image: pd.DataFrame,
                          labels: pd.DataFrame, exclude_fields: Dict[str, str],
-                         min_nuclei: int) -> pd.DataFrame:
+                         min_nuclei: int, outlier_k: float = 0.0) -> pd.DataFrame:
     """One row per secondary-only field, with the rule that excluded it, if any.
 
     Exclusions are RULES plus operator-supplied reasons, never a remembered list:
-    rule 1 is the nucleus-count floor, and any further exclusion arrives as an
-    explicit ``--exclude-field`` with its own recorded reason.
+    rule 1 is the nucleus-count floor; rule 2 is the per-channel detection-rate
+    outlier cut at ``outlier_k`` times the control median; anything further arrives
+    as an explicit ``--exclude-field`` with its own recorded reason.
     """
     sec = nuc[nuc["secondary_only"]].copy() if "secondary_only" in nuc.columns else nuc.iloc[0:0]
     sec_labels = labels[labels["secondary_only"]]
@@ -565,6 +598,7 @@ def secondary_only_table(nuc: pd.DataFrame, per_image: pd.DataFrame,
         row = dict(field=image, n_nuclei=int(len(grp)))
         for out_name, col in (("rna1_spots_per_nucleus", "n_spots_rna1"),
                               ("rna1_nuclear_spots_per_nucleus", "nuclear_spot_count"),
+                              ("rna2_spots_per_nucleus", "n_spots_rna2"),
                               ("partner_spots_per_nucleus", "n_spots_protein")):
             row[out_name] = (float(pd.to_numeric(grp[col], errors="coerce").mean())
                              if col in grp.columns and len(grp) else np.nan)
@@ -579,13 +613,44 @@ def secondary_only_table(nuc: pd.DataFrame, per_image: pd.DataFrame,
     df = pd.DataFrame(rows)
     df["rule_min_nuclei"] = min_nuclei
     df["excluded_by_nucleus_floor"] = df["n_nuclei"] < min_nuclei
+
+    # Detection-rate outlier rule. A control field whose puncta per nucleus on ANY
+    # channel exceeds k times the median across the control fields on that same
+    # channel is dropped from the background estimate. Per channel, because a field
+    # can be clean on one channel and hot on the other, and a background estimate
+    # that keeps a hot field understates how much of the biological signal is floor.
+    df["rule_outlier_k"] = float(outlier_k) if outlier_k else float("nan")
+    df["excluded_by_detection_outlier"] = False
+    df["outlier_channel"] = ""
+    for out_col, chan in (("rna1_spots_per_nucleus", "rna1"),
+                          ("rna2_spots_per_nucleus", "rna2"),
+                          ("partner_spots_per_nucleus", "partner")):
+        if out_col not in df.columns:
+            continue
+        v = pd.to_numeric(df[out_col], errors="coerce")
+        base = v[~df["excluded_by_nucleus_floor"]].dropna()
+        med = float(base.median()) if len(base) else float("nan")
+        cut = med * float(outlier_k) if outlier_k and np.isfinite(med) else float("nan")
+        df[f"outlier_median_{chan}"] = med
+        df[f"outlier_cutoff_{chan}"] = cut
+        if np.isfinite(cut):
+            hit = v > cut
+            df["outlier_channel"] = np.where(
+                hit & ~df["excluded_by_detection_outlier"], chan, df["outlier_channel"])
+            df["excluded_by_detection_outlier"] = df["excluded_by_detection_outlier"] | hit
+
     df["excluded_by_operator"] = df["field"].isin(exclude_fields)
     df["operator_reason"] = df["field"].map(lambda f: exclude_fields.get(f, ""))
-    df["excluded"] = df["excluded_by_nucleus_floor"] | df["excluded_by_operator"]
+    df["excluded"] = (df["excluded_by_nucleus_floor"] | df["excluded_by_detection_outlier"]
+                      | df["excluded_by_operator"])
     df["exclusion_reason"] = np.where(
         df["excluded_by_nucleus_floor"],
         f"rule: fewer than {min_nuclei} nuclei in the field",
-        np.where(df["excluded_by_operator"], df["operator_reason"], ""))
+        np.where(df["excluded_by_detection_outlier"],
+                 ("rule: puncta per nucleus on the " + df["outlier_channel"]
+                  + f" channel exceed {outlier_k:g} times the median across the "
+                    "control fields on that channel"),
+                 np.where(df["excluded_by_operator"], df["operator_reason"], "")))
     kept = df.loc[~df["excluded"], "rna1_spots_per_nucleus"]
     allf = df["rna1_spots_per_nucleus"]
     df["sensitivity_mean_kept_fields"] = float(kept.mean()) if len(kept.dropna()) else np.nan

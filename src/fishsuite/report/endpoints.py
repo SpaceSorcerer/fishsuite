@@ -146,6 +146,20 @@ ENDPOINTS: Tuple[Endpoint, ...] = (
                   "number and carries no multiplicity adjustment."),
     Endpoint("rna2_spots_per_nucleus", "n_spots_rna2", "detection",
              "puncta per nucleus", "{rna2} puncta per nucleus"),
+    Endpoint("rna2_nuclear_spots_per_nucleus", "nuclear_spot_count_rna2", "detection",
+             "nuclear puncta per nucleus", "{rna2} nuclear puncta per nucleus"),
+    Endpoint("rna2_punctum_footprint_area_um2", "rna2_punctum_footprint_area_um2",
+             "detection", "square micrometres", "{rna2} punctum footprint area",
+             source=FOOTPRINT,
+             note="Punctum size for the SECOND RNA channel, from its own "
+                  "half-maximum footprint. Absent unless the run computed the "
+                  "footprint for that channel."),
+    Endpoint("rna2_nuclear_above_floor_intensity", "nuclear_above_floor_intensity_rna2",
+             "detection", "arbitrary units",
+             "{rna2} nuclear intensity above the detection floor",
+             absolute_intensity=True,
+             note="DESCRIPTIVE ONLY: an absolute intensity is not comparable as a "
+                  "level claim across sections."),
 
     # ---------------------------------------------------------- localization
     Endpoint("rna1_nuclear_spot_fraction", "nuclear_spot_fraction", "localization",
@@ -153,6 +167,18 @@ ENDPOINTS: Tuple[Endpoint, ...] = (
              "{rna1} nuclear fraction", primary=True,
              note="Floor-robust headline: a ratio within one nucleus, so a shifted "
                   "detection floor moves numerator and denominator together."),
+    Endpoint("rna2_nuclear_spot_fraction", "nuclear_spot_fraction_rna2", "localization",
+             "fraction of that nucleus's puncta that are nuclear",
+             "{rna2} nuclear fraction", primary=True,
+             note="PRIMARY for an rna_rna run whose second channel is the mature "
+                  "species: a within-nucleus ratio, so a shifted detection floor "
+                  "moves numerator and denominator together. The anchor channel's "
+                  "nuclear fraction is the matching primary for rna1."),
+    Endpoint("rna2_spots_per_um2", "rna2_spots_per_um2", "localization",
+             "puncta per square micrometre of nucleus",
+             "{rna2} puncta per square micrometre", source=DERIVED_DENSITY,
+             note="SENSITIVITY for the {rna2} per-nucleus count, normalising for any "
+                  "difference in nuclear area between groups."),
     Endpoint("rna1_spots_per_um2", "rna1_spots_per_um2", "localization",
              "puncta per square micrometre of nucleus",
              "{rna1} puncta per square micrometre", source=DERIVED_DENSITY,
@@ -280,7 +306,16 @@ ENDPOINTS: Tuple[Endpoint, ...] = (
     Endpoint("paired_fraction_rna1_at_0p3um", "paired_fraction_rna1_at_0p3um", "partner",
              "fraction of {rna1} puncta with a partner punctum within 0.3 micrometres",
              "Fraction of {rna1} puncta paired to {protein} within 0.3 micrometres",
-             exploratory=True),
+             exploratory=True,
+             note="DEFINITION, because a similarly named endpoint elsewhere is NOT "
+                  "the same quantity. Denominator: EVERY punctum of the anchor "
+                  "channel in that nucleus, nuclear and cytoplasmic. Distance: "
+                  "three-dimensional centroid separation at or below 0.3 "
+                  "micrometres, using the run's own voxel size. Partner set: every "
+                  "partner punctum, not restricted to the nucleus. An endpoint that "
+                  "restricts either side to nuclear puncta, or uses a different "
+                  "pairing distance, will differ from this one and the two must not "
+                  "be compared without restating both definitions."),
     Endpoint("paired_fraction_partner_at_0p3um", "paired_fraction_protein_at_0p3um",
              "partner",
              "fraction of {protein} puncta with an anchor punctum within 0.3 micrometres",

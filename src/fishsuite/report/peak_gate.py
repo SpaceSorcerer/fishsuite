@@ -103,6 +103,73 @@ def gate_spots(spots: pd.DataFrame, floors: Dict[str, float]
     return spots.loc[keep.values].reset_index(drop=True), record
 
 
+def repair_pairing(gated: pd.DataFrame, pair_distance_um: float,
+                   voxel_xy_um: float, voxel_z_um: float
+                   ) -> Tuple[pd.DataFrame, Dict[str, object]]:
+    """Recompute per-spot nearest-neighbour distance and the paired flag.
+
+    A peak floor removes partner spots, so the run-time ``nn_distance_um`` and
+    ``paired_at_0p3um`` columns answer a question about a spot set that no longer
+    exists: a spot whose only partner was dropped still reads as paired. They are
+    recomputed here against the SURVIVING partner set, per image, matching the
+    engine's own rule (nearest neighbour in three dimensions with the run's voxel
+    size, paired when the distance is at or below the pairing distance).
+
+    Returns the frame with both columns rewritten and a record of what changed.
+    """
+    from scipy.spatial import cKDTree
+
+    rec: Dict[str, object] = {"pair_distance_um": float(pair_distance_um),
+                              "voxel_xy_um": float(voxel_xy_um),
+                              "voxel_z_um": float(voxel_z_um),
+                              "recomputed": False}
+    need = {"image", "channel", "x_px", "y_px"}
+    if gated is None or not len(gated) or not need <= set(gated.columns):
+        rec["note"] = "no coordinate columns, so pairing was left as the run wrote it"
+        return gated, rec
+    if not (pair_distance_um and pair_distance_um > 0):
+        rec["note"] = "no pairing distance recorded by the run"
+        return gated, rec
+
+    out = gated.reset_index(drop=True)
+    z = (pd.to_numeric(out["z_slice"], errors="coerce").fillna(0.0)
+         if "z_slice" in out.columns else pd.Series(0.0, index=out.index))
+    coords = np.column_stack([
+        pd.to_numeric(out["x_px"], errors="coerce").to_numpy() * float(voxel_xy_um),
+        pd.to_numeric(out["y_px"], errors="coerce").to_numpy() * float(voxel_xy_um),
+        z.to_numpy() * float(voxel_z_um)])
+    nn = np.full(len(out), np.inf, dtype=float)
+    channels = [c for c in out["channel"].astype(str).unique()]
+    pos = np.arange(len(out))
+    ch_all = out["channel"].astype(str).to_numpy()
+    for _, idx in out.groupby(out["image"].astype(str), sort=False).indices.items():
+        idx = np.asarray(idx)
+        for ch in channels:
+            same = ch_all[idx] == ch
+            src, partner = idx[same], idx[~same]
+            if not len(src) or not len(partner):
+                continue                       # no partner: stays inf, so unpaired
+            tree = cKDTree(coords[partner])
+            d, _ = tree.query(coords[src], k=1)
+            nn[src] = np.asarray(d, dtype=float)
+    _ = pos
+
+    before = None
+    pair_col = next((c for c in out.columns if c.startswith("paired_at_")), None)
+    if pair_col is not None:
+        before = float(pd.to_numeric(out[pair_col], errors="coerce").mean())
+    out["nn_distance_um"] = nn
+    flag = (nn <= float(pair_distance_um)).astype(int)
+    if pair_col is None:
+        pair_col = f"paired_at_{str(pair_distance_um).replace('.', 'p')}um"
+    out[pair_col] = flag
+    rec.update(recomputed=True, pair_column=pair_col,
+               paired_fraction_before=before,
+               paired_fraction_after=float(flag.mean()),
+               n_spots=int(len(out)))
+    return out, rec
+
+
 def _per_nucleus_counts(sub: pd.DataFrame, area_um2: pd.Series) -> pd.DataFrame:
     """Counts per (image, nucleus) from gated spots of ONE channel.
 

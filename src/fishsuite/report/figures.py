@@ -51,28 +51,34 @@ OKABE_ITO = {
 PALETTE_CYCLE = [OKABE_ITO["grey"], OKABE_ITO["purple"], OKABE_ITO["sky"],
                  OKABE_ITO["orange"], OKABE_ITO["blue"], OKABE_ITO["green"],
                  OKABE_ITO["vermillion"]]
-# One colour per condition everywhere. Two locks are in play and they are not the
-# same list, so both are honoured rather than averaged:
-#   * the IMAGING WT-versus-QKI-KO pair is Brian's per-paper BIN1 palette,
-#     WT #595959 and QKI-KO #D67AE5 (rnaseq-figure-style, "Per-paper palettes").
-#   * the hESC knockdown conditions take the shared condition-colour map,
-#     MIAT-KD #E69F00 and MIAT-OE #56B4E9.
-# Override by passing a map to group_colors(); nothing here is hardcoded downstream.
-LOCKED_GROUP_COLORS = {
+# Locked condition colours, in two scopes that must not be confused.
+#
+# TWO_GROUP_IMAGING applies ONLY to a two-group d8 cardiomyocyte WT-versus-KO set:
+# Brian's per-paper BIN1 pair. Applying it to a multi-group set silently recolours
+# WT and QKI-KO away from the key that set's own figures already use, which is what
+# happened to the five-line exon/intron report on 2026-09-04.
+TWO_GROUP_IMAGING = {
     "wt": "#595959",
     "control": "#595959",
-    "nt": "#595959",
-    "nt aso": "#595959",
     "qki-ko": "#D67AE5",
     "qki_ko": "#D67AE5",
     "qkiko": "#D67AE5",
+}
+# ANY_SIZE applies at any number of groups: the shared condition-colour map for the
+# hESC knockdown conditions, and the fixed grey for the detection-floor control.
+ANY_SIZE = {
     "miat-kd": OKABE_ITO["orange"],
     "miat_kd": OKABE_ITO["orange"],
     "miat-oe": OKABE_ITO["sky"],
     "miat_oe": OKABE_ITO["sky"],
+    "nt": "#595959",
+    "nt aso": "#595959",
     "secondary-only": "#999999",
     "sec-only": "#999999",
 }
+# Kept for callers that want the union; group_colors() does NOT use it directly.
+LOCKED_GROUP_COLORS = {**TWO_GROUP_IMAGING, **ANY_SIZE}
+
 DPI = 600
 CROP_PX = 256
 
@@ -81,25 +87,33 @@ def group_colors(group_order: Sequence[str],
                  overrides: Optional[Dict[str, str]] = None) -> Dict[str, str]:
     """One colour per condition group.
 
-    A locked condition colour wins; anything else takes the next unused entry of
-    the Okabe-Ito cycle. ``overrides`` maps a group name to a hex colour and beats
-    both, so a paper with its own palette does not need a code change.
+    Precedence, highest first: an explicit ``overrides`` entry (the ``group_colors``
+    block of a run's ``report_groups.yaml``), then a locked condition colour, then
+    the next unused Okabe-Ito entry.
+
+    The two-group imaging pair (WT #595959, QKI-KO #D67AE5) is applied ONLY when
+    the design HAS two biological groups. A multi-group set takes the key recorded
+    beside its run, or the cycle; recolouring WT and QKI-KO inside a five-line set
+    would contradict that set's own published key.
     """
-    out: Dict[str, str] = {}
-    locked = dict(LOCKED_GROUP_COLORS)
+    order = [g for g in group_order]
+    locked = dict(ANY_SIZE)
+    if len([g for g in order if str(g) != "Secondary-only"]) == 2:
+        locked.update(TWO_GROUP_IMAGING)
     for k, v in (overrides or {}).items():
-        locked[str(k).strip().lower()] = v
+        locked[str(k).strip().lower()] = str(v)
+    out: Dict[str, str] = {}
     spare = [c for c in PALETTE_CYCLE]
-    for g in group_order:
-        locked_hex = locked.get(str(g).strip().lower())
-        if locked_hex:
-            out[g] = locked_hex
-            if locked_hex in spare:
-                spare.remove(locked_hex)
-    for g in group_order:
+    for g in order:
+        hex_ = locked.get(str(g).strip().lower())
+        if hex_:
+            out[g] = hex_
+            if hex_ in spare:
+                spare.remove(hex_)
+    for g in order:
         if g not in out:
             out[g] = spare.pop(0) if spare else OKABE_ITO["blue"]
-    out.setdefault("Secondary-only", "#999999")
+    out.setdefault("Secondary-only", locked.get("secondary-only", "#999999"))
     return out
 
 
@@ -205,7 +219,8 @@ class FigureContext:
 
     def __init__(self, run_dir: Path, cfg: dict, thresholds: Optional[pd.DataFrame],
                  group_order: Sequence[str], reference: str, alpha: float,
-                 excluded_fields: Dict[str, str], labels: Dict[str, str]):
+                 excluded_fields: Dict[str, str], labels: Dict[str, str],
+                 color_overrides: Optional[Dict[str, str]] = None):
         self.run_dir = Path(run_dir)
         self.run_name = self.run_dir.name
         self.run_path = str(self.run_dir)
@@ -215,7 +230,7 @@ class FigureContext:
         self.alpha = alpha
         self.excluded_fields = dict(excluded_fields)
         self.channel_labels = dict(labels)
-        self.colors = group_colors(self.group_order)
+        self.colors = group_colors(self.group_order, color_overrides)
         self.thresholds = self._threshold_text(thresholds)
         self.segmentation = self._segmentation_text(cfg, self.run_dir)
         self.banner = (f"Run {self.run_name} | {self.thresholds} | {self.segmentation} | "
@@ -540,10 +555,46 @@ LUT_HEX = {"yellow": "#FFFF00", "magenta": "#FF00FF", "green": "#00FF00",
            "grey": "#BBBBBB", "gray": "#BBBBBB", "white": "#FFFFFF"}
 
 
+# Channel slot -> the run_config key pair for that slot, per analysis mode. The
+# engine writes rna2_lut for an rna_rna run and antibody_lut for rna_protein; both
+# keys are always PRESENT, so reading a fixed slot list hands an rna_rna panel the
+# antibody LUT. That produced a green exon channel on a magenta run (2026-09-04).
+MODE_SLOTS = {
+    "rna_rna": (("rna_label", "rna_lut"), ("rna2_label", "rna2_lut"),
+                ("dapi_label", "dapi_lut")),
+    "rna_protein": (("rna_label", "rna_lut"), ("antibody_label", "antibody_lut"),
+                    ("dapi_label", "dapi_lut")),
+    "rna_only": (("rna_label", "rna_lut"), ("dapi_label", "dapi_lut")),
+    "protein_only": (("antibody_label", "antibody_lut"), ("dapi_label", "dapi_lut")),
+    "ab_ab": (("antibody_label", "antibody_lut"), ("ab2_label", "ab2_lut"),
+              ("dapi_label", "dapi_lut")),
+}
+RENDER_SLOTS = {
+    "rna_rna": ("rna", "rna2", "dapi"),
+    "rna_protein": ("rna", "ab", "dapi"),
+    "rna_only": ("rna", "dapi"),
+}
+
+
 def read_luts(run_dir: Path, pub_dir: Optional[Path]):
-    """Channel names and LUT colours, read from a file, never assumed."""
+    """Channel names and LUT colours, read from a file and keyed on the run's mode.
+
+    Returns ``(entries, source)``. A run whose mode cannot be read yields an empty
+    list and a source string saying so, rather than a guessed default: a wrong LUT
+    key on a micrograph mislabels which channel a reader is looking at.
+    """
     def hexof(name):
         return LUT_HEX.get(str(name).lower(), "#BBBBBB")
+
+    cfg_path = Path(run_dir) / "run_config.json"
+    mode = ""
+    ch: Dict[str, object] = {}
+    try:
+        cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+        ch = (cfg.get("config_resolved") or {}).get("channels") or {}
+        mode = str(ch.get("analysis_mode") or cfg.get("ANALYSIS_MODE") or "")
+    except Exception:                                          # noqa: BLE001
+        pass
 
     if pub_dir is not None:
         rp = Path(pub_dir) / "render_params.json"
@@ -551,27 +602,25 @@ def read_luts(run_dir: Path, pub_dir: Optional[Path]):
             try:
                 r = json.loads(rp.read_text(encoding="utf-8"))
                 lbl, lut = r.get("labels_used") or {}, r.get("luts_used") or {}
-                if lbl and lut:
-                    mode = str(r.get("analysis_mode", ""))
-                    slots = {"rna_protein": ("rna", "ab", "dapi"),
-                             "rna_rna": ("rna", "rna2", "dapi"),
-                             "rna_only": ("rna", "dapi")}.get(
-                                 mode, ("rna", "rna2", "ab", "dapi"))
+                rmode = str(r.get("analysis_mode") or mode)
+                slots = RENDER_SLOTS.get(rmode)
+                if lbl and lut and slots:
                     ent = [(str(lbl[s]), hexof(lut[s])) for s in slots
                            if lut.get(s) and lbl.get(s)]
                     if ent:
                         return ent, str(rp)
             except Exception:                                  # noqa: BLE001
                 pass
-    cfg_path = Path(run_dir) / "run_config.json"
-    try:
-        ch = json.loads(cfg_path.read_text(encoding="utf-8"))["config_resolved"]["channels"]
-        ent = [(str(ch.get("rna_label", "RNA1")), hexof(ch.get("rna_lut", ""))),
-               (str(ch.get("antibody_label", "Protein")), hexof(ch.get("antibody_lut", ""))),
-               (str(ch.get("dapi_label", "DAPI")), hexof(ch.get("dapi_lut", "")))]
-        return ent, str(cfg_path)
-    except Exception:                                          # noqa: BLE001
-        return [], "channel labels could not be read from this run"
+
+    slots = MODE_SLOTS.get(mode)
+    if not slots:
+        return [], (f"analysis mode {mode!r} in {cfg_path} has no channel slot map, "
+                    "so no LUT key is drawn rather than guessing one")
+    ent = [(str(ch.get(lk, lk)), hexof(ch.get(ck, ""))) for lk, ck in slots
+           if ch.get(ck)]
+    if not ent:
+        return [], f"no LUT was recorded for mode {mode!r} in {cfg_path}"
+    return ent, str(cfg_path)
 
 
 def merge_png_for(pub_dir: Path, image: str):

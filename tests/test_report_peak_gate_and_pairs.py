@@ -175,3 +175,127 @@ def test_the_well_level_and_field_level_tukey_are_reported_separately(tmp_path):
     assert not np.allclose(c["p_tukey_fov"], c["well_p_tukey_fov"])
     # Same estimand, so the differences agree even though the p-values do not.
     assert np.allclose(c["tukey_difference"], c["well_tukey_difference"], rtol=1e-9)
+
+
+# ------------------------------------------- palette scope, LUT slots, pairing repair
+
+
+def test_the_two_group_imaging_pair_is_not_applied_to_a_multi_group_set():
+    """The WT/QKI-KO imaging pair is a TWO-GROUP lock. Applying it inside a
+    five-line set recoloured WT and QKI-KO away from that set's own published key
+    on 2026-09-04."""
+    from fishsuite.report.figures import group_colors
+
+    two = group_colors(["WT", "QKI-KO"])
+    assert two["WT"] == "#595959" and two["QKI-KO"] == "#D67AE5"
+    five = group_colors(["WT", "QKI-KO", "Clone16", "Clone17", "Mix"])
+    assert five["WT"] != "#595959" and five["QKI-KO"] != "#D67AE5"
+    assert len(set(five.values())) == len(five), "two groups share a colour"
+
+
+def test_an_explicit_colour_key_beats_every_lock():
+    from fishsuite.report.figures import group_colors
+
+    key = {"WT": "#333333", "QKI-KO": "#CC79A7", "Clone16": "#0072B2",
+           "Clone17": "#56B4E9", "Mix": "#E69F00"}
+    got = group_colors(list(key), key)
+    for g, hx in key.items():
+        assert got[g] == hx
+    # and it also wins at two groups, where the imaging lock would otherwise apply
+    assert group_colors(["WT", "QKI-KO"], {"WT": "#000000"})["WT"] == "#000000"
+
+
+def test_lut_slots_follow_the_runs_analysis_mode(tmp_path):
+    """An rna_rna run must take rna2_lut, not antibody_lut. Both keys are always
+    present in run_config, so a fixed slot list silently hands an rna_rna panel
+    the antibody colour: that produced a green exon channel on a magenta run."""
+    from fishsuite.report.figures import read_luts
+
+    ch = {"rna_label": "introns", "rna_lut": "yellow",
+          "rna2_label": "exons", "rna2_lut": "magenta",
+          "antibody_label": "Protein", "antibody_lut": "green",
+          "dapi_label": "DAPI", "dapi_lut": "blue"}
+    for mode, want in (("rna_rna", ["introns", "exons", "DAPI"]),
+                       ("rna_protein", ["introns", "Protein", "DAPI"])):
+        run = tmp_path / mode
+        run.mkdir()
+        (run / "run_config.json").write_text(
+            json.dumps({"config_resolved": {"channels": dict(ch, analysis_mode=mode)}}),
+            encoding="utf-8")
+        ent, src = read_luts(run, None)
+        assert [n for n, _ in ent] == want, (mode, ent)
+        hexes = [h.lower() for _, h in ent]
+        if mode == "rna_rna":
+            # The antibody slot is green in this config; an rna_rna panel must
+            # never reach it, and green is banned by the style in any case.
+            assert "#00ff00" not in hexes, "the antibody LUT leaked into an rna_rna key"
+            assert "#ff00ff" in hexes, "the rna2 LUT is missing from an rna_rna key"
+
+
+def test_an_unknown_analysis_mode_draws_no_lut_key_rather_than_guessing(tmp_path):
+    from fishsuite.report.figures import read_luts
+
+    run = tmp_path / "weird"
+    run.mkdir()
+    (run / "run_config.json").write_text(
+        json.dumps({"config_resolved": {"channels": {"analysis_mode": "not_a_mode"}}}),
+        encoding="utf-8")
+    ent, src = read_luts(run, None)
+    assert ent == []
+    assert "no channel slot map" in src
+
+
+def test_pairing_is_recomputed_against_the_surviving_partner_set():
+    """After a floor, a punctum whose only partner was dropped must read UNPAIRED.
+    Reading the run-time flag would keep it paired to a spot that no longer exists."""
+    spots = pd.DataFrame({
+        "image": ["a.vsi"] * 3,
+        "channel": ["rna1", "rna2", "rna2"],
+        "nucleus_id": [1, 1, 1],
+        "in_nucleus": [True, True, True],
+        "in_cytoplasm": [False, False, False],
+        "x_px": [0.0, 1.0, 100.0], "y_px": [0.0, 0.0, 0.0], "z_slice": [0, 0, 0],
+        "peak_intensity": [5000.0, 100.0, 5000.0],
+        "paired_at_0p3um": [1, 1, 0],          # run-time flag: the rna1 spot is paired
+        "nn_distance_um": [0.1, 0.1, 10.0],
+    })
+    kept, _ = pg.gate_spots(spots, {"rna2": 1000.0})   # drops the near rna2 partner
+    repaired, rec = pg.repair_pairing(kept, 0.3, voxel_xy_um=0.13, voxel_z_um=0.33)
+    assert rec["recomputed"]
+    r1 = repaired[repaired.channel == "rna1"].iloc[0]
+    assert r1["paired_at_0p3um"] == 0, "stale pairing survived the floor"
+    assert r1["nn_distance_um"] > 0.3
+
+
+def test_pairing_repair_is_a_no_op_when_no_partner_was_dropped():
+    spots = pd.DataFrame({
+        "image": ["a.vsi"] * 2, "channel": ["rna1", "rna2"], "nucleus_id": [1, 1],
+        "in_nucleus": [True, True], "in_cytoplasm": [False, False],
+        "x_px": [0.0, 1.0], "y_px": [0.0, 0.0], "z_slice": [0, 0],
+        "peak_intensity": [5000.0, 5000.0],
+        "paired_at_0p3um": [1, 1], "nn_distance_um": [0.13, 0.13],
+    })
+    kept, _ = pg.gate_spots(spots, {"rna2": 1000.0})
+    repaired, _ = pg.repair_pairing(kept, 0.3, 0.13, 0.33)
+    assert list(repaired["paired_at_0p3um"]) == [1, 1]
+
+
+def test_the_secondary_only_outlier_rule_is_per_channel(tmp_path):
+    """A control field can be clean on one channel and hot on the other; the rule
+    must catch it on either."""
+    from fishsuite.report import aggregate as agg2
+
+    nuc = pd.DataFrame({
+        "image": sum([[f"s{i}.vsi"] * 20 for i in range(4)], []),
+        "nucleus_id": list(range(20)) * 4,
+        "secondary_only": [True] * 80,
+        "n_spots_rna1": [1.0] * 60 + [1.0] * 20,
+        "n_spots_rna2": [1.0] * 60 + [9.0] * 20,      # s3 is hot on rna2 only
+    })
+    lab = pd.DataFrame({"image": [f"s{i}.vsi" for i in range(4)],
+                        "secondary_only": [True] * 4})
+    per_image = pd.DataFrame({"image": [f"s{i}.vsi" for i in range(4)]})
+    out = agg2.secondary_only_table(nuc, per_image, lab, {}, min_nuclei=5, outlier_k=3.0)
+    hot = out[out["field"] == "s3.vsi"].iloc[0]
+    assert bool(hot["excluded"]) and hot["outlier_channel"] == "rna2"
+    assert int(out["excluded"].sum()) == 1

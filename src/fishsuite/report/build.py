@@ -88,6 +88,8 @@ def load_groups_file(path: Path) -> dict:
 
         groups:            {GROUP: [well, well, ...]}
         group_order:       [GROUP, ...]          # first entry is the reference
+        group_colors:      {GROUP: "#RRGGBB", ...}  # this set's own colour key
+        sec_outlier_k:     3.0                   # control-field outlier multiple
         reference:         GROUP
         well_from_image:   regex with one capture group
         exclude_fields:    {image name: reason}
@@ -118,6 +120,9 @@ def load_groups_file(path: Path) -> dict:
             "peak_floors": raw.get("peak_floors") or {},
             "caveat_file": raw.get("caveat_file") or "",
             "nucleus_filter": str(raw.get("nucleus_filter") or "all"),
+            "group_colors": {str(k): str(v) for k, v in
+                             (raw.get("group_colors") or {}).items()},
+            "sec_outlier_k": raw.get("sec_outlier_k"),
             "note": str(raw.get("note") or ""), "path": str(path)}
 
 # ------------------------------------------------------------------ sheets
@@ -165,10 +170,24 @@ def readme_sheet(run_dir: Path, group_order: Sequence[str], reference: str,
         "endpoints absent from the run are excluded from the family and say so in the "
         "holm_exclusion_reason column.")
     add("Statistics", "Minimum detectable effect", mde_note)
+    add("Statistics", "Tukey, which column to read",
+        "TWO Tukey fits are reported and they are not interchangeable. The PRIMARY "
+        "one is on WELL means, columns well_p_tukey_fov and well_tukey_*, fitted "
+        "over every group in the design; it is on the same replicate unit as the "
+        "Welch gate. The FOV-level fit, columns p_tukey_fov and tukey_*, is a "
+        "SENSITIVITY view only: it treats a field of view as an independent "
+        "replicate, so its degrees of freedom are inflated and its p is "
+        "correspondingly smaller than the well-level one.")
     add("Statistics", "Sensitivity, never the gate",
         "Exact permutation of well labels, whose two-sided p has an arithmetic floor "
-        "reported alongside it, and Tukey on field means, which treats a technical "
-        "replicate as independent and therefore overstates confidence.")
+        "reported alongside it, and the FOV-level Tukey described above.")
+    prim = [e.name for e in endpoints if e.primary]
+    add("Statistics", "Primary endpoints",
+        "Marked primary in the contrast tables: " + ", ".join(prim) +
+        ". For a two-RNA run the nuclear FRACTION of each channel is the primary "
+        "readout, because it is a within-nucleus ratio and so is robust to a shifted "
+        "detection floor; the per-nucleus counts are floor-sensitive support."
+        if prim else "no endpoint is marked primary in this run.")
     add("Sheets", "Spots per nucleus by group", _wb.SHEET_DESCRIPTION["Spots per nucleus by group"])
     add("Sheets", "Nuclear fraction by group", _wb.SHEET_DESCRIPTION["Nuclear fraction by group"])
     add("Sheets", "Partner at puncta by group", _wb.SHEET_DESCRIPTION["Partner at puncta by group"])
@@ -206,6 +225,17 @@ def readme_sheet(run_dir: Path, group_order: Sequence[str], reference: str,
             else:
                 add("Data handling", f"Peak floor, {ch}",
                     f"NOT applied: {rec.get('reason', 'no reason recorded')}.")
+        pr = gate_record.get("pairing") or {}
+        if pr.get("recomputed"):
+            add("Data handling", "Pairing recomputed after the floor",
+                "A peak floor removes partner puncta, so the run-time pairing "
+                "columns would report a punctum as paired to a partner that no "
+                "longer exists. Nearest-neighbour distance and the paired flag were "
+                "recomputed against the surviving partner set at a pairing distance "
+                f"of {pr['pair_distance_um']:g} micrometres, in three dimensions "
+                f"using the run's own voxel size. Paired fraction over all puncta "
+                f"went from {pr.get('paired_fraction_before')} to "
+                f"{pr.get('paired_fraction_after')}.")
         if gate_record.get("stale_columns"):
             add("Data handling", "Made stale by the peak floor",
                 "These columns cannot be re-derived from spot_metrics.csv after a "
@@ -228,7 +258,8 @@ def provenance_sheet(data: dict, run_dir: Path, out_dir: Path,
                      group_order: Sequence[str], reference: str,
                      exclude_fields: Dict[str, str], absent: Sequence[str],
                      engine_repo: Optional[Path], preset: Optional[Path],
-                     alpha: float) -> pd.DataFrame:
+                     alpha: float, group_colors: Optional[Dict[str, str]] = None,
+                     sec_outlier_k: float = 0.0) -> pd.DataFrame:
     rows: List[Tuple[str, str]] = []
 
     def add(k, v):
@@ -244,6 +275,11 @@ def provenance_sheet(data: dict, run_dir: Path, out_dir: Path,
     add("well to group", "; ".join(f"{w} -> {g}" for w, g in
                                    sorted(data["well_to_group"].items())) or "none supplied")
     add("nucleus filter", data.get("nucleus_filter", "all"))
+    add("condition colour key", "; ".join(f"{k} {v}" for k, v in
+                                          sorted((group_colors or {}).items()))
+        or "no explicit key; locked condition colours then the Okabe-Ito cycle")
+    add("secondary-only detection-outlier multiple",
+        sec_outlier_k or "not applied")
     add("nuclei segmented in the run", data.get("n_nuclei_all", ""))
     add("nuclei after the nucleus filter", data.get("n_nuclei_after_nucleus_filter", ""))
     add("nuclei before field exclusion", data["n_nuclei_before_field_exclusion"])
@@ -389,6 +425,8 @@ def build_report(run_dir: Path, out_dir: Optional[Path] = None,
                  caveat: str = "",
                  all_pairs: bool = False,
                  nucleus_filter: str = "all",
+                 group_colors: Optional[Dict[str, str]] = None,
+                 sec_outlier_k: float = 0.0,
                  qc_min_nuclei: int = 5, sec_min_nuclei: int = 10,
                  alpha: float = ALPHA, engine_repo: Optional[Path] = None,
                  preset: Optional[Path] = None, style: str = "brian",
@@ -427,6 +465,18 @@ def build_report(run_dir: Path, out_dir: Optional[Path] = None,
         gated, gate_record = _gate.gate_spots(spots, peak_floors)
         vox = pd.to_numeric(data["nuclei"].get("voxel_xy_um"), errors="coerce")
         vox = float(vox.dropna().median()) if vox is not None and vox.notna().any() else None
+        # A floor removes partner spots, so the run-time pairing columns are stale:
+        # a spot whose only partner was dropped still reads as paired. Recompute
+        # them against the surviving partner set before anything aggregates them.
+        vz = pd.to_numeric(data["nuclei"].get("voxel_z_um"), errors="coerce")
+        vz = float(vz.dropna().median()) if vz is not None and vz.notna().any() else 0.0
+        try:
+            pair_um = float((data["cfg"].get("config_resolved") or {})
+                            .get("spot_coloc", {}).get("pair_distance_um") or 0.0)
+        except Exception:                                      # noqa: BLE001
+            pair_um = 0.0
+        gated, pair_record = _gate.repair_pairing(gated, pair_um, vox or 0.0, vz)
+        gate_record["pairing"] = pair_record
         data["nuclei"], stale_after_gate = _gate.apply_to_nuclei(
             data["nuclei"], gated, vox)
         # The spot-derived per-nucleus columns must come from the GATED spots too.
@@ -447,7 +497,7 @@ def build_report(run_dir: Path, out_dir: Optional[Path] = None,
                                      reference, labels, alpha,
                                      all_pairs=all_pairs or len(group_order_resolved) > 2)
     sec = _agg.secondary_only_table(data["nuclei"], data["per_image"], data["labels"],
-                                    exclude_fields, sec_min_nuclei)
+                                    exclude_fields, sec_min_nuclei, sec_outlier_k)
 
     nuc_cols = (["image", "condition", "group", "well_id", "field", "secondary_only",
                  "nucleus_id", "nucleus_area_px"]
@@ -488,7 +538,8 @@ def build_report(run_dir: Path, out_dir: Optional[Path] = None,
         "Secondary-only": sec,
         "Run provenance": provenance_sheet(data, run_dir, out_dir, group_order_resolved,
                                            reference, exclude_fields, absent,
-                                           engine_repo, preset, alpha),
+                                           engine_repo, preset, alpha, group_colors,
+                                           sec_outlier_k),
     }
     strike = {"Secondary-only": list(sec.index[sec["excluded"]])
               if "excluded" in sec.columns else []}
@@ -509,7 +560,8 @@ def build_report(run_dir: Path, out_dir: Optional[Path] = None,
     if make_figures:
         figs = render_figures(out_dir / "figures", run_dir, data, endpoints, absent,
                               well, field, bio_nucleus, contrasts, group_order_resolved,
-                              reference, exclude_fields, labels, alpha)
+                              reference, exclude_fields, labels, alpha,
+                              color_overrides=group_colors)
 
     panel = None
     if coloc_panel:
@@ -535,12 +587,28 @@ def render_figures(fig_dir: Path, run_dir: Path, data: dict,
                    well: pd.DataFrame, field: pd.DataFrame, per_nucleus: pd.DataFrame,
                    contrasts: pd.DataFrame, group_order: Sequence[str],
                    reference: str, exclude_fields: Dict[str, str],
-                   labels: Dict[str, str], alpha: float) -> List[dict]:
+                   labels: Dict[str, str], alpha: float,
+                   color_overrides: Optional[Dict[str, str]] = None) -> List[dict]:
     _fig.set_style()
     fig_dir = Path(fig_dir)
     fig_dir.mkdir(parents=True, exist_ok=True)
+    # Clear the previous build's figures before writing this one. Endpoint
+    # numbering shifts whenever the registry changes, so rebuilding into an
+    # existing folder otherwise leaves orphaned panels from the earlier build
+    # sitting beside the new ones, indistinguishable by name and carrying that
+    # build's colours. Only files this layer writes are removed.
+    stale = 0
+    for pat in ("fig*.png", "fig*.svg", "FIG_MAIN.png", "FIG_MAIN.svg",
+                "FIGURE_INDEX.md"):
+        for old_file in fig_dir.glob(pat):
+            if old_file.is_file():
+                old_file.unlink()
+                stale += 1
+    if stale:
+        print(f"[report] cleared {stale} file(s) from the previous build in {fig_dir}")
     ctx = _fig.FigureContext(run_dir, data["cfg"], data.get("thresholds"), group_order,
-                             reference, alpha, exclude_fields, labels)
+                             reference, alpha, exclude_fields, labels,
+                             color_overrides=color_overrides)
     manifest: List[dict] = []
     absent_set = set(absent)
     drawn = [ep for ep in endpoints
@@ -584,7 +652,13 @@ def render_figures(fig_dir: Path, run_dir: Path, data: dict,
                             contrasts, fig_dir, manifest, stem="FIG_MAIN")
 
     index = ["# Figure index", "",
-             f"Produced by `fishsuite report` from run `{run_dir}`.", ""]
+             f"Produced by `fishsuite report` from run `{run_dir}`.", "",
+             f"Condition colours: "
+             + "; ".join(f"{g} `{ctx.colors.get(g, '')}`" for g in group_order) + ".",
+             f"Channel names and colours read from: {lut_source}.",
+             "",
+             "This folder is cleared and rewritten on every build, so every file in "
+             "it comes from the run and the settings named above.", ""]
     index += [f"- `{m['png']}` / `{m['svg']}` — {m['description']} Source: {m['source']}"
               for m in manifest]
     (fig_dir / "FIGURE_INDEX.md").write_text("\n".join(index) + "\n", encoding="utf-8")
