@@ -95,7 +95,13 @@ def sizefit_run(
     per_image = pd.read_csv(run_dir / "per_image_summary.csv")
     spots = pd.read_csv(run_dir / "spot_metrics.csv")
 
-    win = int(window_px if window_px else getattr(cfg.foci, "size_fit_window_px", 7))
+    # A run finished BEFORE this feature has no ``size_fit_window_px`` in its
+    # stored config, so fall back to the field's CURRENT schema default rather
+    # than to a literal duplicated here — a stale literal silently backfilled
+    # old runs on a different window from the one the engine now uses.
+    _default_win = type(cfg.foci).model_fields["size_fit_window_px"].default
+    win = int(window_px if window_px
+              else getattr(cfg.foci, "size_fit_window_px", None) or _default_win)
     src = Path(input_dir or rc.get("input_dir"))
     if not src.is_dir():
         raise FileNotFoundError(

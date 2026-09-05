@@ -189,6 +189,29 @@ def test_center_is_clamped_inside_the_window():
     assert np.isfinite(res.loc[0, "size_fit_sigma_px"])
 
 
+def test_schema_default_window_matches_the_fit_default():
+    """A drift here silently backfills old runs on a different window."""
+    import inspect
+
+    from fishsuite.config.schema import FociCfg
+
+    schema_default = FociCfg.model_fields["size_fit_window_px"].default
+    fn_default = inspect.signature(fit_spot_sizes).parameters["window_px"].default
+    assert schema_default == fn_default, (schema_default, fn_default)
+    assert schema_default % 2 == 1
+
+
+def test_backfill_uses_the_schema_default_for_a_run_without_the_field():
+    """A run finished before this feature must still be fitted on the current default."""
+    import inspect
+
+    from fishsuite.core import sizefit_backfill
+
+    src = inspect.getsource(sizefit_backfill.sizefit_run)
+    assert "model_fields[\"size_fit_window_px\"].default" in src, (
+        "backfill must read the schema default, not a duplicated literal")
+
+
 def test_moment_estimator_saturates_while_the_fit_does_not():
     """Documents the defect this module exists to fix (rna_rna.py:224-282)."""
     from fishsuite.core.modes.rna_rna import _measure_spot_diameter_um
