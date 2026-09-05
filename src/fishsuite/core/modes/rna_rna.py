@@ -1866,7 +1866,19 @@ def run_one(
     # the SAME detection plane and emits its own ``size_fit_*`` columns; the
     # legacy columns are left exactly as they were.
     compute_size_fit = bool(getattr(cfg.foci, "compute_size_fit", True))
-    _size_fit_window = int(getattr(cfg.foci, "size_fit_window_px", 7) or 7)
+    # Fall back to the SCHEMA default, never a literal. The two had drifted -
+    # this line said 7 while FociCfg.size_fit_window_px and
+    # spot_size.fit_spot_sizes both say 9 - and stayed inert only because the
+    # schema always supplies a value. Imported locally to keep config out of the
+    # module-import graph.
+    from ...config.schema import FociCfg as _FociCfg
+    _size_fit_window_default = int(
+        _FociCfg.model_fields["size_fit_window_px"].default
+    )
+    _size_fit_window = int(
+        getattr(cfg.foci, "size_fit_window_px", _size_fit_window_default)
+        or _size_fit_window_default
+    )
     from ..spot_size import SIZE_FIT_COLUMNS as _size_fit_cols
     from ..spot_size import size_rollup as _size_rollup
     if compute_size_fit:
