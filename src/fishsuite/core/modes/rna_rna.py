@@ -3997,21 +3997,36 @@ def run_one(
                             if isinstance(v, (int, float)) and v == v]
         nuc_frac_2_vals = [v for v in nuclei_df.get("nuclear_spot_fraction_rna2", pd.Series(dtype=float)).tolist()
                             if isinstance(v, (int, float)) and v == v]
-        # Per-image-level fractions: total nuclear spots / total spots
+        # Per-image-level counts and fractions.
+        #
+        # 2026-09-05 FIX: these sum over ``nuclei_df_all``, NOT ``nuclei_df``.
+        # Under fixed-N sampling with ``apply_to_rollups``, ``nuclei_df`` was
+        # rebound above to the SAMPLED subset, while ``total_spots1/2`` are
+        # whole-image in-cell counts taken from the spot table. Summing the
+        # sampled nuclei and dividing by the whole-image total mixed two
+        # denominators: on one MIAT x QKI image ``nuclear_spots_rna1`` reported
+        # 263 (10 sampled nuclei) against 890 in-nucleus spots over 36 nuclei,
+        # so ``frac_nuclear_rna1`` was low by roughly the sampling ratio and
+        # ``cytoplasmic_spots_rna1`` was short by the same construction.
+        #
+        # These columns sit beside ``total_spots_rna1`` and are documented as
+        # image-level, so the numerator is the image, not the sample. The
+        # sample-restricted rollups are the ``mean_*`` / ``median_*`` columns,
+        # which legitimately keep reading ``nuclei_df``.
+        def _sum_col(df, col):
+            return int(pd.to_numeric(
+                df.get(col, pd.Series(dtype=int)), errors="coerce").fillna(0).sum())
+
         if total_spots1 > 0:
-            nuclear_spots_1 = int(
-                pd.to_numeric(nuclei_df.get("nuclear_spot_count", pd.Series(dtype=int)), errors="coerce").fillna(0).sum())
-            cyto_spots_1 = int(
-                pd.to_numeric(nuclei_df.get("cyto_spot_count", pd.Series(dtype=int)), errors="coerce").fillna(0).sum())
+            nuclear_spots_1 = _sum_col(nuclei_df_all, "nuclear_spot_count")
+            cyto_spots_1 = _sum_col(nuclei_df_all, "cyto_spot_count")
             frac_nuclear_image_1 = nuclear_spots_1 / float(total_spots1)
         else:
             nuclear_spots_1 = cyto_spots_1 = 0
             frac_nuclear_image_1 = float("nan")
         if total_spots2 > 0:
-            nuclear_spots_2 = int(
-                pd.to_numeric(nuclei_df.get("nuclear_spot_count_rna2", pd.Series(dtype=int)), errors="coerce").fillna(0).sum())
-            cyto_spots_2 = int(
-                pd.to_numeric(nuclei_df.get("cyto_spot_count_rna2", pd.Series(dtype=int)), errors="coerce").fillna(0).sum())
+            nuclear_spots_2 = _sum_col(nuclei_df_all, "nuclear_spot_count_rna2")
+            cyto_spots_2 = _sum_col(nuclei_df_all, "cyto_spot_count_rna2")
             frac_nuclear_image_2 = nuclear_spots_2 / float(total_spots2)
         else:
             nuclear_spots_2 = cyto_spots_2 = 0
