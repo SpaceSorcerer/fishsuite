@@ -888,6 +888,22 @@ class FociCfg(BaseModel):
     # implemented; it is a named Literal so a future statistic is an additive
     # change and every run records which one it used.
     rna_pedestal_stat: Literal["nuclear_median"] = "nuclear_median"
+    # 2026-09-05 Brian: UPPER BOUND on the per-image pedestal factor. None = no
+    # clamp (the 2026-09-04 behaviour). When set, the applied factor is
+    # min(raw_factor, this), so a field brighter than the reference can still be
+    # scaled DOWN onto it while a field dimmer than the reference is left alone
+    # rather than amplified.
+    #
+    # Why: in the QKI x BIN1-intron arm 3 the unclamped normalisation removed the
+    # cytoplasmic pedestal calls it was built to remove, but it also multiplied
+    # the borrowed secondary-only fields by 1.70-2.11 and raised their BIN1 rate
+    # 13.4-fold, from 3.5 % to 35.5 % of the WT rate, breaching the
+    # under-10 %-of-biological control criterion. A cap of 1.0 keeps the whole
+    # scale-down benefit and cannot amplify a low-pedestal field.
+    #
+    # Both values are recorded per image in thresholds.csv: rna_pedestal_factor
+    # is what was APPLIED, rna_pedestal_factor_raw is what the medians implied.
+    rna_pedestal_factor_max: Optional[float] = None
     # 2026-07-07 Brian: PIPELINE-NATIVE MIAT x QKI ASSOCIATION metrics (approved
     # spec _SPEC_association_analysis_2026-07-06.md). Continuous, floor-robust,
     # AT-THE-PUNCTUM replacements for the binary "QKI-associated MIAT spots"

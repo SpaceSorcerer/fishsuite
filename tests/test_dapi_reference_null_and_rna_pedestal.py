@@ -701,3 +701,92 @@ def test_nuclear_anchor_restriction_off_adds_no_column(fake_img, monkeypatch):
 )
 def test_anchor_count_column_relabels_to_protein(name):
     assert _relabel_rna2_to_protein(name) == "n_partner_anchors_at_protein_spots"
+
+
+# ===========================================================================
+# (d) OPTIONAL CLAMP on the per-image pedestal factor.
+# ===========================================================================
+def test_factor_max_defaults_to_none():
+    assert FociCfg().rna_pedestal_factor_max is None
+
+
+def test_factor_max_round_trips_through_a_yaml_dict():
+    cfg = FishsuiteConfig.model_validate(
+        {"foci": {"rna_pedestal_normalize": True, "rna_pedestal_factor_max": 1.0}}
+    )
+    assert cfg.foci.rna_pedestal_factor_max == pytest.approx(1.0)
+
+
+def test_clamp_caps_a_factor_above_the_max(fake_img, monkeypatch):
+    cfg = _base_cfg()
+    cfg.foci.rna_pedestal_normalize = True
+    cfg.foci.rna_pedestal_factor_max = 1.0
+    seen = _spy_detect(monkeypatch)
+    res = _run(cfg, fake_img, monkeypatch, rna_pedestal_factor=1.8)
+
+    raw = _spot_plane(22, 33)
+    # 1.8 is capped to 1.0, so the detector sees the RAW plane.
+    assert any(np.array_equal(a, raw) for a in seen)
+    assert not any(
+        np.array_equal(a, (raw.astype(np.float64) * 1.8).astype(raw.dtype))
+        for a in seen
+    )
+    assert res.thresholds["rna_pedestal_factor"] == pytest.approx(1.0)
+    assert res.thresholds["rna_pedestal_factor_raw"] == pytest.approx(1.8)
+    assert res.thresholds["rna_pedestal_factor_max"] == pytest.approx(1.0)
+    assert res.thresholds["rna_pedestal_factor_clamped"] is True
+
+
+def test_clamp_leaves_a_factor_below_the_max_alone(fake_img, monkeypatch):
+    """The scale-DOWN direction, which is the whole point of the clamp, is kept."""
+    cfg = _base_cfg()
+    cfg.foci.rna_pedestal_normalize = True
+    cfg.foci.rna_pedestal_factor_max = 1.0
+    seen = _spy_detect(monkeypatch)
+    res = _run(cfg, fake_img, monkeypatch, rna_pedestal_factor=0.6)
+
+    raw = _spot_plane(22, 33)
+    expected = (raw.astype(np.float64) * 0.6).astype(raw.dtype)
+    assert any(np.array_equal(a, expected) for a in seen)
+    assert res.thresholds["rna_pedestal_factor"] == pytest.approx(0.6)
+    assert res.thresholds["rna_pedestal_factor_raw"] == pytest.approx(0.6)
+    assert res.thresholds["rna_pedestal_factor_clamped"] is False
+
+
+def test_factor_exactly_at_the_max_is_not_recorded_as_clamped(fake_img, monkeypatch):
+    cfg = _base_cfg()
+    cfg.foci.rna_pedestal_normalize = True
+    cfg.foci.rna_pedestal_factor_max = 1.0
+    res = _run(cfg, fake_img, monkeypatch, rna_pedestal_factor=1.0)
+    assert res.thresholds["rna_pedestal_factor_clamped"] is False
+    assert res.thresholds["rna_pedestal_factor"] == pytest.approx(1.0)
+
+
+def test_unset_max_never_clamps(fake_img, monkeypatch):
+    cfg = _base_cfg()
+    cfg.foci.rna_pedestal_normalize = True
+    res = _run(cfg, fake_img, monkeypatch, rna_pedestal_factor=1.8)
+    assert res.thresholds["rna_pedestal_factor"] == pytest.approx(1.8)
+    assert res.thresholds["rna_pedestal_factor_clamped"] is False
+    assert res.thresholds["rna_pedestal_factor_max"] != res.thresholds["rna_pedestal_factor_max"]
+
+
+def test_clamp_columns_absent_when_the_feature_is_off(fake_img, monkeypatch):
+    res = _run(_base_cfg(), fake_img, monkeypatch)
+    for k in ("rna_pedestal_factor_raw", "rna_pedestal_factor_max",
+              "rna_pedestal_factor_clamped"):
+        assert k not in res.thresholds
+
+
+def test_clamped_run_matches_an_unnormalised_run_when_max_is_one(
+    fake_img, monkeypatch
+):
+    """A cap of 1.0 with an up-scaling factor must reproduce the OFF path exactly."""
+    ref = _run(_base_cfg(), fake_img, monkeypatch)
+    cfg = _base_cfg()
+    cfg.foci.rna_pedestal_normalize = True
+    cfg.foci.rna_pedestal_factor_max = 1.0
+    new = _run(cfg, fake_img, monkeypatch, rna_pedestal_factor=1.9)
+    a = ref.spots[ref.spots["channel"] == "rna1"][["x_px", "y_px"]].reset_index(drop=True)
+    b = new.spots[new.spots["channel"] == "rna1"][["x_px", "y_px"]].reset_index(drop=True)
+    pd.testing.assert_frame_equal(a, b)

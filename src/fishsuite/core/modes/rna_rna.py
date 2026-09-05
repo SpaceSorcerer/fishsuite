@@ -1492,12 +1492,22 @@ def run_one(
     # float-vs-uint16 filter change. Clipped pixels are counted, not hidden.
     _ped_requested = bool(getattr(cfg.foci, "rna_pedestal_normalize", False))
     _ped_factor = float("nan")
+    _ped_factor_raw = float("nan")
+    _ped_factor_max = getattr(cfg.foci, "rna_pedestal_factor_max", None)
+    _ped_clamped = False
     _ped_applied = False
     _ped_clipped_px = 0
     if _ped_requested:
         _pf = rna_pedestal_factor
         if _pf is not None and float(_pf) == float(_pf) and float(_pf) > 0:
-            _ped_factor = float(_pf)
+            _ped_factor_raw = float(_pf)
+            _ped_factor = _ped_factor_raw
+            # Optional upper bound. A field brighter than the reference is still
+            # scaled DOWN onto it; a dimmer field is left alone rather than
+            # amplified, which is what raised the secondary-only rate in arm 3.
+            if _ped_factor_max is not None and _ped_factor > float(_ped_factor_max):
+                _ped_factor = float(_ped_factor_max)
+                _ped_clamped = True
             _ped_applied = True
         else:
             print(
@@ -1514,7 +1524,10 @@ def run_one(
             _rna_2d_det = np.clip(np.rint(_rna_2d_det), _ii.min, _ii.max)
         _rna_2d_det = _rna_2d_det.astype(rna_2d.dtype, copy=False)
         print(
-            f"  [pedestal] {path.name} rna1: factor={_ped_factor:.4f} "
+            f"  [pedestal] {path.name} rna1: factor={_ped_factor:.4f}"
+            + (f" (CLAMPED from {_ped_factor_raw:.4f} at max "
+               f"{float(_ped_factor_max):.4f})" if _ped_clamped else "")
+            + " "
             f"(stat={getattr(cfg.foci, 'rna_pedestal_stat', 'nuclear_median')}), "
             f"clipped_px={_ped_clipped_px}"
         )
@@ -4512,6 +4525,13 @@ def run_one(
         )
         thresholds["rna_pedestal_applied"] = bool(_ped_applied)
         thresholds["rna_pedestal_factor"] = _ped_factor
+        # The factor the medians implied, before any clamp, so a clamped run
+        # still records what the unclamped one would have applied.
+        thresholds["rna_pedestal_factor_raw"] = _ped_factor_raw
+        thresholds["rna_pedestal_factor_max"] = (
+            float(_ped_factor_max) if _ped_factor_max is not None else float("nan")
+        )
+        thresholds["rna_pedestal_factor_clamped"] = bool(_ped_clamped)
         thresholds["rna_pedestal_clipped_px"] = int(_ped_clipped_px)
 
     qc = dict(
