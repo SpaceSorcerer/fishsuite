@@ -27,6 +27,8 @@ import pandas as pd
 from . import aggregate as _agg
 from . import endpoints as _ep
 from . import figures as _fig
+from . import peak_gate as _gate
+from . import provenance as _prov
 from . import workbook as _wb
 from .stats import ALPHA, SEED, fmt_p
 
@@ -78,13 +80,55 @@ def _engine_head(repo: Optional[Path]) -> str:
         return f"could not read git HEAD: {type(exc).__name__}: {exc}"
 
 
+
+def load_groups_file(path: Path) -> dict:
+    """Read a ``report_groups.yaml`` staged beside a run.
+
+    Recognised keys, all optional except ``groups``::
+
+        groups:            {GROUP: [well, well, ...]}
+        group_order:       [GROUP, ...]          # first entry is the reference
+        reference:         GROUP
+        well_from_image:   regex with one capture group
+        exclude_fields:    {image name: reason}
+        note:              free text, copied into the workbook
+    """
+    import yaml
+
+    path = Path(path)
+    if not path.is_file():
+        raise _agg.ReportInputError(f"--groups-file not found: {path}")
+    raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    if not isinstance(raw, dict):
+        raise _agg.ReportInputError(f"{path} must be a mapping, not {type(raw).__name__}")
+    groups = raw.get("groups") or {}
+    specs = [f"{g}=" + ",".join(str(w) for w in (wells or []))
+             for g, wells in groups.items() if wells]
+    order = [str(g) for g in (raw.get("group_order") or list(groups))]
+    # A group named in group_order but with no wells listed still needs to appear,
+    # because its wells may be recovered from the image name instead.
+    for g in order:
+        if g not in groups and not any(sp.startswith(f"{g}=") for sp in specs):
+            specs.append(f"{g}={g}")
+    return {"specs": specs, "group_order": order,
+            "reference": raw.get("reference") or (order[0] if order else None),
+            "well_from_image": raw.get("well_from_image") or None,
+            "exclude_fields": {str(k): str(v) for k, v in
+                               (raw.get("exclude_fields") or {}).items()},
+            "peak_floors": raw.get("peak_floors") or {},
+            "caveat_file": raw.get("caveat_file") or "",
+            "nucleus_filter": str(raw.get("nucleus_filter") or "all"),
+            "note": str(raw.get("note") or ""), "path": str(path)}
+
 # ------------------------------------------------------------------ sheets
 
 
 def readme_sheet(run_dir: Path, group_order: Sequence[str], reference: str,
                  well_to_group: Dict[str, str], endpoints: Sequence[_ep.Endpoint],
                  absent: Sequence[str], exclude_fields: Dict[str, str],
-                 mde_note: str, native_figures: str, alpha: float) -> pd.DataFrame:
+                 mde_note: str, native_figures: str, alpha: float,
+                 gate_record: Optional[Dict[str, object]] = None,
+                 caveat: str = "") -> pd.DataFrame:
     rows: List[Tuple[str, str, str]] = []
 
     def add(section, item, text):
@@ -145,6 +189,31 @@ def readme_sheet(run_dir: Path, group_order: Sequence[str], reference: str,
     add("Data handling", "Fields excluded",
         "; ".join(f"{k}: {v}" for k, v in sorted(exclude_fields.items()))
         if exclude_fields else "none")
+    gate_record = gate_record or {}
+    if gate_record.get("floors"):
+        add("Data handling", "Post-hoc peak floor",
+            "A peak-intensity floor was applied to this run's spots AFTER detection, "
+            "which reproduces a gated run because fishsuite's own floor gate is also "
+            "post-detection. Boundary is at or above the floor, so a spot exactly at "
+            "it is kept. Floors: "
+            + "; ".join(f"{k} at {v:g}" for k, v in gate_record["floors"].items())
+            + ". Compared against the column " + str(gate_record.get("peak_column", "")) + ".")
+        for ch, rec in (gate_record.get("per_channel") or {}).items():
+            if rec.get("applied"):
+                add("Data handling", f"Peak floor, {ch}",
+                    f"{rec['spots_kept']} of {rec['spots_before']} spots kept at floor "
+                    f"{rec['floor']:g}; {rec['spots_dropped']} dropped.")
+            else:
+                add("Data handling", f"Peak floor, {ch}",
+                    f"NOT applied: {rec.get('reason', 'no reason recorded')}.")
+        if gate_record.get("stale_columns"):
+            add("Data handling", "Made stale by the peak floor",
+                "These columns cannot be re-derived from spot_metrics.csv after a "
+                "floor is applied, so any endpoint reading them reflects the run's "
+                "own floor and NOT the one applied here: "
+                + ", ".join(gate_record["stale_columns"]) + ".")
+    if caveat:
+        add("What this is", "Caveat carried from the analysis record", caveat)
     add("Data handling", "Absolute intensity",
         "Absolute intensity in arbitrary units is never comparable as a level claim "
         "across sections, because laser power is retuned per section. Those endpoints "
@@ -174,6 +243,9 @@ def provenance_sheet(data: dict, run_dir: Path, out_dir: Path,
     add("group order", ", ".join(group_order))
     add("well to group", "; ".join(f"{w} -> {g}" for w, g in
                                    sorted(data["well_to_group"].items())) or "none supplied")
+    add("nucleus filter", data.get("nucleus_filter", "all"))
+    add("nuclei segmented in the run", data.get("n_nuclei_all", ""))
+    add("nuclei after the nucleus filter", data.get("n_nuclei_after_nucleus_filter", ""))
     add("nuclei before field exclusion", data["n_nuclei_before_field_exclusion"])
     add("nuclei after field exclusion", data["n_nuclei_after_field_exclusion"])
     add("fields excluded", "; ".join(f"{k}: {v}" for k, v in sorted(exclude_fields.items()))
@@ -231,10 +303,12 @@ def provenance_sheet(data: dict, run_dir: Path, out_dir: Path,
 def build_readout(run_dir: Path, out_dir: Path, contrasts: pd.DataFrame,
                   well: pd.DataFrame, group_order: Sequence[str], reference: str,
                   sec: pd.DataFrame, absent: Sequence[str],
-                  labels: Dict[str, str], alpha: float) -> str:
+                  labels: Dict[str, str], alpha: float, caveat: str = "") -> str:
     """Ten plain lines, agnostic framing, first line the run path."""
     lines: List[str] = []
     lines.append(f"Run reported: {run_dir}")
+    if caveat:
+        lines.append(caveat.strip().replace("\n", " "))
     lines.append(
         f"Design: {len(group_order)} condition groups ("
         + ", ".join(f"{g}, {int(well.loc[well['group'] == g, 'well_id'].nunique())} wells"
@@ -309,6 +383,12 @@ def _nuc_column(ep: _ep.Endpoint) -> Optional[str]:
 def build_report(run_dir: Path, out_dir: Optional[Path] = None,
                  groups: Sequence[str] = (), reference: Optional[str] = None,
                  exclude_fields: Optional[Dict[str, str]] = None,
+                 well_from_image: Optional[str] = None,
+                 group_order: Sequence[str] = (),
+                 peak_floors: Optional[Dict[str, float]] = None,
+                 caveat: str = "",
+                 all_pairs: bool = False,
+                 nucleus_filter: str = "all",
                  qc_min_nuclei: int = 5, sec_min_nuclei: int = 10,
                  alpha: float = ALPHA, engine_repo: Optional[Path] = None,
                  preset: Optional[Path] = None, style: str = "brian",
@@ -320,25 +400,52 @@ def build_report(run_dir: Path, out_dir: Optional[Path] = None,
     out_dir.mkdir(parents=True, exist_ok=True)
     exclude_fields = dict(exclude_fields or {})
 
-    well_to_group, declared_order = _agg.parse_groups(groups)
-    data = _agg.load_run(run_dir, well_to_group, exclude_fields)
+    well_to_group, parsed_order = _agg.parse_groups(groups)
+    declared_order = list(group_order) or parsed_order
+    data = _agg.load_run(run_dir, well_to_group, exclude_fields, well_from_image,
+                         nucleus_filter=nucleus_filter)
     labels = _ep.channel_labels(data["cfg"])
     if not declared_order:
         _, declared_order = _agg.groups_from_run_config(data["cfg"])
-    group_order = _agg.resolve_group_order(data["labels"], declared_order)
-    if not group_order:
+    group_order_resolved = _agg.resolve_group_order(data["labels"], declared_order)
+    if not group_order_resolved:
         raise _agg.ReportInputError("no biological condition group was resolved")
-    reference = reference or group_order[0]
-    if reference not in group_order:
+    reference = reference or group_order_resolved[0]
+    if reference not in group_order_resolved:
         raise _agg.ReportInputError(
-            f"reference group {reference!r} is not one of {group_order}")
+            f"reference group {reference!r} is not one of {group_order_resolved}")
+
+    gate_record: Dict[str, object] = {}
+    stale_after_gate: List[str] = []
+    if peak_floors:
+        spots_path = run_dir / "spot_metrics.csv"
+        if not spots_path.is_file():
+            raise _agg.ReportInputError(
+                f"--peak-floor was given but {spots_path} does not exist, so the "
+                "floor cannot be applied post hoc")
+        spots = pd.read_csv(spots_path)
+        gated, gate_record = _gate.gate_spots(spots, peak_floors)
+        vox = pd.to_numeric(data["nuclei"].get("voxel_xy_um"), errors="coerce")
+        vox = float(vox.dropna().median()) if vox is not None and vox.notna().any() else None
+        data["nuclei"], stale_after_gate = _gate.apply_to_nuclei(
+            data["nuclei"], gated, vox)
+        # The spot-derived per-nucleus columns must come from the GATED spots too.
+        derived = _agg.spot_derived_from_frame(gated, data.get("thresholds"), vox)
+        if len(derived):
+            drop = [c for c in derived.columns if c in data["nuclei"].columns
+                    and c not in ("image", "nucleus_id")]
+            data["nuclei"] = data["nuclei"].drop(columns=drop).merge(
+                derived, on=["image", "nucleus_id"], how="left")
+        gate_record["floors"] = dict(peak_floors)
+        gate_record["stale_columns"] = list(stale_after_gate)
 
     endpoints, absent = _ep.resolve(data["nuclei"], data["per_image"])
     field = _agg.per_field_long(data["nuclei"], data["per_image"], endpoints,
                                 data["labels"], qc_min_nuclei)
     well = _agg.per_well_long(field)
-    contrasts = _agg.build_contrasts(well, field, endpoints, absent, group_order,
-                                     reference, labels, alpha)
+    contrasts = _agg.build_contrasts(well, field, endpoints, absent, group_order_resolved,
+                                     reference, labels, alpha,
+                                     all_pairs=all_pairs or len(group_order_resolved) > 2)
     sec = _agg.secondary_only_table(data["nuclei"], data["per_image"], data["labels"],
                                     exclude_fields, sec_min_nuclei)
 
@@ -366,20 +473,20 @@ def build_report(run_dir: Path, out_dir: Optional[Path] = None,
              "This run wrote no figures folder of its own."
 
     sheets = {
-        "Read me": readme_sheet(run_dir, group_order, reference, data["well_to_group"],
+        "Read me": readme_sheet(run_dir, group_order_resolved, reference, data["well_to_group"],
                                 endpoints, absent, exclude_fields, mde_note, native, alpha),
         "Spots per nucleus by group": _agg.family_sheet(contrasts, well, "detection",
-                                                        group_order),
+                                                        group_order_resolved),
         "Nuclear fraction by group": _agg.family_sheet(contrasts, well, "localization",
-                                                       group_order),
+                                                       group_order_resolved),
         "Partner at puncta by group": _agg.family_sheet(contrasts, well, "partner",
-                                                        group_order),
+                                                        group_order_resolved),
         "Per well": well,
         "Per field": field,
         "Per nucleus": per_nucleus,
         "Contrasts": contrasts,
         "Secondary-only": sec,
-        "Run provenance": provenance_sheet(data, run_dir, out_dir, group_order,
+        "Run provenance": provenance_sheet(data, run_dir, out_dir, group_order_resolved,
                                            reference, exclude_fields, absent,
                                            engine_repo, preset, alpha),
     }
@@ -390,13 +497,18 @@ def build_report(run_dir: Path, out_dir: Optional[Path] = None,
     well.to_csv(out_dir / "per_well.csv", index=False)
     contrasts.to_csv(out_dir / "contrasts.csv", index=False)
     (out_dir / "READOUT.md").write_text(
-        build_readout(run_dir, out_dir, contrasts, well, group_order, reference, sec,
-                      absent, labels, alpha), encoding="utf-8")
+        build_readout(run_dir, out_dir, contrasts, well, group_order_resolved, reference, sec,
+                      absent, labels, alpha, caveat), encoding="utf-8")
+
+    source = _prov.write_source_run(
+        run_dir, out_dir, preset=preset,
+        groups={w: g for w, g in data["well_to_group"].items()},
+        group_order=group_order_resolved, reference=reference)
 
     figs: List[dict] = []
     if make_figures:
         figs = render_figures(out_dir / "figures", run_dir, data, endpoints, absent,
-                              well, field, bio_nucleus, contrasts, group_order,
+                              well, field, bio_nucleus, contrasts, group_order_resolved,
                               reference, exclude_fields, labels, alpha)
 
     panel = None
@@ -413,8 +525,9 @@ def build_report(run_dir: Path, out_dir: Optional[Path] = None,
                  f"{sys.executable} {' '.join(argv or sys.argv)}\n")
 
     return dict(out_dir=out_dir, xlsx=xlsx, contrasts=contrasts, well=well, field=field,
-                sec=sec, absent=absent, group_order=group_order, reference=reference,
-                figures=figs, coloc_panel=panel, endpoints=endpoints, labels=labels)
+                sec=sec, absent=absent, group_order=group_order_resolved, reference=reference,
+                figures=figs, coloc_panel=panel, endpoints=endpoints, labels=labels,
+                source_run=source, peak_gate=gate_record)
 
 
 def render_figures(fig_dir: Path, run_dir: Path, data: dict,

@@ -795,9 +795,25 @@ def postrun(run_dir, staging, input_dir, image_key, seed):
                    "reference unless --reference says otherwise. Omit this and the "
                    "groups recorded in the run's own config are used; failing that, "
                    "every well is its own group.")
+@click.option("--groups-file", "groups_file", default=None,
+              type=click.Path(exists=True, dir_okay=False),
+              help="A report_groups.yaml staged beside the run, carrying `groups`, "
+                   "`group_order`, `reference`, `well_from_image`, `exclude_fields` "
+                   "and a free-text `note`. Command-line flags override any key it "
+                   "sets, so one file makes a run's report reproducible.")
 @click.option("--reference", default=None, metavar="NAME",
               help="Group every other group is compared against. Default: the first "
                    "group.")
+@click.option("--group-order", "group_order", default=None, metavar="A,B,C",
+              help="Plotting and reporting order of the groups. Groups present in the "
+                   "data but missing here are appended in sorted order.")
+@click.option("--well-from-image", "well_from_image", default=None, metavar="REGEX",
+              help="Recover the WELL from the image name with a regular expression "
+                   "carrying exactly one capture group. Use this when the run recorded "
+                   "the LINE as its condition and the well only in the file name; "
+                   "without it every field of a line collapses into one well and no "
+                   "test is possible. Every biological image must match or the command "
+                   "refuses to run.")
 @click.option("--out", "out_dir", default=None, type=click.Path(file_okay=False),
               help="Where to write the report. Default: <run>/report_<timestamp>/.")
 @click.option("--exclude-field", "exclude_field", multiple=True, metavar="NAME",
@@ -808,6 +824,31 @@ def postrun(run_dir, staging, input_dir, image_key, seed):
 @click.option("--reason", "reason", multiple=True, metavar="TEXT",
               help="Why the preceding --exclude-field was dropped. Given in the same "
                    "order as the --exclude-field flags, one each.")
+@click.option("--all-pairs/--vs-reference", "all_pairs", default=None,
+              help="Report EVERY unordered pair of condition groups, or only each "
+                   "group against the reference. Default: all pairs when there are "
+                   "more than two groups, reference-only when there are two, which "
+                   "are the same thing at two groups.")
+@click.option("--nucleus-filter", type=click.Choice(["all", "sampled"]), default="all",
+              show_default=True,
+              help="Which nuclei enter the report. 'all' uses every segmented "
+                   "nucleus. 'sampled' keeps only those the run flagged "
+                   "sampled_in_analysis, which is the fixed-N balanced set; use it "
+                   "to match an analysis built on that set. The run must carry the "
+                   "column or the command refuses.")
+@click.option("--peak-floor", "peak_floor", default=None, metavar="rna=1000,rna2=1200",
+              help="Apply a peak-intensity floor to the run's spots AFTER detection, "
+                   "then re-derive the per-nucleus counts. fishsuite's own floor gate "
+                   "is post-detection too, so this reproduces a gated run without "
+                   "re-detecting. Boundary is at or above the floor. Columns that "
+                   "cannot be re-derived post hoc are named in the workbook rather "
+                   "than silently carrying a pre-gate value.")
+@click.option("--caveat-file", "caveat_file", default=None,
+              type=click.Path(exists=True, dir_okay=False),
+              help="A text or markdown file whose contents are inserted into "
+                   "READOUT.md immediately after the run path, and recorded in the "
+                   "Read me sheet. Use it to carry a calibration or interpretation "
+                   "caveat from the analysis record into the deliverable.")
 @click.option("--style", type=click.Choice(["brian", "plain"]), default="brian",
               show_default=True,
               help="Figure style. 'brian' is the locked lab style: Okabe-Ito colours, "
@@ -833,9 +874,11 @@ def postrun(run_dir, staging, input_dir, image_key, seed):
 @click.option("--stamp", default="", metavar="TEXT",
               help="Timestamp used in the default output directory name. Defaults to "
                    "now.")
-def report(run_dir, groups, reference, out_dir, exclude_field, reason, style, alpha,
-           qc_min_nuclei, sec_min_nuclei, engine_repo, preset, no_figures,
-           no_coloc_panel, stamp):
+def report(run_dir, groups, groups_file, reference, group_order, well_from_image,
+           out_dir, exclude_field, reason, all_pairs, nucleus_filter, peak_floor,
+           caveat_file, style,
+           alpha, qc_min_nuclei, sec_min_nuclei, engine_repo, preset,
+           no_figures, no_coloc_panel, stamp):
     """Build the condition-versus-condition report for a finished run.
 
     Wells are the biological replicates and the condition GROUP is what gets
@@ -847,8 +890,9 @@ def report(run_dir, groups, reference, out_dir, exclude_field, reason, style, al
     Writes REPORT.xlsx with plain sheet names, READOUT.md, figures/, per_well.csv,
     contrasts.csv, versions.txt and command.log. The run directory is read only.
     """
-    from .report.build import build_report
+    from .report.build import build_report, load_groups_file
     from .report.aggregate import ReportInputError
+    from .report.peak_gate import PeakGateError, parse_peak_floors
 
     if len(reason) != len(exclude_field):
         click.echo(
@@ -857,13 +901,50 @@ def report(run_dir, groups, reference, out_dir, exclude_field, reason, style, al
             f"the same order.", err=True)
         sys.exit(2)
     excludes = dict(zip(exclude_field, reason))
+    specs = list(groups)
+    order = [g.strip() for g in group_order.split(",")] if group_order else []
+    floors = {}
+    caveat = ""
     try:
+        if peak_floor:
+            floors = parse_peak_floors(peak_floor)
+        if caveat_file:
+            caveat = Path(caveat_file).read_text(encoding="utf-8").strip()
+        if groups_file:
+            cfg = load_groups_file(Path(groups_file))
+            # Command-line flags override the file, so a staged file is a default
+            # rather than something that silently wins over what was just typed.
+            specs = specs or cfg["specs"]
+            order = order or cfg["group_order"]
+            reference = reference or cfg["reference"]
+            well_from_image = well_from_image or cfg["well_from_image"]
+            excludes = excludes or cfg["exclude_fields"]
+            if not floors and cfg.get("peak_floors"):
+                floors = {str(k): float(v) for k, v in cfg["peak_floors"].items()}
+            if nucleus_filter == "all" and cfg.get("nucleus_filter"):
+                nucleus_filter = cfg["nucleus_filter"]
+            if not caveat and cfg.get("caveat_file"):
+                cav = Path(cfg["caveat_file"])
+                if not cav.is_absolute():
+                    cav = Path(groups_file).parent / cav
+                if cav.is_file():
+                    caveat = cav.read_text(encoding="utf-8").strip()
+                else:
+                    click.echo(f"caveat_file named in the groups file does not exist: "
+                               f"{cav}", err=True)
+            click.echo(f"groups file : {cfg['path']}")
         r = build_report(
             run_dir=Path(run_dir),
             out_dir=Path(out_dir) if out_dir else None,
-            groups=list(groups),
+            groups=specs,
             reference=reference,
+            group_order=order,
+            well_from_image=well_from_image,
             exclude_fields=excludes,
+            peak_floors=floors,
+            caveat=caveat,
+            all_pairs=bool(all_pairs),
+            nucleus_filter=nucleus_filter,
             qc_min_nuclei=qc_min_nuclei,
             sec_min_nuclei=sec_min_nuclei,
             alpha=alpha,
@@ -874,7 +955,7 @@ def report(run_dir, groups, reference, out_dir, exclude_field, reason, style, al
             coloc_panel=not no_coloc_panel,
             stamp=stamp,
         )
-    except ReportInputError as exc:
+    except (ReportInputError, PeakGateError) as exc:
         click.echo(f"fishsuite report: {exc}", err=True)
         sys.exit(2)
     click.echo(f"report      : {r['out_dir']}")
@@ -883,10 +964,50 @@ def report(run_dir, groups, reference, out_dir, exclude_field, reason, style, al
     click.echo(f"figures     : {len(r['figures'])} figure(s) in {r['out_dir'] / 'figures'}")
     click.echo(f"groups      : {', '.join(r['group_order'])} "
                f"(reference {r['reference']})")
+    gate = r.get("peak_gate") or {}
+    if gate.get("floors"):
+        for ch, rec in (gate.get("per_channel") or {}).items():
+            if rec.get("applied"):
+                click.echo(f"peak floor  : {ch} at {rec['floor']:g} -> "
+                           f"{rec['spots_kept']}/{rec['spots_before']} spots kept")
+    src = r.get("source_run") or {}
+    if src:
+        click.echo(f"source run  : {src.get('source_run_md')} "
+                   f"[link: {(src.get('link') or {}).get('method')}]")
     if r["absent"]:
         click.echo(f"absent from this run (reported as NA): {', '.join(r['absent'])}")
     if r.get("coloc_panel"):
         click.echo(f"coloc panel : {r['coloc_panel']}")
+
+
+@cli.command(short_help="CPU backfill: per-spot Gaussian size fit onto a finished run.")
+@click.option("--run", "run_dir", required=True,
+              type=click.Path(exists=True, file_okay=False),
+              help="Finished run directory (must hold run_config.json, "
+                   "per_image_summary.csv and spot_metrics.csv).")
+@click.option("--input-dir", "input_dir", default=None,
+              type=click.Path(exists=True, file_okay=False),
+              help="Source image tree. Default: the run's recorded input_dir.")
+@click.option("--window-px", type=int, default=None,
+              help="Odd fit-window side in px. Default: the run's "
+                   "foci.size_fit_window_px (7).")
+@click.option("--limit-images", type=int, default=None,
+              help="Fit only the first N images (smoke test).")
+def sizefit(run_dir, input_dir, window_px, limit_images):
+    """Fit a 2-D Gaussian to every detected spot and write size columns.
+
+    Writes spot_metrics_sizefit.csv, sizefit_per_nucleus.csv and
+    sizefit_per_image.csv beside the run's tables. The run's own tables are
+    never modified.
+    """
+    from .core.sizefit_backfill import sizefit_run
+    res = sizefit_run(run_dir, input_dir=input_dir, window_px=window_px,
+                      limit_images=limit_images)
+    click.echo(f"images fitted : {res['images_fitted']}")
+    click.echo(f"spots fitted  : {res['spots']}")
+    click.echo(f"size_fit_ok   : {100.0 * res['frac_size_fit_ok']:.2f}%")
+    for s in res["skipped"][:10]:
+        click.echo(f"  SKIP {s}")
 
 
 if __name__ == "__main__":

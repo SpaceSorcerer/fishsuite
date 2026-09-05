@@ -116,6 +116,12 @@ def tukey_two_group(groups: Dict[str, np.ndarray], test: str, reference: str,
                     alpha: float = ALPHA) -> dict:
     """Tukey HSD on per-field means, normalised to (test minus reference).
 
+    ``groups`` must hold EVERY group in the design, not just the two being
+    reported. Tukey's adjustment is a studentized range over k groups, so fitting
+    it on a two-group subset of a five-group design would understate the p-value.
+    The pair of interest is extracted after the full fit; ``tukey_k`` records how
+    many groups the adjustment was made over.
+
     Differences and intervals come from the NUMERIC attributes of statsmodels
     ``pairwise_tukeyhsd``; its ``summary()`` rounds to 4 decimals. The adjusted p
     is recomputed from the studentized range so the statistic is visible.
@@ -126,6 +132,10 @@ def tukey_two_group(groups: Dict[str, np.ndarray], test: str, reference: str,
     usable = {k: v for k, v in groups.items() if len(v) >= 1}
     if len(usable) < 2 or sum(len(v) for v in usable.values()) - len(usable) < 1:
         out["tukey_note"] = "too few fields or residual df for Tukey"
+        return out
+    if test not in usable or reference not in usable:
+        out["tukey_note"] = (f"{test!r} or {reference!r} has no field value, so the "
+                             "pair cannot be read out of the Tukey fit")
         return out
     from statsmodels.stats.multicomp import pairwise_tukeyhsd
 
@@ -152,15 +162,19 @@ def tukey_two_group(groups: Dict[str, np.ndarray], test: str, reference: str,
     ss_w = sum(((g - g.mean()) ** 2).sum() for g in vals)
     sp = math.sqrt(ss_w / df_w) if df_w > 0 else np.nan
 
-    m = 0                       # exactly one pair when k == 2
+    wanted = {reference, test}
+    m = next((idx for idx in range(len(diffs))
+              if {str(order[i_idx[idx]]), str(order[j_idx[idx]])} == wanted), None)
+    if m is None:
+        out["tukey_note"] = (f"the pair ({reference}, {test}) is not among the "
+                             f"{len(diffs)} pairs statsmodels returned")
+        return out
     g1, g2 = str(order[i_idx[m]]), str(order[j_idx[m]])
     diff = float(diffs[m])
     lo, hi = float(ci[m, 0]), float(ci[m, 1])
     # statsmodels reports mean(g2) - mean(g1); normalise to test - reference.
     if (g1, g2) == (test, reference):
         diff, lo, hi = -diff, -hi, -lo
-    elif (g1, g2) != (reference, test):
-        out["tukey_note"] = f"unexpected Tukey group pair ({g1}, {g2})"
     n1, n2 = len(usable[g1]), len(usable[g2])
     se = sp * math.sqrt((1.0 / n1 + 1.0 / n2) / 2.0) if np.isfinite(sp) else np.nan
     q = abs(diffs[m]) / se if np.isfinite(se) and se > 0 else np.nan

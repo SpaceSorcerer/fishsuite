@@ -84,15 +84,37 @@ def groups_from_run_config(cfg: dict) -> Tuple[Dict[str, str], List[str]]:
 
 
 def label_frame(per_image: pd.DataFrame, well_to_group: Dict[str, str],
-                exclude_fields: Dict[str, str]) -> pd.DataFrame:
-    """One row per image: its well, its group, whether it is a control, its field id."""
+                exclude_fields: Dict[str, str],
+                well_from_image: Optional[str] = None) -> pd.DataFrame:
+    """One row per image: its well, its group, whether it is a control, its field id.
+
+    By default the WELL is the run's ``condition``. Some runs record the LINE as
+    the condition and carry the well only in the file name; ``well_from_image`` is
+    a regular expression with ONE capture group, matched against the image name,
+    that recovers the well in that case. Every non-control image must match, or the
+    grouping is refused rather than silently collapsing a line into one well.
+    """
     need = [c for c in ("image", "condition", "secondary_only") if c not in per_image.columns]
     if need:
         raise ReportInputError(
             f"per_image_summary.csv is missing {need}; this run cannot be grouped")
     lab = per_image[["image", "condition", "secondary_only"]].copy()
     lab["secondary_only"] = lab["secondary_only"].astype(bool)
-    lab["well_id"] = np.where(lab["secondary_only"], pd.NA, lab["condition"])
+    if well_from_image:
+        rx = re.compile(well_from_image)
+        if rx.groups != 1:
+            raise ReportInputError(
+                f"--well-from-image must have exactly one capture group; "
+                f"{well_from_image!r} has {rx.groups}")
+        found = lab["image"].astype(str).str.extract(rx, expand=False)
+        missed = lab.loc[(~lab["secondary_only"]) & found.isna(), "image"].tolist()
+        if missed:
+            raise ReportInputError(
+                f"--well-from-image {well_from_image!r} matched no well in "
+                f"{len(missed)} biological image(s), first: {missed[:3]}")
+        lab["well_id"] = np.where(lab["secondary_only"], pd.NA, found)
+    else:
+        lab["well_id"] = np.where(lab["secondary_only"], pd.NA, lab["condition"])
     lab["group"] = np.where(
         lab["secondary_only"], SEC_ONLY_GROUP,
         lab["condition"].map(lambda c: well_to_group.get(str(c), str(c))))
@@ -104,24 +126,50 @@ def label_frame(per_image: pd.DataFrame, well_to_group: Dict[str, str],
     return lab
 
 
-def spot_derived_per_nucleus(run_dir: Path, thresholds: Optional[pd.DataFrame]
-                             ) -> pd.DataFrame:
+def spot_derived_from_frame(rna_or_all: pd.DataFrame,
+                            thresholds: Optional[pd.DataFrame],
+                            voxel_xy_um: Optional[float] = None) -> pd.DataFrame:
+    """The per-nucleus spot aggregates, from a spot frame already in memory.
+
+    Used when a post-hoc peak floor has produced a GATED spot frame: the derived
+    columns must come from the surviving spots, not from the file on disk.
+    """
+    need = {"image", "channel", "nucleus_id", "in_nucleus"}
+    if rna_or_all is None or not len(rna_or_all) or not need <= set(rna_or_all.columns):
+        return pd.DataFrame(columns=["image", "nucleus_id"])
+    return _spot_aggregates(rna_or_all, thresholds, voxel_xy_um)
+
+
+def spot_derived_per_nucleus(run_dir: Path, thresholds: Optional[pd.DataFrame],
+                             voxel_xy_um: Optional[float] = None) -> pd.DataFrame:
     """Per-nucleus aggregates over that nucleus's NUCLEAR anchor (rna1) puncta.
 
     The exact-footprint columns the engine writes per spot are named for the
-    original MIAT/QKI pair (``qki_at_miat_footprint``); they are role columns, so
-    they are read under those names and emitted under role-neutral ones.
+    original MIAT/QKI pair (``qki_at_miat_footprint``, ``miat_footprint_area_px``);
+    they are role columns, so they are read under those names and emitted under
+    role-neutral ones.
+
+    ``miat_footprint_area_px`` is the punctum's own half-maximum footprint and is
+    the size measurement. It is converted to square micrometres with the run's own
+    voxel area, and restated as the diameter of a circle of the same area.
     """
     path = run_dir / "spot_metrics.csv"
     if not path.is_file():
         return pd.DataFrame(columns=["image", "nucleus_id"])
     head = pd.read_csv(path, nrows=0)
     want = ["image", "channel", "nucleus_id", "in_nucleus", "spot_fwhm_px",
-            "spot_diameter_um", "qki_at_miat_footprint", "qki_footprint_enrichment"]
+            "spot_diameter_um", "qki_at_miat_footprint", "qki_footprint_enrichment",
+            "miat_footprint_area_px"]
     cols = [c for c in want if c in head.columns]
     if not {"image", "channel", "nucleus_id", "in_nucleus"} <= set(cols):
         return pd.DataFrame(columns=["image", "nucleus_id"])
     spots = pd.read_csv(path, usecols=cols)
+    return _spot_aggregates(spots, thresholds, voxel_xy_um)
+
+
+def _spot_aggregates(spots: pd.DataFrame, thresholds: Optional[pd.DataFrame],
+                     voxel_xy_um: Optional[float]) -> pd.DataFrame:
+    """Per-nucleus aggregates over the NUCLEAR rna1 puncta of ``spots``."""
     rna = spots[spots["channel"].eq("rna1") & spots["in_nucleus"].astype(bool)].copy()
     if rna.empty:
         return pd.DataFrame(columns=["image", "nucleus_id"])
@@ -142,13 +190,25 @@ def spot_derived_per_nucleus(run_dir: Path, thresholds: Optional[pd.DataFrame]
             agg["fraction_rna1_puncta_partner_positive_exact_footprint"] = ("_positive", "mean")
     if "qki_footprint_enrichment" in rna.columns:
         agg["partner_enrichment_in_exact_rna1_footprint"] = ("qki_footprint_enrichment", "mean")
+    if "miat_footprint_area_px" in rna.columns and voxel_xy_um and voxel_xy_um > 0:
+        area_um2 = (pd.to_numeric(rna["miat_footprint_area_px"], errors="coerce")
+                    * float(voxel_xy_um) ** 2)
+        rna["_fp_area_um2"] = area_um2
+        # Equivalent diameter of a circle with the same area. Averaged per nucleus
+        # AFTER the per-punctum conversion, so it is the mean punctum diameter and
+        # not the diameter of the mean area, which are not the same number.
+        rna["_fp_eqdiam_um"] = 2.0 * np.sqrt(area_um2 / np.pi)
+        agg["rna1_punctum_footprint_area_um2"] = ("_fp_area_um2", "mean")
+        agg["rna1_punctum_equivalent_diameter_um"] = ("_fp_eqdiam_um", "mean")
     if not agg:
         return pd.DataFrame(columns=["image", "nucleus_id"])
     return (rna.groupby(["image", "nucleus_id"], sort=False).agg(**agg).reset_index())
 
 
 def load_run(run_dir: Path, well_to_group: Dict[str, str],
-             exclude_fields: Dict[str, str]) -> dict:
+             exclude_fields: Dict[str, str],
+             well_from_image: Optional[str] = None,
+             nucleus_filter: str = "all") -> dict:
     run_dir = Path(run_dir)
     missing = [f for f in REQUIRED_FILES if not (run_dir / f).is_file()]
     if missing:
@@ -161,8 +221,11 @@ def load_run(run_dir: Path, well_to_group: Dict[str, str],
 
     if not well_to_group:
         well_to_group, _ = groups_from_run_config(cfg)
-    labels = label_frame(per_image, well_to_group, exclude_fields)
-    derived = spot_derived_per_nucleus(run_dir, thresholds)
+    labels = label_frame(per_image, well_to_group, exclude_fields, well_from_image)
+    _vox = pd.to_numeric(nuclei.get("voxel_xy_um"), errors="coerce")
+    voxel_xy_um = (float(_vox.dropna().median())
+                   if _vox is not None and _vox.notna().any() else None)
+    derived = spot_derived_per_nucleus(run_dir, thresholds, voxel_xy_um)
 
     nuc = nuclei.drop(columns=[c for c in ("condition", "secondary_only", "group")
                                if c in nuclei.columns], errors="ignore")
@@ -183,6 +246,22 @@ def load_run(run_dir: Path, well_to_group: Dict[str, str],
             nuc[flag] = nuc[flag].astype(str).str.strip().str.lower().isin(
                 ["true", "1", "1.0", "yes"])
 
+    n_nuclei_all = int(len(nuc))
+    n_after_nucleus_filter = n_nuclei_all
+    if nucleus_filter == "sampled":
+        if "sampled_in_analysis" not in nuc.columns:
+            raise ReportInputError(
+                "--nucleus-filter sampled needs the sampled_in_analysis column, "
+                "which this run did not emit; it is written only when the run used "
+                "fixed-N nucleus sampling")
+        flag = nuc["sampled_in_analysis"].astype(str).str.strip().str.lower().isin(
+            ["true", "1", "1.0", "yes"])
+        nuc = nuc[flag | nuc["secondary_only"].astype(bool)].copy()
+        n_after_nucleus_filter = int(len(nuc))
+    elif nucleus_filter not in ("all", ""):
+        raise ReportInputError(
+            f"--nucleus-filter {nucleus_filter!r} is not one of all, sampled")
+
     n_before = int(len(nuc))
     if exclude_fields:
         nuc = nuc[~nuc["excluded_field"]].copy()
@@ -191,7 +270,10 @@ def load_run(run_dir: Path, well_to_group: Dict[str, str],
     return dict(per_image=per_image, nuclei=nuc, thresholds=thresholds, cfg=cfg,
                 labels=labels, run_dir=run_dir, well_to_group=dict(well_to_group),
                 n_nuclei_before_field_exclusion=n_before,
-                n_nuclei_after_field_exclusion=int(len(nuc)))
+                n_nuclei_after_field_exclusion=int(len(nuc)),
+                nucleus_filter=nucleus_filter,
+                n_nuclei_all=n_nuclei_all,
+                n_nuclei_after_nucleus_filter=n_after_nucleus_filter)
 
 
 def resolve_group_order(labels: pd.DataFrame, declared: Sequence[str]) -> List[str]:
@@ -269,7 +351,18 @@ def per_well_long(field: pd.DataFrame) -> pd.DataFrame:
     for key, grp in field.groupby(keys, dropna=False, sort=True):
         base = dict(zip(keys, key))
         v = pd.to_numeric(grp["field_value"], errors="coerce").dropna()
+        # Two well statistics, both reported, because they are different numbers
+        # and different analyses have used each. The MEAN OF FIELD MEANS weights
+        # every field equally and is what the Welch gate runs on. The POOLED mean
+        # weights every nucleus equally, so a field with more nuclei counts for
+        # more; it is what a fixed-N sampled design reports.
+        fv = pd.to_numeric(grp["field_value"], errors="coerce")
+        nn = pd.to_numeric(grp["n_nuclei_nonmissing"], errors="coerce")
+        ok = fv.notna() & nn.notna() & (nn > 0)
+        pooled = (float((fv[ok] * nn[ok]).sum() / nn[ok].sum())
+                  if ok.any() and nn[ok].sum() > 0 else float("nan"))
         rows.append(dict(base,
+                         well_pooled_mean_of_nuclei=pooled,
                          n_fields=int(len(grp)),
                          n_fields_nonmissing=int(len(v)),
                          n_nuclei_in_well=int(grp["n_nuclei_total"].sum()),
@@ -287,7 +380,8 @@ def per_well_long(field: pd.DataFrame) -> pd.DataFrame:
 def build_contrasts(well: pd.DataFrame, field: pd.DataFrame,
                     endpoints: Sequence[_ep.Endpoint], absent: Sequence[str],
                     group_order: Sequence[str], reference: str,
-                    labels: Dict[str, str], alpha: float = ALPHA) -> pd.DataFrame:
+                    labels: Dict[str, str], alpha: float = ALPHA,
+                    all_pairs: bool = False) -> pd.DataFrame:
     """Every non-reference group against the reference, on well means.
 
     The star on a figure comes from ``p_welch``. ``p_welch_holm_within_family`` is
@@ -295,20 +389,26 @@ def build_contrasts(well: pd.DataFrame, field: pd.DataFrame,
     minimum detectable effect, so a null result can be read for what it is worth.
     """
     absent = set(absent)
-    tests = [g for g in group_order if g != reference]
+    # Default: every group against the reference. ``all_pairs`` reports every
+    # unordered pair instead, which is what a multi-line design needs; the Tukey
+    # adjustment is over the whole design either way.
+    if all_pairs:
+        pairs = [(b, a) for i, a in enumerate(group_order) for b in group_order[i + 1:]]
+    else:
+        pairs = [(g, reference) for g in group_order if g != reference]
     rows = []
     for ep in endpoints:
         sub = well[well["endpoint"] == ep.name] if len(well) else well
-        ref_v = (sub.loc[sub["group"] == reference, "well_mean_of_field_values"]
-                 .astype(float).dropna().to_numpy() if len(sub) else np.array([]))
-        for test in tests:
+        for test, ref_group in pairs:
+            ref_v = (sub.loc[sub["group"] == ref_group, "well_mean_of_field_values"]
+                     .astype(float).dropna().to_numpy() if len(sub) else np.array([]))
             test_v = (sub.loc[sub["group"] == test, "well_mean_of_field_values"]
                       .astype(float).dropna().to_numpy() if len(sub) else np.array([]))
             r = dict(endpoint=ep.name, endpoint_plain=ep.pretty(labels),
                      family=ep.family, sheet=_ep.FAMILY_SHEET[ep.family],
                      unit=ep.unit, level=ep.level, source=ep.source,
-                     test_group=test, reference_group=reference,
-                     comparison=f"{test} minus {reference}, on well means",
+                     test_group=test, reference_group=ref_group,
+                     comparison=f"{test} minus {ref_group}, on well means",
                      primary=ep.primary, descriptive_only=ep.descriptive_only,
                      exploratory=ep.exploratory,
                      absolute_intensity=ep.absolute_intensity,
@@ -316,21 +416,35 @@ def build_contrasts(well: pd.DataFrame, field: pd.DataFrame,
                      usability_filter=ep.usability_flag or "none",
                      n_nuclei_test=int(sub.loc[sub["group"] == test,
                                                "n_nuclei_in_well"].sum()) if len(sub) else 0,
-                     n_nuclei_reference=int(sub.loc[sub["group"] == reference,
+                     n_nuclei_reference=int(sub.loc[sub["group"] == ref_group,
                                                     "n_nuclei_in_well"].sum()) if len(sub) else 0,
                      n_wells_test=int(len(test_v)), n_wells_reference=int(len(ref_v)))
             r.update({k: v for k, v in welch(test_v, ref_v, alpha).items()
                       if k not in ("n_test", "n_ref")})
             r.update(exact_permutation(test_v, ref_v))
             fsub = field[field["endpoint"] == ep.name] if len(field) else field
+            # Tukey is fitted over EVERY group in the design, not just this pair;
+            # its adjustment is a studentized range over k groups, so a two-group
+            # fit inside a five-group design would understate the p-value.
             groups = {}
-            for name in (reference, test):
+            for name in group_order:
                 g = (pd.to_numeric(fsub.loc[fsub["group"] == name, "field_value"],
                                    errors="coerce").dropna().to_numpy()
                      if len(fsub) else np.array([]))
                 if len(g):
                     groups[name] = g
-            r.update(tukey_two_group(groups, test=test, reference=reference, alpha=alpha))
+            r.update(tukey_two_group(groups, test=test, reference=ref_group, alpha=alpha))
+            # Tukey on WELL means as well. The field-level fit treats a technical
+            # replicate as independent; the well-level fit is on the same unit the
+            # Welch gate uses, so the two are not interchangeable and both are shown.
+            wgroups = {}
+            for name in group_order:
+                g = (sub.loc[sub["group"] == name, "well_mean_of_field_values"]
+                     .astype(float).dropna().to_numpy() if len(sub) else np.array([]))
+                if len(g):
+                    wgroups[name] = g
+            wt = tukey_two_group(wgroups, test=test, reference=ref_group, alpha=alpha)
+            r.update({f"well_{k}": v for k, v in wt.items()})
             r["ratio_test_over_reference"] = (
                 float(test_v.mean() / ref_v.mean())
                 if len(test_v) and len(ref_v) and ref_v.mean() != 0 else np.nan)
@@ -395,7 +509,7 @@ def build_contrasts(well: pd.DataFrame, field: pd.DataFrame,
                 abs(g) >= out.at[i, "mde_hedges_g_at_family_alpha"])
     fam_rank = {f: i for i, f in enumerate(_ep.FAMILY_ORDER)}
     out["_f"] = out["family"].map(fam_rank).fillna(99)
-    out = out.sort_values(["_f", "endpoint", "test_group"]).drop(columns="_f")
+    out = out.sort_values(["_f", "endpoint", "reference_group", "test_group"]).drop(columns="_f")
     return out.reset_index(drop=True)
 
 

@@ -453,6 +453,75 @@ Writes `<run>\report_<stamp>\` containing:
 | `per_well.csv`, `contrasts.csv` | The tested points and every statistic |
 | `versions.txt`, `command.log` | Library versions, seed, and the exact command |
 
+### Punctum size: read the footprint, not the moment estimator
+
+`spot_fwhm_px` and `spot_diameter_um` ARE measured per punctum, by a second-moment
+estimator on a background-subtracted crop (`core/modes/rna_rna.py`
+`_measure_spot_diameter_um`). They are not the configured BigFISH radius. But the
+crop is FIXED at 9 by 9 pixels, so the moment is truncated and the estimator
+SATURATES: on synthetic Gaussians it tracks true width below about 3 px and then
+flattens, reporting a five-fold change in true width as a 1.17-fold change. Two
+conditions can therefore look identical on it while differing in real punctum size.
+
+`fishsuite report` treats the engine's exact half-maximum footprint as THE size
+endpoint instead:
+
+| Endpoint | Source | Behaviour |
+|---|---|---|
+| `rna1_punctum_footprint_area_um2` (primary) | `miat_footprint_area_px` times the run voxel area | segmented per punctum; does not saturate |
+| `rna1_punctum_equivalent_diameter_um` | the same footprint, restated as the diameter of a circle of equal area | mean of per-punctum diameters, not the diameter of the mean area |
+| `rna1_spot_fwhm_px`, `rna1_spot_diameter_um` | the moment estimator | kept, marked descriptive only, no multiplicity-adjusted gate, saturation stated in the workbook note |
+
+A run that emitted no footprint column reports both footprint endpoints as not
+available rather than falling back to the saturating one. See
+`docs/REPORT_SUBCOMMAND_2026-09-04.md`.
+
+A genuine per-punctum Gaussian fit at detection time IS now implemented, as an
+additive `size_fit_*` column family that leaves the three legacy columns
+untouched. It is on by default (`foci.compute_size_fit`) and can be backfilled
+onto a finished run with `fishsuite sizefit --run <run_dir>`. Always filter on
+`size_fit_ok` and read `size_fit_flag` before reading a median: on a channel with
+no isolated compact objects the fit has no scale of its own and most spots are
+rejected rather than given a plausible-looking number. See
+`docs/SPOT_SIZE_FIT_2026-09-04.md`.
+
+### Staging a run's groups
+
+A `report_groups.yaml` beside a run makes its report reproducible from one flag:
+
+```yaml
+groups:
+  WT:     ["WT_1", "WT_2", "WT_3"]
+  QKI-KO: ["KO_1", "KO_2", "KO_3"]
+group_order: ["WT", "QKI-KO"]
+reference: WT
+well_from_image: '_((?:WT|KO)-\d)_'             # only when the run needs it
+exclude_fields: {"WT_1_01.vsi": "out of focus"}
+note: free text recorded with the report
+```
+
+```powershell
+fishsuite report --run "F:\out\UD_run" --groups-file "F:\out\UD_run\report_groups.yaml"
+```
+
+Command-line flags override any key the file sets.
+
+`--well-from-image` exists for one specific failure: some runs record the LINE as
+their condition and carry the well only in the file name (`..._WT-2_22.vsi`).
+Without the regex every field of a line collapses into a single well, leaving one
+replicate per group and no possible test. The expression needs exactly one capture
+group and must match every biological image, or the command refuses to run.
+
+### Source-run linkage
+
+Every report folder names its producing run three times over: `SOURCE_RUN.md` at
+the top (run path, preset, SHA-256 of `run_config.json` / `versions.txt` /
+`thresholds.csv` / `command.log`, segmentation model and cellpose version,
+thresholds read back off the run, group definitions, and what to open in the run);
+a `00_SOURCE_FISHSUITE_RUN` directory junction when the report is written outside
+the run; and copies of the run's provenance files under `provenance\source_run\`.
+Line one of `READOUT.md` is the run path.
+
 The gate is a **Welch t on well means** with Hedges g and a 95 percent interval,
 Holm-adjusted within an endpoint family (a family is one by-group sheet), with the
 **minimum detectable effect** in Hedges g units carried next to every p. Exact

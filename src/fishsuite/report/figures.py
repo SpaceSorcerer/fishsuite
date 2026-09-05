@@ -51,14 +51,25 @@ OKABE_ITO = {
 PALETTE_CYCLE = [OKABE_ITO["grey"], OKABE_ITO["purple"], OKABE_ITO["sky"],
                  OKABE_ITO["orange"], OKABE_ITO["blue"], OKABE_ITO["green"],
                  OKABE_ITO["vermillion"]]
-# One colour per condition everywhere, matching the locked imaging reports.
+# One colour per condition everywhere. Two locks are in play and they are not the
+# same list, so both are honoured rather than averaged:
+#   * the IMAGING WT-versus-QKI-KO pair is Brian's per-paper BIN1 palette,
+#     WT #595959 and QKI-KO #D67AE5 (rnaseq-figure-style, "Per-paper palettes").
+#   * the hESC knockdown conditions take the shared condition-colour map,
+#     MIAT-KD #E69F00 and MIAT-OE #56B4E9.
+# Override by passing a map to group_colors(); nothing here is hardcoded downstream.
 LOCKED_GROUP_COLORS = {
-    "wt": OKABE_ITO["grey"],
-    "control": OKABE_ITO["grey"],
-    "qki-ko": OKABE_ITO["purple"],
-    "qki_ko": OKABE_ITO["purple"],
+    "wt": "#595959",
+    "control": "#595959",
+    "nt": "#595959",
+    "nt aso": "#595959",
+    "qki-ko": "#D67AE5",
+    "qki_ko": "#D67AE5",
+    "qkiko": "#D67AE5",
     "miat-kd": OKABE_ITO["orange"],
+    "miat_kd": OKABE_ITO["orange"],
     "miat-oe": OKABE_ITO["sky"],
+    "miat_oe": OKABE_ITO["sky"],
     "secondary-only": "#999999",
     "sec-only": "#999999",
 }
@@ -66,15 +77,25 @@ DPI = 600
 CROP_PX = 256
 
 
-def group_colors(group_order: Sequence[str]) -> Dict[str, str]:
+def group_colors(group_order: Sequence[str],
+                 overrides: Optional[Dict[str, str]] = None) -> Dict[str, str]:
+    """One colour per condition group.
+
+    A locked condition colour wins; anything else takes the next unused entry of
+    the Okabe-Ito cycle. ``overrides`` maps a group name to a hex colour and beats
+    both, so a paper with its own palette does not need a code change.
+    """
     out: Dict[str, str] = {}
+    locked = dict(LOCKED_GROUP_COLORS)
+    for k, v in (overrides or {}).items():
+        locked[str(k).strip().lower()] = v
     spare = [c for c in PALETTE_CYCLE]
     for g in group_order:
-        locked = LOCKED_GROUP_COLORS.get(str(g).strip().lower())
-        if locked:
-            out[g] = locked
-            if locked in spare:
-                spare.remove(locked)
+        locked_hex = locked.get(str(g).strip().lower())
+        if locked_hex:
+            out[g] = locked_hex
+            if locked_hex in spare:
+                spare.remove(locked_hex)
     for g in group_order:
         if g not in out:
             out[g] = spare.pop(0) if spare else OKABE_ITO["blue"]

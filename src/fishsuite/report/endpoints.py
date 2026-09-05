@@ -10,7 +10,7 @@ sheets. There are no ``Q1``-style codes anywhere in this layer.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Dict, List, Sequence, Tuple
 
 import numpy as np
@@ -44,6 +44,9 @@ FAMILY_DESCRIPTION: Dict[str, str] = {
 NUCLEUS = "nuclei_metrics.csv"
 IMAGE = "per_image_summary.csv (image level, pooled over nuclei by the engine)"
 SPOT = "spot_metrics.csv, aggregated per nucleus over that nucleus's nuclear rna1 spots"
+FOOTPRINT = ("spot_metrics.csv miat_footprint_area_px (legacy column name; it is the "
+             "half-maximum footprint of the rna1 punctum), times the run voxel area, "
+             "aggregated per nucleus")
 DERIVED_AREA = "nuclei_metrics.csv, nucleus_area_px times the run voxel area"
 DERIVED_DENSITY = "nuclei_metrics.csv, n_spots_rna1 divided by nucleus area"
 
@@ -65,6 +68,10 @@ class Endpoint:
     absolute_intensity: bool = False
     excluded_from_holm: str = ""
     usability_flag: str = ""         # per-nucleus boolean that must be True
+    # Alternative spellings of ``column``, tried in order when it is absent. The
+    # engine relabels the rna2 partner columns to ``protein_*`` in rna_protein
+    # mode but leaves them ``rna2_*`` in rna_rna, so one endpoint covers both.
+    alt_columns: Tuple[str, ...] = ()
     note: str = ""
 
     def pretty(self, labels: Dict[str, str]) -> str:
@@ -81,13 +88,43 @@ ENDPOINTS: Tuple[Endpoint, ...] = (
              note="Total puncta detected in that nucleus, nuclear plus cytoplasmic."),
     Endpoint("rna1_nuclear_spots_per_nucleus", "nuclear_spot_count", "detection",
              "nuclear puncta per nucleus", "{rna1} nuclear puncta per nucleus"),
+    # ---- punctum size ----
+    # The footprint endpoints are the size measurement. The moment-estimator
+    # columns below them SATURATE and are kept only for continuity; see the note
+    # on each and docs/REPORT_SUBCOMMAND_2026-09-04.md.
+    Endpoint("rna1_punctum_footprint_area_um2", "rna1_punctum_footprint_area_um2",
+             "detection", "square micrometres", "{rna1} punctum footprint area",
+             source=FOOTPRINT, primary=True,
+             note="THE punctum-size endpoint. Area of the connected component of "
+                  "pixels at or above the local half-maximum that contains the "
+                  "punctum, converted from pixels with the run's own voxel area. It "
+                  "is segmented per punctum, so unlike the moment estimator it does "
+                  "not saturate."),
+    Endpoint("rna1_punctum_equivalent_diameter_um",
+             "rna1_punctum_equivalent_diameter_um", "detection", "micrometres",
+             "{rna1} punctum equivalent diameter", source=FOOTPRINT,
+             note="The diameter of a circle with the same area as the punctum's "
+                  "half-maximum footprint. A shape-free restatement of the footprint "
+                  "area, in the units a reader expects for a punctum size."),
     Endpoint("rna1_spot_fwhm_px", "rna1_spot_fwhm_px", "detection",
-             "pixels", "{rna1} punctum width (full width at half maximum)",
-             source=SPOT,
-             note="Per-nucleus mean over that nucleus's nuclear puncta."),
+             "pixels", "{rna1} punctum width, moment estimator (saturating)",
+             source=SPOT, descriptive_only=True,
+             note="DESCRIPTIVE ONLY, AND SATURATING. Measured per punctum as the "
+                  "second central moment of the background-subtracted signal in a "
+                  "FIXED 9 by 9 pixel crop, then converted to a full width at half "
+                  "maximum. It is not a kernel constant, but the fixed crop truncates "
+                  "the moment: measured on synthetic Gaussians it is accurate below "
+                  "about 3 pixels of true width, reads about 14 percent low at 4.7 "
+                  "pixels, and asymptotes near 4.7 pixels however wide the punctum "
+                  "actually is. Above the linear range it reports local crowding "
+                  "rather than punctum size, so two conditions can look identical on "
+                  "it while differing in real size. Read the footprint area instead."),
     Endpoint("rna1_spot_diameter_um", "rna1_spot_diameter_um", "detection",
-             "micrometres", "{rna1} punctum diameter", source=SPOT,
-             note="Per-nucleus mean over that nucleus's nuclear puncta."),
+             "micrometres", "{rna1} punctum diameter, moment estimator (saturating)",
+             source=SPOT, descriptive_only=True,
+             note="DESCRIPTIVE ONLY, AND SATURATING. The same moment estimator as "
+                  "the width above, multiplied by the voxel size; it inherits the "
+                  "same saturation. Read the footprint area instead."),
     Endpoint("rna1_nuclear_above_floor_intensity", "nuclear_above_floor_intensity_rna1",
              "detection", "arbitrary units",
              "{rna1} nuclear intensity above the detection floor",
@@ -99,7 +136,8 @@ ENDPOINTS: Tuple[Endpoint, ...] = (
              "arbitrary units", "{protein} mean nuclear intensity",
              descriptive_only=True, absolute_intensity=True,
              note="DESCRIPTIVE ONLY. Report the within-nucleus nuclear-to-cytoplasmic "
-                  "ratio instead of this level."),
+                  "ratio instead of this level.",
+             alt_columns=("rna2_nuclear_mean",)),
     Endpoint("protein_spots_per_nucleus", "n_spots_protein", "detection",
              "puncta per nucleus", "{protein} puncta per nucleus", exploratory=True,
              excluded_from_holm="proxy for absolute partner level",
@@ -128,6 +166,7 @@ ENDPOINTS: Tuple[Endpoint, ...] = (
     Endpoint("protein_nc_ratio", "protein_nc_ratio", "localization",
              "nuclear to cytoplasmic mean intensity ratio",
              "{protein} nuclear-to-cytoplasmic ratio",
+             alt_columns=("rna2_nc_ratio",),
              note="A within-nucleus ratio, so it survives the level-claim objection "
                   "that rules out the absolute nuclear mean."),
     Endpoint("rna1_nc_ratio", "rna_nc_ratio", "localization",
@@ -246,7 +285,8 @@ ENDPOINTS: Tuple[Endpoint, ...] = (
              "partner",
              "fraction of {protein} puncta with an anchor punctum within 0.3 micrometres",
              "Fraction of {protein} puncta paired to {rna1} within 0.3 micrometres",
-             exploratory=True),
+             exploratory=True,
+             alt_columns=("paired_fraction_rna2_at_0p3um",)),
     Endpoint("median_nn_distance_rna1_um", "median_nn_distance_rna1_um", "partner",
              "micrometres",
              "Median nearest-neighbour distance from {rna1} to {protein}",
@@ -254,7 +294,8 @@ ENDPOINTS: Tuple[Endpoint, ...] = (
     Endpoint("median_nn_distance_partner_um", "median_nn_distance_protein_um", "partner",
              "micrometres",
              "Median nearest-neighbour distance from {protein} to {rna1}",
-             exploratory=True),
+             exploratory=True,
+             alt_columns=("median_nn_distance_rna2_um",)),
     Endpoint("rna1_enrichment_at_partner_puncta", "rna1_enrichment_at_protein_spots",
              "partner", "observed divided by local background",
              "{rna1} enrichment at {protein} puncta, local background only",
@@ -293,7 +334,8 @@ ENDPOINTS: Tuple[Endpoint, ...] = (
              excluded_from_holm="tracks absolute partner level",
              note="CONTEXT ONLY. A pixel-overlap coefficient sensitive to the pixel "
                   "threshold; it is not an enrichment test and it tracks the absolute "
-                  "partner level, so it carries no multiplicity adjustment."),
+                  "partner level, so it carries no multiplicity adjustment.",
+             alt_columns=("manders_rna1_in_rna2",)),
     Endpoint("rna1_pooled_rotation_enrichment_at_partner_puncta",
              "rna1_pooled_rotation_enrichment_at_protein_spots", "partner",
              "observed divided by the partner-anchored rotation-null mean, pooled over "
@@ -325,16 +367,27 @@ def channel_labels(cfg: dict) -> Dict[str, str]:
 
 def resolve(nuc: pd.DataFrame, per_image: pd.DataFrame
             ) -> Tuple[List[Endpoint], List[str]]:
-    """Keep every endpoint. Columns the run did not emit become all-NA and are
-    listed, so a missing partner-anchored null degrades to NA with a note instead
-    of silently vanishing from the report."""
+    """Bind every endpoint to a column this run actually emitted.
+
+    An endpoint whose primary column is missing falls back to the first of its
+    alternative spellings that is present. If none is, the endpoint is KEPT, its
+    column is created as all-NA and its name is returned in the absent list, so a
+    missing partner-anchored null degrades to a reported NA with a note instead of
+    silently vanishing from the report.
+    """
     absent: List[str] = []
+    out: List[Endpoint] = []
     for ep in ENDPOINTS:
         frame = nuc if ep.level == "nucleus" else per_image
-        if ep.column not in frame.columns:
+        chosen = ep.column
+        if chosen not in frame.columns:
+            chosen = next((c for c in ep.alt_columns if c in frame.columns), "")
+        if not chosen:
             absent.append(ep.name)
-            frame[ep.column] = np.nan
-    return list(ENDPOINTS), absent
+            chosen = ep.column
+            frame[chosen] = np.nan
+        out.append(ep if chosen == ep.column else replace(ep, column=chosen))
+    return out, absent
 
 
 def usable_endpoints(endpoints: Sequence[Endpoint], absent: Sequence[str]
