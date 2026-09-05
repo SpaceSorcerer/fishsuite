@@ -657,7 +657,11 @@ def render_figures(fig_dir: Path, run_dir: Path, data: dict,
         print(f"[report] cleared {stale} file(s) from the previous build in {fig_dir}")
     ctx = _fig.FigureContext(run_dir, data["cfg"], data.get("thresholds"), group_order,
                              reference, alpha, exclude_fields, labels,
-                             color_overrides=color_overrides)
+                             color_overrides=color_overrides,
+                             nucleus_filter=data.get("nucleus_filter", "all"),
+                             n_nuclei_all=data.get("n_nuclei_all"),
+                             n_nuclei_after_nucleus_filter=data.get(
+                                 "n_nuclei_after_nucleus_filter"))
     manifest: List[dict] = []
     absent_set = set(absent)
     drawn = [ep for ep in endpoints

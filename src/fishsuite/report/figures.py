@@ -220,7 +220,10 @@ class FigureContext:
     def __init__(self, run_dir: Path, cfg: dict, thresholds: Optional[pd.DataFrame],
                  group_order: Sequence[str], reference: str, alpha: float,
                  excluded_fields: Dict[str, str], labels: Dict[str, str],
-                 color_overrides: Optional[Dict[str, str]] = None):
+                 color_overrides: Optional[Dict[str, str]] = None,
+                 nucleus_filter: str = "all",
+                 n_nuclei_all: Optional[int] = None,
+                 n_nuclei_after_nucleus_filter: Optional[int] = None):
         self.run_dir = Path(run_dir)
         self.run_name = self.run_dir.name
         self.run_path = str(self.run_dir)
@@ -229,6 +232,9 @@ class FigureContext:
         self.reference = reference
         self.alpha = alpha
         self.excluded_fields = dict(excluded_fields)
+        self.nucleus_filter = str(nucleus_filter or "all")
+        self.n_nuclei_all = n_nuclei_all
+        self.n_nuclei_after_nucleus_filter = n_nuclei_after_nucleus_filter
         self.channel_labels = dict(labels)
         self.colors = group_colors(self.group_order, color_overrides)
         self.thresholds = self._threshold_text(thresholds)
@@ -287,11 +293,34 @@ class FigureContext:
         out += f" {ver}" if ver else " (version not recorded)"
         return out
 
+    def _nucleus_filter_text(self) -> str:
+        """The nucleus filter ACTUALLY applied, not an assumed one.
+
+        Until 2026-09-05 this asserted "every segmented nucleus, no post-hoc
+        nucleus filter" unconditionally, so every report built with
+        ``nucleus_filter: sampled`` carried a false statement on every figure.
+        """
+        if self.nucleus_filter == "sampled":
+            samp = (self.cfg or {}).get("sampling") or {}
+            n = samp.get("n_per_unit")
+            unit = {"per_image": "image", "per_well": "well"}.get(
+                str(samp.get("unit") or "per_image"), str(samp.get("unit")))
+            head = (f"the {n} nuclei per {unit} the run sampled"
+                    if n else "the nuclei the run sampled")
+            counts = ""
+            if self.n_nuclei_after_nucleus_filter is not None and self.n_nuclei_all:
+                counts = (f", {self.n_nuclei_after_nucleus_filter} of "
+                          f"{self.n_nuclei_all} segmented")
+            return f"post-hoc nucleus filter: {head}{counts}"
+        if self.nucleus_filter in ("all", ""):
+            return "every segmented nucleus, no post-hoc nucleus filter"
+        return f"post-hoc nucleus filter: {self.nucleus_filter}"
+
     def _filter_text(self) -> str:
         ex = (f"; excluded fields: "
               + "; ".join(f"{k} ({v})" for k, v in sorted(self.excluded_fields.items()))
               if self.excluded_fields else "; no field excluded")
-        return (f"Filter: every segmented nucleus, no post-hoc nucleus filter, except "
+        return (f"Filter: {self._nucleus_filter_text()}, except "
                 f"where an endpoint states the engine usability flag it applies"
                 f"{ex}. Gate: Welch t on well means at alpha {self.alpha:g}; "
                 f"reference group {self.reference}.")
