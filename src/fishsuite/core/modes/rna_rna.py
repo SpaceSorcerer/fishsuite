@@ -1087,6 +1087,7 @@ def run_one(
     rna2_is_antibody: bool = False,
     sampling_unit_key: Optional[str] = None,
     sampling_n_alloc: Optional[int] = None,
+    rna_pedestal_factor: Optional[float] = None,
 ) -> ImageResult:
     """Run the rna_rna pipeline on a single image.
 
@@ -1473,6 +1474,53 @@ def run_one(
     rna1_params = cfg.foci.resolved_for("rna")
     rna2_params = cfg.foci.resolved_for("rna2")
 
+    # ---- Per-image PEDESTAL NORMALISATION of the rna1 plane (2026-09-04) ---
+    # A fixed absolute ``threshold_override`` only means the same thing in two
+    # images when their background pedestals do. ``rna_pedestal_factor`` is
+    # ``batch_reference / this image's in-nucleus median``, computed by the
+    # runner from the batch pre-pass; multiplying the rna1 plane by it puts
+    # every field on one pedestal WITHOUT moving the absolute threshold scale.
+    #
+    # Scope is deliberately narrow: ONLY the array handed to spot detection is
+    # scaled. ``rna_2d`` itself is untouched, so partner intensity, pixel
+    # coloc, the rotation nulls, the footprint metrics and the publication
+    # images all still see raw counts.
+    #
+    # The scaled plane is cast BACK to the input dtype so the BigFISH LoG
+    # response stays in the same quantisation regime as an un-normalised run —
+    # otherwise arm-to-arm differences would confound the pedestal with a
+    # float-vs-uint16 filter change. Clipped pixels are counted, not hidden.
+    _ped_requested = bool(getattr(cfg.foci, "rna_pedestal_normalize", False))
+    _ped_factor = float("nan")
+    _ped_applied = False
+    _ped_clipped_px = 0
+    if _ped_requested:
+        _pf = rna_pedestal_factor
+        if _pf is not None and float(_pf) == float(_pf) and float(_pf) > 0:
+            _ped_factor = float(_pf)
+            _ped_applied = True
+        else:
+            print(
+                f"  NOTE: {path.name}: foci.rna_pedestal_normalize is ON but no "
+                f"per-image pedestal factor was supplied (it needs the batch "
+                f"pre-pass, pixel_coloc.threshold_scope: batch) -> rna1 "
+                f"detection runs UN-NORMALISED for this image."
+            )
+    if _ped_applied:
+        _rna_2d_det = rna_2d.astype(np.float64, copy=True) * _ped_factor
+        if np.issubdtype(rna_2d.dtype, np.integer):
+            _ii = np.iinfo(rna_2d.dtype)
+            _ped_clipped_px = int(np.count_nonzero(_rna_2d_det > _ii.max))
+            _rna_2d_det = np.clip(np.rint(_rna_2d_det), _ii.min, _ii.max)
+        _rna_2d_det = _rna_2d_det.astype(rna_2d.dtype, copy=False)
+        print(
+            f"  [pedestal] {path.name} rna1: factor={_ped_factor:.4f} "
+            f"(stat={getattr(cfg.foci, 'rna_pedestal_stat', 'nuclear_median')}), "
+            f"clipped_px={_ped_clipped_px}"
+        )
+    else:
+        _rna_2d_det = rna_2d
+
     def _detect(rna_img: np.ndarray, params: Dict[str, Any]) -> Tuple[pd.DataFrame, float]:
         # 2026-05-21 Brian: previously sec-only images were skipped entirely
         # (returned empty DataFrame). That artificially produced 0 spots in
@@ -1511,7 +1559,23 @@ def run_one(
         except Exception:
             return pd.DataFrame(), float("nan")
 
-    spots1_df, thr1_val = _detect(rna_2d, rna1_params)
+    spots1_df, thr1_val = _detect(_rna_2d_det, rna1_params)
+    # Detection saw the scaled plane, so ``intensity_peak`` came off it. Put the
+    # RAW value back (everything downstream — the min_spot_peak_intensity floor,
+    # spot_metrics, the per-nucleus intensity aggregates — is defined on raw
+    # counts) and keep the detection-time value as its own column.
+    if _ped_applied and len(spots1_df):
+        spots1_df = spots1_df.copy()
+        spots1_df["intensity_peak_normalized"] = spots1_df["intensity_peak"].astype(float)
+        _pdy = np.clip(
+            np.rint(spots1_df["y_px"].astype(float).to_numpy()).astype(np.intp),
+            0, rna_2d.shape[0] - 1,
+        )
+        _pdx = np.clip(
+            np.rint(spots1_df["x_px"].astype(float).to_numpy()).astype(np.intp),
+            0, rna_2d.shape[1] - 1,
+        )
+        spots1_df["intensity_peak"] = rna_2d[_pdy, _pdx].astype(float)
     # 2026-06-05 Brian: diffuse-antibody opt-out. In rna_protein mode
     # (rna2_is_antibody=True), when cfg.foci.detect_antibody_spots is False the
     # antibody/protein channel is treated as a DIFFUSE INTENSITY channel: skip
@@ -1795,6 +1859,30 @@ def run_one(
                 )
             spots1_df["qki_footprint_enrichment"] = _enr
 
+    # ---- REAL per-spot SIZE: 2-D Gaussian + constant background (Brian 2026-09-04)
+    # ADDITIVE. ``spot_diameter_um`` above is a second-moment estimate on a fixed
+    # 9x9 crop and is bounded by that crop (see spot_size.py for the numbers), so
+    # it cannot resolve a real size range. This block fits an actual Gaussian on
+    # the SAME detection plane and emits its own ``size_fit_*`` columns; the
+    # legacy columns are left exactly as they were.
+    compute_size_fit = bool(getattr(cfg.foci, "compute_size_fit", True))
+    _size_fit_window = int(getattr(cfg.foci, "size_fit_window_px", 7) or 7)
+    from ..spot_size import SIZE_FIT_COLUMNS as _size_fit_cols
+    from ..spot_size import size_rollup as _size_rollup
+    if compute_size_fit:
+        from ..spot_size import fit_spot_sizes as _fit_sizes
+        from ..spot_size import footprint_size_columns as _fp_size
+        for _sdf, _plane in ((spots1_df, rna_2d), (spots2_df, rna2_2d)):
+            if _sdf is None or len(_sdf) == 0:
+                continue
+            _fit = _fit_sizes(_plane, _sdf, voxel_xy_um, window_px=_size_fit_window)
+            for _c in _fit.columns:
+                _sdf[_c] = _fit[_c].to_numpy()
+            if "miat_footprint_area_px" in _sdf.columns:
+                _fps = _fp_size(_sdf["miat_footprint_area_px"].to_numpy(), voxel_xy_um)
+                for _c in _fps.columns:
+                    _sdf[_c] = _fps[_c].to_numpy()
+
     # Build the per-nucleus spot indexes NOW — after nn_distance/paired,
     # spot_diameter, and (when enabled) partner_local_mean_intensity have all
     # been written — so groupby snapshots a frame that already carries every
@@ -1908,6 +1996,32 @@ def run_one(
             "compute_partner_rotation_null) -> the partner-anchored rotation "
             "columns will NOT be emitted."
         )
+    # 2026-09-04 Brian: WHICH FIELD the partner-anchored null samples.
+    # "rna" (default) = the rna1 plane, the 2026-09-03 behaviour. "dapi" = the
+    # DAPI plane, a SIGNAL-FREE REFERENCE for the same estimator: DAPI carries
+    # no RNA-probe signal, so whatever enrichment comes back from it is what
+    # nuclear texture alone produces. "both" emits both families in one pass.
+    # ``_pa_prefixes`` drives every downstream block, so adding a field is one
+    # list entry rather than a second copy of the computation.
+    _pa_field_cfg = str(
+        getattr(cfg.foci, "partner_anchored_null_sample_field", "rna")
+    ).lower()
+    _pa_prefixes: List[str] = []
+    if compute_partner_anchored_rotation:
+        if _pa_field_cfg in ("rna", "both"):
+            _pa_prefixes.append("rna1")
+        if _pa_field_cfg in ("dapi", "both"):
+            _pa_prefixes.append("dapi")
+    # Column-name tag: rna1 keeps the 2026-09-03 names EXACTLY (empty tag), so a
+    # "rna"-only run is byte-equivalent to the pre-change output.
+    _PA_TAG = {"rna1": "", "dapi": "_dapi"}
+    # 2026-09-04: restrict the partner constellation to IN-NUCLEUS anchors so
+    # the observed statistic and the keep-N rotation null share one spatial
+    # support. Default off -> the constellation is unchanged.
+    _pa_nuclear_only = bool(
+        compute_partner_anchored_rotation
+        and getattr(cfg.foci, "partner_anchored_null_nuclear_anchors_only", False)
+    )
     # 2026-08-10: the translation null now has its OWN gate. It used to require
     # ``compute_partner_rotation_null`` as well, so asking for translation alone
     # silently produced nothing. Un-nesting it can only ADD output to a config
@@ -2070,14 +2184,24 @@ def run_one(
         _rot_pool = np.zeros(_rot_n, dtype=np.float64)
         _rot_n_nuclei_used = 0
     if compute_partner_anchored_rotation:
-        # Distinct RNG streams (seed root + 303 / + 606) so the partner-anchored
-        # null is independent of, and cannot perturb, the rna1-anchored draws.
-        _prot_rng = np.random.default_rng(_rot_seed + 303)
-        _prot_assoc_rng = np.random.default_rng(_rot_seed + 606)
-        _prot_obs_num = 0.0
-        _prot_w_den = 0.0
-        _prot_pool = np.zeros(_rot_n, dtype=np.float64)
-        _prot_n_nuclei_used = 0
+        # One RNG PAIR per sampled field, all distinct from the rna1-anchored
+        # streams (+101 / +404) and from each other, so no combination of these
+        # flags can perturb another family's draws: rna1 = seed+303 / +606,
+        # dapi = seed+909 / +1212. A "both" run therefore reproduces a
+        # "rna"-only run's rna1 numbers bit-for-bit.
+        _PA_SEEDS = {"rna1": (303, 606), "dapi": (909, 1212)}
+        _pa_field_arr = {
+            "rna1": rna_2d.astype(np.float64, copy=False),
+            "dapi": dapi_2d.astype(np.float64, copy=False),
+        }
+        _pa_rng = {k: np.random.default_rng(_rot_seed + _PA_SEEDS[k][0])
+                   for k in _pa_prefixes}
+        _pa_assoc_rng = {k: np.random.default_rng(_rot_seed + _PA_SEEDS[k][1])
+                         for k in _pa_prefixes}
+        _pa_obs_num = {k: 0.0 for k in _pa_prefixes}
+        _pa_w_den = {k: 0.0 for k in _pa_prefixes}
+        _pa_pool = {k: np.zeros(_rot_n, dtype=np.float64) for k in _pa_prefixes}
+        _pa_n_nuclei_used = {k: 0 for k in _pa_prefixes}
     if compute_partner_translation:
         # Translation drops out-of-mask points -> variable-length null arrays
         # per iter, so we pool the per-nucleus ENRICHMENT (spot-weighted),
@@ -2624,13 +2748,15 @@ def run_one(
         rna2_rotation_assoc_fraction_at_rna1_spots = float("nan")
         rotation_null_usable = False
         rotation_median_retention = float("nan")
-        # Partner-anchored rotation null (2026-09-03); NaN/False unless the
-        # feature is on AND this nucleus has partner spots.
-        rna1_rotation_enrichment_at_rna2_spots = float("nan")
-        rna1_rotation_null_z_at_rna2_spots = float("nan")
-        rna1_rotation_null_p_at_rna2_spots = float("nan")
-        rna1_rotation_assoc_fraction_at_rna2_spots = float("nan")
-        rotation_null_usable_at_rna2_spots = False
+        # Partner-anchored rotation null (2026-09-03; per sampled field
+        # 2026-09-04). NaN/False unless the feature is on AND this nucleus has
+        # partner spots.
+        _pa_enr = {k: float("nan") for k in _pa_prefixes}
+        _pa_z = {k: float("nan") for k in _pa_prefixes}
+        _pa_p = {k: float("nan") for k in _pa_prefixes}
+        _pa_assoc = {k: float("nan") for k in _pa_prefixes}
+        _pa_usable = {k: False for k in _pa_prefixes}
+        _pa_n_anchors = 0
         rna2_translation_enrichment_at_rna1_spots = float("nan")
         rna2_translation_null_z_at_rna1_spots = float("nan")
         translation_null_usable = False
@@ -2798,6 +2924,9 @@ def run_one(
             # when ``detect_antibody_spots`` is False.
             if compute_partner_anchored_rotation:
                 sub2 = spots2_by_nid.get(nid)
+                if (_pa_nuclear_only and sub2 is not None and len(sub2) > 0
+                        and "in_nucleus" in sub2.columns):
+                    sub2 = sub2.loc[sub2["in_nucleus"].astype(bool)]
                 if (sub2 is not None and len(sub2) > 0
                         and {"y_px", "x_px"}.issubset(sub2.columns)
                         and _nys.size > 0):
@@ -2812,49 +2941,57 @@ def run_one(
                         _keep_p = ~_nucleolus_in_nuc[_pcy, _pcx]
                         _pcy = _pcy[_keep_p]
                         _pcx = _pcx[_keep_p]
+                    _pa_n_anchors = int(_pcy.size)
                     if _pcy.size > 0:
-                        _rna1_2d_f = rna_2d.astype(np.float64, copy=False)
+                        # One pass per SAMPLED FIELD (2026-09-04). The
+                        # constellation, mask, centroid, disk stencil, n and
+                        # min-retention are identical across fields — only the
+                        # sampled plane and the RNG pair differ — so the DAPI
+                        # family is the same estimator on a signal-free channel
+                        # and is directly comparable to the rna1 family.
                         _pcy0 = float(_pcy.mean())
                         _pcx0 = float(_pcx.mean())
-                        _prot = _rotation_null_for_nucleus(
-                            _rna1_2d_f, _pcy, _pcx, _samp_mask, (_pcy0, _pcx0),
-                            _rot_dy, _rot_dx, _rot_n, _prot_rng,
-                            min_retention=_rot_min_ret,
-                        )
-                        rotation_null_usable_at_rna2_spots = bool(_prot["usable"])
-                        _pns = _prot["null_stats"]
-                        if _pns.size:
-                            _pnm = float(_pns.mean())
-                            _pnsd = float(_pns.std(ddof=1)) if _pns.size > 1 else 0.0
-                            _pobs = _prot["obs"]
-                            rna1_rotation_enrichment_at_rna2_spots = (
-                                _pobs / _pnm if _pnm > 0 else float("nan")
+                        for _pfx in _pa_prefixes:
+                            _pa_f = _pa_field_arr[_pfx]
+                            _prot = _rotation_null_for_nucleus(
+                                _pa_f, _pcy, _pcx, _samp_mask, (_pcy0, _pcx0),
+                                _rot_dy, _rot_dx, _rot_n, _pa_rng[_pfx],
+                                min_retention=_rot_min_ret,
                             )
-                            rna1_rotation_null_z_at_rna2_spots = (
-                                (_pobs - _pnm) / _pnsd if _pnsd > 0 else float("nan")
-                            )
-                            rna1_rotation_null_p_at_rna2_spots = float(
-                                (np.sum(_pns >= _pobs) + 1) / (_pns.size + 1)
-                            )
-                            _psingle = _rotation_single_position_dist(
-                                _rna1_2d_f, _pcy, _pcx, _samp_mask, (_pcy0, _pcx0),
-                                _rot_dy, _rot_dx,
-                                n_iters=min(200, _rot_n), rng=_prot_assoc_rng,
-                            )
-                            if _psingle.size >= 20:
-                                _pthr = float(np.percentile(_psingle, _rot_assoc_pct))
-                                _pobs_per_spot = _disk_means_at(
-                                    _rna1_2d_f, _pcy, _pcx, _rot_dy, _rot_dx)
-                                rna1_rotation_assoc_fraction_at_rna2_spots = float(
-                                    (_pobs_per_spot > _pthr).mean())
-                            # pool only rot-USABLE nuclei (full-length keep-N null)
-                            if (rotation_null_usable_at_rna2_spots
-                                    and _pns.size == _rot_n and _nid_in_sample):
-                                _n_sp_prot = int(_pcy.size)
-                                _prot_obs_num += _pobs * _n_sp_prot
-                                _prot_w_den += _n_sp_prot
-                                _prot_pool += _pns * _n_sp_prot
-                                _prot_n_nuclei_used += 1
+                            _pa_usable[_pfx] = bool(_prot["usable"])
+                            _pns = _prot["null_stats"]
+                            if _pns.size:
+                                _pnm = float(_pns.mean())
+                                _pnsd = float(_pns.std(ddof=1)) if _pns.size > 1 else 0.0
+                                _pobs = _prot["obs"]
+                                _pa_enr[_pfx] = (
+                                    _pobs / _pnm if _pnm > 0 else float("nan")
+                                )
+                                _pa_z[_pfx] = (
+                                    (_pobs - _pnm) / _pnsd if _pnsd > 0 else float("nan")
+                                )
+                                _pa_p[_pfx] = float(
+                                    (np.sum(_pns >= _pobs) + 1) / (_pns.size + 1)
+                                )
+                                _psingle = _rotation_single_position_dist(
+                                    _pa_f, _pcy, _pcx, _samp_mask, (_pcy0, _pcx0),
+                                    _rot_dy, _rot_dx,
+                                    n_iters=min(200, _rot_n), rng=_pa_assoc_rng[_pfx],
+                                )
+                                if _psingle.size >= 20:
+                                    _pthr = float(np.percentile(_psingle, _rot_assoc_pct))
+                                    _pobs_per_spot = _disk_means_at(
+                                        _pa_f, _pcy, _pcx, _rot_dy, _rot_dx)
+                                    _pa_assoc[_pfx] = float(
+                                        (_pobs_per_spot > _pthr).mean())
+                                # pool only rot-USABLE nuclei (full-length keep-N null)
+                                if (_pa_usable[_pfx]
+                                        and _pns.size == _rot_n and _nid_in_sample):
+                                    _n_sp_prot = int(_pcy.size)
+                                    _pa_obs_num[_pfx] += _pobs * _n_sp_prot
+                                    _pa_w_den[_pfx] += _n_sp_prot
+                                    _pa_pool[_pfx] += _pns * _n_sp_prot
+                                    _pa_n_nuclei_used[_pfx] += 1
 
         # Per-nucleus row — column ordering: rna_only-compatible fields first
         # (so anything reading rna_only output still finds its columns), then
@@ -3096,11 +3233,18 @@ def run_one(
         # turns these into ``*_at_protein_spots``; the leading ``rna1`` token
         # carries no rna2 substring and is deliberately left alone.
         if compute_partner_anchored_rotation:
-            nuc_row["rna1_rotation_enrichment_at_rna2_spots"] = rna1_rotation_enrichment_at_rna2_spots
-            nuc_row["rna1_rotation_null_z_at_rna2_spots"] = rna1_rotation_null_z_at_rna2_spots
-            nuc_row["rna1_rotation_null_p_at_rna2_spots"] = rna1_rotation_null_p_at_rna2_spots
-            nuc_row["rna1_rotation_assoc_fraction_at_rna2_spots"] = rna1_rotation_assoc_fraction_at_rna2_spots
-            nuc_row["rotation_null_usable_at_rna2_spots"] = rotation_null_usable_at_rna2_spots
+            for _pfx in _pa_prefixes:
+                _tg = _PA_TAG[_pfx]
+                nuc_row[f"{_pfx}_rotation_enrichment_at_rna2_spots"] = _pa_enr[_pfx]
+                nuc_row[f"{_pfx}_rotation_null_z_at_rna2_spots"] = _pa_z[_pfx]
+                nuc_row[f"{_pfx}_rotation_null_p_at_rna2_spots"] = _pa_p[_pfx]
+                nuc_row[f"{_pfx}_rotation_assoc_fraction_at_rna2_spots"] = _pa_assoc[_pfx]
+                nuc_row[f"rotation_null_usable{_tg}_at_rna2_spots"] = _pa_usable[_pfx]
+            # Anchor count the null ACTUALLY used (post in-nucleus restriction
+            # and post nucleolus drop). Emitted only under the restriction flag,
+            # so an unrestricted run's column set is unchanged.
+            if _pa_nuclear_only:
+                nuc_row["n_partner_anchors_at_rna2_spots"] = int(_pa_n_anchors)
         # GATED translation-null per-nucleus columns. Un-nested from the rotation
         # block 2026-08-10 so translation can be requested on its own; the emitted
         # key set for a rotation+translation run is unchanged.
@@ -3120,6 +3264,14 @@ def run_one(
             nuc_row["sampling_rank"] = (
                 int(_samp_res.rank[nid]) if nid in _samp_res.rank else float("nan")
             )
+        # Per-nucleus REAL-size rollup (2026-09-04): median fitted FWHM (um)
+        # over this nucleus's OK fits, and median footprint area (um^2). Nuclear
+        # spots only — ``spots*_by_nid`` is already keyed on nucleus assignment.
+        if compute_size_fit:
+            nuc_row.update(_size_rollup(spots1_by_nid.get(nid), prefix="rna1",
+                                        nuclear_only=False))
+            nuc_row.update(_size_rollup(spots2_by_nid.get(nid), prefix="rna2",
+                                        nuclear_only=False))
         nuc_rows.append(nuc_row)
 
         # Morphology row (per-nucleus, single block — shape is channel-agnostic)
@@ -3205,12 +3357,17 @@ def run_one(
     pooled_rot_obs = float("nan")
     pooled_rot_mean = float("nan")
     pooled_rot_assoc = float("nan")
-    pooled_prot_enrichment = float("nan")
-    pooled_prot_z = float("nan")
-    pooled_prot_p_empirical = float("nan")
-    pooled_prot_obs = float("nan")
-    pooled_prot_mean = float("nan")
-    pooled_prot_assoc = float("nan")
+    # Per-sampled-field pooled partner-anchored rollup (2026-09-04). Keyed by
+    # the same prefixes as the per-nucleus values, so "rna" / "dapi" / "both"
+    # differ only in how many entries these dicts carry.
+    pooled_pa = {
+        k: {
+            "enrichment": float("nan"), "z": float("nan"),
+            "p_empirical": float("nan"), "obs": float("nan"),
+            "null_mean": float("nan"), "assoc": float("nan"),
+        }
+        for k in _pa_prefixes
+    }
     pooled_tr_enrichment = float("nan")
     pooled_tr_z = float("nan")
     if compute_partner_rotation and _rot_w_den > 0:
@@ -3246,29 +3403,39 @@ def run_one(
                     "pooled_obs": float(_ro_pool),
                 }
             )
-    if compute_partner_anchored_rotation and _prot_w_den > 0:
+    if compute_partner_anchored_rotation:
         # Same spot-count-weighted pooling as the rna1-anchored rollup above,
-        # over the nuclei whose PARTNER constellation was rotation-usable.
-        _po_pool = _prot_obs_num / _prot_w_den
-        _pp_pool = _prot_pool / _prot_w_den
-        _pp_mean = float(_pp_pool.mean())
-        _pp_sd = float(_pp_pool.std(ddof=1)) if _pp_pool.size > 1 else 0.0
-        pooled_prot_obs = float(_po_pool)
-        pooled_prot_mean = _pp_mean
-        pooled_prot_enrichment = (_po_pool / _pp_mean) if _pp_mean > 0 else float("nan")
-        pooled_prot_z = ((_po_pool - _pp_mean) / _pp_sd) if _pp_sd > 0 else float("nan")
-        pooled_prot_p_empirical = float(
-            (np.sum(_pp_pool >= _po_pool) + 1) / (_rot_n + 1)
-        )
-        _passoc_vals = [
-            r.get("rna1_rotation_assoc_fraction_at_rna2_spots")
-            for r in nuc_rows
-            if r.get("rotation_null_usable_at_rna2_spots")
-        ]
-        _passoc_vals = [float(a) for a in _passoc_vals
-                        if a is not None and float(a) == float(a)]
-        pooled_prot_assoc = (float(np.mean(_passoc_vals)) if _passoc_vals
-                             else float("nan"))
+        # over the nuclei whose PARTNER constellation was rotation-usable, run
+        # once per sampled field.
+        for _pfx in _pa_prefixes:
+            if _pa_w_den[_pfx] <= 0:
+                continue
+            _tg = _PA_TAG[_pfx]
+            _po_pool = _pa_obs_num[_pfx] / _pa_w_den[_pfx]
+            _pp_pool = _pa_pool[_pfx] / _pa_w_den[_pfx]
+            _pp_mean = float(_pp_pool.mean())
+            _pp_sd = float(_pp_pool.std(ddof=1)) if _pp_pool.size > 1 else 0.0
+            pooled_pa[_pfx]["obs"] = float(_po_pool)
+            pooled_pa[_pfx]["null_mean"] = _pp_mean
+            pooled_pa[_pfx]["enrichment"] = (
+                (_po_pool / _pp_mean) if _pp_mean > 0 else float("nan")
+            )
+            pooled_pa[_pfx]["z"] = (
+                ((_po_pool - _pp_mean) / _pp_sd) if _pp_sd > 0 else float("nan")
+            )
+            pooled_pa[_pfx]["p_empirical"] = float(
+                (np.sum(_pp_pool >= _po_pool) + 1) / (_rot_n + 1)
+            )
+            _passoc_vals = [
+                r.get(f"{_pfx}_rotation_assoc_fraction_at_rna2_spots")
+                for r in nuc_rows
+                if r.get(f"rotation_null_usable{_tg}_at_rna2_spots")
+            ]
+            _passoc_vals = [float(a) for a in _passoc_vals
+                            if a is not None and float(a) == float(a)]
+            pooled_pa[_pfx]["assoc"] = (
+                float(np.mean(_passoc_vals)) if _passoc_vals else float("nan")
+            )
     if compute_partner_translation and _tr_w_den > 0:
         pooled_tr_enrichment = float(_tr_enr_num / _tr_w_den)
         pooled_tr_z = float(_tr_z_num / _tr_w_den)
@@ -3390,6 +3557,37 @@ def run_one(
                 )
                 spot_row["qki_footprint_enrichment"] = float(
                     r.get("qki_footprint_enrichment", float("nan"))
+                )
+            # REAL per-spot size (2026-09-04, additive, default ON). Emitted for
+            # BOTH channels — unlike the footprint block, the Gaussian fit is
+            # defined on whichever plane the spot was detected on.
+            if compute_size_fit:
+                for _sc in _size_fit_cols:
+                    _sv = r.get(_sc, float("nan"))
+                    if _sc == "size_fit_ok":
+                        spot_row[_sc] = int(_sv) if _sv == _sv else 0
+                    elif isinstance(_sv, str):
+                        # 2026-09-04: SIZE_FIT_COLUMNS gained the string-valued
+                        # ``size_fit_flag`` ('ok' / 'not_fitted' / ...) while
+                        # this loop still cast every non-``size_fit_ok`` column
+                        # with float(), which raised on EVERY image. Dispatch by
+                        # value type rather than by column name so a future
+                        # string column cannot reintroduce it.
+                        spot_row[_sc] = _sv
+                    else:
+                        spot_row[_sc] = float(_sv)
+                if compute_footprint:
+                    spot_row["footprint_area_um2"] = float(
+                        r.get("footprint_area_um2", float("nan")))
+                    spot_row["footprint_equiv_diameter_um"] = float(
+                        r.get("footprint_equiv_diameter_um", float("nan")))
+            # Detection-time normalised peak (2026-09-04). Emitted for BOTH
+            # channels whenever the pedestal feature is REQUESTED, so the
+            # column set does not drift between images when one image fails to
+            # receive a factor; rna2 rows are NaN because only rna1 is scaled.
+            if _ped_requested:
+                spot_row["intensity_peak_normalized"] = float(
+                    r.get("intensity_peak_normalized", float("nan"))
                 )
             spot_rows.append(spot_row)
 
@@ -3964,13 +4162,16 @@ def run_one(
             per_image["partner_rotation_disk_px"] = float(_rot_disk_px)
         # GATED PARTNER-ANCHORED rotation per-image pooled rollup (default OFF).
         if compute_partner_anchored_rotation:
-            per_image["rna1_pooled_rotation_enrichment_at_rna2_spots"] = round(pooled_prot_enrichment, 4) if pooled_prot_enrichment == pooled_prot_enrichment else float("nan")
-            per_image["rna1_pooled_rotation_null_z_at_rna2_spots"] = round(pooled_prot_z, 3) if pooled_prot_z == pooled_prot_z else float("nan")
-            per_image["rna1_pooled_rotation_null_p_empirical_at_rna2_spots"] = pooled_prot_p_empirical
-            per_image["rna1_pooled_rotation_obs_at_rna2_spots"] = round(pooled_prot_obs, 3) if pooled_prot_obs == pooled_prot_obs else float("nan")
-            per_image["rna1_pooled_rotation_null_mean_at_rna2_spots"] = round(pooled_prot_mean, 3) if pooled_prot_mean == pooled_prot_mean else float("nan")
-            per_image["rna1_mean_rotation_assoc_fraction_at_rna2_spots"] = round(pooled_prot_assoc, 4) if pooled_prot_assoc == pooled_prot_assoc else float("nan")
-            per_image["n_nuclei_partner_rotation_null_at_rna2_spots"] = int(_prot_n_nuclei_used)
+            for _pfx in _pa_prefixes:
+                _tg = _PA_TAG[_pfx]
+                _pp = pooled_pa[_pfx]
+                per_image[f"{_pfx}_pooled_rotation_enrichment_at_rna2_spots"] = round(_pp["enrichment"], 4) if _pp["enrichment"] == _pp["enrichment"] else float("nan")
+                per_image[f"{_pfx}_pooled_rotation_null_z_at_rna2_spots"] = round(_pp["z"], 3) if _pp["z"] == _pp["z"] else float("nan")
+                per_image[f"{_pfx}_pooled_rotation_null_p_empirical_at_rna2_spots"] = _pp["p_empirical"]
+                per_image[f"{_pfx}_pooled_rotation_obs_at_rna2_spots"] = round(_pp["obs"], 3) if _pp["obs"] == _pp["obs"] else float("nan")
+                per_image[f"{_pfx}_pooled_rotation_null_mean_at_rna2_spots"] = round(_pp["null_mean"], 3) if _pp["null_mean"] == _pp["null_mean"] else float("nan")
+                per_image[f"{_pfx}_mean_rotation_assoc_fraction_at_rna2_spots"] = round(_pp["assoc"], 4) if _pp["assoc"] == _pp["assoc"] else float("nan")
+                per_image[f"n_nuclei_partner_rotation_null{_tg}_at_rna2_spots"] = int(_pa_n_nuclei_used[_pfx])
     else:
         per_image = {
             "image": img_name,
@@ -4110,13 +4311,15 @@ def run_one(
         # Partner-anchored rollup — empty-image fallback (mirror the populated
         # branch's KEY SET so the schema stays image-invariant).
         if compute_partner_anchored_rotation:
-            per_image["rna1_pooled_rotation_enrichment_at_rna2_spots"] = float("nan")
-            per_image["rna1_pooled_rotation_null_z_at_rna2_spots"] = float("nan")
-            per_image["rna1_pooled_rotation_null_p_empirical_at_rna2_spots"] = float("nan")
-            per_image["rna1_pooled_rotation_obs_at_rna2_spots"] = float("nan")
-            per_image["rna1_pooled_rotation_null_mean_at_rna2_spots"] = float("nan")
-            per_image["rna1_mean_rotation_assoc_fraction_at_rna2_spots"] = float("nan")
-            per_image["n_nuclei_partner_rotation_null_at_rna2_spots"] = 0
+            for _pfx in _pa_prefixes:
+                _tg = _PA_TAG[_pfx]
+                per_image[f"{_pfx}_pooled_rotation_enrichment_at_rna2_spots"] = float("nan")
+                per_image[f"{_pfx}_pooled_rotation_null_z_at_rna2_spots"] = float("nan")
+                per_image[f"{_pfx}_pooled_rotation_null_p_empirical_at_rna2_spots"] = float("nan")
+                per_image[f"{_pfx}_pooled_rotation_obs_at_rna2_spots"] = float("nan")
+                per_image[f"{_pfx}_pooled_rotation_null_mean_at_rna2_spots"] = float("nan")
+                per_image[f"{_pfx}_mean_rotation_assoc_fraction_at_rna2_spots"] = float("nan")
+                per_image[f"n_nuclei_partner_rotation_null{_tg}_at_rna2_spots"] = 0
 
     # ---- GATED translation-null per-image pooled rollup ---------------------
     # Un-nested from the rotation block 2026-08-10 and moved after the
@@ -4157,6 +4360,14 @@ def run_one(
     # second, separately-maintained filter. ``n_nuclei_in_*`` is the audit trail
     # for exactly that: it reports the sampled count, not the field count.
     per_image.update(coloc_rollup_columns(nuclei_df))
+
+    # Per-image REAL-size rollup (2026-09-04). Median over this frame's NUCLEAR
+    # spots of the fitted FWHM (um, OK fits only) and of the footprint area
+    # (um^2). Both branches above converge on this single ``per_image``.
+    if compute_size_fit and len(spots_out_df) > 0:
+        for _lab in ("rna1", "rna2"):
+            _sub = spots_out_df[spots_out_df["channel"] == _lab]
+            per_image.update(_size_rollup(_sub, prefix=_lab, nuclear_only=True))
 
     # Per-nucleus-scope companion to the renamed frame-scope NN medians. The
     # per-nucleus ``median_nn_distance_rna*_um`` column covers the spots assigned
@@ -4276,6 +4487,20 @@ def run_one(
         "rna_min_sep_px": rna1_params["min_sep_px"],
         "rna2_min_sep_px": rna2_params["min_sep_px"],
     }
+    # ---- GATED per-image rna1 pedestal provenance (2026-09-04) -------------
+    # Added only when the feature is REQUESTED, so thresholds.csv stays
+    # byte-identical for every preset that does not ask for it.
+    # ``rna_pedestal_applied`` distinguishes "requested and applied" from
+    # "requested but no factor reached this image" — those two produce the
+    # same spots and must not look the same in the provenance table.
+    if _ped_requested:
+        thresholds["rna_pedestal_normalize"] = True
+        thresholds["rna_pedestal_stat"] = str(
+            getattr(cfg.foci, "rna_pedestal_stat", "nuclear_median")
+        )
+        thresholds["rna_pedestal_applied"] = bool(_ped_applied)
+        thresholds["rna_pedestal_factor"] = _ped_factor
+        thresholds["rna_pedestal_clipped_px"] = int(_ped_clipped_px)
 
     qc = dict(
         labels=labels,

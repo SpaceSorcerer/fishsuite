@@ -168,6 +168,7 @@ def run_one(
     analysis_floors: Optional[Dict[str, Any]] = None,
     sampling_unit_key: Optional[str] = None,
     sampling_n_alloc: Optional[int] = None,
+    rna_pedestal_factor: Optional[float] = None,
 ) -> ImageResult:
     """Run the upgraded rna_protein pipeline on a single image.
 
@@ -206,6 +207,10 @@ def run_one(
         precomputed_labels=precomputed_labels,
         sampling_unit_key=sampling_unit_key,
         sampling_n_alloc=sampling_n_alloc,
+        # Per-image rna1 pedestal multiplier (2026-09-04). Computed by the
+        # runner from the batch pre-pass; None unless
+        # foci.rna_pedestal_normalize is on.
+        rna_pedestal_factor=rna_pedestal_factor,
         # 2026-06-05 Brian: the rna2 slot here IS the antibody/protein channel.
         # When cfg.foci.detect_antibody_spots is False, rna_rna SKIPS rna2
         # spot detection (diffuse QKI IF carpet fix). The flag rides on the

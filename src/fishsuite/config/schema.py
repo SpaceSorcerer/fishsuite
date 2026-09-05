@@ -827,6 +827,67 @@ class FociCfg(BaseModel):
     # DEFAULT FALSE -> the columns are never emitted and the output is
     # byte-equivalent to the pre-feature path.
     compute_partner_anchored_rotation_null: bool = False
+    # 2026-09-04 Brian: WHICH FIELD the partner-anchored rotation null samples.
+    # "rna"  -> the rna1 plane (the 2026-09-03 behaviour, unchanged default).
+    # "dapi" -> the DAPI plane. DAPI carries no RNA-probe signal, so the same
+    #           enrichment machinery run on it is a SIGNAL-FREE REFERENCE: it
+    #           measures what the estimator returns from nuclear-texture
+    #           autocorrelation alone. Motivated by the QKI x BIN1-intron
+    #           adversarial review F1 (the enrichment function returned
+    #           1.16-1.20 on an antigen-free 640 channel in QKI-KO), which the
+    #           rna1-anchored number alone cannot distinguish from binding.
+    # "both" -> emit BOTH column families in one pass.
+    # The DAPI-sampled null uses its OWN RNG streams (seed root + 909 / + 1212),
+    # so switching this on leaves every rna1-sampled draw bit-for-bit unchanged.
+    # Columns: ``dapi_rotation_enrichment_at_rna2_spots`` +
+    # ``dapi_rotation_null_z_at_rna2_spots`` + ``dapi_rotation_null_p_at_rna2_spots``
+    # + ``dapi_rotation_assoc_fraction_at_rna2_spots`` +
+    # ``rotation_null_usable_dapi_at_rna2_spots``, plus the per-image pooled
+    # rollup, all relabelled ``rna2`` -> ``protein`` by rna_protein.
+    partner_anchored_null_sample_field: Literal["rna", "dapi", "both"] = "rna"
+    # 2026-09-04 Brian: restrict the partner-anchored CONSTELLATION to anchors
+    # whose centre lies INSIDE the nucleus label. The observed statistic is
+    # computed over every anchor wherever it lies, while the keep-N rotation
+    # redraw forces every null anchor into ``nucleus minus nucleolus``; an
+    # out-of-nucleus anchor therefore contributes to the observed value from a
+    # support the null never samples. In the QKI x BIN1-intron arm-2 run 20.5 %
+    # of QKI anchors (spot-weighted) lay outside the nucleus mask.
+    #
+    # ``FociChannelOverrideCfg.only_nuclear_spots`` does NOT do this: in
+    # ``rna_rna`` / ``rna_protein`` that field is resolved and written to
+    # thresholds.csv but never filters the spot table, so a preset setting it
+    # asserts a restriction the engine does not apply. This flag is the
+    # restriction, scoped to the partner-anchored null only.
+    #
+    # When on, ``n_partner_anchors_at_rna2_spots`` records the anchor count the
+    # null actually used, per nucleus. Default False -> byte-identical output.
+    partner_anchored_null_nuclear_anchors_only: bool = False
+    # 2026-09-04 Brian: PER-IMAGE PEDESTAL NORMALISATION of the rna1 plane
+    # BEFORE LoG detection. A fixed absolute ``threshold_override`` is only
+    # comparable across images when their background pedestals are; in the
+    # QKI x BIN1-intron acquisition the in-nucleus 561 median spans 403-1056
+    # across fields (~2.6x) while p99/p50 stays 1.77-2.28, i.e. the field-to-
+    # field difference is MULTIPLICATIVE. When True the rna1 plane is scaled by
+    # ``batch_reference / this_image_in-nucleus_median`` so one absolute
+    # threshold means the same thing everywhere. The batch reference is the
+    # MEDIAN of the per-image in-nucleus medians over the BIOLOGICAL (non
+    # secondary-only) images, so absolute thresholds keep their original scale.
+    #
+    # ONLY spot DETECTION sees the scaled plane. Every intensity written out
+    # (spot peak intensities, partner intensity, pixel-coloc, rotation nulls,
+    # publication images) is measured on the RAW plane; the detection-time
+    # normalised peak is emitted ALONGSIDE as ``intensity_peak_normalized``.
+    #
+    # Requires the batch pre-pass (``pixel_coloc.threshold_scope: batch``),
+    # which is where the per-image in-nucleus medians are computed; without it
+    # the runner prints an explicit NOTE and leaves detection un-normalised
+    # rather than silently inventing a reference. Default False -> byte-
+    # identical output.
+    rna_pedestal_normalize: bool = False
+    # Statistic used as each image's pedestal. Only ``nuclear_median`` is
+    # implemented; it is a named Literal so a future statistic is an additive
+    # change and every run records which one it used.
+    rna_pedestal_stat: Literal["nuclear_median"] = "nuclear_median"
     # 2026-07-07 Brian: PIPELINE-NATIVE MIAT x QKI ASSOCIATION metrics (approved
     # spec _SPEC_association_analysis_2026-07-06.md). Continuous, floor-robust,
     # AT-THE-PUNCTUM replacements for the binary "QKI-associated MIAT spots"
@@ -871,6 +932,25 @@ class FociCfg(BaseModel):
     # contributes 0 to the gated per-nucleus ratio. Units = raw partner-channel
     # intensity (same scale as ``qki_at_miat_footprint``). DEFAULT None.
     assoc_qki_floor: Optional[float] = None
+    # 2026-09-04 Brian: REAL per-spot size measurement. ``spot_diameter_um`` /
+    # ``spot_fwhm_px`` / ``spot_area_px`` come from a second-moment estimator on
+    # a fixed 9x9 crop (``rna_rna._measure_spot_diameter_um``), which is bounded
+    # by the crop (hard ceiling FWHM 6.08 px, floor 1.18 px) and therefore
+    # compresses a real size range into a near-constant number. When True the
+    # engine ADDITIONALLY fits a 2-D Gaussian + constant background around every
+    # spot and emits ``size_fit_sigma_px`` / ``size_fit_fwhm_px`` /
+    # ``size_fit_fwhm_um`` / ``size_fit_amplitude`` / ``size_fit_background`` /
+    # ``size_fit_r2`` / ``size_fit_ok``, plus ``footprint_area_um2`` /
+    # ``footprint_equiv_diameter_um`` when the footprint block is on. The legacy
+    # columns are NOT changed. DEFAULT True (additive columns only).
+    compute_size_fit: bool = True
+    # Odd side length (px) of the FIRST-PASS square fit window. 9 -> +/-4 px,
+    # chosen from a window-convergence scan on real 65 nm/px data: the fitted
+    # sigma settles near 2.42 px from window 11 up, window 9 returns 2.37 px
+    # (2% low), and wider windows lose spots to neighbours entering the crop.
+    # A spot whose sigma exceeds half its window is refitted on a wider one
+    # (up to 15 px), so this is a starting point, not a ceiling.
+    size_fit_window_px: int = 9
 
     def resolved_for(self, channel: Literal["rna", "rna2", "antibody"]) -> Dict[str, Any]:
         """Return a dict of effective spot-detection params for ``channel``.

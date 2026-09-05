@@ -13,7 +13,7 @@ import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 import pandas as pd
@@ -489,6 +489,46 @@ def _prescan_one(args):
 # Main batch entry point
 # ---------------------------------------------------------------------------
 
+def resolve_rna_pedestal(
+    nuclear_median_by_path: Dict[str, float],
+    biological_paths: Sequence[str],
+) -> Tuple[Optional[float], Dict[str, float], int, bool]:
+    """Resolve the per-image rna1 pedestal factors for ``foci.rna_pedestal_normalize``.
+
+    ``nuclear_median_by_path`` is the in-nucleus median of the rna1 channel for
+    every image the batch pre-pass measured. ``biological_paths`` is the subset
+    that is NOT secondary-only.
+
+    The REFERENCE is the median of the biological images' medians: secondary-only
+    fields exist to measure background and must not set the scale the biological
+    images are normalised to. They still receive a factor, so detection runs on
+    one pedestal across the whole run.
+
+    Returns ``(reference, factors_by_path, n_reference_images, fell_back_to_all)``.
+    ``reference`` is None when no median is available at all. ``fell_back_to_all``
+    is True when no biological image had nuclei and the reference had to come
+    from every image instead — a fact the caller must print rather than absorb.
+    """
+    if not nuclear_median_by_path:
+        return None, {}, 0, False
+    bio = [
+        nuclear_median_by_path[p]
+        for p in biological_paths
+        if p in nuclear_median_by_path
+    ]
+    fell_back = False
+    if not bio:
+        bio = list(nuclear_median_by_path.values())
+        fell_back = True
+    reference = float(np.median(bio))
+    factors = {
+        p: reference / m
+        for p, m in nuclear_median_by_path.items()
+        if m > 0
+    }
+    return reference, factors, len(bio), fell_back
+
+
 def run_batch(
     config_path: Path,
     input_dir: Path,
@@ -676,6 +716,13 @@ def run_batch(
     # ONLY when threshold_scope == 'batch'; empty otherwise, so the per-image
     # path's behavior is byte-identical to before (dict.get -> None).
     precomputed_labels_by_path: Dict[str, np.ndarray] = {}
+    # 2026-09-04: per-image IN-NUCLEUS MEDIAN of the rna1 channel, harvested
+    # from the same batch pre-pass (the pooled nuclear pixels are already in
+    # hand, so this costs nothing extra). Consumed only by
+    # foci.rna_pedestal_normalize.
+    nuclear_median_by_path: Dict[str, float] = {}
+    rna_pedestal_reference: float | None = None
+    rna_pedestal_factor_by_path: Dict[str, float] = {}
     pc_cfg = getattr(cfg, "pixel_coloc", None)
     # 2026-05-28 Brian: rna_protein is a TWO-channel mode (RNA + protein) and
     # pools BOTH channels in the batch pre-scan, exactly like rna_rna pools
@@ -742,6 +789,7 @@ def run_batch(
                     return
                 if v1 is not None and v1.size > 0:
                     pooled_list.append(v1)
+                    nuclear_median_by_path[path_str] = float(np.median(v1))
                 if is_rna_rna and v2 is not None and v2.size > 0:
                     pooled2_list.append(v2)
                 if labels is not None:
@@ -1594,6 +1642,46 @@ def run_batch(
         # 2026-05-21 Brian: auto-strip the common leading prefix from all
         # input filenames so per-image outputs use short, readable names.
         # e.g. "TRANK1-CAMK2D-WT-KO_10_6ADVMLE fast" -> "10_6ADVMLE_fast".
+        # ---- rna1 PEDESTAL REFERENCE (2026-09-04) -------------------------
+        # ``rna_pedestal_reference`` is the MEDIAN of the per-image in-nucleus
+        # medians over the BIOLOGICAL images. Secondary-only fields are excluded
+        # from the reference because they exist to measure background and must
+        # not set the scale the biological images are normalised to; they still
+        # RECEIVE a factor, so every image is detected on one pedestal.
+        if bool(getattr(cfg.foci, "rna_pedestal_normalize", False)):
+            if not nuclear_median_by_path:
+                _console.print(
+                    "[yellow]NOTE: foci.rna_pedestal_normalize is ON but no "
+                    "per-image in-nucleus medians are available (it needs the "
+                    "batch pre-pass, pixel_coloc.threshold_scope: batch) -> "
+                    "rna1 detection will run UN-NORMALISED.[/yellow]"
+                )
+            else:
+                (
+                    rna_pedestal_reference,
+                    rna_pedestal_factor_by_path,
+                    _n_ref_imgs,
+                    _ref_fell_back,
+                ) = resolve_rna_pedestal(
+                    nuclear_median_by_path,
+                    [str(im.path) for im in images if not im.sec_only],
+                )
+                _ref_src = (
+                    "ALL images (no biological image had nuclei)"
+                    if _ref_fell_back else "biological images"
+                )
+                _fvals = list(rna_pedestal_factor_by_path.values())
+                _console.print(
+                    f"[bold]PEDESTAL[/bold] rna1 "
+                    f"stat={getattr(cfg.foci, 'rna_pedestal_stat', 'nuclear_median')} "
+                    f"reference={rna_pedestal_reference:.2f} "
+                    f"(median of {_n_ref_imgs} {_ref_src}); "
+                    f"per-image in-nucleus median range "
+                    f"{min(nuclear_median_by_path.values()):.1f}-"
+                    f"{max(nuclear_median_by_path.values()):.1f}; "
+                    f"factor range {min(_fvals):.4f}-{max(_fvals):.4f} "
+                    f"over {len(_fvals)} images"
+                )
         _strip_prefix = _compute_common_filename_prefix([im.path.stem for im in images])
         task = progress.add_task("Processing images", total=len(images))
         for i, dimg in enumerate(images):
@@ -1637,6 +1725,15 @@ def run_batch(
                     _cached_labels = precomputed_labels_by_path.get(str(dimg.path))
                     if _cached_labels is not None:
                         _mode_kwargs["precomputed_labels"] = _cached_labels
+                # Per-image rna1 pedestal multiplier (2026-09-04). Forwarded
+                # ONLY when the feature is on and this image got a factor, so
+                # every other run passes nothing and is unchanged. rna_only does
+                # not implement it and is deliberately not in this list.
+                if (bool(getattr(cfg.foci, "rna_pedestal_normalize", False))
+                        and cfg.channels.analysis_mode in ("rna_rna", "rna_protein")):
+                    _ped_f = rna_pedestal_factor_by_path.get(str(dimg.path))
+                    if _ped_f is not None:
+                        _mode_kwargs["rna_pedestal_factor"] = float(_ped_f)
                 # Fixed-N sampling: hand this image its unit key + its share of
                 # N. Only forwarded when sampling is enabled, so every other
                 # path is untouched.
