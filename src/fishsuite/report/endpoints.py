@@ -321,7 +321,16 @@ ENDPOINTS: Tuple[Endpoint, ...] = (
              "fraction of {protein} puncta with an anchor punctum within 0.3 micrometres",
              "Fraction of {protein} puncta paired to {rna1} within 0.3 micrometres",
              exploratory=True,
-             alt_columns=("paired_fraction_rna2_at_0p3um",)),
+             alt_columns=("paired_fraction_rna2_at_0p3um",),
+             note="DEFINITION, the mirror of the anchor-side paired fraction and NOT "
+                  "its reciprocal. Denominator: EVERY punctum of the PARTNER channel "
+                  "in that nucleus, nuclear and cytoplasmic. Distance: three-"
+                  "dimensional centroid separation at or below 0.3 micrometres, using "
+                  "the run's own voxel size. Anchor set: every anchor punctum, not "
+                  "restricted to the nucleus. It differs from the anchor-side fraction "
+                  "whenever the two channels have different punctum counts, because "
+                  "only the denominator changes; the two are not interchangeable and "
+                  "neither implies the other."),
     Endpoint("median_nn_distance_rna1_um", "median_nn_distance_rna1_um", "partner",
              "micrometres",
              "Median nearest-neighbour distance from {rna1} to {protein}",

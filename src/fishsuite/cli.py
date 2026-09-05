@@ -829,6 +829,12 @@ def postrun(run_dir, staging, input_dir, image_key, seed):
                    "group against the reference. Default: all pairs when there are "
                    "more than two groups, reference-only when there are two, which "
                    "are the same thing at two groups.")
+@click.option("--primary-endpoint", "primary_endpoint", default=None,
+              metavar="NAME",
+              help="Endpoint this report answers on. Named on line 2 of "
+                   "READOUT.md and listed first among the headline "
+                   "endpoints, so a reader who stops after two lines "
+                   "still knows which result is the primary one.")
 @click.option("--sec-outlier-k", "sec_outlier_k", default=0.0, show_default=True,
               type=float,
               help="Drop a secondary-only control field whose puncta per nucleus on "
@@ -883,7 +889,7 @@ def postrun(run_dir, staging, input_dir, image_key, seed):
                    "now.")
 def report(run_dir, groups, groups_file, reference, group_order, well_from_image,
            out_dir, exclude_field, reason, all_pairs, nucleus_filter, peak_floor,
-           sec_outlier_k, caveat_file, style,
+           primary_endpoint, sec_outlier_k, caveat_file, style,
            alpha, qc_min_nuclei, sec_min_nuclei, engine_repo, preset,
            no_figures, no_coloc_panel, stamp):
     """Build the condition-versus-condition report for a finished run.
@@ -930,6 +936,8 @@ def report(run_dir, groups, groups_file, reference, group_order, well_from_image
             if not floors and cfg.get("peak_floors"):
                 floors = {str(k): float(v) for k, v in cfg["peak_floors"].items()}
             color_key = color_key or cfg.get("group_colors") or {}
+            primary_endpoint = (primary_endpoint
+                                or cfg.get("primary_endpoint") or "")
             if not sec_outlier_k and cfg.get("sec_outlier_k"):
                 sec_outlier_k = float(cfg["sec_outlier_k"])
             if nucleus_filter == "all" and cfg.get("nucleus_filter"):
@@ -958,6 +966,7 @@ def report(run_dir, groups, groups_file, reference, group_order, well_from_image
             nucleus_filter=nucleus_filter,
             group_colors=color_key,
             sec_outlier_k=sec_outlier_k,
+            primary_endpoint=primary_endpoint or "",
             qc_min_nuclei=qc_min_nuclei,
             sec_min_nuclei=sec_min_nuclei,
             alpha=alpha,

@@ -89,6 +89,7 @@ def load_groups_file(path: Path) -> dict:
         groups:            {GROUP: [well, well, ...]}
         group_order:       [GROUP, ...]          # first entry is the reference
         group_colors:      {GROUP: "#RRGGBB", ...}  # this set's own colour key
+        primary_endpoint:  ENDPOINT_NAME        # named in READOUT line 2, listed first
         sec_outlier_k:     3.0                   # control-field outlier multiple
         reference:         GROUP
         well_from_image:   regex with one capture group
@@ -120,6 +121,7 @@ def load_groups_file(path: Path) -> dict:
             "peak_floors": raw.get("peak_floors") or {},
             "caveat_file": raw.get("caveat_file") or "",
             "nucleus_filter": str(raw.get("nucleus_filter") or "all"),
+            "primary_endpoint": str(raw.get("primary_endpoint") or ""),
             "group_colors": {str(k): str(v) for k, v in
                              (raw.get("group_colors") or {}).items()},
             "sec_outlier_k": raw.get("sec_outlier_k"),
@@ -133,7 +135,7 @@ def readme_sheet(run_dir: Path, group_order: Sequence[str], reference: str,
                  absent: Sequence[str], exclude_fields: Dict[str, str],
                  mde_note: str, native_figures: str, alpha: float,
                  gate_record: Optional[Dict[str, object]] = None,
-                 caveat: str = "") -> pd.DataFrame:
+                 caveat: str = "", primary_endpoint: str = "") -> pd.DataFrame:
     rows: List[Tuple[str, str, str]] = []
 
     def add(section, item, text):
@@ -181,6 +183,10 @@ def readme_sheet(run_dir: Path, group_order: Sequence[str], reference: str,
     add("Statistics", "Sensitivity, never the gate",
         "Exact permutation of well labels, whose two-sided p has an arithmetic floor "
         "reported alongside it, and the FOV-level Tukey described above.")
+    if primary_endpoint:
+        add("Statistics", "Declared primary endpoint",
+            f"{primary_endpoint}. It is named on line 2 of READOUT.md and "
+            "listed first among the headline endpoints there.")
     prim = [e.name for e in endpoints if e.primary]
     add("Statistics", "Primary endpoints",
         "Marked primary in the contrast tables: " + ", ".join(prim) +
@@ -336,13 +342,48 @@ def provenance_sheet(data: dict, run_dir: Path, out_dir: Path,
 # ------------------------------------------------------------------ readout
 
 
+def _primary_statement(contrasts: pd.DataFrame, primary_endpoint: str) -> str:
+    """Line 2 of the readout: which endpoint this report answers on, by name.
+
+    Returns an empty string when no primary endpoint was declared, so the readout
+    omits the line rather than asserting one that was never chosen.
+    """
+    if not primary_endpoint:
+        return ""
+    if not len(contrasts) or "endpoint" not in contrasts.columns:
+        return (f"The declared primary endpoint {primary_endpoint} could not be "
+                "checked because this report produced no contrasts.")
+    hit = contrasts[contrasts["endpoint"] == primary_endpoint]
+    if not len(hit):
+        return (f"The declared primary endpoint {primary_endpoint} is NOT among the "
+                "endpoints this run emitted, so no primary result is quoted below. "
+                "Check the primary_endpoint key against the run.")
+    r = hit.iloc[0]
+    if bool(r.get("endpoint_absent_in_run")):
+        return (f"PRIMARY endpoint: {r['endpoint_plain']} ({primary_endpoint}). Its "
+                "column is ABSENT from this run, so it is reported as not available "
+                "and nothing below stands in for it.")
+    return (f"PRIMARY endpoint: {r['endpoint_plain']} ({primary_endpoint}). "
+            "Everything else below is supporting. A nuclear fraction is the primary "
+            "readout because it is a within-nucleus ratio, so a shifted detection "
+            "floor moves numerator and denominator together; a per-nucleus count "
+            "does not.")
+
+
 def build_readout(run_dir: Path, out_dir: Path, contrasts: pd.DataFrame,
                   well: pd.DataFrame, group_order: Sequence[str], reference: str,
                   sec: pd.DataFrame, absent: Sequence[str],
-                  labels: Dict[str, str], alpha: float, caveat: str = "") -> str:
+                  labels: Dict[str, str], alpha: float, caveat: str = "",
+                  primary_endpoint: str = "") -> str:
     """Ten plain lines, agnostic framing, first line the run path."""
     lines: List[str] = []
     lines.append(f"Run reported: {run_dir}")
+    # Line 2 names the endpoint this report answers on, before any number is
+    # quoted and before the caveat, so a reader who stops after two lines still
+    # knows which result is the primary one.
+    _primary_line = _primary_statement(contrasts, primary_endpoint)
+    if _primary_line:
+        lines.append(_primary_line)
     if caveat:
         lines.append(caveat.strip().replace("\n", " "))
     lines.append(
@@ -352,6 +393,12 @@ def build_readout(run_dir: Path, out_dir: Path, contrasts: pd.DataFrame,
         + f"); the well is the biological replicate and {reference} is the reference.")
     prim = contrasts[contrasts["primary"] & ~contrasts["endpoint_absent_in_run"]] \
         if len(contrasts) else contrasts
+    # The headline list leads with the declared primary endpoint; it is NAMED on
+    # line 2 above, before any number is quoted.
+    if primary_endpoint and len(prim):
+        named = prim[prim["endpoint"] == primary_endpoint]
+        if len(named):
+            prim = pd.concat([named, prim[prim["endpoint"] != primary_endpoint]])
     if len(prim):
         parts = []
         for _, r in prim.iterrows():
@@ -423,6 +470,7 @@ def build_report(run_dir: Path, out_dir: Optional[Path] = None,
                  group_order: Sequence[str] = (),
                  peak_floors: Optional[Dict[str, float]] = None,
                  caveat: str = "",
+                 primary_endpoint: str = "",
                  all_pairs: bool = False,
                  nucleus_filter: str = "all",
                  group_colors: Optional[Dict[str, str]] = None,
@@ -549,7 +597,8 @@ def build_report(run_dir: Path, out_dir: Optional[Path] = None,
     contrasts.to_csv(out_dir / "contrasts.csv", index=False)
     (out_dir / "READOUT.md").write_text(
         build_readout(run_dir, out_dir, contrasts, well, group_order_resolved, reference, sec,
-                      absent, labels, alpha, caveat), encoding="utf-8")
+                      absent, labels, alpha, caveat, primary_endpoint),
+        encoding="utf-8")
 
     source = _prov.write_source_run(
         run_dir, out_dir, preset=preset,
