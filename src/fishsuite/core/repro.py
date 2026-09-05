@@ -148,6 +148,35 @@ _VERSION_PKGS = [
 ]
 
 
+def engine_git_commit() -> str:
+    """The commit of the fishsuite checkout this module is running from.
+
+    Returns the 40-character SHA, with "-dirty" appended when the tree has
+    uncommitted changes, or "unknown" when the source is not in a git
+    repository or git is unavailable. Never raises.
+
+    2026-09-05: added because a run's versions.txt recorded the package
+    version but not the commit, so which engine produced a run was evidenced
+    only by logs outside the run directory. fishsuite_version alone cannot
+    distinguish two commits that share it, which is every commit between
+    releases.
+    """
+    try:
+        import subprocess
+        repo = Path(__file__).resolve().parents[2]
+        def _git(*args: str) -> str:
+            return subprocess.run(("git", "-C", str(repo)) + args,
+                                  capture_output=True, text=True, timeout=10,
+                                  check=True).stdout.strip()
+        sha = _git("rev-parse", "HEAD")
+        if not sha:
+            return "unknown"
+        dirty = bool(_git("status", "--porcelain", "--untracked-files=no"))
+        return sha + ("-dirty" if dirty else "")
+    except Exception:
+        return "unknown"
+
+
 def write_versions_txt(out_dir: Path | str, seed: int) -> bool:
     """Write ``versions.txt`` into ``out_dir``. Crash-proof (returns bool).
 
@@ -169,6 +198,7 @@ def write_versions_txt(out_dir: Path | str, seed: int) -> bool:
         out_dir.mkdir(parents=True, exist_ok=True)
         lines = []
         lines.append(f"fishsuite_version: {_fs_version}")
+        lines.append(f"fishsuite_git_commit: {engine_git_commit()}")
         lines.append(f"global_seed: {seed}")
         lines.append(
             f"written_utc: {datetime.now(tz=timezone.utc).isoformat()}"
