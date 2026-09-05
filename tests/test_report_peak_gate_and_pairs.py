@@ -299,3 +299,38 @@ def test_the_secondary_only_outlier_rule_is_per_channel(tmp_path):
     hot = out[out["field"] == "s3.vsi"].iloc[0]
     assert bool(hot["excluded"]) and hot["outlier_channel"] == "rna2"
     assert int(out["excluded"].sum()) == 1
+
+
+def test_a_derived_column_never_shadows_the_engines_own(tmp_path):
+    """Merging a recomputed column onto a run that already emits it suffixes both
+    to `_x`/`_y`, removing the plain name and making the endpoint resolve ABSENT.
+    Two pairing endpoints were silently blanked that way."""
+    run = tmp_path / "RUN_DUP"
+    run.mkdir(parents=True)
+    img = [{"image": "a.vsi", "condition": "WT_1", "secondary_only": False}]
+    nuc = [{"image": "a.vsi", "nucleus_id": 1, "n_spots_rna1": 2.0,
+            "nucleus_area_px": 16000.0, "voxel_xy_um": 0.065,
+            "paired_fraction_rna1_at_0p3um": 0.75,      # the engine's own value
+            "median_nn_distance_rna1_um": 0.42}]
+    spot = [{"image": "a.vsi", "channel": "rna1", "nucleus_id": 1, "in_nucleus": True,
+             "in_cytoplasm": False, "x_px": 0.0, "y_px": 0.0, "z_slice": 0,
+             "paired_at_0p3um": 0, "nn_distance_um": 9.0,
+             "miat_footprint_area_px": 20.0}]
+    pd.DataFrame(img).to_csv(run / "per_image_summary.csv", index=False)
+    pd.DataFrame(nuc).to_csv(run / "nuclei_metrics.csv", index=False)
+    pd.DataFrame(spot).to_csv(run / "spot_metrics.csv", index=False)
+    (run / "run_config.json").write_text(
+        json.dumps({"config_resolved": {"channels": {"analysis_mode": "rna_protein"}}}),
+        encoding="utf-8")
+
+    data = agg.load_run(run, {}, {})
+    cols = list(data["nuclei"].columns)
+    for c in ("paired_fraction_rna1_at_0p3um", "median_nn_distance_rna1_um"):
+        assert c in cols, f"{c} lost its plain name in the merge"
+        assert f"{c}_x" not in cols and f"{c}_y" not in cols, f"{c} was suffixed"
+    # The engine's value survives; the recomputation does not shadow it.
+    assert float(data["nuclei"]["paired_fraction_rna1_at_0p3um"].iloc[0]) == 0.75
+    assert float(data["nuclei"]["median_nn_distance_rna1_um"].iloc[0]) == 0.42
+    _, absent = ep.resolve(data["nuclei"], data["per_image"])
+    assert "paired_fraction_rna1_at_0p3um" not in absent
+    assert "median_nn_distance_rna1_um" not in absent

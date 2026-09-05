@@ -261,8 +261,21 @@ def load_run(run_dir: Path, well_to_group: Dict[str, str],
                                if c in nuclei.columns], errors="ignore")
     nuc = nuc.merge(labels, on="image", how="left", validate="many_to_one")
     if len(derived):
-        nuc = nuc.merge(derived, on=["image", "nucleus_id"], how="left",
-                        validate="one_to_one")
+        # The engine's own per-nucleus column wins whenever it emitted one. The
+        # derived frame recomputes some of the same quantities (the pairing
+        # endpoints in particular) and on an UNGATED run the two agree to about
+        # 1e-16, so preferring the engine costs nothing and keeps the report
+        # reading the run rather than a re-derivation of it.
+        #
+        # Merging both would suffix them `_x` and `_y`, which removes the plain
+        # name entirely and makes the endpoint resolve as ABSENT: two pairing
+        # endpoints were silently blanked that way before this guard existed.
+        # A gated run is handled separately in the report builder, where the
+        # derived values must win because a floor invalidates the engine's.
+        dup = [c for c in derived.columns
+               if c in nuc.columns and c not in ("image", "nucleus_id")]
+        nuc = nuc.merge(derived.drop(columns=dup), on=["image", "nucleus_id"],
+                        how="left", validate="one_to_one")
 
     vox = pd.to_numeric(nuc.get("voxel_xy_um"), errors="coerce")
     if vox is not None and not vox.isna().all() and "nucleus_area_px" in nuc.columns:
