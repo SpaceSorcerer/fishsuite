@@ -281,10 +281,26 @@ def load_run(run_dir: Path, well_to_group: Dict[str, str],
     if vox is not None and not vox.isna().all() and "nucleus_area_px" in nuc.columns:
         nuc["nucleus_area_um2"] = pd.to_numeric(nuc["nucleus_area_px"],
                                                 errors="coerce") * vox ** 2
+        # TOTAL puncta (nuclear + cytoplasmic) over NUCLEAR area. The two
+        # scopes do not match; the endpoint label says so. Kept because it is
+        # the published sensitivity for the per-nucleus count.
         for src_col, out_col in (("n_spots_rna1", "rna1_spots_per_um2"),
                                  ("n_spots_rna2", "rna2_spots_per_um2")):
             if src_col in nuc.columns:
                 nuc[out_col] = (pd.to_numeric(nuc[src_col], errors="coerce")
+                                / nuc["nucleus_area_um2"])
+        # 2026-09-05: scope-matched densities, NUCLEAR puncta over NUCLEAR area.
+        # The engine already emits these; recompute only when it did not, so the
+        # report reads the run wherever the run answered.
+        for eng_col, cnt_col, out_col in (
+                ("nuclear_spot_density_per_um2", "nuclear_spot_count",
+                 "rna1_nuclear_spots_per_um2"),
+                ("nuclear_spot_density_per_um2_protein", "nuclear_spot_count_protein",
+                 "protein_spots_per_um2")):
+            if eng_col in nuc.columns:
+                nuc[out_col] = pd.to_numeric(nuc[eng_col], errors="coerce")
+            elif cnt_col in nuc.columns:
+                nuc[out_col] = (pd.to_numeric(nuc[cnt_col], errors="coerce")
                                 / nuc["nucleus_area_um2"])
     for flag in ("rotation_null_usable", "rotation_null_usable_at_protein_spots"):
         if flag in nuc.columns:

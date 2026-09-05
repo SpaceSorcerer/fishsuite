@@ -998,6 +998,14 @@ PARTNER_ANCHORED = [
     ("frac_called_coloc_partner_shuffle",
      "partner-anchored coloc fraction (shuffle, Costes with fallback)"),
 ]
+# Object-fraction columns are on 0-1 and are counts of OBJECTS, not pixel
+# intensity-correlation quotients. Both spellings must be listed: the paired
+# columns are named `paired_frac_*`, so a `frac_`-only test missed all six of
+# them and they inherited the pixel fallback, `role = pixel, descriptive` and
+# `unit = ICQ -0.5..+0.5`. The values were always correct; only the two label
+# columns were wrong, and one of the six is a delivered headline.
+OBJECT_FRACTION_PREFIXES = ("frac_", "paired_frac_")
+
 SPOT_PAIRING = [
     ("paired_frac_rna1_at_partner", "fraction of rna1 puncta paired to a partner punctum"),
     ("paired_frac_rna1_at_partner_shuffle", "same, partner positions shuffled"),
@@ -1062,9 +1070,10 @@ def contrasts_table(well, per_nucleus, mde, primary_col, secondary_col):
             role="PRIMARY object endpoint, tested" if primary
             else ("SENSITIVITY twin of the primary, descriptive" if twin
                   else "SENSITIVITY, descriptive" if sens
-                  else ("object, descriptive" if col.startswith("frac_")
+                  else ("object, descriptive" if col.startswith(OBJECT_FRACTION_PREFIXES)
                         else "pixel, descriptive")),
-            unit="fraction 0-1" if col.startswith(("frac_", "manders")) else
+            unit="fraction 0-1"
+                 if col.startswith(OBJECT_FRACTION_PREFIXES + ("manders",)) else
                  ("r" if col.startswith("pearson") else "ICQ -0.5..+0.5"),
             arm_test=ARMS[1], arm_ref=ARMS[0],
             n_wells_test=w["n_test"], n_wells_ref=w["n_ref"],

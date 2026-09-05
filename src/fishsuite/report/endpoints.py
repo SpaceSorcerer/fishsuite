@@ -175,15 +175,49 @@ ENDPOINTS: Tuple[Endpoint, ...] = (
                   "moves numerator and denominator together. The anchor channel's "
                   "nuclear fraction is the matching primary for rna1."),
     Endpoint("rna2_spots_per_um2", "rna2_spots_per_um2", "localization",
-             "puncta per square micrometre of nucleus",
-             "{rna2} puncta per square micrometre", source=DERIVED_DENSITY,
+             "TOTAL puncta per square micrometre of NUCLEAR area",
+             "{rna2} total puncta per square micrometre of nucleus",
+             source=DERIVED_DENSITY,
              note="SENSITIVITY for the {rna2} per-nucleus count, normalising for any "
-                  "difference in nuclear area between groups."),
+                  "difference in nuclear area between groups. SCOPE MISMATCH: the "
+                  "numerator is every punctum in the cell, nuclear and cytoplasmic, "
+                  "while the denominator is the NUCLEAR area only, so it is a count "
+                  "normalised by nuclear size and not a nuclear concentration. Use "
+                  "rna2_nuclear_spot_fraction, or the scope-matched "
+                  "protein_spots_per_um2 for the partner, when concentration is "
+                  "what is meant."),
     Endpoint("rna1_spots_per_um2", "rna1_spots_per_um2", "localization",
-             "puncta per square micrometre of nucleus",
-             "{rna1} puncta per square micrometre", source=DERIVED_DENSITY,
+             "TOTAL puncta per square micrometre of NUCLEAR area",
+             "{rna1} total puncta per square micrometre of nucleus",
+             source=DERIVED_DENSITY,
              note="SENSITIVITY for the per-nucleus count, normalising for any "
-                  "difference in nuclear area between groups."),
+                  "difference in nuclear area between groups. SCOPE MISMATCH: the "
+                  "numerator is every punctum in the cell, nuclear and cytoplasmic, "
+                  "while the denominator is the NUCLEAR area only, so it is a count "
+                  "normalised by nuclear size and not a nuclear concentration. "
+                  "rna1_nuclear_spots_per_um2 is the scope-matched companion."),
+    Endpoint("rna1_nuclear_spots_per_um2", "rna1_nuclear_spots_per_um2",
+             "localization", "nuclear puncta per square micrometre of nuclear area",
+             "{rna1} nuclear puncta per square micrometre",
+             source=DERIVED_DENSITY,
+             note="SCOPE-MATCHED density: NUCLEAR puncta over NUCLEAR area, so it is "
+                  "a concentration. Read from the engine's own "
+                  "nuclear_spot_density_per_um2 when the run emitted it, otherwise "
+                  "nuclear_spot_count / nucleus_area_um2. Companion to "
+                  "rna1_spots_per_um2, whose numerator is the whole cell."),
+    Endpoint("protein_spots_per_um2", "protein_spots_per_um2", "localization",
+             "nuclear puncta per square micrometre of nuclear area",
+             "{protein} nuclear puncta per square micrometre",
+             source=DERIVED_DENSITY, exploratory=True,
+             excluded_from_holm="proxy for absolute partner level",
+             note="EXPLORATORY, and the per-area companion to "
+                  "protein_spots_per_nucleus. NUCLEAR partner puncta over NUCLEAR "
+                  "area, from the engine's nuclear_spot_density_per_um2_protein when "
+                  "present, otherwise nuclear_spot_count_protein / nucleus_area_um2. "
+                  "It inherits its parent's limitation: the count is thresholded at "
+                  "one global intensity, so for a diffuse partner it tracks absolute "
+                  "level rather than object number, and it carries no multiplicity "
+                  "adjustment for the same reason."),
     Endpoint("nucleus_area_um2", "nucleus_area_um2", "localization",
              "square micrometres", "Nucleus area", source=DERIVED_AREA,
              descriptive_only=True,
