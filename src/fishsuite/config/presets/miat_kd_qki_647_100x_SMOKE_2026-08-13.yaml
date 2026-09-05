@@ -1,0 +1,352 @@
+# ############################################################################
+# ##                                                                        ##
+# ##   ███  SMOKE TEST — NOT AN ANALYSIS. DO NOT QUOTE ANY NUMBER FROM      ##
+# ##   ███  THIS RUN. NOT IN A FIGURE, NOT IN A WORKBOOK, NOT IN A          ##
+# ##   ███  METHODS SECTION, NOT IN CONVERSATION AS "roughly".              ##
+# ##                                                                        ##
+# ##   PURPOSE: prove the config EXECUTES end-to-end on 3 real images       ##
+# ##   before committing a GPU night to the full 51-image QKI run. It       ##
+# ##   answers "does the code path complete and emit the expected files",   ##
+# ##   and NOTHING else.                                                    ##
+# ##                                                                        ##
+# ##   THREE REASONS ITS NUMBERS ARE STRUCTURALLY INVALID — each on its     ##
+# ##   own is disqualifying:                                                ##
+# ##     1. n = 3 IMAGES (1 NT well, 1 KD well, 1 omission). One image per  ##
+# ##        arm is not a comparison; the replicate unit is the WELL and     ##
+# ##        this run has one FOV from one well per arm.                     ##
+# ##     2. partner_null_n and partner_rotation_n are 50, not 1000. The     ##
+# ##        empirical p-value floor is 1/(n+1), so the SMALLEST p this run  ##
+# ##        can report is 1/51 = 0.0196 — a bound imposed by the setting,   ##
+# ##        not a measurement. Z and enrichment are correspondingly noisy.  ##
+# ##     3. pixel_coloc threshold_scope=batch and pub_contrast auto_batch   ##
+# ##        both derive from a BATCH PRE-SCAN, and this batch is 2          ##
+# ##        non-sec-only images. Every threshold and display floor here is  ##
+# ##        computed from a 2-image pool and will differ from the full run. ##
+# ##                                                                        ##
+# ##   WHAT A PASS LOOKS LIKE — check these, not the values:                ##
+# ##     - exit code 0, and per_image_summary.csv has exactly 3 rows        ##
+# ##     - conditions read NT_s1w1 / KD_s1w4 / Sec-Only, one each           ##
+# ##     - nuclei_metrics.csv is non-empty and nuclear_spot_fraction is     ##
+# ##       populated (not all-NaN)                                          ##
+# ##     - the rotation-null columns EXIST (protein_*rotation*), which is   ##
+# ##       the single most expensive code path in the full run              ##
+# ##     - versions.txt and command.log exist AND are non-empty (their      ##
+# ##       writers warn rather than raise, so assert, do not assume)        ##
+# ##     - qc_overlays / publication_images / figures are populated         ##
+# ##     - spots land on real puncta and the threshold panel is punctate,   ##
+# ##       not a solid wall                                                 ##
+# ##                                                                        ##
+# ##   THEN: read qc_rna1_spots_per_nucleus. If the median is far above     ##
+# ##   ~15-40/nucleus, retune foci.threshold_multiplier in the FULL preset  ##
+# ##   BEFORE launching the overnight run — that is the second thing this   ##
+# ##   smoke test is for, and the LoG is newly well-sampled at 1.85 px so   ##
+# ##   an increase is expected.                                             ##
+# ##                                                                        ##
+# ############################################################################
+# ============================================================================
+# MIAT (647 RNA-FISH) x QKI (568 IF) — 3-IMAGE SMOKE TEST — 100x — rna_protein
+# Date: 2026-08-13 | acquisition 2026-08-12 | for MASTER CONTROL
+#
+# CLONE OF:  miat_kd_qki_647_100x_2026-08-13.yaml
+# READ THAT FILE for the full rationale — measured-metadata provenance, the
+# 65 nm/px rescale derivation, why auto-detect (-1) is unsafe, the diffuse-
+# partner path, the nucleolus carve-out direction, and the z handling. None of
+# it is repeated here; this header covers ONLY what differs.
+#
+# EVERYTHING ELSE IS BYTE-EQUIVALENT TO THE FULL PRESET, deliberately — a smoke
+# test that changes the science settings tests a config we will not run. In
+# particular UNCHANGED: bigfish_voxel_size_nm 65.0 and every rescaled *_px
+# value; joint autofocus with focus_central_fraction 1.0 and the full stack;
+# detect_antibody_spots false; the whole foci metric stack; channel indices
+# 0/1/2; sampling 10 per image, random, seed 0; parallel workers 1.
+#
+# ── THE ONLY THREE DIFFERENCES ─────────────────────────────────────────────
+#   1. input_file_subset  : EMPTY  ->  3 real catalog-relative paths
+#   2. partner_null_n     : 1000   ->  50
+#      partner_rotation_n : 1000   ->  50
+#   3. experiment.name / description say SMOKE, so the string is stamped into
+#      run_config.json and cannot be mistaken for the real run later.
+#   (sampling.on_short is `keep` in BOTH — the full preset already uses it for
+#   the first pass, so this is not a smoke-only relaxation.)
+#
+# ── §THE 3 FILES — REAL, VERIFIED ON DISK 2026-08-13 ───────────────────────
+#   Read directly from F:\Raw Images\MIAT-QKI-MIATKD-2026-08-12\QKI\, not from
+#   any roster document and never invented. Each was confirmed to exist, to
+#   carry its paired Olympus `_<stem>_\` folder, and to have a readable
+#   `stack1\frame_t_0.ets` inside it — a .vsi without its sibling folder is
+#   unreadable, and that is exactly the kind of fault a smoke test must not
+#   trip over for the wrong reason.
+#
+#     NT, slide 1, well 1   p2_FolderWell-1-NT-MIAT-647-QKI-565/
+#                             MIAT_QKI_zstack__Well-1-NT-MIAT-647-QKI-565_06.vsi
+#     KD, slide 1, well 4   p2_FolderWell-4-KD-MIAT647-QKI-565/
+#                             MIAT_QKI_zstack__Well-4-KD-MIAT647-QKI-565_09.vsi
+#     Omission (Sec-Only)   p3_FolderSec-Only-MIAT-QKI-NT/
+#                             MIAT_QKI_zstack__Sec-Only-MIAT-QKI-NT_54.vsi
+#
+#   WHY THESE THREE: one per code path that can fail differently. NT exercises
+#   a bright-MIAT field; KD exercises a sparse one, which is where a spot
+#   detector or a rotation null is most likely to degenerate (too few spots to
+#   rotate -> rotation_null_usable False); the omission field exercises the
+#   sec-only branch, detect_in_sec_only, and the spot_rate_signal_to_control
+#   columns. Both biological images are from SLIDE 1 / pass 2 so the pair is
+#   internally comparable.
+#
+#   MATCHING, CODE-VERIFIED against runner.py lines 552-592: an entry is kept
+#   if its bare basename, its full posix path, OR its posix path relative to
+#   -i matches. The relative form below therefore resolves ONLY under
+#   -i ...\QKI. ★ A non-empty input_file_subset that matches ZERO files RAISES
+#   RuntimeError (line 588) — it does not quietly run on everything, and it
+#   does not quietly run on nothing.
+#
+#   ★ SIDE EFFECT WORTH KNOWING: the matcher also indexes each entry's BARE
+#   BASENAME, so a basename match anywhere under -i is accepted regardless of
+#   folder. That is safe here only because pass 1 — the 7 colliding basenames —
+#   is quarantined in the SIBLING directory QKI_pass1_EXCLUDED\ and is never
+#   discovered. If pass 1 were ever moved back under the -i root this subset
+#   would become ambiguous.
+#
+# ── §HOW TO RUN ────────────────────────────────────────────────────────────
+#   fishproc_dml env, ONE GPU run at a time, foreground, --dry-run FIRST.
+#   -p 1 is REQUIRED, not advisory: compute_partner_intensity runs an
+#   in-process per-spot loop that HANGS the parallel pool.
+#   Expect the wall time to be dominated by 3 cellpose segmentations rather
+#   than by the nulls (cut 40x here) — but time it rather than trusting that.
+# ============================================================================
+
+experiment:
+  name: "SMOKE_MIAT_KD_QKI_647_100x_2026-08-13"
+  description: "★ SMOKE TEST — NOT AN ANALYSIS. NO NUMBER FROM THIS RUN MAY BE QUOTED, PLOTTED, OR PUT IN A METHODS SECTION. Clone of miat_kd_qki_647_100x_2026-08-13.yaml, run over exactly 3 real images (1 NT slide-1 well-1 FOV, 1 KD slide-1 well-4 FOV, 1 Sec-Only omission FOV) with partner_null_n and partner_rotation_n cut from 1000 to 50, solely to prove the config EXECUTES end-to-end before an overnight 51-image GPU run is committed. Its numbers are structurally invalid for three independent reasons: n=3 images with one FOV from one well per arm (the replicate unit is the WELL); the empirical p floor at 50 draws is 1/51 = 0.0196, a setting-imposed bound rather than a measurement; and both the batch pixel-coloc MAD threshold and the auto_batch display floors are derived from a pre-scan pool of just 2 non-sec-only images, so they will differ from the full run. EVERYTHING ELSE is byte-equivalent to the full preset on purpose — measured 65.0 nm/px unbinned with every *_px value rescaled, 350.0 nm z-step, channel indices rna=0/antibody=1/dapi=2 measured from OME on all 88 files, joint autofocus with focus_central_fraction 1.0 over the full stack and no pinned planes, detect_antibody_spots FALSE, partner intensity + position null + rotation null + radial profile + footprint enrichment all ON, nucleolus carved from the nulls, sampling 10 nuclei per image random seed 0 on_short keep, workers 1. A PASS is: exit 0, 3 rows in per_image_summary.csv, conditions NT_s1w1/KD_s1w4/Sec-Only one each, nuclear_spot_fraction populated, the protein rotation-null columns present, versions.txt and command.log present AND non-empty, and spots landing on real puncta. Then read qc_rna1_spots_per_nucleus and retune foci.threshold_multiplier in the FULL preset if the median runs far above ~15-40/nucleus. Human/Homo sapiens, H9 hESC undifferentiated."
+  cell_line: "H9 hESC (undifferentiated)"
+  date: "2026-08-12"          # ACQUISITION date. Smoke preset written 2026-08-13.
+
+# ── §CONDITIONS — identical to the full preset ─────────────────────────────
+# -i ROOT: F:\Raw Images\MIAT-QKI-MIATKD-2026-08-12\QKI
+#
+# The FULL 13-key map is kept verbatim rather than trimmed to the 3 wells in
+# the subset. Two reasons: the subset filter runs AFTER discovery and condition
+# assignment, so trimming the map would change nothing about which images run;
+# and keeping it identical means this file tests the SAME condition wiring the
+# overnight run will use, which is part of what is being smoke-tested.
+#
+# ★ PASS-1 EXCLUSION IS STRUCTURAL, NOT CONFIGURAL. discover_inputs line 1367
+# is `subfolder_conditions.get(subfolder, subfolder)` — an UNLISTED subfolder is
+# still discovered and labelled with its own folder name. Pass 1 is excluded
+# because it lives in the SIBLING directory QKI_pass1_EXCLUDED\, outside this
+# -i root. Confirmed on the dry-run roster 2026-08-13: zero pass-1 images
+# discovered. Do not move it back under QKI\.
+conditions:
+  mode: subfolders            # "filenames" is NOT a legal value — the enum is
+                              # Literal["auto","explicit","subfolders"]; it raises.
+  subfolder_conditions:
+    # ── SLIDE 1 (pass 2) — acquisition order NT -> KD ──
+    "p2_FolderWell-1-NT-MIAT-647-QKI-565": "NT_s1w1"     # <- the smoke NT image is here
+    "p2_FolderWell-2-NT-MIAT647-QKI-565": "NT_s1w2"
+    "p2_FolderWell-3-NT-MIAT-647-QKI-565": "NT_s1w3"
+    "p2_FolderWell-4-KD-MIAT647-QKI-565": "KD_s1w4"      # <- the smoke KD image is here
+    "p2_FolderWell5-KD-MIAT647-QKI-565": "KD_s1w5"
+    "p2_FolderWell6-KD-MIAT647-QKI-565": "KD_s1w6"
+    # Well-6 reshoot: SAME well, same slide -> SAME label (technical repeat).
+    "p2r_FolderWell6-KD-MIAT647-QKI-565": "KD_s1w6"
+    # ── SLIDE 2 (pass 3) — acquisition order KD -> NT (counterbalanced) ──
+    "p3_FolderWell-1-NT-MIAT-647-QKI-565": "NT_s2w1"
+    "p3_FolderWell-2-NT-MIAT647-QKI-565": "NT_s2w2"
+    "p3_FolderWell-3-NT-MIAT-647-QKI-565": "NT_s2w3"
+    "p3_FolderWell-4-KD-MIAT647-QKI-565": "KD_s2w4"
+    "p3_FolderWell5-KD-MIAT647-QKI-565": "KD_s2w5"
+    "p3_FolderWell6-KD-MIAT647-QKI-565": "KD_s2w6"
+  # ★ TRAP, CONFIRMED IN SOURCE: an omission folder must NEVER also appear in
+  # subfolder_conditions. io.py line 1371 is
+  #   `condition = subfolder_conditions.get(subfolder, "Sec-Only")`
+  # — the "Sec-Only" forcing is only the DEFAULT of that lookup, so a folder
+  # listed above would receive ITS OWN LABEL instead. List omission folders HERE
+  # ONLY. Verified on the 2026-08-13 dry run: all 12 omission files landed on
+  # Sec-Only and were NOT caught by the NT/KD tokens inside their own filenames.
+  sec_only_folders:
+    - "p3_FolderSec-Only-MIAT-QKI-NT"     # <- the smoke omission image is here
+    - "p3_FolderSec-Only-MIAT-QKi-KD"     # lowercase "i" is the real folder name
+  sec_only_files: ["sec-only"]
+  filename_conditions: []
+  # Labels absent from this 3-image run are dropped by order_conditions
+  # (`[c for c in preferred if c in bio_conds]`), so the full list is safe and
+  # keeps this file diff-clean against the full preset.
+  condition_order:
+    - "NT_s1w1"
+    - "NT_s1w2"
+    - "NT_s1w3"
+    - "NT_s2w1"
+    - "NT_s2w2"
+    - "NT_s2w3"
+    - "KD_s1w4"
+    - "KD_s1w5"
+    - "KD_s1w6"
+    - "KD_s2w4"
+    - "KD_s2w5"
+    - "KD_s2w6"
+    - "Sec-Only"
+  min_nuclei_for_stats: 10
+
+# ── ★ THE SMOKE SUBSET — 3 REAL FILES, VERIFIED ON DISK 2026-08-13 ─────────
+# Catalog-relative posix paths (runner.py accepts bare basename / full posix /
+# -i-relative posix; the relative form resolves only under -i ...\QKI).
+# A non-empty subset matching ZERO files raises RuntimeError — it will not
+# silently run on the whole cohort.
+input_file_subset:
+  - "p2_FolderWell-1-NT-MIAT-647-QKI-565/MIAT_QKI_zstack__Well-1-NT-MIAT-647-QKI-565_06.vsi"
+  - "p2_FolderWell-4-KD-MIAT647-QKI-565/MIAT_QKI_zstack__Well-4-KD-MIAT647-QKI-565_09.vsi"
+  - "p3_FolderSec-Only-MIAT-QKI-NT/MIAT_QKI_zstack__Sec-Only-MIAT-QKI-NT_54.vsi"
+
+channels:
+  analysis_mode: rna_protein
+  # ★ MEASURED from OME on 88/88 files. Do NOT replace with -1: auto-detect
+  # swaps MIAT and QKI here (see the full preset's §CHANNELS).
+  dapi: 2                       # C2 = "405 CSU" -> DAPI
+  rna: 0                        # C0 = "640 CSU" -> MIAT RNA-FISH (PUNCTATE slot)
+  antibody: 1                   # C1 = "561 CSU" -> QKI IF       (DIFFUSE partner slot)
+  rna2: -1                      # unused; rna_protein shims antibody into rna2
+  one_indexed: false
+  dapi_label: "DAPI"
+  rna_label: "MIAT-647"
+  antibody_label: "QKI-568"     # rabbit anti-QKI, Fortis
+  # LUTs BY WAVELENGTH (locked convention), NOT by role.
+  dapi_lut: "blue"              # 405 -> blue
+  rna_lut: "yellow"             # 647 -> yellow  (MIAT)
+  antibody_lut: "magenta"       # 568 -> magenta (QKI)
+
+z_stack:
+  # UNCHANGED from the full preset. Joint autofocus is one of the things being
+  # smoke-tested: read the per-image z_plane and joint_focus_* columns out of
+  # per_image_summary.csv afterwards and check the picks are not stack edges.
+  mode: autofocus
+  autofocus_channel: joint
+  autofocus_joint_reduce: product
+  autofocus_joint_nuclear_mask: true
+  autofocus_intensity_weighted: true
+  focus_central_fraction: 1.0            # NO CENTRAL CAP — load-bearing. 0.6 capped the pick
+                                         # mid-stack on fields focusing high and MANUFACTURED
+                                         # a fake NT<KD anomaly.
+  focus_min_intensity_frac_of_peak: 0.3
+  start_slice: 1
+  end_slice: null                        # null -> last plane, whatever n_z is (measured 38)
+  # No file_overrides — pinning comes after z-montage review, as in the full preset.
+
+nuclei:
+  # UNCHANGED — rescaled to the MEASURED 0.065 um/px.
+  backend: cellpose
+  cellpose_model_type: cpsam
+  cellpose_diameter_px: 200.0          # ~13 um nucleus @ 0.065 um/px
+  cellpose_flow_threshold: 0.4
+  cellpose_cellprob_threshold: 0.0
+  cellpose_downsample_factor: 4.0      # ds4 -> 0.260 um/px seg grid; 2304/4 = 576 px frames,
+                                       # GPU-safe on one 12 GB DirectML card
+  cellpose_device: directml            # AMD RX 6750 XT; REQUIRES the fishproc_dml env
+  min_area_px: 16000                   # 67.6 um^2
+  max_area_px: 1000000000000.0
+  exclude_border: true
+  border_margin_px: 20                 # 1.3 um
+  stardist_model: 2D_versatile_fluo
+  prob_threshold: 0.5
+  nms_threshold: 0.5
+  stardist_gauss_sigma: 3.0
+  stardist_postprocess: none
+  label_smoothing_radius_px: 0
+  reject_ghost_nuclei: false
+
+sampling:
+  # UNCHANGED from the full preset — including on_short, which is already
+  # `keep` there for the first pass. Not a smoke-only relaxation.
+  enabled: true
+  n_per_unit: 10
+  unit: per_image       # per_well RAISES as unimplemented
+  order: random
+  seed: 0
+  on_short: keep        # a 3-image smoke test must not abort on one short field
+
+pixel_coloc:
+  threshold_mode: mad
+  threshold_scope: batch    # ★ SMOKE CAVEAT: the batch pre-scan pool here is 2 non-sec-only
+                            # images, so this threshold is NOT the full run's threshold.
+                            # Kept as `batch` anyway so the pre-scan CODE PATH is exercised.
+  k_mad: 2.5
+
+spot_coloc:
+  pair_distance_um: 0.3     # ~4.6 px @ the measured 0.065 um/px. INERT while
+                            # detect_antibody_spots is false.
+  report_nn_distance: true
+
+foci:
+  enabled: true
+  backend: bigfish
+  bigfish_voxel_size_nm: 65.0          # MEASURED, uniform 88/88, UNBINNED
+  bigfish_voxel_z_nm: 0.0
+  bigfish_spot_radius_nm: 120.0        # physical; = 1.85 px at 65 nm/px (properly sampled LoG)
+  bigfish_spot_radius_z_nm: 350.0      # MEASURED z-step
+  threshold_multiplier: 1.0            # ★ ONE OF THE TWO THINGS THIS RUN IS FOR: read
+                                       # qc_rna1_spots_per_nucleus afterwards and retune this
+                                       # in the FULL preset if the median runs far above
+                                       # ~15-40/nucleus. An increase is EXPECTED — the parent
+                                       # preset sized this against a sub-pixel 0.92 px LoG.
+  only_nuclear_spots: true
+  min_sep_px: 1                        # Fiji-NMS knob; inert in the fishsuite BigFISH wrapper
+  detect_in_sec_only: true             # the omission image is in the subset precisely so this
+                                       # branch and spot_rate_signal_to_control_rna1/_rna2 run
+  # No MIAT spot floor (rna_overrides.min_spot_peak_intensity) — UNSET here for
+  # the same reason as the full preset, and a floor must never be calibrated
+  # off a 1-image omission sample anyway.
+  detect_antibody_spots: false         # QKI is nucleoplasm-filling: no thresholdable object
+  compute_partner_intensity: true      # in-process per-spot loop -> REQUIRES -p 1
+  compute_partner_null_enrichment: true
+  partner_null_n: 50                   # ★ SMOKE ONLY (full preset: 1000). Empirical p floor
+                                       # 1/(50+1) = 0.0196 — a setting, not a measurement.
+  partner_null_disk_px: 6.0            # 0.39 um at the measured 65 nm/px
+  partner_null_seed: 0
+  exclude_nucleolus_from_partner_null: true
+  save_partner_null_draws: true
+  compute_partner_radial_profile: true
+  partner_radial_bins_um: [0.25, 0.5, 0.75, 1.0]
+  compute_partner_rotation_null: true  # the most expensive path in the full run — the main
+                                       # thing worth proving before an overnight commit
+  partner_rotation_n: 50               # ★ SMOKE ONLY (full preset: 1000). Same p-floor caveat.
+                                       # Also watch rotation_null_usable on the KD image: a
+                                       # sparse constellation is where this degrades first.
+  partner_rotation_seed: 0
+  partner_rotation_min_retention: 0.5
+  partner_rotation_assoc_percentile: 95.0
+  save_partner_rotation_null_draws: true
+  compute_footprint_enrichment: true
+  # assoc_qki_floor UNSET (None => OFF), as in the full preset.
+
+cytoplasm:
+  enabled: true
+  voronoi_max_expansion_px: 80         # 5.2 um @ 0.065 um/px
+  measure_nc_ratio: true
+
+nucleolus:
+  enabled: true
+
+output:
+  save_qc_overlays: true
+  save_per_image_csv: true
+  save_masks: true
+  save_publication_images: true
+  save_publication_tifs: false
+  pub_contrast_mode: auto_batch        # ★ SMOKE CAVEAT: derived from a 2-image batch pre-scan,
+                                       # so these display floors are NOT the full run's.
+  apply_pub_contrast_floor_to_analysis: true
+  apply_pub_contrast_floor_to_spots: false
+  prefix: ""
+  scalebar_um: 25.0
+  scalebar_font_px: 52
+
+parallel:
+  # -p 1 REQUIRED, not advisory — compute_partner_intensity hangs the pool.
+  workers: 1
+  seg_workers: 1
+  main_workers: 1
+  threads_per_worker: 4
+
+qc:
+  qc_min_nuclei: 10          # advisory; never drops an image
+  qc_saturated_frac: 0.001
+
+seed: 0

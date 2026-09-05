@@ -1,0 +1,393 @@
+# ############################################################################
+# ##                                                                        ##
+# ##   ███  QC / CALIBRATION PASS — NOT A COLOCALIZATION ANALYSIS.          ##
+# ##   ███  NO COLOC NUMBER EXISTS IN THIS RUN'S OUTPUT, BY DESIGN.         ##
+# ##                                                                        ##
+# ##   This pass exists to produce exactly three things:                    ##
+# ##     1. QC metrics for condition-blind image filtering                  ##
+# ##     2. Per-file focus scores + chosen z-planes, to build z-montages    ##
+# ##        and PIN planes for the final run                                ##
+# ##     3. The omission-well spot-intensity distribution, to calibrate     ##
+# ##        the MIAT floor                                                  ##
+# ##                                                                        ##
+# ##   None of those use the partner nulls. The rotation null, the          ##
+# ##   position null, the radial profile and the footprint/capacity metrics ##
+# ##   are COLOCALIZATION statistics and they belong to the FINAL,          ##
+# ##   PINNED-PLANE run. Computed here they would be measured on unpinned   ##
+# ##   autofocus planes and then discarded — so they are OFF.               ##
+# ##                                                                        ##
+# ##   CONSEQUENCE: the columns protein_*_at_rna1_spots, the rotation-null  ##
+# ##   columns, qki_at_miat_footprint, qki_assoc_ratio_continuous,          ##
+# ##   capacity_qki_at_miat and miat_mass_nuclear ARE NOT EMITTED. A        ##
+# ##   downstream script that reads them off this run finds nothing. That   ##
+# ##   is intended, not a fault.                                            ##
+# ##                                                                        ##
+# ############################################################################
+# ============================================================================
+# MIAT (647 RNA-FISH) x QKI (568 IF) — QC / CALIBRATION PASS — 100x
+# Date: 2026-08-13 | acquisition 2026-08-12 | for MASTER CONTROL
+#
+# CLONE OF:  miat_kd_qki_647_100x_2026-08-13.yaml
+# READ THAT FILE for the full rationale — measured-metadata provenance, the
+# 65 nm/px rescale derivation, why auto-detect (-1) is unsafe, the diffuse-
+# partner path, and the z handling. Not repeated here.
+#
+# UNCHANGED FROM THE FULL PRESET, deliberately: the 65 nm rescale and every
+# *_px value; channel indices 0/1/2 and their labels/LUTs; joint autofocus with
+# focus_central_fraction 1.0, full stack, UNPINNED; detect_antibody_spots
+# false; bigfish spot radius/tm/only_nuclear_spots; sampling 10 per image,
+# random, seed 0, on_short keep; nucleolus on; conditions and sec-only wiring;
+# seed 0. Anything that would change WHICH nuclei or WHICH spots are found must
+# be identical to the final run, or this pass calibrates the wrong thing.
+#
+# ── §WHAT WAS TURNED OFF, AND WHAT THAT ACTUALLY SAVES ─────────────────────
+#   foci.compute_partner_intensity        true -> false
+#   foci.compute_partner_null_enrichment  true -> false   (1000 draws/nucleus)
+#   foci.compute_partner_rotation_null    true -> false   (1000 draws/nucleus)
+#   foci.compute_partner_radial_profile   true -> false
+#   foci.compute_footprint_enrichment     true -> false
+#   foci.save_partner_null_draws          true -> false
+#   foci.save_partner_rotation_null_draws true -> false
+#   output.save_publication_tifs          false (already)
+#
+#   This is the DOMINANT saving and it is clean: the two nulls are 1000 seeded
+#   draws per nucleus each, on top of a per-spot in-process loop.
+#
+# ── §TWO REQUESTED CHANGES WERE NOT MADE — VERIFIED IN SOURCE ──────────────
+#
+#   (A) output.save_publication_images STAYS TRUE. Turning it off does skip
+#       the pub-contrast pre-scan — runner.py line 850-853 gates that whole
+#       block on `cfg.output.save_publication_images` — but it also SILENTLY
+#       DESTROYS A DELIVERABLE OF THIS PASS.
+#
+#       The chain, verified in source AND against a real run: the pre-scan is
+#       the only thing that populates `batch_contrast`; runner.py line 1633
+#       reads `batch_contrast.get("rna")` to build `analysis_floors`; and the
+#       modes "treat a missing/None floor as NaN columns" (runner.py comment,
+#       lines 1622-1629). So with publication images off, EVERY rna_thresh_*
+#       and protein_thresh_* column comes out NaN.
+#
+#       Confirmed empirically on the 3-image smoke run
+#       (_ANALYSIS\SMOKE_QKI_20260813-112421): its run_config.json records
+#       batch_contrast rna floor = 469.70000000000005, and nuclei_metrics.csv
+#       carries rna_thresh_floor = 469.7 on 176/176 nuclei. Same number. The
+#       thresholded-intensity floor IS the pub-contrast floor.
+#
+#       ★ FILTERING RULE 5 — per-image median `rna_thresh_pos_fraction_cyto`
+#       vs the omission P95 — is one of the five declared image-filtering
+#       criteria. It reads a column that would be entirely NaN. Rule 4
+#       (`rna_cytoplasmic_mean`) is a plain mean and would survive; rule 5
+#       would not. Pinning output.rna_intensity_threshold instead is circular:
+#       the number to pin is what this pass is meant to calibrate.
+#
+#       COST OF KEEPING IT: the pub-contrast pre-scan reads each image,
+#       resolves channels and runs DAPI autofocus, then pools whole-image
+#       pixels — it does NOT segment (no cellpose; see runner.py ~line 908
+#       onward). So it is an I/O + autofocus pass, not a second GPU pass.
+#       That is a far smaller bill than losing a filtering criterion.
+#
+#   (B) pixel_coloc STAYS threshold_scope: batch. Two reasons.
+#
+#       First, `threshold_scope: image` is NOT A LEGAL VALUE — the enum is
+#       Literal["batch", "per_image"] (schema.py PixelColocCfg) and anything
+#       else RAISES at load. There is also NO `pixel_coloc.enabled` field, so
+#       the block cannot be switched off at all.
+#
+#       Second, and this is the real point: the batch pre-scan is ALSO THE
+#       SEGMENTATION CACHE. runner.py line 629-634 — `precomputed_labels_by_path`
+#       ... "Reused in the main analysis pass so each image is segmented
+#       exactly ONCE per run (avoids a 2x segmentation cost with slow backends
+#       such as cellpose). Populated ONLY when threshold_scope == 'batch'" —
+#       and line 1585-1594 hands those labels to run_one. Switch to per_image
+#       and segmentation simply MOVES into the main loop; each image is still
+#       segmented exactly once. The cellpose time does not go away. What you
+#       would actually save is the pixel pooling and one MAD computation, and
+#       what you would lose is the single pooled threshold.
+#
+# ── §PARALLELISM — THERE IS NO SPEEDUP AVAILABLE. VERIFIED. ────────────────
+#   Checked against source, with a canary confirming the search pattern works
+#   (`seg_workers` returns 6 hits in the same file that returns 0 for
+#   `main_workers`):
+#
+#   * `parallel.main_workers` IS DEAD CONFIG. It is declared in schema.py
+#     (ParallelCfg, line 1099) and `auto_main_workers()` exists in
+#     core/parallel.py, but runner.py NEVER READS IT. Raising it does nothing.
+#   * `parallel.workers` / the `-p` flag resolves to `n_workers`, which in
+#     v1.0.0 is used ONLY for the console line, the run_config.json provenance
+#     field, and the Excel report. It does not drive a per-image pool.
+#   * The ONLY ProcessPoolExecutor in the runner (line 729-731) is the
+#     SEGMENTATION pre-scan pool, driven by `seg_workers`. `BatchExecutor` in
+#     core/parallel.py is defined and never instantiated.
+#   * So the main per-image pass is SERIAL regardless of any setting, and
+#     turning off compute_partner_intensity does not "unlock" anything.
+#
+#   ★ seg_workers STAYS 1, and note the footgun: `resolve_workers` only applies
+#     the device clamp on the string "auto" (`auto_seg_workers` returns 1 for
+#     directml). An explicit INT bypasses it entirely — `max(1, int(value))` —
+#     so `seg_workers: 4` on DirectML would be honoured as 4 and put four
+#     cellpose streams on one 12 GB GPU. Type 1; do not experiment here.
+#
+#   For the record, sampling is provably order-independent, so parallelism
+#   would NOT have changed results if it existed: `derive_unit_rng`
+#   (core/segmentation.py:595) keys a PCG64 SeedSequence on a blake2b hash of
+#   the unit key — NOT Python's randomized hash() — and its docstring states
+#   the draw is "identical at -p 1 and -p 12".
+#
+# ── §WHAT THIS PASS STILL PRODUCES (the point of it) ───────────────────────
+#   * Segmentation + MIAT spot detection on every image, with QC overlays
+#   * qc_* columns: qc_n_nuclei, qc_frac_saturated_rna/_antibody,
+#     qc_focus_score, qc_rna1_spots_per_nucleus, the overdetect flags
+#   * z_plane and the per-channel joint_focus_<dapi|rna|partner> scores —
+#     input to the z-montages and the plane pins
+#   * Omission-well spot intensities (detect_in_sec_only ON) +
+#     spot_rate_signal_to_control_rna1 — the MIAT floor calibration set
+#   * rna_thresh_* / protein_thresh_* and the *_above_floor_* columns, which
+#     is why (A) above matters
+#   * rna_cytoplasmic_mean (filtering rule 4) and nucleolus masks
+#   * Whole-nucleus partner PIXEL metrics still compute (protein nuclear mean /
+#     total / N:C) — a first look at Q4, since those are pixel metrics and do
+#     not depend on compute_partner_intensity
+#
+# ── §HOW TO RUN ────────────────────────────────────────────────────────────
+#   fishproc_dml env, ONE GPU run at a time, foreground, --dry-run FIRST.
+#   -p 1. It is provenance-only in v1.0.0, but keep it: it is what the locked
+#   skill specifies, it is recorded in run_config.json, and it costs nothing.
+# ============================================================================
+
+experiment:
+  name: "QCPASS_MIAT_KD_QKI_647_100x_2026-08-13"
+  description: "★ QC / CALIBRATION PASS — NOT a colocalization analysis. Clone of miat_kd_qki_647_100x_2026-08-13.yaml with the partner-null machinery OFF (compute_partner_intensity, compute_partner_null_enrichment, compute_partner_rotation_null, compute_partner_radial_profile, compute_footprint_enrichment and both save_*_draws all false). Purpose is three things only: QC metrics for condition-blind image filtering; per-file focus scores and chosen z-planes for building z-montages and pinning planes; and the omission-well spot-intensity distribution for MIAT floor calibration. None of those use the nulls, and computing coloc statistics on UNPINNED autofocus planes would produce numbers that the final pinned-plane run discards. The coloc columns (protein_*_at_rna1_spots, rotation-null, qki_at_miat_footprint, qki_assoc_ratio_continuous, capacity_qki_at_miat, miat_mass_nuclear) are therefore NOT EMITTED by design. Two requested changes were deliberately NOT made, both verified in source: save_publication_images stays TRUE because runner.py gates the pub-contrast pre-scan on it (line 850-853) and that pre-scan is the sole source of batch_contrast, which line 1633 turns into analysis_floors — with it off every rna_thresh_*/protein_thresh_* column goes NaN, which would kill image-filtering rule 5 (per-image median rna_thresh_pos_fraction_cyto vs the omission P95); confirmed against the smoke run, whose batch_contrast rna floor 469.70000000000005 is exactly its nuclei_metrics rna_thresh_floor 469.7 on 176/176 nuclei. And pixel_coloc stays threshold_scope batch because 'image' is not a legal enum value (Literal[batch, per_image]), there is no pixel_coloc.enabled field, and the batch pre-scan is ALSO the segmentation cache (precomputed_labels_by_path, runner.py 629-634) so switching to per_image merely moves cellpose into the main loop rather than removing it. Parallelism offers nothing: parallel.main_workers is dead config never read by runner.py, -p/n_workers is provenance-only in v1.0.0, and the only process pool is the segmentation pre-scan driven by seg_workers, which must stay 1 on DirectML — note that resolve_workers only applies the device clamp to the string 'auto', so an explicit int bypasses it. Everything that determines WHICH nuclei and WHICH spots are found is identical to the full preset: 65 nm rescale, channel indices, joint autofocus with focus_central_fraction 1.0 unpinned over the full stack, detect_antibody_spots false, sampling 10/image random seed 0 on_short keep, nucleolus on, detect_in_sec_only on. Human/Homo sapiens, H9 hESC undifferentiated."
+  cell_line: "H9 hESC (undifferentiated)"
+  date: "2026-08-12"          # ACQUISITION date. QC preset written 2026-08-13.
+
+# ── §CONDITIONS — identical to the full preset ─────────────────────────────
+# -i ROOT: F:\Raw Images\MIAT-QKI-MIATKD-2026-08-12\QKI
+# Pass 1 is excluded STRUCTURALLY — it lives in the sibling directory
+# QKI_pass1_EXCLUDED\, outside this -i root. An unlisted subfolder under -i
+# would NOT be excluded: discover_inputs line 1367 labels it with its own
+# folder name. Confirmed on the 2026-08-13 dry run: zero pass-1 images.
+conditions:
+  mode: subfolders            # "filenames" is NOT a legal value — the enum is
+                              # Literal["auto","explicit","subfolders"]; it raises.
+  subfolder_conditions:
+    # ── SLIDE 1 (pass 2) — acquisition order NT -> KD ──
+    "p2_FolderWell-1-NT-MIAT-647-QKI-565": "NT_s1w1"
+    "p2_FolderWell-2-NT-MIAT647-QKI-565": "NT_s1w2"
+    "p2_FolderWell-3-NT-MIAT-647-QKI-565": "NT_s1w3"
+    "p2_FolderWell-4-KD-MIAT647-QKI-565": "KD_s1w4"
+    "p2_FolderWell5-KD-MIAT647-QKI-565": "KD_s1w5"
+    "p2_FolderWell6-KD-MIAT647-QKI-565": "KD_s1w6"
+    # Well-6 reshoot: SAME well, same slide -> SAME label (technical repeat).
+    "p2r_FolderWell6-KD-MIAT647-QKI-565": "KD_s1w6"
+    # ── SLIDE 2 (pass 3) — acquisition order KD -> NT (counterbalanced) ──
+    "p3_FolderWell-1-NT-MIAT-647-QKI-565": "NT_s2w1"
+    "p3_FolderWell-2-NT-MIAT647-QKI-565": "NT_s2w2"
+    "p3_FolderWell-3-NT-MIAT-647-QKI-565": "NT_s2w3"
+    "p3_FolderWell-4-KD-MIAT647-QKI-565": "KD_s2w4"
+    "p3_FolderWell5-KD-MIAT647-QKI-565": "KD_s2w5"
+    "p3_FolderWell6-KD-MIAT647-QKI-565": "KD_s2w6"
+  # ★ TRAP, CONFIRMED IN SOURCE: an omission folder must NEVER also appear in
+  # subfolder_conditions — io.py line 1371 makes "Sec-Only" only the DEFAULT of
+  # that lookup, so a listed folder gets its own label instead.
+  sec_only_folders:
+    - "p3_FolderSec-Only-MIAT-QKI-NT"
+    - "p3_FolderSec-Only-MIAT-QKi-KD"     # lowercase "i" is the real folder name
+  sec_only_files: ["sec-only"]
+  filename_conditions: []
+  condition_order:
+    - "NT_s1w1"
+    - "NT_s1w2"
+    - "NT_s1w3"
+    - "NT_s2w1"
+    - "NT_s2w2"
+    - "NT_s2w3"
+    - "KD_s1w4"
+    - "KD_s1w5"
+    - "KD_s1w6"
+    - "KD_s2w4"
+    - "KD_s2w5"
+    - "KD_s2w6"
+    - "Sec-Only"
+  min_nuclei_for_stats: 10
+
+channels:
+  analysis_mode: rna_protein   # UNCHANGED — the partner channel is still READ
+                               # (whole-nucleus pixel metrics, pixel coloc); it
+                               # is only the partner-at-spot statistics that are off.
+  # ★ MEASURED from OME on 88/88 files. Do NOT replace with -1: auto-detect
+  # swaps MIAT and QKI here.
+  dapi: 2                       # C2 = "405 CSU" -> DAPI
+  rna: 0                        # C0 = "640 CSU" -> MIAT RNA-FISH (PUNCTATE slot)
+  antibody: 1                   # C1 = "561 CSU" -> QKI IF       (DIFFUSE partner slot)
+  rna2: -1
+  one_indexed: false
+  dapi_label: "DAPI"
+  rna_label: "MIAT-647"
+  antibody_label: "QKI-568"
+  dapi_lut: "blue"
+  rna_lut: "yellow"
+  antibody_lut: "magenta"
+
+z_stack:
+  # UNCHANGED and load-bearing: this pass exists partly to PRODUCE the focus
+  # scores and chosen planes, so it must run the same autofocus the final run
+  # will be compared against. Read z_plane + joint_focus_<dapi|rna|partner>
+  # out of per_image_summary.csv afterwards and build the z-montages from them.
+  mode: autofocus
+  autofocus_channel: joint
+  autofocus_joint_reduce: product
+  autofocus_joint_nuclear_mask: true
+  autofocus_intensity_weighted: true
+  focus_central_fraction: 1.0            # NO CENTRAL CAP — 0.6 manufactured a fake
+                                         # NT<KD anomaly by capping the pick mid-stack.
+  focus_min_intensity_frac_of_peak: 0.3
+  start_slice: 1
+  end_slice: null                        # null -> last plane (n_z measured 38)
+  # NO file_overrides — UNPINNED on purpose. Pins are the OUTPUT of this pass.
+
+nuclei:
+  # UNCHANGED — rescaled to the MEASURED 0.065 um/px. Must match the final run
+  # exactly or the nuclei this pass filters on are not the nuclei that get analysed.
+  backend: cellpose
+  cellpose_model_type: cpsam
+  cellpose_diameter_px: 200.0          # ~13 um nucleus @ 0.065 um/px
+  cellpose_flow_threshold: 0.4
+  cellpose_cellprob_threshold: 0.0
+  cellpose_downsample_factor: 4.0      # ds4 -> 0.260 um/px seg grid; 2304/4 = 576 px
+  cellpose_device: directml            # AMD RX 6750 XT; REQUIRES the fishproc_dml env
+  min_area_px: 16000                   # 67.6 um^2
+  max_area_px: 1000000000000.0
+  exclude_border: true
+  border_margin_px: 20                 # 1.3 um
+  stardist_model: 2D_versatile_fluo
+  prob_threshold: 0.5
+  nms_threshold: 0.5
+  stardist_gauss_sigma: 3.0
+  stardist_postprocess: none
+  label_smoothing_radius_px: 0
+  reject_ghost_nuclei: false
+
+sampling:
+  # UNCHANGED. Order-independent by construction (derive_unit_rng, blake2b-keyed
+  # SeedSequence), so the draw here is the draw the final run will make.
+  enabled: true
+  n_per_unit: 10
+  unit: per_image       # per_well RAISES as unimplemented
+  order: random
+  seed: 0
+  on_short: keep        # first pass — the roster has not been triaged yet
+
+pixel_coloc:
+  # ★ STAYS `batch` — see §TWO REQUESTED CHANGES (B). `image` is not a legal
+  # value (enum is batch|per_image), there is no pixel_coloc.enabled field, and
+  # the batch pre-scan is ALSO the segmentation cache that keeps each image
+  # segmented exactly once. Switching to per_image moves cellpose into the main
+  # loop rather than removing it.
+  threshold_mode: mad
+  threshold_scope: batch
+  k_mad: 2.5
+
+spot_coloc:
+  # Fully inert here: detect_antibody_spots is false AND partner intensity is off.
+  pair_distance_um: 0.3     # ~4.6 px @ the measured 0.065 um/px
+  report_nn_distance: true
+
+foci:
+  enabled: true
+  backend: bigfish
+  # ── DETECTION — IDENTICAL TO THE FULL PRESET. Non-negotiable: this pass
+  # calibrates the floor and counts the spots the final run will use. ──
+  bigfish_voxel_size_nm: 65.0          # MEASURED, uniform 88/88, UNBINNED
+  bigfish_voxel_z_nm: 0.0
+  bigfish_spot_radius_nm: 120.0        # physical; = 1.85 px at 65 nm/px
+  bigfish_spot_radius_z_nm: 350.0      # MEASURED z-step
+  threshold_multiplier: 1.0            # __TO TUNE__ — read qc_rna1_spots_per_nucleus
+                                       # from THIS run and retune before the final run.
+  only_nuclear_spots: true
+  min_sep_px: 1                        # Fiji-NMS knob; inert in the BigFISH wrapper
+  detect_in_sec_only: true             # ★ LOAD-BEARING. Floor calibration depends on the
+                                       # omission wells being DETECTED, not skipped. Also
+                                       # emits spot_rate_signal_to_control_rna1.
+  # No MIAT spot floor — UNSET. Calibrating it is an OUTPUT of this pass:
+  # floor = P99(omission spot peak), then two acceptance checks (omission median
+  # under ~40% of the real-probe median, AND spot_rate_signal_to_control_rna1
+  # >= 2.0), then a 0.8x/1.0x/1.2x sweep in separate output dirs.
+  detect_antibody_spots: false         # QKI is nucleoplasm-filling: no thresholdable object
+  # ── COLOCALIZATION MACHINERY — ALL OFF FOR THIS PASS ─────────────────────
+  # These are the FINAL run's statistics. On unpinned autofocus planes they
+  # would be computed and then discarded, and they are the dominant cost:
+  # two nulls at 1000 seeded draws per nucleus on top of a per-spot in-process
+  # loop. Turn every one of these back ON for the pinned-plane final run.
+  compute_partner_intensity: false         # was true — also the reason the full preset needs -p 1
+  compute_partner_null_enrichment: false   # was true — 1000 random-position draws/nucleus
+  compute_partner_rotation_null: false     # was true — 1000 rotation draws/nucleus
+  compute_partner_radial_profile: false    # was true
+  compute_footprint_enrichment: false      # was true — footprint/capacity/association ratio
+  save_partner_null_draws: false           # was true
+  save_partner_rotation_null_draws: false  # was true
+  # The partner_null_* / partner_rotation_* parameter values are left at the
+  # full preset's settings below so this file stays diff-clean against it and
+  # so re-enabling is a pure flag flip. They are INERT while the flags are off.
+  partner_null_n: 1000
+  partner_null_disk_px: 6.0                # 0.39 um at the measured 65 nm/px
+  partner_null_seed: 0
+  exclude_nucleolus_from_partner_null: true
+  partner_radial_bins_um: [0.25, 0.5, 0.75, 1.0]
+  partner_rotation_n: 1000
+  partner_rotation_seed: 0
+  partner_rotation_min_retention: 0.5
+  partner_rotation_assoc_percentile: 95.0
+  # assoc_qki_floor UNSET (None => OFF), as in the full preset.
+
+cytoplasm:
+  enabled: true
+  voronoi_max_expansion_px: 80         # 5.2 um @ 0.065 um/px
+  measure_nc_ratio: true               # ★ supplies rna_cytoplasmic_mean — image-filtering
+                                       # rule 4, an ABSOLUTE extranuclear level measured in
+                                       # the Voronoi perinuclear ring. Note the plan BARS
+                                       # every N:C RATIO from the filtering criteria as
+                                       # circular; rule 4 is a mean, not a ratio.
+
+nucleolus:
+  enabled: true                        # KEPT ON deliberately: cheap, and the final run's
+                                       # null carving depends on it, so confirm here that
+                                       # nucleolus detection is non-degenerate on these DAPI
+                                       # images (check nucleolus_overlay/ and the
+                                       # nucleolus_area_px distribution) BEFORE the final run.
+
+output:
+  save_qc_overlays: true               # ★ KEPT ON — eyeball segmentation + spot placement
+  save_per_image_csv: true
+  save_masks: true
+  # ★ STAYS TRUE — see §TWO REQUESTED CHANGES (A). runner.py line 850-853 gates
+  # the pub-contrast pre-scan on this flag, and that pre-scan is the ONLY source
+  # of batch_contrast, which line 1633 turns into analysis_floors. Setting this
+  # false makes EVERY rna_thresh_* / protein_thresh_* column NaN and kills
+  # image-filtering rule 5. Proven on the smoke run: batch_contrast rna floor
+  # 469.70000000000005 == nuclei_metrics rna_thresh_floor 469.7, 176/176 nuclei.
+  # The pre-scan reads + autofocuses + pools pixels; it does NOT segment.
+  save_publication_images: true
+  save_publication_tifs: false         # pure output size; no pre-scan effect
+  pub_contrast_mode: auto_batch
+  apply_pub_contrast_floor_to_analysis: true   # emits the *_above_floor_* columns
+  apply_pub_contrast_floor_to_spots: false     # never gate spot COUNTS by a display floor
+  prefix: ""
+  scalebar_um: 25.0
+  scalebar_font_px: 52
+
+parallel:
+  # ★ NO SPEEDUP IS AVAILABLE — see §PARALLELISM. main_workers is dead config
+  # (never read by runner.py); -p/workers is provenance-only in v1.0.0; the only
+  # process pool is the segmentation pre-scan, driven by seg_workers, which must
+  # stay 1 on DirectML. resolve_workers applies the device clamp ONLY to the
+  # string "auto", so an explicit int would bypass it — type 1.
+  workers: 1
+  seg_workers: 1
+  main_workers: 1
+  threads_per_worker: 4
+
+qc:
+  qc_min_nuclei: 10          # advisory; never drops an image
+  qc_saturated_frac: 0.001   # image-filtering rule 2
+
+seed: 0

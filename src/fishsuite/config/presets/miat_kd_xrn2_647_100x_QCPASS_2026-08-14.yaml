@@ -1,0 +1,434 @@
+# ############################################################################
+# ##                                                                        ##
+# ##   ███  XRN2 QC / CALIBRATION PASS — NOT A COLOCALIZATION ANALYSIS.     ##
+# ##   ███  NO COLOC NUMBER EXISTS IN THIS RUN'S OUTPUT, BY DESIGN.         ##
+# ##                                                                        ##
+# ##   Mirrors the QKI QC pass that worked                                  ##
+# ##   (miat_kd_qki_647_100x_QCPASS_2026-08-13.yaml). Three deliverables:   ##
+# ##     1. QC metrics for condition-blind image filtering                  ##
+# ##     2. Per-file focus scores + chosen z-planes, for z-montages and     ##
+# ##        plane pins                                                      ##
+# ##     3. The omission-well spot-intensity distribution, to calibrate     ##
+# ##        the XRN2 arm's MIAT floor ON ITS OWN DATA                       ##
+# ##                                                                        ##
+# ##   None of those use the partner nulls, so the rotation null, position  ##
+# ##   null, radial profile and footprint/capacity metrics are OFF. They    ##
+# ##   belong to the FINAL pinned-plane run; computed here on UNPINNED      ##
+# ##   autofocus planes they would be discarded.                            ##
+# ##                                                                        ##
+# ##   CONSEQUENCE: protein_*_at_rna1_spots, the rotation-null columns,     ##
+# ##   qki_at_miat_footprint, qki_assoc_ratio_continuous,                   ##
+# ##   capacity_qki_at_miat and miat_mass_nuclear ARE NOT EMITTED. That is  ##
+# ##   intended, not a fault.                                              ##
+# ##                                                                        ##
+# ############################################################################
+# ============================================================================
+# MIAT (647 RNA-FISH) x XRN2 (568 IF) — QC / CALIBRATION PASS — 100x
+# Date: 2026-08-14 | acquisition 2026-08-12 | for MASTER CONTROL
+#
+# CLONE OF:  miat_kd_xrn2_647_100x_2026-08-13.yaml
+# READ THAT FILE for the measured-metadata provenance (channel order, 65 nm
+# unbinned pixel size, 350 nm z-step, all read from OME across 88 files), the
+# *_px rescale derivation, and the diffuse-partner rationale. Not repeated here.
+#
+# UNCHANGED FROM THE 08-13 PRESET, deliberately: the 65 nm rescale and every
+# *_px value; channel indices 0/1/2 with labels and LUTs; joint autofocus with
+# focus_central_fraction 1.0, full stack, UNPINNED; detect_antibody_spots false;
+# sampling 10 per image, random, seed 0, on_short keep; nucleolus on; the
+# slide-aware per-well labels (NT_s2w8 ... KD_s2w11); seed 0. Anything that
+# changes WHICH nuclei or WHICH spots are found must match the FINAL run, or
+# this pass calibrates the wrong thing.
+#
+# ── §WHAT WAS TURNED OFF ───────────────────────────────────────────────────
+#   foci.compute_partner_intensity        true -> false
+#   foci.compute_partner_null_enrichment  true -> false   (1000 draws/nucleus)
+#   foci.compute_partner_rotation_null    true -> false   (1000 draws/nucleus)
+#   foci.compute_partner_radial_profile   true -> false   (~1x the position-null
+#                                                          draw cost: rna_rna.py
+#                                                          629-650 with
+#                                                          _null_n = partner_null_n,
+#                                                          rna_rna.py:1953)
+#   foci.compute_footprint_enrichment     true -> false
+#   foci.save_partner_null_draws          true -> false
+#   foci.save_partner_rotation_null_draws true -> false
+#   The partner_null_* / partner_rotation_* parameter VALUES are left at the
+#   08-13 settings below — inert while the flags are off — so re-enabling for
+#   the FINAL run is a pure flag flip and no value can drift meanwhile.
+#
+# ── §WHAT STAYED ON, AND WHY ──────────────────────────────────────────────
+#   output.save_publication_images: TRUE. Do not "optimise" this away. The
+#   pub-contrast pre-scan is gated on that flag (runner.py:850-853) and is the
+#   SOLE populator of `batch_contrast`, which runner.py:1633 turns into
+#   `analysis_floors`; the modes treat a missing floor as NaN columns. With it
+#   off, EVERY rna_thresh_* / protein_thresh_* column goes NaN — including the
+#   extranuclear-haze column the image filtering reads. Established on the QKI
+#   side and confirmed against a real run there (its batch_contrast rna floor
+#   equalled its nuclei_metrics rna_thresh_floor exactly). The pre-scan reads +
+#   autofocuses + pools pixels and does NOT segment, so it is an I/O pass, not
+#   a second GPU pass.
+#
+#   pixel_coloc.threshold_scope: batch. Not just for the threshold — the batch
+#   pre-scan is ALSO the segmentation cache (`precomputed_labels_by_path`,
+#   runner.py:629-634, consumed at 1585-1594), so each image is segmented
+#   exactly once. Switching to per_image MOVES cellpose into the main loop
+#   rather than removing it. (`threshold_scope: image` is not a legal value;
+#   the enum is Literal["batch","per_image"]. There is no pixel_coloc.enabled.)
+#
+#   detect_in_sec_only: TRUE — floor calibration depends on the omission wells
+#   being DETECTED, not skipped. Also emits spot_rate_signal_to_control_rna1.
+#
+#   nucleolus.enabled: TRUE — see §NUCLEOLUS, which matters more here than on
+#   the QKI side.
+#
+# ── §NO SPOT FLOOR — AND DO NOT INHERIT 364 FROM QKI ──────────────────────
+#   foci.rna_overrides.min_spot_peak_intensity is deliberately UNSET. The QKI
+#   arm settled on 364.0, and the MIAT probe, its dye and its exposure are the
+#   same here — so the two SHOULD agree. That is exactly why the XRN2 floor is
+#   derived from XRN2's own omission wells and then SHOWN to agree, rather than
+#   assumed to. An inherited constant that happens to be right is indistinguishable
+#   from one that happens to be wrong.
+#
+#   ★ CALIBRATE ROBUSTLY, AND SCREEN PER-IMAGE FIRST. On the QKI side a P99 of
+#   the pooled omission spot peaks returned 3058, which would have discarded the
+#   great majority of real MIAT spots. The cause was measured, not guessed: ONE
+#   omission field carried bright debris with a median spot peak roughly twenty
+#   times every other omission image's, and its tail dragged the pooled
+#   percentile. So:
+#     1. Compute the per-image median omission spot peak FIRST and inspect the
+#        spread across images before pooling anything.
+#     2. Treat a field that sits orders of magnitude above its siblings as
+#        debris and report it, rather than letting it set the floor.
+#     3. Prefer a robust statistic and cross-check against
+#        spot_rate_signal_to_control_rna1 (>= 2.0) and against the QKI arm's
+#        364.0 — agreement between two independently calibrated arms is
+#        evidence; a single pooled percentile is not.
+#   ★★ THE LEVERAGE IS WORSE HERE: XRN2 has SIX omission fields to QKI's twelve,
+#   and they are all NT-side (see §OMISSION). One debris field is therefore
+#   twice as influential on this arm as it was on the one where it already
+#   caused a wrong answer.
+#
+# ── §OMISSION CONTROL — NT-SIDE ONLY. STATE IT, DO NOT PAPER OVER IT ──────
+#   The XRN2 set has ONE omission folder and it is the NT-side one. There is NO
+#   KD-side omission for XRN2 (the QKI set has both). Consequences:
+#     * The XRN2 KD arm has NO condition-matched background. Any KD background
+#       statement is extrapolated from the NT-side control, not measured.
+#     * Six omission fields total, so every omission-derived quantity here rests
+#       on a smaller and single-armed sample than the QKI equivalent.
+#   The folder is also literally named "FolderSec-Only-MIAT-QKI-NT" — it says
+#   QKI, it is MISNAMED, and it IS the XRN2 omission set (6 .vsi named
+#   MIAT_XRN2_zstack__Sec-Only-...). Do not "correct" the name; the catalog
+#   reproduces it verbatim and the key below must match it exactly.
+#
+# ── §NUCLEOLUS — XRN2 IS THE MIRROR IMAGE OF QKI, AND IT NEEDS HARDER QC ──
+#   Both presets set nucleolus.enabled + exclude_nucleolus_from_partner_null,
+#   the SAME setting for OPPOSITE reasons — read this rather than assuming it
+#   was copied:
+#     QKI  is nucleolus-POOR. An un-carved null samples a dark void, the null
+#          mean falls, and enrichment is INFLATED. Carving is CONSERVATIVE.
+#     XRN2 is nucleolus-ENRICHED (5'->3' exoribonuclease, rRNA processing) on
+#          top of its nucleoplasmic pool. An un-carved null draws into the
+#          BRIGHTEST region, the null mean rises, and enrichment is DEFLATED.
+#          Carving RAISES the XRN2 estimate.
+#   ★ THE CORRECTION THEREFORE MOVES XRN2 IN THE FAVOURABLE DIRECTION. A
+#   correction that helps the hypothesis has to be audited harder than one that
+#   hurts it. BEFORE any FINAL XRN2 run relies on the carve-out:
+#     * confirm nucleolus_area_px and nucleolus_fraction_of_nucleus are
+#       non-degenerate — not near-zero (nothing carved, so the setting is a
+#       no-op) and not near the max_area_frac_of_nucleus cap (over-carving,
+#       which would eat nucleoplasm and inflate the result)
+#     * eyeball nucleolus_overlay/ on several fields per arm
+#     * report the FINAL numbers BOTH carved and uncarved
+#   This pass exists partly to make that audit possible on real masks. Nucleolus
+#   detection is DAPI-based, so it is measurable here even with the nulls off.
+#
+# ── §DESIGN — 2 WELLS PER ARM. THE CEILING ON WHAT THIS ARM CAN CLAIM ─────
+#   Roster-confirmed: well 8 NT 5 FOV, well 9 NT 4 FOV, well 10 KD 4 FOV,
+#   well 11 KD 5 FOV, omission 6 FOV = 24 .vsi. All four wells on SLIDE 2
+#   (confirmed by Brian 2026-08-13; encoded nowhere on disk).
+#   At 2 wells per arm an exact permutation test has 6 splits and a minimum
+#   two-sided p of 0.33, so NO significance test is available for the KD
+#   contrast — effect size and per-well values only, marked DESCRIPTIVE. If >=2
+#   wells drop on the filtering criteria, report within-arm specificity only and
+#   state the KD contrast as NOT ATTEMPTED, never as null.
+#   Acquisition was NOT counterbalanced (omission -> KD -> NT, NT last after
+#   ~3.2 h). Photobleaching would depress NT and ATTENUATE an NT>KD MIAT effect,
+#   so the direction is conservative — declare it rather than leave it implicit.
+#
+# ── §HOW TO RUN ───────────────────────────────────────────────────────────
+#   fishproc_dml env, ONE GPU run at a time, foreground, --dry-run FIRST.
+#   Expect 24 images: NT 9 (wells 8+9), KD 9 (wells 10+11), Sec-Only 6.
+#   -p 1. With compute_partner_intensity off it is not strictly required, but
+#   the main per-image pass is serial in this version regardless (main_workers
+#   is never read by runner.py), so it costs nothing and keeps provenance
+#   uniform with the QKI runs.
+# ============================================================================
+
+experiment:
+  name: "QCPASS_MIAT_KD_XRN2_647_100x_2026-08-14"
+  description: "★ XRN2 QC / CALIBRATION PASS — NOT a colocalization analysis. Clone of miat_kd_xrn2_647_100x_2026-08-13.yaml with the partner-null machinery OFF (compute_partner_intensity, compute_partner_null_enrichment, compute_partner_rotation_null, compute_partner_radial_profile, compute_footprint_enrichment and both save_*_draws all false), mirroring the QKI QC pass. Three deliverables only: QC metrics for condition-blind image filtering; per-file focus scores and chosen z-planes for z-montages and plane pinning; and the omission-well spot-intensity distribution for calibrating THIS arm's MIAT floor. The coloc columns are not emitted, by design. save_publication_images stays TRUE because it is the sole populator of batch_contrast -> analysis_floors and turning it off NaNs every *_thresh_* column; pixel_coloc stays threshold_scope batch because that pre-scan is also the segmentation cache. NO SPOT FLOOR IS SET: the QKI arm settled on 364.0 and the MIAT probe/dye/exposure are shared, so the two should agree — which is why this arm's floor is derived from its own omission wells and then shown to agree rather than inherited. Calibrate robustly and screen per-image first: on the QKI side a pooled P99 returned 3058 because ONE omission field carried bright debris with a median spot peak ~20x its siblings, and XRN2 has only six omission fields to QKI's twelve, so one bad field has twice the leverage. XRN2-SPECIFIC: the omission set is NT-SIDE ONLY (no KD-side omission exists, so the KD arm has no condition-matched background), and its folder is misnamed FolderSec-Only-MIAT-QKI-NT but genuinely is the XRN2 omission set. XRN2 is nucleolus-ENRICHED, the mirror image of QKI, so carving the nucleolus from the nulls RAISES the XRN2 estimate — a correction in the favourable direction, which is why its nucleolus masks need harder QC (nucleolus_area_px and nucleolus_fraction_of_nucleus non-degenerate, overlays eyeballed, FINAL numbers reported both carved and uncarved). Design is 2 wells per arm on slide 2, so no significance test is available for the KD contrast (exact permutation minimum two-sided p = 0.33) and acquisition was not counterbalanced. Sampling 10/image random seed 0 on_short keep; joint autofocus focus_central_fraction 1.0, unpinned, full stack; 65 nm rescale throughout. Human/Homo sapiens, H9 hESC undifferentiated."
+  cell_line: "H9 hESC (undifferentiated)"
+  date: "2026-08-12"          # ACQUISITION date. QC preset written 2026-08-14.
+
+# ── §CONDITIONS — flattened catalog subfolders, slide-aware per-well labels ─
+# -i ROOT: F:\Raw Images\MIAT-QKI-MIATKD-2026-08-12\XRN2
+# Keys are the VERBATIM catalog folder names, confirmed present on disk
+# 2026-08-14. No pass prefix: the XRN2 set is a single acquisition pass with one
+# date folder per well, so nothing needs disambiguating.
+#
+# Slide token s2: all four XRN2 wells are on SLIDE 2, confirmed by Brian
+# 2026-08-13 and encoded NOWHERE on disk — not derivable from these names.
+# Slide is CONSTANT across the set, so it cannot be a blocking factor here; it
+# is carried for provenance, to keep the label grammar identical to the QKI
+# presets (ARM_s<slide>w<well>), and because it links these wells to the
+# slide-2 QKI wells that certify the same physical mount.
+#
+# ★ Source hyphenation is inconsistent and reproduced VERBATIM: "Well-10" is
+# hyphenated while "Well8"/"Well9"/"Well11" are not. A tidied key matches nothing.
+conditions:
+  mode: subfolders            # "filenames" is NOT a legal value — the enum is
+                              # Literal["auto","explicit","subfolders"]; it raises.
+  subfolder_conditions:
+    # ── NT arm — wells 8 and 9, slide 2 ──
+    "FolderWell8-NT-MIAT-XRN2": "NT_s2w8"        # 5 FOV
+    "FolderWell9-NT-MIAT-XRN2": "NT_s2w9"        # 4 FOV
+    # ── KD arm — wells 10 and 11, slide 2 ──
+    "FolderWell-10-KD-MIAT-XRN2": "KD_s2w10"     # 4 FOV
+    "FolderWell11-KD-MIAT-XRN2": "KD_s2w11"      # 5 FOV
+  # ★ TRAP, CONFIRMED IN SOURCE: an omission folder must NEVER also appear in
+  # subfolder_conditions — io.py:1371 is
+  #   `condition = subfolder_conditions.get(subfolder, "Sec-Only")`
+  # so "Sec-Only" is only that lookup's DEFAULT, and a folder listed in both
+  # would receive its own label and be analysed as a biological well.
+  #
+  # ★ MISNAMED BUT CORRECT, and NT-SIDE ONLY — see §OMISSION. There is no
+  # KD-side omission for XRN2.
+  sec_only_folders:
+    - "FolderSec-Only-MIAT-QKI-NT"
+  # Belt and braces: the substring "sec-only" is present (case-folded) in the
+  # basenames of all six omission files and in no real well's basename. The
+  # sec-only test is evaluated BEFORE condition matching (io.py `is_sec` is
+  # computed first), so a file named "Sec-Only-MIAT-QKI-NT" can never be
+  # relabelled NT by anything.
+  sec_only_files: ["sec-only"]
+  filename_conditions: []     # layout is by FOLDER, not by filename
+  condition_order:
+    - "NT_s2w8"
+    - "NT_s2w9"
+    - "KD_s2w10"
+    - "KD_s2w11"
+    - "Sec-Only"
+  min_nuclei_for_stats: 10
+
+# NO input_file_subset — this pass runs the full XRN2 roster. Triage is its
+# OUTPUT, not its input. (It is an inclusion allowlist matched on bare basename,
+# so a partial list would silently filter the run toward zero.)
+
+channels:
+  analysis_mode: rna_protein   # UNCHANGED — the partner channel is still READ for
+                               # whole-nucleus pixel metrics and pixel coloc; only the
+                               # partner-at-spot statistics are off.
+  # ★ MEASURED from OME on 88/88 files. Do NOT replace with -1: auto-detect
+  # would swap MIAT and XRN2 ("640" sits in the antibody pattern table; neither
+  # "568" nor "565" appears anywhere).
+  dapi: 2                       # C2 = "405 CSU" -> DAPI
+  rna: 0                        # C0 = "640 CSU" -> MIAT RNA-FISH (PUNCTATE slot)
+  antibody: 1                   # C1 = "561 CSU" -> XRN2 IF      (DIFFUSE partner slot)
+  rna2: -1
+  one_indexed: false
+  dapi_label: "DAPI"
+  rna_label: "MIAT-647"
+  antibody_label: "XRN2-568"    # primary host species / vendor STILL UNVERIFIED
+  dapi_lut: "blue"              # LUTs by WAVELENGTH (locked convention), not by role
+  rna_lut: "yellow"
+  antibody_lut: "magenta"
+
+z_stack:
+  # UNCHANGED and load-bearing: this pass exists partly to PRODUCE the focus
+  # scores and chosen planes, so it must run the same autofocus the FINAL run
+  # will be pinned from. Read z_plane and joint_focus_<dapi|rna|partner> out of
+  # per_image_summary.csv afterwards and build the z-montages from them.
+  #
+  # ★ EXPECT THE OMISSION FIELDS' PICKS TO DRIFT DEEP, as they did on QKI, where
+  # stained images spanned z 8-19 (median 13) but omission images spanned 16-27
+  # (median 22.5). Mechanism: joint autofocus multiplies per-channel normalised
+  # focus scores across DAPI + MIAT + XRN2, and an omission well carries no
+  # specific signal in two of those three channels. On the QKI side a
+  # discriminating test found plane depth does NOT bias the omission background
+  # (Spearman rho +0.09 / -0.28 / +0.14 across three measures, all
+  # non-significant), so this is a provenance caveat rather than a confound —
+  # but check it here rather than assuming the QKI result transfers.
+  mode: autofocus
+  autofocus_channel: joint
+  autofocus_joint_reduce: product
+  autofocus_joint_nuclear_mask: true
+  autofocus_intensity_weighted: true
+  focus_central_fraction: 1.0            # NO CENTRAL CAP — load-bearing. 0.6 capped the
+                                         # pick mid-stack on fields focusing high and
+                                         # MANUFACTURED a fake NT<KD anomaly.
+  focus_min_intensity_frac_of_peak: 0.3
+  start_slice: 1
+  end_slice: null                        # null -> last plane; n_z measured 38 on all 24
+  # NO file_overrides — UNPINNED on purpose. Pins are the OUTPUT of this pass.
+
+nuclei:
+  # UNCHANGED — rescaled to the MEASURED 0.065 um/px. Must match the FINAL run
+  # exactly, or the nuclei this pass filters on are not the nuclei analysed.
+  backend: cellpose
+  cellpose_model_type: cpsam
+  cellpose_diameter_px: 200.0          # ~13 um nucleus @ 0.065 um/px
+  cellpose_flow_threshold: 0.4
+  cellpose_cellprob_threshold: 0.0
+  cellpose_downsample_factor: 4.0      # ds4 -> 0.260 um/px seg grid; 2304/4 = 576 px
+  cellpose_device: directml            # AMD RX 6750 XT; REQUIRES the fishproc_dml env
+  min_area_px: 16000                   # 67.6 um^2
+  max_area_px: 1000000000000.0
+  exclude_border: true
+  border_margin_px: 20                 # 1.3 um
+  stardist_model: 2D_versatile_fluo
+  prob_threshold: 0.5
+  nms_threshold: 0.5
+  stardist_gauss_sigma: 3.0
+  stardist_postprocess: none
+  label_smoothing_radius_px: 0
+  reject_ghost_nuclei: false
+
+sampling:
+  # UNCHANGED. Order-independent by construction (derive_unit_rng keys a PCG64
+  # SeedSequence on a blake2b hash of the unit key, core/segmentation.py:595), so
+  # the draw here is the draw the FINAL run will make.
+  enabled: true
+  n_per_unit: 10
+  unit: per_image       # per_well RAISES as unimplemented
+  order: random
+  seed: 0
+  on_short: keep        # first pass — the roster has not been triaged yet. Switch to
+                        # `fail` for the FINAL run once the >=10-nuclei rule has
+                        # cleaned the roster, at which point it is a pure assertion.
+                        # ★ Matters more on this arm: at 2 wells per arm, an aborted
+                        # run costs a quarter of the design.
+
+pixel_coloc:
+  # STAYS `batch` — also the segmentation cache; see §WHAT STAYED ON.
+  threshold_mode: mad
+  threshold_scope: batch
+  k_mad: 2.5
+
+spot_coloc:
+  # Fully inert here: detect_antibody_spots is false AND partner intensity is off.
+  pair_distance_um: 0.3     # ~4.6 px @ the measured 0.065 um/px
+  report_nn_distance: true
+
+foci:
+  enabled: true
+  backend: bigfish
+  # ── DETECTION — IDENTICAL to the 08-13 XRN2 preset and to the QKI arm.
+  # Non-negotiable: this pass calibrates the floor and counts the spots the
+  # FINAL run will use, and the two arms must detect MIAT the same way. ──
+  bigfish_voxel_size_nm: 65.0          # MEASURED, uniform 88/88, UNBINNED
+  bigfish_voxel_z_nm: 0.0
+  bigfish_spot_radius_nm: 120.0        # physical; 1.85 px at 65 nm/px
+  bigfish_spot_radius_z_nm: 350.0      # MEASURED z-step
+  threshold_multiplier: 1.0            # __TO TUNE__ — read qc_rna1_spots_per_nucleus
+                                       # from THIS run. Whatever tm and floor this arm
+                                       # settles on must be reconciled with the QKI arm's.
+  only_nuclear_spots: true
+  min_sep_px: 1                        # Fiji-NMS knob; inert in the BigFISH wrapper
+  detect_in_sec_only: true             # ★ LOAD-BEARING: floor calibration depends on the
+                                       # omission wells being DETECTED, not skipped. Also
+                                       # emits spot_rate_signal_to_control_rna1.
+  # ★ NO rna_overrides.min_spot_peak_intensity — see §NO SPOT FLOOR. Deriving it
+  # is an OUTPUT of this pass. Do not paste 364.0 in from the QKI arm.
+  detect_antibody_spots: false         # XRN2 fills the nucleoplasm: no thresholdable
+                                       # object. Re-measure callability on THIS
+                                       # acquisition in a separate diagnostic pass
+                                       # (detect_antibody_spots: true, read
+                                       # spot_rate_signal_to_control_rna2 vs 2.0) rather
+                                       # than inheriting the 640-era answer.
+  # ── COLOCALIZATION MACHINERY — ALL OFF FOR THIS PASS ─────────────────────
+  # These are the FINAL run's statistics. Turn every one back ON for the pinned-
+  # plane final run.
+  compute_partner_intensity: false         # was true — also the reason the full preset needs -p 1
+  compute_partner_null_enrichment: false   # was true — 1000 random-position draws/nucleus
+  compute_partner_rotation_null: false     # was true — 1000 rotation draws/nucleus
+  compute_partner_radial_profile: false    # was true — ~1x the position-null draw cost
+  compute_footprint_enrichment: false      # was true — footprint/capacity/association ratio
+  save_partner_null_draws: false           # was true
+  save_partner_rotation_null_draws: false  # was true
+  # Inert while the flags above are false; retained so re-enabling is a pure
+  # flag flip and no value can drift meanwhile.
+  partner_null_n: 1000
+  partner_null_disk_px: 6.0                # 0.39 um at 65 nm/px (schema default is the
+                                           # 130-nm-era 3.0 — set explicitly so a
+                                           # copy-paste cannot inherit a half-scale disk)
+  partner_null_seed: 0
+  exclude_nucleolus_from_partner_null: true  # see §NUCLEOLUS — for XRN2 this RAISES the
+                                             # estimate, the mirror of the QKI case
+  partner_radial_bins_um: [0.25, 0.5, 0.75, 1.0]
+  partner_rotation_n: 1000
+  partner_rotation_seed: 0
+  partner_rotation_min_retention: 0.5
+  partner_rotation_assoc_percentile: 95.0
+  # assoc_qki_floor UNSET (None => OFF). Despite the "qki" in the field name it
+  # is the generic PARTNER floor and would gate on XRN2 here.
+
+cytoplasm:
+  enabled: true
+  voronoi_max_expansion_px: 80         # 5.2 um @ 0.065 um/px
+  measure_nc_ratio: true               # supplies rna_cytoplasmic_mean, the ABSOLUTE
+                                       # extranuclear level used by the image filtering.
+                                       # NOTE every N:C RATIO is barred from the filtering
+                                       # criteria as circular — it is the retention readout
+                                       # itself; the filter keys on the absolute mean.
+
+nucleolus:
+  enabled: true                        # ★ AUDIT THESE MASKS HARDER THAN ON THE QKI SIDE —
+                                       # see §NUCLEOLUS. XRN2 is nucleolus-ENRICHED, so
+                                       # carving RAISES its enrichment: a correction in the
+                                       # favourable direction. Confirm nucleolus_area_px and
+                                       # nucleolus_fraction_of_nucleus are non-degenerate
+                                       # (neither ~0 nor at the max_area_frac cap) and
+                                       # eyeball nucleolus_overlay/ before any FINAL XRN2
+                                       # run relies on the carve-out.
+
+output:
+  save_qc_overlays: true               # ★ KEPT ON — eyeball segmentation + spot placement
+  save_per_image_csv: true
+  save_masks: true                     # also what a later backfill would reuse
+  # ★ STAYS TRUE — sole populator of batch_contrast -> analysis_floors. Turning
+  # it off NaNs every *_thresh_* column, including the extranuclear-haze column
+  # the image filtering reads. See §WHAT STAYED ON.
+  save_publication_images: true
+  save_publication_tifs: false         # pure output size; no pre-scan effect
+  # auto_batch for THIS pass. Manual floors are pinned in the FINAL XRN2 preset
+  # once this arm's own display ranges are chosen; the QKI arm's MIAT 364-1888 /
+  # QKI 563-2500 do not transfer (different partner, and the floor is an
+  # empirical property of this image set).
+  pub_contrast_mode: auto_batch
+  apply_pub_contrast_floor_to_analysis: true   # emits the *_above_floor_* columns. Under
+                                               # auto_batch the floor is percentile-derived
+                                               # PER BATCH, so those columns are NOT
+                                               # comparable across runs until manual floors
+                                               # are pinned.
+  apply_pub_contrast_floor_to_spots: false     # never gate spot COUNTS by a display floor
+  prefix: ""
+  scalebar_um: 25.0
+  scalebar_font_px: 52
+
+parallel:
+  # With compute_partner_intensity off, -p 1 is not strictly required — but the
+  # main per-image pass is serial in this version regardless (main_workers is
+  # never read by runner.py; -p feeds provenance only), and the sole process
+  # pool is the segmentation pre-scan driven by seg_workers, which MUST stay 1
+  # on DirectML. Note resolve_workers applies the device clamp only to the
+  # string "auto": an explicit int bypasses it, so seg_workers: 4 would be
+  # honoured as 4 on one 12 GB GPU. Type 1.
+  workers: 1
+  seg_workers: 1
+  main_workers: 1
+  threads_per_worker: 4
+
+qc:
+  qc_min_nuclei: 10          # advisory; never drops an image
+  qc_saturated_frac: 0.001   # image-filtering rule 2
+
+seed: 0

@@ -1,0 +1,251 @@
+# BIN1 exon/intron RNA-FISH, human d8 cardiomyocytes - rna_rna FULL-RUN preset (51 files).
+#
+# Raw (READ-ONLY): F:\Raw Images\BIN1_RNA-FISH_Ex565_In647\
+#   17 Folder<COND> subfolders x 3 .vsi = 51; empty `_temp` skipped by the
+#   leading-underscore rule in core/io.py.
+#   Geometry (bioio, scene 0, 51/51): 1152x1152, 3 channels, 40 z at 0.33 um,
+#   0.13 um/px, channel names `640 CSU | 561 CSU | 405 CSU`.
+#   Source: F:\Image Analysis Work\BIN1_Introns_Exons_RNA-FISH_Analysisi\00_INVENTORY\inventory_summary.md
+#
+# Parent: bin1_d8cmyo_100x.yaml (the only real-data rna_rna preset at 0.13 um/px).
+# NOT carried from the parent: z window 35-60 (invalid for 40 planes), the
+# decon-tuned floors 675/1350 and 825/1650, `antibody: 2` (would point at DAPI
+# here), the 4-file decon `sec_only_files` list and `input_file_subset`.
+#
+# Field-by-field rationale + floor provenance:
+#   F:\Image Analysis Work\BIN1_Introns_Exons_RNA-FISH_Analysisi\02_FISHSUITE_SETUP_2026-09-02\PRESET_FIELD_TABLE.md
+
+experiment:
+  name: "BIN1_ExIn_565_647_rna_rna_2026-09-02"
+  description: "BIN1 intron (640/647) vs exon (561/565) RNA-FISH, d8 cardiomyocytes: WT / QKI-KO / Clone16 / Clone17 / Mix + secondary-only"
+  cell_line: "d8 cardiomyocyte"
+
+conditions:
+  mode: subfolders
+  # POOLED line labels. The well (-1/-2/-3 = biological replicate) is recovered
+  # downstream from the `subfolder` column; splitting wells into conditions here
+  # is what the RNASEH2B run did and its report had to undo.
+  # Every biological folder must be listed: an unlisted folder silently becomes
+  # its own folder-named condition (core/io.py `_add`:
+  # subfolder_conditions.get(subfolder, subfolder)).
+  subfolder_conditions:
+    FolderWT-1: "WT"
+    FolderWT-2: "WT"
+    FolderWT-3: "WT"
+    FolderKO-1: "QKI-KO"
+    FolderKO-2: "QKI-KO"
+    FolderKO-3: "QKI-KO"
+    Folder16-1: "Clone16"
+    Folder16-2: "Clone16"
+    Folder16-3: "Clone16"
+    Folder17-1: "Clone17"
+    Folder17-2: "Clone17"
+    Folder17-3: "Clone17"
+    FolderMix-1: "Mix"
+    FolderMix-2: "Mix"
+    FolderMix-3: "Mix"
+  # Deliberately NOT in subfolder_conditions: a sec-only folder listed there
+  # keeps its mapped label instead of being forced to "Sec-Only".
+  # Sec-Only-2 was never acquired -> the control arm is 6 files across 2 groups.
+  sec_only_folders:
+    - "FolderSec-Only-1"
+    - "FolderSec-Only-3"
+  sec_only_files: []
+  condition_order: ["WT", "QKI-KO", "Clone16", "Clone17", "Mix", "Sec-Only"]
+  min_nuclei_for_stats: 6
+
+# ---------------------------------------------------------------------------
+# CHANNEL MAP - CONFIRMED BY BRIAN 2026-09-03 from the probe order (empirical check 01_CHANNEL_ID was INCONCLUSIVE, not contradicting)
+#
+#   rna:  0  = "640 CSU"  -> BIN1 Introns-647
+#   rna2: 1  = "561 CSU"  -> BIN1 Exons-565
+#   dapi: 2  = "405 CSU"
+#
+# Basis: (a) the acquisition filename `BIN1_RNA-FISH-Introns647-Exons565_*`,
+# (b) the parent preset's PI-confirmed orientation (bin1_d8cmyo_100x.yaml,
+# 2026-05-19: ch0/640 = Introns, ch1/561 = Exons).
+#
+# Empirical check verdict: **INCONCLUSIVE**
+#   F:\Image Analysis Work\BIN1_Introns_Exons_RNA-FISH_Analysisi\01_CHANNEL_ID_2026-09-02\CHANNEL_ASSIGNMENT_RESOLVED.md
+#   The prespecified rule reached step 3 (no consistent separation): nuc_frac did
+#   not separate ch0 from ch1 in WT (4.3% gap) or QKI-KO (5.6%), both below the
+#   10% requirement; punctate_frac separated toward ch0 in both lines, but the
+#   rule requires both metrics to agree. No assignment was made, so the
+#   secondary-only collapse checks were not applied.
+#
+# STATUS: Brian's probe-order confirmation is PENDING. Do not treat the labels
+# below as established. rna_rna detects both channels symmetrically (same
+# BigFISH parameters, same per-channel pipeline), so if the order turns out to
+# be reversed the correction is a RELABEL of the two channels' outputs, not a
+# re-run - provided the two channels' floors and any per-channel overrides are
+# swapped together with the labels.
+# ---------------------------------------------------------------------------
+channels:
+  analysis_mode: rna_rna
+  dapi: 2
+  rna: 0
+  rna2: 1
+  antibody: -1
+  one_indexed: false
+  dapi_label: "DAPI"
+  rna_label: "BIN1 Introns-647"
+  rna2_label: "BIN1 Exons-565"
+  # Sam's WAVELENGTH-based convention: 647 always yellow, 561/568 always
+  # magenta, regardless of which probe sits on which channel.
+  rna_lut: "yellow"
+  rna2_lut: "magenta"
+  dapi_lut: "blue"
+
+z_stack:
+  # Locked single plane per image (no maxproj - it collapses spots in z).
+  mode: autofocus
+  # Joint focus over DAPI + both probe channels: spot pairing at 0.3 um is only
+  # meaningful if both RNA channels are measured on the SAME plane.
+  autofocus_channel: joint
+  autofocus_joint_reduce: product
+  # Restrict the joint metric to nuclear pixels so diffuse cytoplasmic exon
+  # haze cannot hijack the focus score.
+  autofocus_joint_nuclear_mask: true
+  autofocus_intensity_weighted: true
+  # Central 80% of 40 planes (1-indexed). The parent's 35/60 is out of range here.
+  start_slice: 5
+  end_slice: 36
+  # 1.0 = no extra central cap. A value < 1 caps the argmax mid-window and
+  # manufactured a fake NT<KD anomaly on 2026-07-19; the explicit window +
+  # intensity weighting + nuclear mask already constrain the pick. If the pilot
+  # z-histogram piles at 5 or 36, revisit at 0.8 in a NEW run dir.
+  focus_central_fraction: 1.0
+  focus_min_intensity_frac_of_peak: 0.3
+  # z depth is identical in 51/51 files.
+  file_overrides: {}
+
+nuclei:
+  backend: cellpose
+  cellpose_model_type: cpsam
+  cellpose_device: directml
+  # RNASEH2B used 200 px at 65 nm/px = 13 um; 13 um / 0.13 um-per-px = 100 px.
+  cellpose_diameter_px: 100.0
+  # 1152 / 2 = 576 px working image = the same working scale as RNASEH2B's
+  # 2304 / 4, i.e. a 50 px working diameter.
+  cellpose_downsample_factor: 2.0
+  cellpose_flow_threshold: 0.4
+  cellpose_cellprob_threshold: 0.0
+  # PLACEHOLDER. A straight rescale of RNASEH2B (16000 px2 at 65 nm) gives
+  # 4000 px2 here, but the parent measured real d8 CM nuclei at 40-50 px
+  # diameter (1300-2000 px2) at this same pixel size and set 1500. The pilot
+  # `nucleus_area_px` histogram + overlays decide between 1500 and 4000.
+  min_area_px: 1500
+  exclude_border: true
+  border_margin_px: 10
+  reject_ghost_nuclei: false
+  # --- inert unless `backend` is switched back to stardist (parent values) ---
+  prob_threshold: 0.3
+  nms_threshold: 0.3
+  stardist_model: "2D_versatile_fluo"
+  stardist_gauss_sigma: 1.5
+  stardist_postprocess: watershed_otsu
+  stardist_postprocess_otsu_sigma: 2.0
+  stardist_postprocess_mask_closing_px: 8
+  label_smoothing_radius_px: 5
+
+pixel_coloc:
+  # Cannot be disabled; `batch` scope is also the segmentation cache.
+  threshold_mode: mad
+  threshold_scope: batch
+  k_mad: 2.5
+
+spot_coloc:
+  # 0.3 um = 2.31 px at 0.13 um/px.
+  pair_distance_um: 0.3
+  report_nn_distance: true
+
+foci:
+  enabled: true
+  backend: bigfish
+  # PINNED, not auto-detected: the SD-MGCA magnification-changer setting is not
+  # recorded in the VSI, and the z step here is 0.33 um (every earlier BIN1
+  # preset assumed 0.21).
+  bigfish_voxel_size_nm: 130.0
+  bigfish_voxel_z_nm: 330.0
+  bigfish_spot_radius_nm: 130.0
+  bigfish_spot_radius_z_nm: 300.0
+  # 1.0 = BigFISH auto-threshold with no scaling (the parent's shipped v3 setting).
+  threshold_multiplier: 1.0
+  only_nuclear_spots: false
+  min_sep_px: 1
+  # rna_rna has no sec-only detection gate (sec-only is always spot-detected);
+  # set anyway so core/qc.py emits the signal-to-control columns.
+  detect_in_sec_only: true
+  min_spot_signal_to_control: 2.0
+  # The display/analysis floor goes through `output.manual_*`, not through
+  # per-channel `min_spot_peak_intensity`.
+  rna_overrides: {}
+  rna2_overrides: {}
+  # All compute_partner_* / footprint / rotation-null flags OMITTED (default OFF):
+  # in rna_rna they sample exon pixels at intron spots under `rna2_*` and literal
+  # `qki_*` column names, which is not the question being asked here.
+
+cytoplasm:
+  enabled: true
+  # 40 px = 5.2 um at 0.13 um/px (RNASEH2B's 80 px at 65 nm).
+  voronoi_max_expansion_px: 40
+  measure_nc_ratio: true
+
+output:
+  save_qc_overlays: true
+  save_per_image_csv: true
+  save_masks: true
+  # MUST stay true: with publication images off, every `*_thresh_*` column is NaN.
+  save_publication_images: true
+  save_publication_tifs: false
+  pub_contrast_mode: manual
+  # ------------------------------------------------------------------
+  # FIRST GUESS - tune per Sam's method on the pilot before the full run.
+  # Raw 16-bit counts. Derived from
+  # 01_CHANNEL_ID_2026-09-02\channel_id_summary.csv (background-subtracted
+  # nuclear percentiles) with the per-channel median camera background from
+  # channel_id_metrics.csv added back:
+  #   min = secondary-only p99 of nuclear pixels + background
+  #   max = biological (WT+KO) p99 of nuclear pixels + background
+  #   ch0: 376.0 + 376.5 = 752.5 -> 752 ; 738.5 + 376.5 = 1115.0
+  #   ch1: 311.0 + 378.0 = 689.0        ; 1137.5 + 378.0 = 1515.5 -> 1516
+  #   ch2: median biological ring 693.5 + 390.5 = 1084.0 ; p99 9810.5 + 390.5 = 10201.0
+  # These are single-plane PIXEL percentiles, not BigFISH `intensity_peak`
+  # values, so they are a display starting point only and must be replaced from
+  # the pilot `spot_metrics.csv` sweep + secondary-only audit.
+  # ------------------------------------------------------------------
+  manual_rna_min: 752.0      # FIRST GUESS - tune per Sam's method on the pilot
+  manual_rna_max: 1115.0     # FIRST GUESS - tune per Sam's method on the pilot
+  manual_rna2_min: 689.0     # FIRST GUESS - tune per Sam's method on the pilot
+  manual_rna2_max: 1516.0    # FIRST GUESS - tune per Sam's method on the pilot
+  manual_dapi_min: 1084.0    # FIRST GUESS - tune per Sam's method on the pilot
+  manual_dapi_max: 10201.0   # FIRST GUESS - tune per Sam's method on the pilot
+  # Run of record is UNGATED at the spot level: BigFISH detection is unchanged
+  # and no spot is dropped, so the gated arm can be derived post hoc from
+  # `spot_metrics.csv` (`intensity_peak >= floor`, re-paired at 0.3 um) without
+  # a second GPU run. The floors therefore affect only the publication images
+  # and the intensity columns below.
+  apply_pub_contrast_floor_to_spots: false
+  # ON: gives `nc_ratio_above_floor_intensity_*` and the `*_thresh_*` columns at
+  # the same floor. NOTE the MIAT/QKI runs use `false` - do not compare the
+  # thresholded intensity columns across those arms.
+  apply_pub_contrast_floor_to_analysis: true
+  scalebar_um: 25.0
+  scalebar_font_px: 52
+  prefix: ""
+
+parallel:
+  workers: 1
+  seg_workers: 1
+  main_workers: 1
+  threads_per_worker: 4
+
+qc:
+  qc_min_nuclei: 5
+  qc_saturated_frac: 0.001
+
+seed: 0
+
+# Full-run preset: no subset, all 51 files. The 17-file pilot lives in a
+# separate copy (bin1_exin_PILOT17_2026-09-02.yaml).
+input_file_subset: []

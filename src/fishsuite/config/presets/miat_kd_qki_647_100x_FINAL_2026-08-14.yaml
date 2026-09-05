@@ -1,0 +1,507 @@
+# ############################################################################
+# ##                                                                        ##
+# ##   ███  FINAL ANALYSIS RUN — MIAT x QKI, PINNED PLANES, 44 IMAGES       ##
+# ##                                                                        ##
+# ##   This is the analysis of record for the direct MIAT-QKI association   ##
+# ##   measurements. Its outputs are citable; the QC pass's are not.        ##
+# ##                                                                        ##
+# ##   ★ THE NULLS ARE OFF AND ARE RETROFITTED AFTERWARDS. Brian's call:    ##
+# ##   deliver the DIRECT measurements first (footprint enrichment,         ##
+# ##   capacity, association ratio, the tracking-regression axes), then     ##
+# ##   add the nulls with `fishsuite backfill --rotation`, which is         ##
+# ##   CPU-only and operates on this completed run directory.               ##
+# ##                                                                        ##
+# ##   ★★ READ §BACKFILL BEFORE RELYING ON THAT PLAN. Backfill restores the ##
+# ##   nulls at PER-IMAGE granularity into SEPARATE CSVs. It does NOT write ##
+# ##   per-nucleus columns, so `rotation_null_usable` (the plan's stated    ##
+# ##   pre-aggregation filter) and the per-nucleus association fraction     ##
+# ##   (the "% of MIAT spots co-occupied" figure) will NOT exist. That is a ##
+# ##   real cost of the sequencing decision, not a defect — but it is a     ##
+# ##   cost, and it should be an informed one.                              ##
+# ##                                                                        ##
+# ############################################################################
+# ============================================================================
+# MIAT (647 RNA-FISH) x QKI (568 IF) — FINAL PINNED-PLANE RUN — 100x
+# Date: 2026-08-14 | acquisition 2026-08-12 | for MASTER CONTROL
+#
+# LINEAGE: miat_kd_qki_647_100x_2026-08-12 (inferred metadata)
+#       -> miat_kd_qki_647_100x_2026-08-13 (measured metadata, 65 nm rescale)
+#       -> miat_kd_qki_647_100x_QCPASS_2026-08-13 (QC + calibration, 51 images)
+#       -> THIS FILE (final, 44 images, pinned planes, calibrated floor)
+# Read the 08-13 preset for the measured-metadata provenance and the 65 nm
+# rescale derivation; not repeated here.
+#
+# UNCHANGED FROM THE 08-13 PRESET: every *_px value and the 65 nm voxel size;
+# channel indices 0/1/2 with their labels and LUTs; joint autofocus parameters;
+# detect_antibody_spots false; nucleolus on; cytoplasm on; seed 0; conditions
+# and sec-only wiring; the slide-carrying per-well labels.
+#
+# ── §WHAT CHANGED FOR THE FINAL RUN ────────────────────────────────────────
+#   1. MIAT SPOT FLOOR PINNED at 364.0 (foci.rna_overrides.min_spot_peak_intensity)
+#   2. 44-image roster via input_file_subset (7 images excluded — see §ROSTER)
+#   3. PINNED z-planes, one per file, from the QC pass's autofocus picks
+#   4. Manual display floors (pub_contrast_mode: manual)
+#   5. sampling.on_short: keep -> fail (the roster is now triaged)
+#   6. Position null, rotation null and radial profile OFF; partner intensity
+#      and footprint enrichment ON
+#
+# ── §THE FLOOR — 364.0, AND WHY NOT THE CALIBRATED 3058 ────────────────────
+#   Brian's call, and the QC pass supports it. The P99-of-omission statistic
+#   returned 3058, but that percentile chased a bright-debris tail: applying it
+#   would have discarded the overwhelming majority of real MIAT spots for no
+#   gain in signal-to-control. 364.0 retains essentially all real spots at a
+#   large signal-to-control margin. Re-derive both figures from the QC pass's
+#   `QC_ANALYSIS/02_calibrate_floor/` before quoting either — they are dated
+#   observations, not standing facts.
+#
+#   ★ TWO DIFFERENT FLOORS, BOTH SET TO 364.0, AND THEY ARE NOT THE SAME KNOB:
+#     - foci.rna_overrides.min_spot_peak_intensity: 364.0  <- DETECTION. Drops
+#       spots below the floor right after BigFISH, before any measurement.
+#     - output.manual_rna_min: 364.0                       <- DISPLAY, and it
+#       also becomes the `rna_thresh_*` integration floor (see §DISPLAY).
+#   They are deliberately the same number so the thresholded-intensity columns
+#   integrate over exactly the pixel population the spot caller accepted.
+#   `apply_pub_contrast_floor_to_spots` STAYS FALSE — the display floor must
+#   never gate detection; detection gating is the override above. Setting it
+#   true would double-gate.
+#
+#   Higher floors belong in a POST-HOC sensitivity sweep (0.8x/1.0x/1.2x, each
+#   in its own output dir), not in this run.
+#
+# ── §ROSTER — 44 IMAGES, EXCLUSIONS ARE A STATED RULE ──────────────────────
+#   Verified against the live catalog: 51 discovered, 7 excluded, 44 kept =
+#   17 NT (6 wells) + 15 KD (5 wells) + 12 omission. Each exclusion basename
+#   was confirmed to EXIST before being excluded — an exclusion that matches
+#   nothing silently excludes nothing.
+#
+#   EXCLUDED:
+#     NT_s1w1 FOV 07  — 1 image. Brian's visual call.
+#     KD_s1w6 FOVs 15,16,17,18,19,20 — the WHOLE WELL, 6 images (3 from the
+#       p2_ folder + 3 from the p2r_ reshoot, which is the same physical well).
+#       Brian flagged it by eye; independently the five highest cytoplasmic-QKI
+#       images in the dataset are all well 6. A well-level defect is dropped at
+#       the well, not per-FOV — cherry-picking within a bad well is the worse
+#       error. This drops KD from 6 wells to 5.
+#   RETAINED explicitly, having been checked and cleared: KD_s1w5 FOVs 12, 13.
+#
+#   ★ input_file_subset matching ZERO files raises RuntimeError (runner.py:588),
+#   but a subset matching the WRONG COUNT is silent. The dry-run roster must
+#   read exactly 44. Assert the per-condition counts, not just the total.
+#
+# ── §Z — PINNED, ONE PLANE PER FILE ────────────────────────────────────────
+#   mode stays `autofocus` with a DEGENERATE file_override window
+#   {start_slice: F, end_slice: F} per file — the documented pinning pattern:
+#   the search range collapses to a single plane, so the pick is forced to F.
+#   All 44 pins come from the QC pass's own autofocus picks
+#   (`QC_ANALYSIS/06_make_pin_overrides/resolved_pins.csv`, pin_source =
+#   autofocus for all 44, zero manual overrides). No plane was moved by hand.
+#
+#   ★ PINNED PLANES OUTSIDE BRIAN'S IDEAL 10-17 WINDOW — 13 of 44, REPORTED
+#   NOT MOVED. The pattern is not random and it matters:
+#     - STAINED images (n=32): z 8-19, median 13. Only three sit outside
+#       10-17 — KD_s2w4 FOV 38 at z=8, KD_s1w4 FOV 11 at z=9, KD_s1w5 FOV 14
+#       at z=19. All within the 8-23 acceptable window.
+#     - OMISSION images (n=12): z 16-27, median 22.5. TEN of the twelve sit
+#       above 17, and TWO EXCEED even the 8-23 acceptable window —
+#       Sec-Only-MIAT-QKI-NT_55 at z=26 and _59 at z=27.
+#   LIKELY MECHANISM: joint autofocus multiplies per-channel normalised focus
+#   scores across DAPI + MIAT + QKI. In an omission well two of those three
+#   channels carry no specific signal, so the product is driven by noise in two
+#   of its three terms and the pick drifts. The stained and omission z
+#   distributions barely overlap.
+#   CONSEQUENCE TO STATE, NOT HIDE: the omission wells are the floor-calibration
+#   set and the display reference band, and they are being read at
+#   systematically deeper planes than the images they calibrate. "Same z
+#   treatment for samples and control" is true in method and only approximate
+#   in fact. This does not invalidate the 364.0 floor — that floor was
+#   calibrated on the QC pass, which made these same picks — but any statement
+#   that the omission band is z-matched to the samples needs this caveat.
+#
+# ── §NULLS OFF, AND §BACKFILL — WHAT COMES BACK AND WHAT DOES NOT ─────────
+#   OFF here: compute_partner_null_enrichment, compute_partner_rotation_null,
+#   save_partner_null_draws, save_partner_rotation_null_draws,
+#   compute_partner_radial_profile.
+#   ON here: compute_partner_intensity, compute_footprint_enrichment — these
+#   are the DIRECT measurements: qki_at_miat_footprint, miat_footprint_area_px,
+#   qki_footprint_enrichment (per spot); qki_assoc_ratio_continuous,
+#   qki_associated_with_miat, miat_mass_nuclear, capacity_qki_at_miat,
+#   qki_at_miat_foci_enrichment (per nucleus). The last two per-nucleus names
+#   are the x and y of the tracking regression.
+#
+#   ★ RADIAL PROFILE IS OFF — recommendation, not an instruction. Verified in
+#   source: `_radial_profile_for_nucleus` (core/modes/rna_rna.py:629-650) takes
+#   `n_null` and draws `rng.integers(0, npix, size=n_null * n_sp)`, and the call
+#   site passes `_null_n = int(cfg.foci.partner_null_n)` (rna_rna.py:1953) —
+#   i.e. 1000 draw-sets per nucleus, the SAME order of cost as the position null
+#   being removed. (One position set is reused across all four rings, so it is
+#   ~1x that cost, not 4x — but it is not free either.) Keeping it on would give
+#   back much of the saving, it is a null-based specificity check of exactly the
+#   kind Brian deferred, and backfill computes it by default. So: off, and it
+#   returns with the nulls in a single CPU pass.
+#
+#   ★★ WHAT BACKFILL CAN AND CANNOT RESTORE — VERIFIED IN
+#   core/coloc_backfill.py, because this decision rests on it:
+#     CAN — both nulls, post-hoc, CPU-only, no GPU and no re-segmentation. It
+#       reuses this run's saved nucleus masks and MIAT spot coordinates and
+#       recomputes the analysis z-plane deterministically. `--rotation` adds the
+#       rotation null; null draws and the radial profile are ON by default
+#       (`--no-null-draws` / `--no-radial` to skip).
+#     CANNOT — write PER-NUCLEUS columns. It never touches nuclei_metrics.csv
+#       (the string does not appear in its write path) and never rewrites
+#       per_image_summary.csv. It emits SEPARATE files: coloc_null_draws.csv,
+#       coloc_null_summary.csv, coloc_radial_profile.csv,
+#       coloc_rotation_null_draws.csv, coloc_rotation_null_summary.csv. The
+#       summary rows are keyed (image, condition) with n_nuclei_used — per
+#       image, never per nucleus.
+#     THEREFORE THESE WILL NOT EXIST after backfill, and they are named
+#     deliverables in the analysis plan:
+#       * rotation_null_usable        — the plan's stated per-nucleus filter
+#                                       ("filter rotation_null_usable == True
+#                                       before any coloc aggregation")
+#       * rotation_median_retention
+#       * protein_rotation_assoc_fraction_at_rna1_spots — the per-nucleus
+#         "% of MIAT spots co-occupied" figure (plan figure F3)
+#       * the per-nucleus enrichment/z columns for both nulls, so well-level
+#         aggregation of coloc must start at the IMAGE level, not the nucleus
+#     ALSO LOST: backfill SELF-VALIDATES by reproducing the run's stored
+#       protein_pooled_* columns. With the nulls off in the run those columns
+#       do not exist, so the validation gate has no reference to check against.
+#   If any of that is load-bearing, the fix is to turn the two null flags back
+#   on HERE and pay the GPU time once. Raise it before launching.
+#
+# ── §DISPLAY — MANUAL FLOORS, AND THE ONE THAT IS NOT COSMETIC ────────────
+#   pub_contrast_mode: manual with all four channel pairs typed. MIAT 364-1888
+#   and QKI 563-2500 are Brian's (superseding the earlier 300-3200 / 531-2360).
+#   The antibody pair is mirrored into manual_rna2_min/max because the renderer
+#   may read the rna2 slot.
+#   DAPI 334-2419 is NOT invented: it is the value the QC pass actually applied,
+#   read from its run_config.json `batch_contrast.dapi` (floor 334.0, ceil
+#   2419.0). Using the measured applied value keeps the final images comparable
+#   to the QC pass's.
+#   ★ manual mode is NOT cosmetic-only: runner.py:1475-1497 mirrors every typed
+#   manual_*_min/max pair into `batch_contrast`, which runner.py:1633 turns into
+#   `analysis_floors`. So manual_rna_min 364.0 becomes the `rna_thresh_*`
+#   integration floor. Typing ALL FOUR pairs also means `_manual_needs_autobatch`
+#   is False and the auto_batch pre-scan is skipped entirely — a real saving,
+#   and safe ONLY because every pair is typed. Leave one pair unset and the
+#   pre-scan silently runs again.
+#
+# ── §HOW TO RUN ────────────────────────────────────────────────────────────
+#   fishproc_dml env, ONE GPU run at a time, foreground, --dry-run FIRST and
+#   CHECK THE ROSTER READS 44. -p 1 is REQUIRED: compute_partner_intensity runs
+#   an in-process per-spot loop that hangs the parallel pool.
+# ============================================================================
+
+experiment:
+  name: "FINAL_MIAT_KD_QKI_647_100x_2026-08-14"
+  description: "FINAL pinned-plane MIAT(647 RNA-FISH) x QKI(568 IF, rabbit/Fortis) rna_protein run — the analysis of record for the DIRECT association measurements. Acquired 2026-08-12; QC pass 2026-08-13; final preset 2026-08-14. 44-image roster via input_file_subset (51 discovered, 7 excluded: NT_s1w1 FOV 07, and the whole KD_s1w6 well = FOVs 15-20 across the p2_ and p2r_ reshoot folders) giving 17 NT / 6 wells + 15 KD / 5 wells + 12 omission; every exclusion basename was confirmed to exist before being excluded. MIAT spot floor PINNED at 364.0 via foci.rna_overrides.min_spot_peak_intensity (Brian's call; the P99-of-omission statistic returned 3058 but chased a bright-debris tail and would have discarded the great majority of real spots for no signal-to-control gain — higher floors belong in a post-hoc sweep). Display floors manual: MIAT 364-1888, QKI 563-2500 mirrored into rna2, DAPI 334-2419 read from the QC pass's applied batch_contrast rather than invented; manual mode mirrors these into batch_contrast so manual_rna_min also becomes the rna_thresh_* integration floor, and typing all four pairs skips the auto_batch pre-scan. apply_pub_contrast_floor_to_spots stays FALSE — display never gates detection; detection is gated by the min_spot_peak_intensity override. All 44 z-planes PINNED from the QC pass's own autofocus picks via degenerate {start_slice: F, end_slice: F} overrides, pin_source autofocus for all 44 with zero manual moves. NULLS OFF by Brian's sequencing decision (position null, rotation null, radial profile, and both save_*_draws) with partner intensity and footprint enrichment ON, to deliver the direct measurements first; the nulls are retrofitted via CPU-only `fishsuite backfill --rotation`. CAVEAT VERIFIED IN core/coloc_backfill.py: backfill restores both nulls only at PER-IMAGE granularity into separate CSVs and never writes per-nucleus columns, so rotation_null_usable (the plan's stated pre-aggregation filter), rotation_median_retention and the per-nucleus association fraction will not exist, and the backfill self-validation gate loses its reference. sampling.on_short is now fail, the roster having been triaged. Human/Homo sapiens, H9 hESC undifferentiated."
+  cell_line: "H9 hESC (undifferentiated)"
+  date: "2026-08-12"          # ACQUISITION date. Final preset written 2026-08-14.
+
+conditions:
+  mode: subfolders
+  subfolder_conditions:
+    "p2_FolderWell-1-NT-MIAT-647-QKI-565": "NT_s1w1"
+    "p2_FolderWell-2-NT-MIAT647-QKI-565": "NT_s1w2"
+    "p2_FolderWell-3-NT-MIAT-647-QKI-565": "NT_s1w3"
+    "p2_FolderWell-4-KD-MIAT647-QKI-565": "KD_s1w4"
+    "p2_FolderWell5-KD-MIAT647-QKI-565": "KD_s1w5"
+    # KD_s1w6 keys are RETAINED so the label map still describes the catalog,
+    # but every well-6 image is excluded by input_file_subset below. A label
+    # with no surviving image simply never appears in the output.
+    "p2_FolderWell6-KD-MIAT647-QKI-565": "KD_s1w6"
+    "p2r_FolderWell6-KD-MIAT647-QKI-565": "KD_s1w6"
+    "p3_FolderWell-1-NT-MIAT-647-QKI-565": "NT_s2w1"
+    "p3_FolderWell-2-NT-MIAT647-QKI-565": "NT_s2w2"
+    "p3_FolderWell-3-NT-MIAT-647-QKI-565": "NT_s2w3"
+    "p3_FolderWell-4-KD-MIAT647-QKI-565": "KD_s2w4"
+    "p3_FolderWell5-KD-MIAT647-QKI-565": "KD_s2w5"
+    "p3_FolderWell6-KD-MIAT647-QKI-565": "KD_s2w6"
+  # Omission folders in sec_only_folders ONLY — io.py:1371 makes "Sec-Only"
+  # merely the DEFAULT of the subfolder_conditions lookup, so a folder listed
+  # in both would be analysed as a biological well.
+  sec_only_folders:
+    - "p3_FolderSec-Only-MIAT-QKI-NT"
+    - "p3_FolderSec-Only-MIAT-QKi-KD"
+  sec_only_files: ["sec-only"]
+  filename_conditions: []
+  # KD_s1w6 is deliberately absent — the well is excluded. Labels absent from
+  # the data are dropped by order_conditions, but omitting it here makes the
+  # intent explicit rather than incidental.
+  condition_order:
+    - "NT_s1w1"
+    - "NT_s1w2"
+    - "NT_s1w3"
+    - "NT_s2w1"
+    - "NT_s2w2"
+    - "NT_s2w3"
+    - "KD_s1w4"
+    - "KD_s1w5"
+    - "KD_s2w4"
+    - "KD_s2w5"
+    - "KD_s2w6"
+    - "Sec-Only"
+  min_nuclei_for_stats: 10
+
+# ── §ROSTER — 44 images. 17 NT + 15 KD + 12 omission. ──────────────────────
+# Catalog-relative posix paths under -i F:\Raw Images\MIAT-QKI-MIATKD-2026-08-12\QKI
+# Generated from a live discover_inputs walk, not transcribed. Verify the
+# dry-run reads 44 with the per-condition counts above.
+input_file_subset:
+  - "p2_FolderWell-1-NT-MIAT-647-QKI-565/MIAT_QKI_zstack__Well-1-NT-MIAT-647-QKI-565_06.vsi"
+  - "p2_FolderWell-1-NT-MIAT-647-QKI-565/MIAT_QKI_zstack__Well-1-NT-MIAT-647-QKI-565_08.vsi"
+  - "p2_FolderWell-2-NT-MIAT647-QKI-565/MIAT_QKI_zstack__Well-2-NT-MIAT647-QKI-565_03.vsi"
+  - "p2_FolderWell-2-NT-MIAT647-QKI-565/MIAT_QKI_zstack__Well-2-NT-MIAT647-QKI-565_04.vsi"
+  - "p2_FolderWell-2-NT-MIAT647-QKI-565/MIAT_QKI_zstack__Well-2-NT-MIAT647-QKI-565_05.vsi"
+  - "p2_FolderWell-3-NT-MIAT-647-QKI-565/MIAT_QKI_zstack__Well-3-NT-MIAT-647-QKI-565_00.vsi"
+  - "p2_FolderWell-3-NT-MIAT-647-QKI-565/MIAT_QKI_zstack__Well-3-NT-MIAT-647-QKI-565_01.vsi"
+  - "p2_FolderWell-3-NT-MIAT-647-QKI-565/MIAT_QKI_zstack__Well-3-NT-MIAT-647-QKI-565_02.vsi"
+  - "p2_FolderWell-4-KD-MIAT647-QKI-565/MIAT_QKI_zstack__Well-4-KD-MIAT647-QKI-565_09.vsi"
+  - "p2_FolderWell-4-KD-MIAT647-QKI-565/MIAT_QKI_zstack__Well-4-KD-MIAT647-QKI-565_10.vsi"
+  - "p2_FolderWell-4-KD-MIAT647-QKI-565/MIAT_QKI_zstack__Well-4-KD-MIAT647-QKI-565_11.vsi"
+  - "p2_FolderWell5-KD-MIAT647-QKI-565/MIAT_QKI_zstack__Well5-KD-MIAT647-QKI-565_12.vsi"
+  - "p2_FolderWell5-KD-MIAT647-QKI-565/MIAT_QKI_zstack__Well5-KD-MIAT647-QKI-565_13.vsi"
+  - "p2_FolderWell5-KD-MIAT647-QKI-565/MIAT_QKI_zstack__Well5-KD-MIAT647-QKI-565_14.vsi"
+  - "p3_FolderSec-Only-MIAT-QKI-NT/MIAT_QKI_zstack__Sec-Only-MIAT-QKI-NT_54.vsi"
+  - "p3_FolderSec-Only-MIAT-QKI-NT/MIAT_QKI_zstack__Sec-Only-MIAT-QKI-NT_55.vsi"
+  - "p3_FolderSec-Only-MIAT-QKI-NT/MIAT_QKI_zstack__Sec-Only-MIAT-QKI-NT_56.vsi"
+  - "p3_FolderSec-Only-MIAT-QKI-NT/MIAT_QKI_zstack__Sec-Only-MIAT-QKI-NT_57.vsi"
+  - "p3_FolderSec-Only-MIAT-QKI-NT/MIAT_QKI_zstack__Sec-Only-MIAT-QKI-NT_58.vsi"
+  - "p3_FolderSec-Only-MIAT-QKI-NT/MIAT_QKI_zstack__Sec-Only-MIAT-QKI-NT_59.vsi"
+  - "p3_FolderSec-Only-MIAT-QKi-KD/MIAT_QKI_zstack__Sec-Only-MIAT-QKi-KD_48.vsi"
+  - "p3_FolderSec-Only-MIAT-QKi-KD/MIAT_QKI_zstack__Sec-Only-MIAT-QKi-KD_49.vsi"
+  - "p3_FolderSec-Only-MIAT-QKi-KD/MIAT_QKI_zstack__Sec-Only-MIAT-QKi-KD_50.vsi"
+  - "p3_FolderSec-Only-MIAT-QKi-KD/MIAT_QKI_zstack__Sec-Only-MIAT-QKi-KD_51.vsi"
+  - "p3_FolderSec-Only-MIAT-QKi-KD/MIAT_QKI_zstack__Sec-Only-MIAT-QKi-KD_52.vsi"
+  - "p3_FolderSec-Only-MIAT-QKi-KD/MIAT_QKI_zstack__Sec-Only-MIAT-QKi-KD_53.vsi"
+  - "p3_FolderWell-1-NT-MIAT-647-QKI-565/MIAT_QKI_zstack__Well-1-NT-MIAT-647-QKI-565_39.vsi"
+  - "p3_FolderWell-1-NT-MIAT-647-QKI-565/MIAT_QKI_zstack__Well-1-NT-MIAT-647-QKI-565_40.vsi"
+  - "p3_FolderWell-1-NT-MIAT-647-QKI-565/MIAT_QKI_zstack__Well-1-NT-MIAT-647-QKI-565_41.vsi"
+  - "p3_FolderWell-2-NT-MIAT647-QKI-565/MIAT_QKI_zstack__Well-2-NT-MIAT647-QKI-565_42.vsi"
+  - "p3_FolderWell-2-NT-MIAT647-QKI-565/MIAT_QKI_zstack__Well-2-NT-MIAT647-QKI-565_43.vsi"
+  - "p3_FolderWell-2-NT-MIAT647-QKI-565/MIAT_QKI_zstack__Well-2-NT-MIAT647-QKI-565_44.vsi"
+  - "p3_FolderWell-3-NT-MIAT-647-QKI-565/MIAT_QKI_zstack__Well-3-NT-MIAT-647-QKI-565_45.vsi"
+  - "p3_FolderWell-3-NT-MIAT-647-QKI-565/MIAT_QKI_zstack__Well-3-NT-MIAT-647-QKI-565_46.vsi"
+  - "p3_FolderWell-3-NT-MIAT-647-QKI-565/MIAT_QKI_zstack__Well-3-NT-MIAT-647-QKI-565_47.vsi"
+  - "p3_FolderWell-4-KD-MIAT647-QKI-565/MIAT_QKI_zstack__Well-4-KD-MIAT647-QKI-565_36.vsi"
+  - "p3_FolderWell-4-KD-MIAT647-QKI-565/MIAT_QKI_zstack__Well-4-KD-MIAT647-QKI-565_37.vsi"
+  - "p3_FolderWell-4-KD-MIAT647-QKI-565/MIAT_QKI_zstack__Well-4-KD-MIAT647-QKI-565_38.vsi"
+  - "p3_FolderWell5-KD-MIAT647-QKI-565/MIAT_QKI_zstack__Well5-KD-MIAT647-QKI-565_33.vsi"
+  - "p3_FolderWell5-KD-MIAT647-QKI-565/MIAT_QKI_zstack__Well5-KD-MIAT647-QKI-565_34.vsi"
+  - "p3_FolderWell5-KD-MIAT647-QKI-565/MIAT_QKI_zstack__Well5-KD-MIAT647-QKI-565_35.vsi"
+  - "p3_FolderWell6-KD-MIAT647-QKI-565/MIAT_QKI_zstack__Well6-KD-MIAT647-QKI-565_30.vsi"
+  - "p3_FolderWell6-KD-MIAT647-QKI-565/MIAT_QKI_zstack__Well6-KD-MIAT647-QKI-565_31.vsi"
+  - "p3_FolderWell6-KD-MIAT647-QKI-565/MIAT_QKI_zstack__Well6-KD-MIAT647-QKI-565_32.vsi"
+
+channels:
+  analysis_mode: rna_protein
+  dapi: 2                       # C2 = "405 CSU" -> DAPI      (measured, 88/88 files)
+  rna: 0                        # C0 = "640 CSU" -> MIAT      (PUNCTATE slot)
+  antibody: 1                   # C1 = "561 CSU" -> QKI IF    (DIFFUSE partner slot)
+  rna2: -1
+  one_indexed: false
+  dapi_label: "DAPI"
+  rna_label: "MIAT-647"
+  antibody_label: "QKI-568"
+  dapi_lut: "blue"
+  rna_lut: "yellow"
+  antibody_lut: "magenta"
+
+z_stack:
+  # PINNED. mode stays `autofocus`; each file's degenerate {F, F} window
+  # collapses the search to one plane, which is the documented pin pattern.
+  # The joint-autofocus parameters below are therefore inert for pinned files
+  # but are retained so the config still describes how the pins were derived.
+  mode: autofocus
+  autofocus_channel: joint
+  autofocus_joint_reduce: product
+  autofocus_joint_nuclear_mask: true
+  autofocus_intensity_weighted: true
+  focus_central_fraction: 1.0
+  focus_min_intensity_frac_of_peak: 0.3
+  start_slice: 1
+  end_slice: null
+  # 44 pins, one per retained image, from the QC pass's autofocus picks
+  # (QC_ANALYSIS/06_make_pin_overrides/resolved_pins.csv; pin_source=autofocus
+  # on all 44, zero manual moves). 13 sit outside Brian's ideal 10-17 — see
+  # §Z; ten of those thirteen are omission images.
+  file_overrides:
+    "MIAT_QKI_zstack__Sec-Only-MIAT-QKI-NT_54.vsi": {start_slice: 16, end_slice: 16}
+    "MIAT_QKI_zstack__Sec-Only-MIAT-QKI-NT_55.vsi": {start_slice: 26, end_slice: 26}
+    "MIAT_QKI_zstack__Sec-Only-MIAT-QKI-NT_56.vsi": {start_slice: 22, end_slice: 22}
+    "MIAT_QKI_zstack__Sec-Only-MIAT-QKI-NT_57.vsi": {start_slice: 23, end_slice: 23}
+    "MIAT_QKI_zstack__Sec-Only-MIAT-QKI-NT_58.vsi": {start_slice: 17, end_slice: 17}
+    "MIAT_QKI_zstack__Sec-Only-MIAT-QKI-NT_59.vsi": {start_slice: 27, end_slice: 27}
+    "MIAT_QKI_zstack__Sec-Only-MIAT-QKi-KD_48.vsi": {start_slice: 22, end_slice: 22}
+    "MIAT_QKI_zstack__Sec-Only-MIAT-QKi-KD_49.vsi": {start_slice: 18, end_slice: 18}
+    "MIAT_QKI_zstack__Sec-Only-MIAT-QKi-KD_50.vsi": {start_slice: 18, end_slice: 18}
+    "MIAT_QKI_zstack__Sec-Only-MIAT-QKi-KD_51.vsi": {start_slice: 23, end_slice: 23}
+    "MIAT_QKI_zstack__Sec-Only-MIAT-QKi-KD_52.vsi": {start_slice: 23, end_slice: 23}
+    "MIAT_QKI_zstack__Sec-Only-MIAT-QKi-KD_53.vsi": {start_slice: 23, end_slice: 23}
+    "MIAT_QKI_zstack__Well-1-NT-MIAT-647-QKI-565_06.vsi": {start_slice: 16, end_slice: 16}
+    "MIAT_QKI_zstack__Well-1-NT-MIAT-647-QKI-565_08.vsi": {start_slice: 14, end_slice: 14}
+    "MIAT_QKI_zstack__Well-1-NT-MIAT-647-QKI-565_39.vsi": {start_slice: 13, end_slice: 13}
+    "MIAT_QKI_zstack__Well-1-NT-MIAT-647-QKI-565_40.vsi": {start_slice: 13, end_slice: 13}
+    "MIAT_QKI_zstack__Well-1-NT-MIAT-647-QKI-565_41.vsi": {start_slice: 12, end_slice: 12}
+    "MIAT_QKI_zstack__Well-2-NT-MIAT647-QKI-565_03.vsi": {start_slice: 15, end_slice: 15}
+    "MIAT_QKI_zstack__Well-2-NT-MIAT647-QKI-565_04.vsi": {start_slice: 13, end_slice: 13}
+    "MIAT_QKI_zstack__Well-2-NT-MIAT647-QKI-565_05.vsi": {start_slice: 12, end_slice: 12}
+    "MIAT_QKI_zstack__Well-2-NT-MIAT647-QKI-565_42.vsi": {start_slice: 14, end_slice: 14}
+    "MIAT_QKI_zstack__Well-2-NT-MIAT647-QKI-565_43.vsi": {start_slice: 12, end_slice: 12}
+    "MIAT_QKI_zstack__Well-2-NT-MIAT647-QKI-565_44.vsi": {start_slice: 13, end_slice: 13}
+    "MIAT_QKI_zstack__Well-3-NT-MIAT-647-QKI-565_00.vsi": {start_slice: 13, end_slice: 13}
+    "MIAT_QKI_zstack__Well-3-NT-MIAT-647-QKI-565_01.vsi": {start_slice: 15, end_slice: 15}
+    "MIAT_QKI_zstack__Well-3-NT-MIAT-647-QKI-565_02.vsi": {start_slice: 13, end_slice: 13}
+    "MIAT_QKI_zstack__Well-3-NT-MIAT-647-QKI-565_45.vsi": {start_slice: 12, end_slice: 12}
+    "MIAT_QKI_zstack__Well-3-NT-MIAT-647-QKI-565_46.vsi": {start_slice: 11, end_slice: 11}
+    "MIAT_QKI_zstack__Well-3-NT-MIAT-647-QKI-565_47.vsi": {start_slice: 10, end_slice: 10}
+    "MIAT_QKI_zstack__Well-4-KD-MIAT647-QKI-565_09.vsi": {start_slice: 14, end_slice: 14}
+    "MIAT_QKI_zstack__Well-4-KD-MIAT647-QKI-565_10.vsi": {start_slice: 11, end_slice: 11}
+    "MIAT_QKI_zstack__Well-4-KD-MIAT647-QKI-565_11.vsi": {start_slice: 9, end_slice: 9}
+    "MIAT_QKI_zstack__Well-4-KD-MIAT647-QKI-565_36.vsi": {start_slice: 14, end_slice: 14}
+    "MIAT_QKI_zstack__Well-4-KD-MIAT647-QKI-565_37.vsi": {start_slice: 12, end_slice: 12}
+    "MIAT_QKI_zstack__Well-4-KD-MIAT647-QKI-565_38.vsi": {start_slice: 8, end_slice: 8}
+    "MIAT_QKI_zstack__Well5-KD-MIAT647-QKI-565_12.vsi": {start_slice: 16, end_slice: 16}
+    "MIAT_QKI_zstack__Well5-KD-MIAT647-QKI-565_13.vsi": {start_slice: 13, end_slice: 13}
+    "MIAT_QKI_zstack__Well5-KD-MIAT647-QKI-565_14.vsi": {start_slice: 19, end_slice: 19}
+    "MIAT_QKI_zstack__Well5-KD-MIAT647-QKI-565_33.vsi": {start_slice: 10, end_slice: 10}
+    "MIAT_QKI_zstack__Well5-KD-MIAT647-QKI-565_34.vsi": {start_slice: 14, end_slice: 14}
+    "MIAT_QKI_zstack__Well5-KD-MIAT647-QKI-565_35.vsi": {start_slice: 11, end_slice: 11}
+    "MIAT_QKI_zstack__Well6-KD-MIAT647-QKI-565_30.vsi": {start_slice: 13, end_slice: 13}
+    "MIAT_QKI_zstack__Well6-KD-MIAT647-QKI-565_31.vsi": {start_slice: 14, end_slice: 14}
+    "MIAT_QKI_zstack__Well6-KD-MIAT647-QKI-565_32.vsi": {start_slice: 14, end_slice: 14}
+
+nuclei:
+  backend: cellpose
+  cellpose_model_type: cpsam
+  cellpose_diameter_px: 200.0          # ~13 um nucleus @ the measured 0.065 um/px
+  cellpose_flow_threshold: 0.4
+  cellpose_cellprob_threshold: 0.0
+  cellpose_downsample_factor: 4.0      # ds4 -> 0.260 um/px seg grid; 2304/4 = 576 px
+  cellpose_device: directml            # AMD RX 6750 XT; REQUIRES the fishproc_dml env
+  min_area_px: 16000                   # 67.6 um^2
+  max_area_px: 1000000000000.0
+  exclude_border: true
+  border_margin_px: 20                 # 1.3 um
+  stardist_model: 2D_versatile_fluo
+  prob_threshold: 0.5
+  nms_threshold: 0.5
+  stardist_gauss_sigma: 3.0
+  stardist_postprocess: none
+  label_smoothing_radius_px: 0
+  reject_ghost_nuclei: false
+
+sampling:
+  enabled: true
+  n_per_unit: 10
+  unit: per_image
+  order: random
+  seed: 0
+  on_short: fail        # ★ CHANGED from `keep`. The roster is now triaged, so a
+                        # field with <10 eligible nuclei should not exist —
+                        # `fail` is therefore an ASSERTION that should never
+                        # fire, not a filter. If it does fire, something changed
+                        # since the QC pass; investigate rather than relaxing it.
+
+pixel_coloc:
+  threshold_mode: mad
+  threshold_scope: batch    # also the segmentation cache (runner.py:629-634) — keeps
+                            # each image segmented exactly once
+  k_mad: 2.5
+
+spot_coloc:
+  pair_distance_um: 0.3     # ~4.6 px @ 0.065 um/px. INERT — detect_antibody_spots false.
+  report_nn_distance: true
+
+foci:
+  enabled: true
+  backend: bigfish
+  bigfish_voxel_size_nm: 65.0          # MEASURED, uniform 88/88, UNBINNED
+  bigfish_voxel_z_nm: 0.0
+  bigfish_spot_radius_nm: 120.0        # physical; 1.85 px at 65 nm/px
+  bigfish_spot_radius_z_nm: 350.0      # MEASURED z-step
+  threshold_multiplier: 1.0
+  only_nuclear_spots: true
+  min_sep_px: 1                        # Fiji-NMS knob; inert in the BigFISH wrapper
+  detect_in_sec_only: true             # omission wells still detected and REPORTED
+  detect_antibody_spots: false         # QKI is nucleoplasm-filling: no thresholdable object
+  # ★ THE DETECTION FLOOR. Not the display floor — see §THE FLOOR.
+  rna_overrides:
+    min_spot_peak_intensity: 364.0     # Brian's call. Drops sub-floor spots straight
+                                       # after BigFISH, before any measurement.
+  # ── DIRECT MEASUREMENTS: ON ──
+  compute_partner_intensity: true          # QKI intensity at each MIAT spot -> REQUIRES -p 1
+  compute_footprint_enrichment: true       # per-spot footprint + per-nucleus capacity /
+                                           # association ratio / miat_mass_nuclear —
+                                           # the tracking-regression axes
+  # ── NULLS: OFF, retrofitted via `fishsuite backfill --rotation`. See §BACKFILL
+  #    for exactly what does and does not come back. ──
+  compute_partner_null_enrichment: false
+  compute_partner_rotation_null: false
+  compute_partner_radial_profile: false    # ~1x the position-null draw cost (rna_rna.py:629-650
+                                           # with _null_n = partner_null_n, rna_rna.py:1953);
+                                           # backfill computes it by default
+  save_partner_null_draws: false
+  save_partner_rotation_null_draws: false
+  # Inert while the flags above are false; retained so re-enabling is a pure
+  # flag flip and no value can drift in the meantime.
+  partner_null_n: 1000
+  partner_null_disk_px: 6.0                # 0.39 um at 65 nm/px
+  partner_null_seed: 0
+  exclude_nucleolus_from_partner_null: true
+  partner_radial_bins_um: [0.25, 0.5, 0.75, 1.0]
+  partner_rotation_n: 1000
+  partner_rotation_seed: 0
+  partner_rotation_min_retention: 0.5
+  partner_rotation_assoc_percentile: 95.0
+  # assoc_qki_floor UNSET (None => OFF) — the primary continuous association
+  # metric is floor-free; the gated variant is not needed for this run.
+
+cytoplasm:
+  enabled: true
+  voronoi_max_expansion_px: 80         # 5.2 um @ 0.065 um/px
+  measure_nc_ratio: true
+
+nucleolus:
+  enabled: true                        # carved from the nulls when they are backfilled;
+                                       # QC pass confirmed detection is non-degenerate
+
+output:
+  save_qc_overlays: true
+  save_per_image_csv: true
+  save_masks: true                     # ★ REQUIRED for backfill — it reuses these saved
+                                       # nucleus label masks rather than re-segmenting.
+                                       # Do not turn this off on a run you intend to backfill.
+  save_publication_images: true
+  save_publication_tifs: false
+  # ── MANUAL DISPLAY FLOORS — all four pairs typed. See §DISPLAY. ──
+  pub_contrast_mode: manual
+  manual_rna_min: 364.0                # MIAT-647, Brian (supersedes 300-3200)
+  manual_rna_max: 1888.0
+  manual_antibody_min: 563.0           # QKI-568, Brian (supersedes 531-2360)
+  manual_antibody_max: 2500.0
+  manual_rna2_min: 563.0               # mirror of the antibody pair — the renderer
+  manual_rna2_max: 2500.0              # may read the rna2 slot
+  manual_dapi_min: 334.0               # MEASURED: the value the QC pass actually applied
+  manual_dapi_max: 2419.0              # (its run_config.json batch_contrast.dapi). NOT invented.
+  apply_pub_contrast_floor_to_analysis: true   # emits the *_above_floor_* columns
+  apply_pub_contrast_floor_to_spots: false     # ★ display must NEVER gate detection —
+                                               # detection is gated by rna_overrides above
+  prefix: ""
+  scalebar_um: 25.0
+  scalebar_font_px: 52
+
+parallel:
+  # -p 1 REQUIRED: compute_partner_intensity runs an in-process per-spot loop
+  # that hangs the pool. main_workers is dead config in this version and the
+  # main pass is serial regardless; seg_workers must stay 1 on DirectML.
+  workers: 1
+  seg_workers: 1
+  main_workers: 1
+  threads_per_worker: 4
+
+qc:
+  qc_min_nuclei: 10
+  qc_saturated_frac: 0.001
+
+seed: 0

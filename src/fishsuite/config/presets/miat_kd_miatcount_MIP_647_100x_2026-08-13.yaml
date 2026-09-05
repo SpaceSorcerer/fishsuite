@@ -1,0 +1,577 @@
+# ############################################################################
+# ##                                                                        ##
+# ##   METADATA IS NOW MEASURED, NOT INFERRED (2026-08-13)                  ##
+# ##   ...BUT THIS PRESET IS STILL NOT RUNNABLE. SEE ITEM 3.                ##
+# ##                                                                        ##
+# ##   1. CHANNEL ORDER — MEASURED, uniform 88/88:                          ##
+# ##        C0="640 CSU"  C1="561 CSU"  C2="405 CSU"                        ##
+# ##      -> rna: 0 (MIAT)  dapi: 2 (405). The 08-12 inference was CORRECT  ##
+# ##      and is now a fact. Still DO NOT set -1 (auto-detect) — in         ##
+# ##      rna_only that error is SILENT. See §CHANNELS.                     ##
+# ##   2. PIXEL SIZE — MEASURED 65.0 nm/px, UNBINNED, uniform 88/88.        ##
+# ##      The 08-12 preset's 130.0 nm / 2x2-binned ASSUMPTION WAS WRONG.    ##
+# ##      Independently corroborated: the Olympus .oex sidecars record      ##
+# ##      binning = 1. EVERY *_px parameter below is rescaled x2 (areas x4).##
+# ##      Z-STEP — MEASURED 350.0 nm (Brian's note said 300 nm; the note    ##
+# ##      was wrong). n_z = 38 on 87/88 files.                              ##
+# ##   3. ★ z_stack.file_overrides IS EMPTY AND THIS PRESET CANNOT PRODUCE  ##
+# ##      A VALID COUNT UNTIL IT IS FILLED. The parent's REPLACE_ME_*.vsi   ##
+# ##      placeholders have been DELETED rather than renamed: real          ##
+# ##      basenames without measured focus planes would be a fabricated     ##
+# ##      pin. The window arithmetic is derived in §Z below (F+/-2 at the   ##
+# ##      measured 0.35 um step — NOT the parent's F+/-3). Fill the block   ##
+# ##      from a validated z-montage, then run.                             ##
+# ##      AN UNPINNED FILE IS NOT AN ERROR — IT IS A WRONG NUMBER: it falls ##
+# ##      back to MID-STACK silently and gets NO MIAT MIP at all.           ##
+# ##                                                                        ##
+# ##   STILL TO TUNE (unchanged, NOT invented here): the MIAT spot floor.   ##
+# ##                                                                        ##
+# ############################################################################
+# ============================================================================
+# MIAT (647 RNA-FISH) NARROW-MIP PUNCTA COUNT — MIAT-ASO KD vs NT + full-
+# omission control — 100x — rna_only
+# Date: 2026-08-13 (retarget) | acquisition 2026-08-12 | for MASTER CONTROL
+# Parent: miat_kd_miatcount_MIP_647_100x_2026-08-12.yaml — kept UNCHANGED as
+#         the record of what was inferred before any metadata was read. This
+#         file is the measured-metadata retarget; do not edit the parent.
+# DO-NOT-RUN artifact: config only; no GPU was used to build this file.
+# Dry-run FIRST (fishsuite-rna-fish skill hard rule).
+# ============================================================================
+# PURPOSE
+#   MIAT knockdown-EFFICIENCY readout, and the Q1 HEADLINE: count MIAT puncta
+#   per nucleus, MIAT-ASO knockdown (KD) vs non-targeting (NT), plus a
+#   FULL-OMISSION control. Single channel — no protein partner. Human /
+#   Homo sapiens, H9 hESC (undifferentiated).
+#
+#   ★ WHY THIS RUN IS THE HEADLINE AND NOT THE COLOC RUN. The two rna_protein
+#   association presets lock every channel to ONE optical section chosen by
+#   JOINT autofocus — a pick partly driven by the PARTNER channel. If that pick
+#   were arm-dependent it could manufacture a count difference. This preset
+#   chooses z from DAPI alone (a pinned plane) and MIPs a narrow MIAT window, so
+#   the count is not hostage to the partner. The single-plane count from the
+#   coloc runs is a concordance CHECK, not the headline.
+#
+#   Companion presets (same acquisition, same MIAT-647 probe, same day):
+#     miat_kd_qki_647_100x_2026-08-13.yaml
+#     miat_kd_xrn2_647_100x_2026-08-13.yaml
+#   (The hnRNPD arm was never imaged; that preset is unused and the arm was
+#   dropped as a pre-analysis decision.)
+#
+# ── ★ THE CHANGE THAT MATTERS: MIAT MOVED 561 -> 647 ────────────────────────
+#   In EVERY prior dataset MIAT was the 561-line channel and the protein was
+#   the 640-line channel. The channel ROLES are therefore SWAPPED versus every
+#   existing preset in this folder. Nothing about the old 561-vs-640 role
+#   assignment carries over. THIS PRESET IS THE TEST OF WHETHER THE MOVE
+#   HELPED — it is the spot-count arm, the readout that was already clean.
+#   Whether the intensity readouts now follow it is the open question; do not
+#   write it up as settled.
+#
+# ── §CHANNELS — MEASURED, AND WHY `-1` FAILS SILENTLY HERE ─────────────────
+#   MEASURED 2026-08-13 across all 88 .vsi via
+#   fishsuite.gui.state.detect_channels_from_file (bioio, read-only):
+#       channel_names = "640 CSU|561 CSU|405 CSU"  on 88/88 files (100%).
+#   So C0=MIAT-647, C2=DAPI-405. No longer an inference.
+#
+#   Auto-detect (-1) is WRONG BY CONSTRUCTION and, in rna_only, SILENT.
+#   CODE-VERIFIED against core/io.py autodetect_channels: "640" sits in
+#   _AB_NAME_PATTERNS and neither "568" nor "565" appears anywhere, so
+#   auto-detect resolves the 640 channel (MIAT) to the ANTIBODY role and hands
+#   the `rna` role to whatever is left — the PROTEIN channel. rna_only.py then
+#   resolves dapi/rna, clamps, and proceeds: there is NO antibody slot whose
+#   absence would raise (the rna_protein siblings DO raise via
+#   rna_rna._resolve_channels on the shimmed rna2). The run would count
+#   protein-channel local maxima, label the column MIAT, and finish exit-0.
+#   Explicit indices only. THIS IS THE PRESET WHERE THAT MISTAKE IS INVISIBLE.
+#
+# ── §PIXEL SIZE / SPOT RADIUS — 65 nm/px, MEASURED ──────────────────────────
+#   MEASURED 0.065 um/px (65.0 nm), uniform on 88/88 files, UNBINNED. The
+#   Olympus .oex sidecars independently record binning = 1. Frame 2304x2304,
+#   uint16, also uniform 88/88.
+#
+#   The 2026-08-12 parent assumed 0.130 um/px (2x2 binned). WRONG, so EVERY
+#   pixel-unit parameter here is DOUBLED and every area QUADRUPLED. Physical
+#   parameters (*_nm, *_um) are scale-invariant and unchanged. Field by field:
+#       bigfish_voxel_size_nm       130.0 -> 65.0
+#       cellpose_diameter_px        100.0 -> 200.0    (13 um nucleus)
+#       min_area_px                  4000 -> 16000    (67.6 um^2, area = x4)
+#       border_margin_px               10 -> 20       (1.3 um)
+#       cellpose_downsample_factor    2.0 -> 4.0      (260 nm/px seg grid)
+#       voronoi_max_expansion_px       40 -> 80       (5.2 um)
+#       partner_null_disk_px          3.0 -> 6.0      (inert in rna_only; set
+#                                                      so a copy-paste of this
+#                                                      block cannot inherit a
+#                                                      130-nm-era value)
+#       bigfish_spot_radius_z_nm    300.0 -> 350.0    (measured z-step)
+#
+#   min_sep_px is deliberately NOT rescaled — it stays 1. Per schema.py it is
+#   the Fiji-NMS knob and "fishsuite's BigFISH wrapper doesn't NMS today", so
+#   it is inert; 1 is effectively disabled at any pixel size.
+#
+#   bigfish_spot_radius_nm STAYS 120.0 — PHYSICAL, not a pixel count. What
+#   CHANGES is its pixel footprint: 1.85 px at the measured 65 nm/px, not the
+#   0.92 px the parent computed at the assumed 130 nm/px.
+#
+#   ★ CONSEQUENCE, AND IT LANDS HARDEST ON THIS PRESET BECAUSE IT IS THE COUNT:
+#   a properly sampled LoG finds MORE spots at the same threshold_multiplier.
+#   Read qc_rna1_spots_per_nucleus off per_image_summary.csv on the first pass
+#   and retune threshold_multiplier if the median runs far above the expected
+#   ~15-40/nucleus. Whatever tm and floor this preset settles on must then be
+#   carried IDENTICALLY into the two association presets.
+#
+# ── §Z — DAPI SINGLE PINNED PLANE + MIAT NARROW MIP (THE LOCKED RECIPE) ────
+#   mode: single. NOT autofocus, and this is not a preference — it is REQUIRED.
+#   VERIFIED against core/modes/rna_only.py: under z_mode == "autofocus" the
+#   code LOCKS the RNA channel to DAPI's autofocus plane and IGNORES any
+#   rna_start_slice / rna_end_slice override, printing "... per-channel RNA
+#   maxproj override IGNORED under autofocus". Setting mode: autofocus here
+#   would SILENTLY collapse this preset back to bare single-plane MIAT
+#   detection — the exact thing it exists to avoid — while still looking
+#   correctly configured. The window IS honored under z_mode in
+#   {single, maxproj, 3d} and under autofocus_maxproj. "single" is chosen
+#   because a degenerate 1-slice DAPI bound is then a plain array slice, with
+#   no window-search machinery to reason about.
+#
+#   ── THE MIP WINDOW IS F+/-2, DERIVED — NOT THE PARENT'S F+/-3 ──
+#   The parent wrote F+/-3 against an ASSUMED 0.30 um z-step. The step is
+#   MEASURED 0.35 um, so the same +/-3 now spans 2.45 um. Axial PSF at
+#   100x / NA ~1.45 with a CSU disk is ~0.8 um FWHM (sigma_z ~ 0.34 um):
+#       F+/-1 : 3 planes, 1.05 um, ~70%   coverage — too tight; the count then
+#                                                    depends on where in z the
+#                                                    punctum happens to sit
+#     ★ F+/-2 : 5 planes, 1.75 um, ~96%   coverage — RECOMMENDED
+#       F+/-3 : 7 planes, 2.45 um, ~99.8% coverage — +4% signal in exchange for
+#                                                    2 pure-background planes
+#                                                    per side (background up
+#                                                    ~1.18x)
+#   The NA 1.45 / n 1.518 (UPLXAPO100XO) figure is an ASSUMPTION, not read from
+#   the files; at NA 1.40 the choice of F+/-2 is unchanged.
+#
+#   ── HOW TO FILL THE PIN BLOCK (currently empty — see banner item 3) ──
+#   Keys are matched against Path(image).name — the BARE basename, exact.
+#   Per file:
+#       start_slice == end_slice == F   -> DAPI segmented on exactly plane F
+#       rna_start_slice = F-2           -> MIAT detected on a MAXPROJ of
+#       rna_end_slice   = F+2              [F-2, F+2], CLAMPED to the stack
+#   Clamping is real: n_z is 38 here, so F=37 gives [35, 38], not [35, 39], and
+#   F=2 gives [1, 4]. Keep the window ASYMMETRIC at the edges rather than
+#   shifting F.
+#
+#   F comes from a VALIDATED z-montage, one per file — not guessed, not
+#   autofocused. Build the montage first (2-row grid over all 38 planes,
+#   DAPI / MIAT, tiles labelled with plane number and focus score, CONTRAST
+#   FIXED ACROSS TILES — per-tile autoscale makes every plane look equally
+#   sharp, the classic montage bug), read F, then fill the block. Validate the
+#   pins three ways: each F within +/-3 of the autofocus pick or a written
+#   reason; nuclei count at the pin >= count at the autofocus plane; NO ARM BIAS
+#   in pinned F.
+#
+#   Shape of the block once measured (illustrative arithmetic ONLY — these are
+#   NOT filenames from this acquisition and NOT measured planes):
+#     file_overrides:
+#       "<basename>.vsi": {start_slice: 22, end_slice: 22, rna_start_slice: 20, rna_end_slice: 24}
+#       "<basename>.vsi": {start_slice: 37, end_slice: 37, rna_start_slice: 35, rna_end_slice: 38}   # clamped at n_z
+#       "<basename>.vsi": {start_slice: 2,  end_slice: 2,  rna_start_slice: 1,  rna_end_slice: 4}    # clamped at 1
+#   The full-omission fields get pinned like any other file: the floor must be
+#   measured on the SAME z treatment as the samples, or it is not a floor.
+#
+#   Top-level start_slice/end_slice are left null so an unpinned file falls back
+#   to MID-STACK (io.py: z_mode single with z_start None takes the middle of the
+#   window) rather than to plane 1. Mid-stack is a LESS BAD fallback, not a
+#   correct one. Before running, confirm the file_overrides keys cover EVERY
+#   discovered image — the dry-run roster is the list to check against.
+#
+# ── §OUTPUT COLUMN NAME ────────────────────────────────────────────────────
+#   In rna_only the per-image count column is the UNSUFFIXED
+#   `mean_spots_per_nucleus` (and the per-nucleus column is `rna_spot_count`).
+#   It is NOT `mean_spots_per_nucleus_rna1` — that suffixed name is emitted by
+#   the TWO-channel modes (rna_rna / rna_protein), i.e. by the sibling
+#   association presets. A downstream script that reads the _rna1 column off
+#   this run's output finds nothing. Verified in core/excel_report.py.
+#
+# ── §ACQUISITION / DESIGN — MEASURED + ROSTER-CONFIRMED ───────────────────
+#   100x. DAPI + MIAT RNA-FISH in 647 + one protein per set in 568/565. The
+#   protein channel is simply NOT READ by this preset (antibody: -1).
+#   MEASURED from the OME + .oex sidecars, uniform across all 88 files:
+#     exposure 405 = 300 ms, 561 = 700 ms, 640 = 700 ms; gain 0; binning 1;
+#     z-step 350 nm; n_z 38 (87/88); frame 2304x2304 uint16.
+#   Note the 700 ms figure supersedes the 650 ms in Brian's written note.
+#
+#   REPLICATE UNIT = THE WELL, keyed (slide, well) for the QKI set and (well)
+#   for XRN2. FOV and repeat pass are TECHNICAL.
+#     QKI  : 6 NT wells + 6 KD wells across 2 slides (3 per arm per slide)
+#     XRN2 : 2 NT wells (8, 9) + 2 KD wells (10, 11), one pass
+#
+# ── §FULL-OMISSION CONTROL = THE FLOOR CALIBRATION SET ────────────────────
+#   These wells omit the probe AND the antibody. For a MIAT COUNT that makes
+#   them the ideal control: no probe means every spot they yield is
+#   non-specific, so their spot distribution IS the floor-tuning target (see
+#   foci). Routed through conditions.sec_only_folders — the runner forces them
+#   to the "Sec-Only" label and keeps them out of the biological comparison,
+#   and foci.detect_in_sec_only: true makes the run REPORT their rate rather
+#   than subtract it. ★ THIS PRESET IS WHERE THE FLOOR IS TUNED, and the floor
+#   it settles on is the one to carry to both association presets.
+#
+#   RUN WITH:  -i <one catalog set root>   (fishproc_dml conda env; --dry-run
+#   FIRST). Unlike the two association presets this one does NOT need -p 1: it
+#   never sets compute_partner_intensity, the in-process per-spot loop that
+#   hangs the parallel pool. workers: auto is safe here.
+# ============================================================================
+
+experiment:
+  name: "MIAT_KD_MIATCOUNT_MIP_647_100x_2026-08-13"
+  description: "rna_only MIAT-647 puncta count via a NARROW MIP with DAPI segmented on the single pinned plane F; MIAT-ASO KD vs NT knockdown-efficiency readout (Q1 headline) + full-omission control (probe AND antibody omitted). Acquired 2026-08-12; preset retargeted 2026-08-13 against OME metadata read from ALL 88 .vsi. MEASURED AND NO LONGER INFERRED: channel order 640|561|405 uniform 88/88 (rna=0 MIAT, dapi=2 DAPI); pixel size 65.0 nm UNBINNED uniform 88/88 (the 08-12 parent's 130.0 nm 2x2-binned assumption was WRONG, so every *_px parameter is doubled and every area quadrupled); z-step 350.0 nm uniform 88/88; n_z 38 on 87/88. THE MIP WINDOW IS NOW F+/-2, NOT the parent's F+/-3: at the measured 0.35 um step F+/-3 spans 2.45 um, far deeper than the ~0.8 um axial PSF needs, while F+/-2 (5 planes, 1.75 um) covers ~96% of the axial PSF without adding 2 pure-background planes per side. z_stack.mode is single and NOT autofocus — verified against core/modes/rna_only.py, autofocus silently IGNORES the per-channel rna_start_slice/rna_end_slice MIP override and would collapse this back to bare single-plane detection. ★ z_stack.file_overrides IS EMPTY: the parent's REPLACE_ME placeholder filenames were DELETED rather than replaced, because F must be read off a validated z-montage and inventing plane numbers would be fabricating data. THIS PRESET CANNOT PRODUCE A VALID COUNT UNTIL THE PIN BLOCK IS FILLED — an unpinned file falls back to mid-stack silently and gets no MIAT MIP. Conditions cover BOTH catalog sets with SET-SUFFIXED, slide-aware per-well labels so set is never silently pooled into arm; run once per -i root. The per-image count column is the UNSUFFIXED mean_spots_per_nucleus (per-nucleus rna_spot_count), NOT mean_spots_per_nucleus_rna1 which is the two-channel-mode name. Auto-detect (-1) is wrong by construction and in rna_only fails SILENTLY, counting protein-channel maxima under a MIAT label. Fixed-N sampling 10 nuclei per FOV, random, seed 0, on_short KEEP (first pass). Spot radius 120 nm = 1.85 px at the measured 65 nm/px. MIAT spot floor deliberately UNSET pending omission-well calibration — this run is where it gets tuned. Human/Homo sapiens."
+  cell_line: "H9 hESC (undifferentiated)"
+  date: "2026-08-12"          # ACQUISITION date. Preset retargeted 2026-08-13.
+
+# ── §CONDITIONS — flattened catalog subfolders, SET-SUFFIXED per-well labels ─
+# -i ROOTS (run this preset ONCE PER ROOT — never both at once):
+#   F:\Raw Images\MIAT-QKI-MIATKD-2026-08-12\QKI
+#   F:\Raw Images\MIAT-QKI-MIATKD-2026-08-12\XRN2
+#
+# ★ WHY BOTH SETS' KEYS LIVE IN ONE PRESET. The MIAT probe and the DAPI stain
+# are shared across sets, so the count is the same measurement in both, and one
+# preset keeps the detection parameters provably identical. Discovery only ever
+# sees the folders under whichever root -i names, so the other set's keys are
+# simply never looked up — VERIFIED in source: io.py builds `children` from
+# input_dir.iterdir() and looks each subfolder name up in the dict; an unused
+# key is inert. `condition_order` likewise tolerates labels absent from the
+# data — analysis/single_condition_plots.order_conditions computes
+# `[c for c in preferred if c in bio_conds]`, so absent labels drop out.
+#
+# ★ LABELS CARRY THE SET (_qki / _xrn2) as well as the well. Pooling the two
+# sets would pool three different 568 stains under one arm label — irrelevant
+# to a MIAT count in principle, but it would silently merge two experiments'
+# wells into one replicate pool. The set suffix makes that impossible.
+#
+# ★★★ THE CATALOG DOES NOT EXIST YET (checked 2026-08-13). These keys are the
+# PLANNED flattened-catalog folder names: for the QKI set, the pass prefix +
+# the VERBATIM source folder name; for XRN2, the verbatim source name with no
+# prefix (single pass, no collisions). Correct BY CONSTRUCTION only if the
+# custody copy (plan Phase 0.5) uses exactly this naming — verify on the
+# dry-run roster. A key that matches nothing contributes nothing and its well
+# silently comes back EMPTY.
+#
+# WHY FLATTENING IS REQUIRED, not a convenience: core/io.py discover_inputs
+# walks EXACTLY ONE level below -i. The source layout is
+# <SET>/Folder<Well>/{_20260812|001_20260812}/*.vsi — three levels — so
+# pointing -i at a set folder OR at a well folder both discover ZERO images.
+#
+# PASS PREFIX -> SLIDE, QKI set only (nothing on disk encodes the slide):
+#   p1_  = pass 1, slide 1  — EXCLUDED from the primary analysis (see below)
+#   p2_  = pass 2, slide 1
+#   p2r_ = pass 2 well-6 RESHOOT, slide 1 — SAME physical well as p2_ well 6,
+#          so it carries the SAME label and folds in as a technical repeat
+#   p3_  = pass 3, SLIDE 2 (source MIAT_QKi_2\Extra\ — the folder NAMED
+#          MIAT_QKi_2 is not slide 2; slide 2 is the Extra subfolder in it)
+# XRN2 wells 8-11 are all on SLIDE 2 — confirmed by Brian 2026-08-13, encoded
+# nowhere on disk, and NOT derivable from the folder names. Slide is constant
+# across the XRN2 set so it is provenance rather than a blocking factor, but
+# the token is carried so BOTH sets share one label grammar
+# (ARM_s<slide>w<well>_<set>) and a downstream parser reads them with one rule.
+#
+# ★★★ PASS 1 IS NOT EXCLUDED BY OMITTING IT HERE — READ THIS. discover_inputs
+# line 1367 is `condition = subfolder_conditions.get(subfolder, subfolder)`:
+# an UNLISTED subfolder is still discovered and is labelled with its own FOLDER
+# NAME. If the p1_* folders sit under the QKI root they enter the run as 5 junk
+# conditions, carrying the 7 colliding basenames that are the whole reason
+# pass 1 is excluded — and on THIS preset a basename collision also means a
+# file_overrides key pins the WRONG file's plane. Enforce the exclusion
+# STRUCTURALLY, either:
+#   (a) keep the pass-1 folders OUTSIDE this -i root (e.g. a sibling
+#       ..\_QUARANTINE_pass1\ at the catalog root) — preferred; or
+#   (b) name them with a LEADING UNDERSCORE (_p1_Folder...), which
+#       discover_inputs skips (`not p.name.startswith("_")`, io.py line 1387).
+# Confirm on the dry-run roster that ZERO pass-1 images appear.
+conditions:
+  mode: subfolders            # "filenames" is NOT a legal value for this field.
+                              # The enum is Literal["auto","explicit","subfolders"]
+                              # (schema.py ConditionsCfg) — setting mode: filenames
+                              # RAISES. Filename-encoded conditions are wired via
+                              # the SEPARATE filename_conditions list, which is
+                              # deliberately empty here (the layout is by folder).
+  subfolder_conditions:
+    # ══ QKI SET — -i .../QKI ══
+    # ── slide 1 (pass 2), acquisition order NT -> KD ──
+    "p2_FolderWell-1-NT-MIAT-647-QKI-565": "NT_s1w1_qki"
+    "p2_FolderWell-2-NT-MIAT647-QKI-565": "NT_s1w2_qki"
+    "p2_FolderWell-3-NT-MIAT-647-QKI-565": "NT_s1w3_qki"
+    "p2_FolderWell-4-KD-MIAT647-QKI-565": "KD_s1w4_qki"
+    "p2_FolderWell5-KD-MIAT647-QKI-565": "KD_s1w5_qki"
+    "p2_FolderWell6-KD-MIAT647-QKI-565": "KD_s1w6_qki"
+    # Well-6 reshoot: SAME well, same slide -> SAME label (technical repeat).
+    "p2r_FolderWell6-KD-MIAT647-QKI-565": "KD_s1w6_qki"
+    # ── slide 2 (pass 3), acquisition order KD -> NT (counterbalanced) ──
+    "p3_FolderWell-1-NT-MIAT-647-QKI-565": "NT_s2w1_qki"
+    "p3_FolderWell-2-NT-MIAT647-QKI-565": "NT_s2w2_qki"
+    "p3_FolderWell-3-NT-MIAT-647-QKI-565": "NT_s2w3_qki"
+    "p3_FolderWell-4-KD-MIAT647-QKI-565": "KD_s2w4_qki"
+    "p3_FolderWell5-KD-MIAT647-QKI-565": "KD_s2w5_qki"
+    "p3_FolderWell6-KD-MIAT647-QKI-565": "KD_s2w6_qki"
+    # ══ XRN2 SET — -i .../XRN2 — all four wells on SLIDE 2 ══
+    "FolderWell8-NT-MIAT-XRN2": "NT_s2w8_xrn2"
+    "FolderWell9-NT-MIAT-XRN2": "NT_s2w9_xrn2"
+    "FolderWell-10-KD-MIAT-XRN2": "KD_s2w10_xrn2"
+    "FolderWell11-KD-MIAT-XRN2": "KD_s2w11_xrn2"
+    # NOTE the source naming inconsistencies are REAL and reproduced verbatim:
+    # "Well-1".."Well-4" and "Well-10" are hyphenated, "Well5"/"Well6"/"Well8"/
+    # "Well9"/"Well11" are not; and "MIAT-647" (wells 1,3) vs "MIAT647"
+    # (wells 2,4,5,6) differ within the same slide. Do not "tidy" these keys.
+  # ── FULL-OMISSION controls (probe AND antibody omitted) = the floor set ──
+  # ★ TRAP, CONFIRMED IN SOURCE: an omission folder must NEVER also appear in
+  # subfolder_conditions. io.py line 1371 is
+  #   `condition = subfolder_conditions.get(subfolder, "Sec-Only")`
+  # — the "Sec-Only" forcing is only the DEFAULT of that lookup, so a folder
+  # listed above would receive ITS OWN LABEL instead and be analysed as a
+  # biological well. List omission folders HERE ONLY.
+  #
+  # ★ The XRN2 entry is MISNAMED — it says "QKI" — but it sits in the XRN2 tree,
+  # holds 6 .vsi named MIAT_XRN2_zstack__Sec-Only-MIAT-QKI-NT_00..05, and IS the
+  # XRN2 omission set. There is NO KD-side omission for XRN2; the QKI set has
+  # both. Its name does not collide with the QKI entries, which carry the p3_
+  # prefix.
+  sec_only_folders:
+    - "p3_FolderSec-Only-MIAT-QKI-NT"      # QKI set, slide 2, NT side
+    - "p3_FolderSec-Only-MIAT-QKi-KD"      # QKI set, slide 2, KD side (lowercase "i" is real)
+    - "FolderSec-Only-MIAT-QKI-NT"         # XRN2 set — misnamed, but IS the XRN2 omission set
+  # Belt and braces. VERIFIED against the roster: the substring "sec-only" is
+  # present (case-folded) in 18 of 89 .vsi basenames, and those 18 are exactly
+  # the files inside the three Sec-Only folders — no false positive on any real
+  # well, no omission file missed. The sec-only test is evaluated BEFORE
+  # condition matching (io.py `is_sec` is computed first), so a file named
+  # "Sec-Only-MIAT-QKI-NT" can never be relabelled NT by anything.
+  sec_only_files: ["sec-only"]
+  filename_conditions: []     # layout is by FOLDER, not by filename
+  # Labels absent from a given run's data are dropped by order_conditions, so
+  # listing both sets here is safe.
+  condition_order:
+    - "NT_s1w1_qki"
+    - "NT_s1w2_qki"
+    - "NT_s1w3_qki"
+    - "NT_s2w1_qki"
+    - "NT_s2w2_qki"
+    - "NT_s2w3_qki"
+    - "KD_s1w4_qki"
+    - "KD_s1w5_qki"
+    - "KD_s1w6_qki"
+    - "KD_s2w4_qki"
+    - "KD_s2w5_qki"
+    - "KD_s2w6_qki"
+    - "NT_s2w8_xrn2"
+    - "NT_s2w9_xrn2"
+    - "KD_s2w10_xrn2"
+    - "KD_s2w11_xrn2"
+    - "Sec-Only"
+  min_nuclei_for_stats: 10    # matches sampling.n_per_unit and qc.qc_min_nuclei;
+                              # also the plan's rule-1 admission threshold
+
+# NO input_file_subset. Deliberate: it is an INCLUSION allowlist matched on bare
+# basename, so a partial list silently filters the run toward zero while looking
+# like it worked. Note that the file_overrides block is NOT a roster either — it
+# pins z-planes for the files it names and does not restrict which files run.
+
+channels:
+  analysis_mode: rna_only       # MIAT COUNT — the protein channel is not read
+  # ★ MEASURED from OME on 88/88 files (see §CHANNELS), not inferred.
+  # Do NOT replace these with -1: in rna_only, auto-detect silently hands the
+  # `rna` role to the PROTEIN channel on this acquisition.
+  dapi: 2                       # C2 = "405 CSU" -> DAPI (segmentation)
+  rna: 0                        # C0 = "640 CSU" -> MIAT RNA-FISH
+  antibody: -1                  # unused in rna_only
+  rna2: -1                      # unused
+  one_indexed: false            # indices above are 0-indexed
+  dapi_label: "DAPI"
+  rna_label: "MIAT-647"
+  # LUTs BY WAVELENGTH (locked convention), NOT by role.
+  dapi_lut: "blue"              # 405 -> blue
+  rna_lut: "yellow"             # 647 -> yellow (MIAT)
+
+z_stack:
+  # DAPI single pinned plane + MIAT narrow MIP. mode MUST be single — under
+  # autofocus, rna_only.py IGNORES rna_start_slice/rna_end_slice. See §Z.
+  mode: single
+  # Top-level bounds LEFT NULL ON PURPOSE: an unpinned file then falls back to
+  # MID-STACK rather than to plane 1 (io.py, z_mode single with z_start None).
+  # A less bad fallback, not a correct one.
+  start_slice: null
+  end_slice: null
+  # ── ★ file_overrides IS DELIBERATELY ABSENT — THE PIN BLOCK IS UNWRITTEN ──
+  # The 2026-08-12 parent shipped eight REPLACE_ME_*.vsi placeholder keys with
+  # illustrative plane numbers. Those have been DELETED, not renamed: the real
+  # basenames are known from the roster, but the focus planes are NOT — F must
+  # be read off a validated z-montage per file, and pairing a real filename with
+  # an invented plane number would look measured while being fabricated.
+  #
+  # UNTIL THIS BLOCK IS FILLED THIS PRESET CANNOT PRODUCE A VALID COUNT: every
+  # file falls back to mid-stack DAPI and gets NO MIAT MIP at all, silently.
+  #
+  # Fill it per §Z: {start_slice: F, end_slice: F, rna_start_slice: F-2,
+  # rna_end_slice: F+2}, clamped to [1, 38], keys = bare basenames, one entry
+  # per discovered image INCLUDING the omission fields. F+/-2, NOT F+/-3 — at
+  # the measured 0.35 um step F+/-3 spans 2.45 um against a ~0.8 um axial PSF.
+
+nuclei:
+  # ★ RESCALED to the MEASURED 0.065 um/px — every *_px value is DOUBLE the
+  # 2026-08-12 parent's, and min_area_px is x4 (it is an AREA). See §PIXEL SIZE.
+  backend: cellpose
+  cellpose_model_type: cpsam
+  cellpose_diameter_px: 200.0          # ~13 um nucleus @ 0.065 um/px (was 100.0 @ assumed 0.130)
+  cellpose_flow_threshold: 0.4
+  cellpose_cellprob_threshold: 0.0
+  cellpose_downsample_factor: 4.0      # ds4 -> 0.260 um/px seg grid, identical to the validated
+                                       # 100x config; on-grid diameter 50 px; 2304/4 = 576 px
+                                       # frames, GPU-safe on one 12 GB DirectML card. At ds 2.0
+                                       # cellpose would see 1152^2 frames.
+  cellpose_device: directml            # AMD RX 6750 XT; REQUIRES the fishproc_dml env
+  min_area_px: 16000                   # 67.6 um^2 — the SAME physical area as 4000 px @ 0.130
+  max_area_px: 1000000000000.0
+  exclude_border: true
+  border_margin_px: 20                 # 1.3 um (was 10 @ assumed 0.130)
+  stardist_model: 2D_versatile_fluo
+  prob_threshold: 0.5
+  nms_threshold: 0.5
+  stardist_gauss_sigma: 3.0
+  stardist_postprocess: none
+  label_smoothing_radius_px: 0
+  reject_ghost_nuclei: false
+
+# ── FIXED-N NUCLEUS SAMPLING (ON) ───────────────────────────────────────────
+# Equalizes the denominator across FOVs: without it a confluent field
+# contributes many more nuclei than a sparse one and the arms are not
+# comparable. This matters MORE for a raw count than for a ratio metric. Runs
+# LAST in the filter chain (area -> border -> ghost -> sample) and selects on
+# DAPI + geometry ONLY — never on the RNA channel, which is the outcome here.
+sampling:
+  enabled: true
+  n_per_unit: 10        # 10 came from the 75 prior 100x FOVs: 0 of 75 fell short of 10,
+                        # and the sparsest field held 13 nuclei. Headroom, not a guess.
+  unit: per_image       # per_well RAISES as unimplemented (runner.check_sampling_supported):
+                        # it divides N before any nucleus count is known and never
+                        # redistributes an unused share.
+  order: random         # THE ONLY UNBIASED OPTION. raster is spatially systematic;
+                        # center_out deliberately excludes the periphery.
+  seed: 0
+  on_short: keep        # ★ CHANGED from the parent's `fail`, for the FIRST PASS ONLY.
+                        # `fail` aborts the whole run on the first field with <10
+                        # eligible nuclei, which on an un-triaged roster means the
+                        # first pass cannot complete and we learn nothing about the
+                        # other images. `keep` quantifies what is there and flags the
+                        # unit short_of_target, so the roster can be triaged from real
+                        # data. Switch BACK to `fail` for the FINAL runs, once the
+                        # >=10-nuclei admission rule (plan Phase 2, rule 1) has cleaned
+                        # the roster — at which point `fail` is unreachable and acts as
+                        # a pure assertion. Do NOT lower n_per_unit to dodge it.
+
+foci:
+  enabled: true
+  backend: bigfish
+  bigfish_voxel_size_nm: 65.0          # ★ MEASURED, uniform 88/88, UNBINNED (was 130.0 assumed)
+  bigfish_voxel_z_nm: 0.0              # 0 = auto; moot (2D detection on the narrow-window MIP)
+  bigfish_spot_radius_nm: 120.0        # UNCHANGED — physical. 100 nm scaled by 647/561 = 1.15
+                                       # -> ~115, rounded to 120.0. At the MEASURED 65 nm/px
+                                       # this is 1.85 px (NOT the 0.92 px the parent computed
+                                       # at the wrong 130 nm/px) — a properly sampled LoG.
+  bigfish_spot_radius_z_nm: 350.0      # ★ set to the MEASURED z-step (was 300.0 assumed).
+                                       # Moot for 2D detection on the MIP; correct anyway.
+  threshold_multiplier: 1.0            # __TO TUNE__ MIAT strictness (t = auto_thr * tm; higher = stricter).
+                                       # 1.0 is the validated 100x starting point. EXPECT MORE SPOTS
+                                       # THAN THE PARENT PREDICTED: the LoG is now well-sampled at
+                                       # 1.85 px, and this is the COUNT preset, so the effect lands
+                                       # squarely on the headline. Watch qc_rna1_spots_per_nucleus
+                                       # and retune if the median runs far above ~15-40/nucleus.
+                                       # Carry the settled value to BOTH association presets.
+  only_nuclear_spots: true             # MIAT is nuclear-retained; cytoplasmic textured autofluorescence
+                                       # is gated out. TRADEOFF: this makes the SPOT-based % nuclear
+                                       # retention degenerate (100% by construction). The
+                                       # intensity-based N/C ratio below still measures it.
+  min_sep_px: 1                        # NOT rescaled, on purpose: per schema.py this is the Fiji-NMS
+                                       # knob and the fishsuite BigFISH wrapper does not NMS today,
+                                       # so it is inert here; 1 is disabled at any pixel size.
+  partner_null_disk_px: 6.0            # ★ RESCALED for consistency with the two association presets
+                                       # (was 3.0 @ assumed 0.130; 6 px x 65 nm = 0.39 um, the same
+                                       # physical disk). INERT in rna_only — no partner channel and
+                                       # compute_partner_null_enrichment is off — set only so a
+                                       # copy-paste of this block cannot carry a 130-nm-era value.
+  # ── __TO TUNE__ MIAT SPOT FLOOR — THE PROCEDURE, NOT A NUMBER ─────────────
+  # STILL deliberately UNSET. No MIAT-647 image has been measured, and a floor
+  # carried over from the 561 era would be meaningless on a different dye at a
+  # different exposure. On the 561 roster a floor of 3500 killed dim-but-real
+  # puncta and had to be removed, so no floor is the safer start: nuclear gating
+  # + LoG local-maxima detection already reject smooth haze, which has no local
+  # maxima.
+  #
+  # TUNE IT AGAINST THE FULL-OMISSION CONTROL (which omits the probe, so every
+  # spot it yields is non-specific). ★ THIS PRESET IS WHERE THAT TUNING HAPPENS
+  # — it is the count run, and the floor it settles on carries to both
+  # association presets:
+  #   1. Run with no floor (a NO-FLOOR MIP count run). Read the omission wells'
+  #      MIAT spot peak intensities (detect_in_sec_only: true makes them appear).
+  #   2. floor = P99(omission spot peak).
+  #   3. TWO INDEPENDENT ACCEPTANCE CHECKS: the omission MEDIAN spot peak must
+  #      sit well under ~40% of the real-probe median, AND the native
+  #      spot_rate_signal_to_control_rna1 must be >= 2.0. If either fails, the
+  #      probe is not clearing background and no floor rescues that — stop and
+  #      raise it rather than tuning until the number looks right.
+  #   4. Then SWEEP 0.8x / 1.0x / 1.2x the chosen floor, each in its OWN output
+  #      directory, and report the effect at each. The direction must hold
+  #      across the sweep; if it flips, the headline moves to the floor-robust
+  #      metrics with counts as support.
+  # To apply, uncomment:
+  #   rna_overrides:
+  #     min_spot_peak_intensity: <value from step 2>
+  #
+  # CRITICAL specificity guard: report (NEVER subtract) the non-specific spot
+  # rate in the omission wells.
+  detect_in_sec_only: true
+
+cytoplasm:
+  enabled: true
+  voronoi_max_expansion_px: 80         # ★ RESCALED: 5.2 um @ 0.065 um/px (was 40 @ assumed 0.130)
+  measure_nc_ratio: true               # intensity-based % nuclear MIAT — the retention QC that runs
+                                       # alongside the raw count and survives only_nuclear_spots: true.
+                                       # NOTE the plan BARS every N:C ratio from the image-filtering
+                                       # criteria — they are the retention readout itself, so
+                                       # filtering on them would be circular.
+
+output:
+  save_qc_overlays: true
+  save_per_image_csv: true
+  save_masks: true
+  save_publication_images: true
+  save_publication_tifs: false
+  # ── DISPLAY/ANALYSIS FLOORS: auto_batch for the FIRST PASS ───────────────
+  # DELIBERATELY NOT manual. Every manual floor in this folder was calibrated
+  # on MIAT-561; this is a 647 probe at a first-time exposure, so those numbers
+  # describe a different measurement. Brian's scope display range for MIAT
+  # (300-3200) is a DISPLAY range from the acquisition software and is NOT the
+  # spot-detection floor — it gets pinned as manual_rna_min/_max on the FINAL /
+  # figure runs only, not here.
+  pub_contrast_mode: auto_batch
+  apply_pub_contrast_floor_to_analysis: true   # emit the *_above_floor_intensity_* per-nucleus columns.
+                                               # NOTE: under auto_batch the floor is percentile-derived
+                                               # PER BATCH, so those columns are NOT comparable across
+                                               # runs until manual floors are pinned.
+  apply_pub_contrast_floor_to_spots: false     # never gate spot COUNTS by a display floor — this preset
+                                               # IS the count, so that would be self-defeating
+  prefix: ""
+  scalebar_um: 25.0                    # UNCHANGED (physical um)
+  scalebar_font_px: 52
+
+parallel:
+  # Safe to parallelize: the two association presets pin workers: 1 ONLY
+  # because foci.compute_partner_intensity runs an in-process per-spot loop
+  # that hangs the pool. This preset never sets it.
+  workers: auto
+  seg_workers: 1                       # DirectML: one 12 GB GPU -> one segmentation worker
+  main_workers: 1
+  threads_per_worker: 4
+
+# ── PER-IMAGE QC FLAG THRESHOLDS (advisory; never drops an image) ───────────
+# ADDED in this retarget — the 2026-08-12 parent had no qc block and so used
+# the schema defaults (qc_min_nuclei 5, qc_saturated_frac 0.01), which do not
+# match the plan's declared filtering criteria.
+qc:
+  qc_min_nuclei: 10          # matches sampling.n_per_unit and the plan's rule-1 threshold
+  qc_saturated_frac: 0.001   # plan rule 2: qc_frac_saturated_rna < 0.001
+                             # (the _antibody variant is moot in rna_only)
+
+seed: 0
