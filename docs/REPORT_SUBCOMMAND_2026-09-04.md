@@ -346,13 +346,18 @@ paper with its own palette needs no code change.
 ### Replicate-simple style
 
 Brian's locked style for imaging figures draws well means as the tested points,
-with group-mean ticks and optional muted FOV points. The two-group colour key is
+with group-mean columns (width 0.6, group-colour fill at 35% opacity, solid 1 pt edge),
+mean ± sample SD error bars (ddof=1 across well means), and optional muted FOV
+points. Columns and capped SD bars sit behind the well points and are omitted
+for groups with fewer than two finite wells. Focus columns start at the axis
+floor (50 for a 50–100 window). Footer: "bar = mean of well means, error bar = ± SD".
+The two-group colour key is
 WT grey (#595959), QKI-KO purple (#D67AE5); explicit run colour overrides remain
 supported. Every plot and composite exports a `_full` / `_focus` pair as 600 dpi
 PNG and editable SVG. Full scale starts at zero (percentages 0-100); focus uses
 50-100 for percentages only when every well mean exceeds 50, otherwise 0-100.
 Other focus axes round outward around the displayed data, never below zero for
-non-negative quantities. Brackets clear the highest displayed point by 13% of
+non-negative quantities. Brackets clear the highest displayed point or SD-bar top by 13% of
 the final axis span, with extra headroom above 100 when needed for annotations.
 Footers identify the axis variant; workbook figure indexes and decks default to
 `_focus` and list `_full` alongside it. Statistics are unchanged. Standalone

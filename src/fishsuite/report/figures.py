@@ -612,7 +612,7 @@ def draw_replicate_simple(ax, ctx: FigureContext, endpoint: str, well: pd.DataFr
     pw = well[well["endpoint"] == endpoint] if len(well) else well
     pf = field[field["endpoint"] == endpoint] if len(field) else field
     rows = contrasts[contrasts["endpoint"] == endpoint] if len(contrasts) else contrasts
-    seen, counts, well_values = [], [], []
+    seen, counts, well_values, mean_bars = [], [], [], []
     for xi, group in enumerate(ctx.group_order):
         col = ctx.colors[group]
         wells = pw[pw["group"] == group].sort_values("well_id") if len(pw) else pw
@@ -635,9 +635,16 @@ def draw_replicate_simple(ax, ctx: FigureContext, endpoint: str, well: pd.DataFr
                              facecolor=(*shade(col, 1), .45), edgecolor=col,
                              linewidths=1.1, zorder=5)
             art.set_gid(f"well:{group}")
-            tick = ax.hlines(float(wm.mean()), xi - .28, xi + .28, color=col,
-                            linewidth=2, zorder=4)
-            tick.set_gid(f"group-mean:{group}")
+            if len(wm) >= 2:
+                mean, sd = float(wm.mean()), float(wm.std(ddof=1))
+                bar = ax.bar(xi, mean, width=.6, facecolor=(*shade(col, 1), .35),
+                             edgecolor=col, linewidth=1, zorder=1)[0]
+                bar.set_gid(f"group-mean:{group}")
+                mean_bars.append((bar, mean))
+                ax.errorbar(xi, mean, yerr=sd, fmt="none", ecolor=col,
+                            elinewidth=1, capsize=3, capthick=1, zorder=3,
+                            label=f"group-sd:{group}")
+                seen.extend([mean - sd, mean + sd])
             seen.extend(wm)
             well_values.extend(wm)
         nn = (int(pd.to_numeric(fields["n_nuclei_nonmissing"], errors="coerce").sum())
@@ -651,7 +658,8 @@ def draw_replicate_simple(ax, ctx: FigureContext, endpoint: str, well: pd.DataFr
     ax.set_xlim(-.6, len(ctx.group_order) - .4)
     ax.set_ylabel(ylabel, fontsize=6.6 if compact else 8.5)
     ax.tick_params(labelsize=6.2 if compact else 8)
-    marker = ("Points are WELL means, the tested replicates; ticks are group means. "
+    marker = ("Points are WELL means, the tested replicates; "
+              "bar = mean of well means, error bar = ± SD. "
               + ("Muted small points are technical FOV means." if ctx.technical_layer == "fov"
                  else "No technical layer is drawn."))
     if not seen:
@@ -698,6 +706,9 @@ def draw_replicate_simple(ax, ctx: FigureContext, endpoint: str, well: pd.DataFr
             line.set_ydata([y, y])
             text.set_y(y + .02 * span)
         ax.set_ylim(bottom, top)
+        for bar, mean in mean_bars:
+            bar.set_y(bottom)
+            bar.set_height(mean - bottom)
         if percent:
             ax.set_yticks(np.arange(bottom, 101, step))
 
@@ -729,7 +740,8 @@ def draw_replicate_simple(ax, ctx: FigureContext, endpoint: str, well: pd.DataFr
                        f"usability filter: {r.get('usability_filter', 'none')}.")
         level += 1
     set_axis("focus")
-    return ("Two-sided Welch on well means; replicate unit: well; raw-p stars.\n"
+    return ("Two-sided Welch on well means; replicate unit: well; raw-p stars. "
+            "bar = mean of well means, error bar = ± SD.\n"
             + " ".join(details) + " n: " + "; ".join(counts) + ".\n"
             + f"Run: {ctx.run_path}; axis: focus window")
 
@@ -771,7 +783,7 @@ def layout_replicate_simple(fig, ax, ctx, title, foot):
     compact_foot = compact_foot.replace("Two-sided Welch on well means; replicate unit: well; raw-p stars.",
         "Two-sided Welch; well replicates; raw-p stars.")
     compact_foot = compact_foot.replace("MDE g (80% power, alpha .05)", "MDE g (80%, α .05)")
-    compact_foot = compact_foot.replace("family alpha", "family α").replace("well means", "wells")
+    compact_foot = compact_foot.replace("family alpha", "family α")
     compact_foot = compact_foot.replace("defined nuclei", "nuclei")
     if "axis: focus window" in foot:
         compact_foot += " axis: focus window"
@@ -1362,7 +1374,7 @@ def composite_main(ctx: FigureContext, specs: Sequence[dict], panels: List[dict]
         + "\n".join(x for x in foots if x))
     if ctx.plot_style == "replicate-simple":
         foot = ctx.footer(f"Panels: {lettered}.\n"
-                          "Points are well means; ticks are group means. "
+                          "Points are well means; bar = mean of well means, error bar = ± SD. "
                           + ("Muted small points are FOV means. " if ctx.technical_layer == "fov" else "")
                           + "Two-sided Welch on wells; raw p above each comparison.\n"
                           + "\n".join(foots))

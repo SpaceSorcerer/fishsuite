@@ -283,3 +283,45 @@ def test_nonnegative_focus_floor_and_full_zero(report_data, tmp_path):
     assert ax.get_ylim()[0] == 0
     assert ax.get_ylim()[1] > 79
     plt.close(canvas)
+
+
+@pytest.mark.parametrize("variant,floor", [("full", 0), ("focus", 50)])
+@pytest.mark.parametrize("values", [[.6, .6, .99], [.6, .99, .99]])
+def test_mean_column_sample_sd_and_bracket_clearance(tmp_path, variant, floor, values):
+    endpoint = "rna1_nuclear_spot_fraction"
+    values = np.array(values)
+    wells = pd.DataFrame(dict(endpoint=[endpoint]*4, group=["WT"]*3+["QKI-KO"],
+        well_id=["WT_1", "WT_2", "WT_3", "KO_1"],
+        well_mean_of_field_values=[*values, .8]))
+    contrasts = pd.DataFrame([dict(endpoint=endpoint, test_group="QKI-KO",
+                                  reference_group="WT", p_welch=.2)])
+    canvas, ax = plt.subplots()
+    foot = fig.draw_plot(ax, context(tmp_path, plot_style="replicate-simple"), endpoint,
+        wells, pd.DataFrame(), pd.DataFrame(), contrasts, "fraction", None)
+    ax._replicate_simple_axis(variant)
+    bars = [p for p in ax.patches if p.get_gid() == "group-mean:WT"]
+    assert len(bars) == 1
+    bar = bars[0]
+    mean, sd = np.mean(values*100), np.std(values*100, ddof=1)
+    assert bar.get_y() == floor
+    assert bar.get_y() + bar.get_height() == pytest.approx(mean)
+    assert bar.get_width() == pytest.approx(.6)
+    assert bar.get_facecolor() == pytest.approx(to_rgba("#595959", .35))
+    assert bar.get_edgecolor() == pytest.approx(to_rgba("#595959"))
+    assert bar.get_linewidth() == 1
+    errors = [c for c in ax.containers if c.get_label() == "group-sd:WT"]
+    assert len(errors) == 1
+    _, caps, stems = errors[0].lines
+    np.testing.assert_allclose(stems[0].get_segments()[0], [[0, mean-sd], [0, mean+sd]])
+    assert len(caps) == 2
+    points = next(c for c in ax.collections if c.get_gid() == "well:WT")
+    assert len(points.get_offsets()) == 3
+    assert bar.get_zorder() < points.get_zorder()
+    assert stems[0].get_zorder() < points.get_zorder()
+    assert all(c.get_zorder() < points.get_zorder() for c in caps)
+    assert not any(p.get_gid() == "group-mean:QKI-KO" for p in ax.patches)
+    assert not any(c.get_label() == "group-sd:QKI-KO" for c in ax.containers)
+    lo, hi = ax.get_ylim()
+    assert ax.lines[-1].get_ydata()[0] >= max(mean+sd, max(values*100)) + .13*(hi-lo)
+    assert "bar = mean of well means, error bar = ± SD" in foot
+    plt.close(canvas)
