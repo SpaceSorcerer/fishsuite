@@ -391,7 +391,7 @@ def draw_superplot(ax, ctx: FigureContext, endpoint: str, well: pd.DataFrame,
     if fraction_scale(endpoint) == 100:
         scale = 100.
         ylabel = ('BIN1 intron puncta: % nuclear (per nucleus)' if endpoint == 'rna1_nuclear_spot_fraction'
-                  else ylabel.replace('fraction', 'percent') + (' (%)' if '%' not in ylabel else ''))
+                  else ylabel.replace('fraction', 'percent') + (' (%)' if '%' not in ylabel and 'percentage points' not in ylabel else ''))
     pw = well[well["endpoint"] == endpoint] if len(well) else well
     pf = field[field["endpoint"] == endpoint] if len(field) else field
     crow = contrasts[contrasts["endpoint"] == endpoint] if len(contrasts) else contrasts
@@ -608,7 +608,7 @@ def draw_replicate_simple(ax, ctx: FigureContext, endpoint: str, well: pd.DataFr
     if fraction_scale(endpoint) == 100:
         scale = 100.
         ylabel = ('BIN1 intron puncta: % nuclear (per nucleus)' if endpoint == 'rna1_nuclear_spot_fraction'
-                  else ylabel.replace('fraction', 'percent') + (' (%)' if '%' not in ylabel else ''))
+                  else ylabel.replace('fraction', 'percent') + (' (%)' if '%' not in ylabel and 'percentage points' not in ylabel else ''))
     pw = well[well["endpoint"] == endpoint] if len(well) else well
     pf = field[field["endpoint"] == endpoint] if len(field) else field
     rows = contrasts[contrasts["endpoint"] == endpoint] if len(contrasts) else contrasts
@@ -677,7 +677,7 @@ def draw_replicate_simple(ax, ctx: FigureContext, endpoint: str, well: pd.DataFr
     from .endpoints import ENDPOINTS, a3_endpoints
     unit = next((e.unit for e in (*ENDPOINTS, *a3_endpoints([endpoint]))
                  if e.name == endpoint), "")
-    percent = fraction_scale(endpoint) == 100 or '%' in unit
+    percent = (fraction_scale(endpoint) == 100 or '%' in unit) and 'minus_shuffle' not in endpoint
     zoom = percent and bool(well_values) and min(well_values) > 50
     brackets = []
 
@@ -725,6 +725,16 @@ def draw_replicate_simple(ax, ctx: FigureContext, endpoint: str, well: pd.DataFr
             continue
         r = match.iloc[0]
         p = r.get("p_welch", np.nan)
+        from .endpoints import ENDPOINTS, a3_endpoints
+        definition = next((e for e in (*ENDPOINTS, *a3_endpoints([endpoint]))
+                           if e.name == endpoint), None)
+        descriptive = definition and (definition.descriptive_only or definition.absolute_intensity)
+        if descriptive:
+            label = 'descriptive, no test'
+            annotation = ax.text(.5, .97, label, transform=ax.transAxes,
+                                 ha='center', va='top', fontsize=6.2 if compact else 7)
+            annotation.set_gid('test-status:' + endpoint)
+            continue
         line, = ax.plot([ref_x, xi], [high, high], color="black", linewidth=.8)
         text = ax.text((ref_x + xi) / 2, high, f"{stars(p)}  p={fmt_p(p)}",
                        ha="center", va="bottom", fontsize=6.2 if compact else 7)
@@ -1028,6 +1038,7 @@ def render_localization(ctx: FigureContext, well: pd.DataFrame, field: pd.DataFr
         ax.text(.5, -.035, f"{record['well_id']} | nucleus {record['nucleus_id']} | {record.get('cyto_estimation_method', 'missing')}\n"
                 f"Territory boundary: {record['territory_boundary']}", transform=ax.transAxes, ha='center', va='top', fontsize=6)
     canvas.text(.06, .535, 'D   Documented crops: cyan = retained nuclear outline; white rings = assigned cytoplasmic RNA1 spots', fontsize=8)
+    canvas.text(.06, .57, 'cytoplasmic = outside the 2D nuclear mask within the assigned territory; single plane', fontsize=8)
     canvas.text(.06, .19, 'Recorded areas describe assigned territory, not membrane-bounded cells. Missing boundaries are not reconstructed.\n'
                 'Unassigned spots are excluded from nucleus denominators and tabulated separately. Crop coordinates and geometry: localization_crops.json.', fontsize=6.5)
     for k, (name, color) in enumerate(luts):

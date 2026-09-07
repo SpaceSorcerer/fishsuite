@@ -494,7 +494,7 @@ def build_report(run_dir: Path, out_dir: Optional[Path] = None,
                  plot_style: str = "superplot", technical_layer: str = "none",
                  existing_coloc: Optional[Path] = None,
                  baseline_manifest: Optional[Path] = None,
-                 deck_spec: Optional[Path] = None, deck: bool = False,
+                 deck_spec: Optional[Path] = None, deck: bool = False, qc_cyto_calls: bool = False,
                  miat_qki: Optional[Path] = None,
                  miat_qki_count_report: Optional[Path] = None) -> dict:
     if miat_qki is not None:
@@ -546,6 +546,9 @@ def build_report(run_dir: Path, out_dir: Optional[Path] = None,
     declared_order = list(group_order) or parsed_order
     data = _agg.load_run(run_dir, well_to_group, exclude_fields, well_from_image,
                          nucleus_filter=nucleus_filter)
+    if qc_cyto_calls:
+        from .cyto_calls import build_cyto_calls
+        build_cyto_calls(run_dir, out_dir/'qc_cyto_calls', data['nuclei'])
     labels = _ep.channel_labels(data["cfg"])
     if not declared_order:
         _, declared_order = _agg.groups_from_run_config(data["cfg"])

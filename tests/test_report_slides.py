@@ -4,10 +4,20 @@ import pytest
 import pandas as pd
 
 
-def test_recorded_deck_semantic_assets_and_localization(tmp_path):
+def test_recorded_deck_semantic_assets_and_localization(tmp_path, monkeypatch):
     import yaml
     from fishsuite.report.build import build_report
     from pptx import Presentation
+    from fishsuite.report import figures
+    original = figures.draw_replicate_simple
+    checked = []
+    def check_panel(ax, ctx, endpoint, *args, **kwargs):
+        result = original(ax, ctx, endpoint, *args, **kwargs)
+        texts = [t.get_text() for t in ax.texts]
+        assert any('p=' in t or 'descriptive, no test' in t for t in texts), (endpoint, texts)
+        checked.append(endpoint)
+        return result
+    monkeypatch.setattr(figures, 'draw_replicate_simple', check_panel)
     root = Path(__file__).resolve().parents[1]
     spec = root/'_closeout_evidence/A/deck_spec.yaml'
     run = Path('F:/Image Analysis Work/RNASEH2B_BIN1introns_2026_08_25/13b_FULL_HARMONIZED_T36_FIXEDNUCLEAR_2026-09-05/RUN_T36_fixed_2026-09-05_0915')
@@ -18,7 +28,7 @@ def test_recorded_deck_semantic_assets_and_localization(tmp_path):
                 'q1_localization':'A05_BIN1_localization', 'q1_total_if':'A04_RNASEH2B_total_IF',
                 'q2':'A06_question2', 'q3':'A07_question3', 'q4_reverse_anchor':'A08_question4',
                 'nucleus_selection':'A03_nucleus_selection', 'methods_provenance':'A02_methods',
-                'standard_coloc':'A09_standard_coloc'}
+                'micrographs':'A10_micrographs', 'standard_coloc':'A09_standard_coloc'}
     assert [s['identity'] for s in resolved['slides']] == list(expected)
     for slide in resolved['slides']:
         assert Path(slide['figures'][0]['path']).name == expected[slide['identity']]+('_focus.png' if slide.get('identity') in {'q1_count_size','q1_localization','q1_total_if','q2','q3','q4_reverse_anchor','standard_coloc'} else '.png')
@@ -40,6 +50,14 @@ def test_recorded_deck_semantic_assets_and_localization(tmp_path):
     assert 'Assigned-cytoplasmic puncta count' in svg
     ppt = Presentation(result['out_dir']/'Sam_RNASEH2B_BIN1.pptx')
     assert [s.shapes[0].text for s in ppt.slides] == [s['title'] for s in resolved['slides']]
+    assert resolved['slides'][1]['title'] == '1. Are BIN1 intron puncta larger, more numerous and more nuclear in KO than WT? (sanity check)'
+    assert resolved['slides'][3]['title'] == '1b. RNASEH2B total signal and puncta, WT vs KO'
+    for i in (4, 5, 6):
+        assert resolved['slides'][i]['title'].startswith(str(i-2)+'. ')
+    assert {'frac_called_coloc_shuffle_runthr', 'frac_called_coloc_minus_shuffle_runthr'} <= set(checked)
+    assert 'cytoplasmic = outside the 2D nuclear mask within the assigned territory; single plane' in svg
+    for slide in ppt.slides:
+        assert any(s.has_text_frame and s.top > 5000000 for s in slide.shapes)
     for slide, definition in zip(ppt.slides, resolved['slides']):
         if len(definition['figures']) == 3:
             text = [s.text for s in slide.shapes if s.has_text_frame]
@@ -218,3 +236,31 @@ def test_micrograph_labels_are_slide_readable_and_inside_panel(tmp_path):
     assert min(bar.get_xdata()) > ax.get_xlim()[0]
     assert max(bar.get_xdata()) < ax.get_xlim()[1]
     plt.close(canvas)
+
+
+def test_cytoplasmic_call_csv_and_missing_overlay(tmp_path):
+    import numpy as np
+    import tifffile
+    from PIL import Image
+    from fishsuite.report.cyto_calls import build_cyto_calls
+    run = tmp_path/'run'
+    (run/'publication_images').mkdir(parents=True)
+    (run/'masks').mkdir()
+    labels = np.zeros((80,80), dtype=np.uint16)
+    labels[20:40,20:40] = 1
+    tifffile.imwrite(run/'masks/WT_1__field__nuclei_label_mask.tif', labels)
+    Image.new('RGB',(80,80)).save(run/'publication_images/WT_1__field__merge_all.png')
+    pd.DataFrame([dict(image=image, condition='WT_1', channel='rna1', spot_id=1,
+                      nucleus_id=1, in_cytoplasm=1, x_px=41, y_px=30)
+                  for image in ['field.vsi','absent.vsi']]).to_csv(run/'spot_metrics.csv', index=False)
+    nuclei = pd.DataFrame([dict(image=image, nucleus_id=1, group='WT', voxel_xy_um=1.)
+                           for image in ['field.vsi','absent.vsi']])
+    out=tmp_path/'qc'
+    build_cyto_calls(run,out,nuclei)
+    calls=pd.read_csv(out/'cytoplasmic_calls.csv')
+    assert len(calls)==2
+    assert calls.set_index('image').loc['field.vsi','distance_to_mask_edge_um']==pytest.approx(1.5)
+    assert calls.set_index('image').loc['absent.vsi','status']=='missing overlay'
+    assert calls.set_index('image').loc['field.vsi','crop_px']==6
+    assert len(pd.read_csv(out/'missing.csv'))==1
+    assert (out/'WT_sheet_001.png').is_file()

@@ -18,6 +18,8 @@ from .provenance import guard_output, sha256
 def _literal_number(text, identifiers=()):
     # Gene labels such as BIN1 and RNASEH2B are identities, not numeric claims.
     text = str(text)
+    # Sam's question identifiers are ordering labels, not measured quantities.
+    text = re.sub(r'^(?:1b|[1-4])\.\s+', '', text)
     for identifier in sorted(set(identifiers), key=len, reverse=True):
         text = re.sub(r'(?<!\w)' + re.escape(identifier) + r'(?!\w)', '', text)
     return re.search(r'(?<![\w])[-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?(?:[a-zA-Zµμ%]+)?', text)
@@ -127,10 +129,11 @@ def build_deck(workbook: Path, spec: dict, destination: Path) -> Path:
     sources = []
     for number, definition in enumerate(slides,1):
         slide = ppt.slides.add_slide(ppt.slide_layouts[6])
-        box = slide.shapes.add_textbox(Inches(.4), Inches(.2), Inches(12.5), Inches(.7))
+        box = slide.shapes.add_textbox(Inches(.4), Inches(.15), Inches(12.5), Inches(.95))
         box.text_frame.text = definition['title']
+        box.text_frame.word_wrap = True
         for paragraph in box.text_frame.paragraphs:
-            paragraph.font.name, paragraph.font.size = 'Arial', Pt(26)
+            paragraph.font.name, paragraph.font.size = 'Arial', Pt(23)
         notes = [str(Path(workbook).resolve()), 'workbook SHA256: '+spec['workbook_sha256']]
         for item in definition['values']:
             location = f'{item["sheet"]}!{item["cell"]}'
@@ -142,14 +145,15 @@ def build_deck(workbook: Path, spec: dict, destination: Path) -> Path:
             from PIL import Image
             with Image.open(asset['path']) as img:
                 ratio = img.width / img.height
-            max_width, max_height = ((9.3, 5.9) if asset_no == 0 else (2.7, 2.7)) if len(assets)>1 else (12.4, 6.0)
+            max_width, max_height = ((9.3, 4.9) if asset_no == 0 else (2.7, 2.2)) if len(assets)>1 else (12.4, 4.9)
             width = min(max_width, max_height*ratio)
             height = width / ratio
             left = .3+(9.3-width)/2 if len(assets)>1 and asset_no==0 else 10+(2.7-width)/2 if len(assets)>1 else (13.333333-width)/2
-            top = 1.05+(5.9-height)/2 if asset_no==0 else 1.1+(asset_no-1)*2.9+(2.7-height)/2
+            top = 1.15+(4.9-height)/2 if asset_no==0 else 1.25+(asset_no-1)*2.5+(2.2-height)/2
             slide.shapes.add_picture(asset['path'], Inches(left), Inches(top), Inches(width), Inches(height))
             if asset.get('caption_value'):
-                caption = slide.shapes.add_textbox(Inches(left), Inches(top-.2), Inches(width), Inches(.2))
+                caption = slide.shapes.add_textbox(Inches(left), Inches(top-.3), Inches(width), Inches(.3))
+                caption.text_frame.margin_top = caption.text_frame.margin_bottom = 0
                 caption.text_frame.text = asset['caption_value']
                 for paragraph in caption.text_frame.paragraphs:
                     paragraph.font.name, paragraph.font.size = 'Arial', Pt(14)
@@ -163,6 +167,13 @@ def build_deck(workbook: Path, spec: dict, destination: Path) -> Path:
             content.text_frame.word_wrap = True
             for p in content.text_frame.paragraphs:
                 p.font.name, p.font.size = 'Arial', Pt(18)
+        readouts = [v['value'] for v in definition['values'] if v.get('label') == 'readout']
+        if readouts and assets:
+            box = slide.shapes.add_textbox(Inches(.5), Inches(6.25), Inches(12.3), Inches(1.0))
+            box.text_frame.word_wrap = True
+            box.text_frame.text = str(readouts[0])
+            for paragraph in box.text_frame.paragraphs:
+                paragraph.font.name, paragraph.font.size = 'Arial', Pt(18)
         slide.notes_slide.notes_text_frame.text = '\n'.join(notes)
     destination.parent.mkdir(parents=True, exist_ok=True)
     ppt.save(destination)
@@ -360,7 +371,15 @@ def prepare_deck(template: dict, sheets: dict, out_dir: Path, data: dict,
             count = len(names)
             cols = min(count,3)
             rows = (count+cols-1)//cols
-            f, axes = fig.plt.subplots(rows,cols,figsize=(12.4,5.6),squeeze=False)
+            if item.get('headline'):
+                f = fig.plt.figure(figsize=(12.4,5.6))
+                secondary_cols = (count - 1 + 1) // 2
+                grid = f.add_gridspec(2, secondary_cols + 1, width_ratios=[1.7] + [1] * secondary_cols)
+                axes = np.array([f.add_subplot(grid[:, 0])] +
+                                [f.add_subplot(grid[i // secondary_cols, 1 + i % secondary_cols])
+                                 for i in range(count - 1)])
+            else:
+                f, axes = fig.plt.subplots(rows,cols,figsize=(12.4,5.6),squeeze=False)
             f.subplots_adjust(left=.08,right=.98,top=.83,bottom=.17,hspace=.7,wspace=.65)
             for ax,name in zip(axes.flat,names):
                 e = by_endpoint[name]
@@ -378,15 +397,31 @@ def prepare_deck(template: dict, sheets: dict, out_dir: Path, data: dict,
                     unit='puncta / square micrometre'
                 if scale==100:
                     unit='percent (%)'
-                plotted_contrasts=contrasts.loc[contrasts.p_welch.notna()]
-                fig.draw_replicate_simple(ax,ctx,name,well,field,data['nuclei'],plotted_contrasts,
+                if 'minus_shuffle' in name:
+                    unit='excess over shuffle (percentage points)'
+                fig.draw_replicate_simple(ax,ctx,name,well,field,data['nuclei'],contrasts,
                                           unit,e.column,scale=scale,compact=True)
                 title = e.pretty(ctx.channel_labels)
+                if item.get('headline'):
+                    title = {
+                        'rna1_enrichment_at_partner_puncta': 'BIN1 signal: relative enrichment',
+                        'rna1_rotation_enrichment_at_partner_puncta': 'BIN1 signal: rotation enrichment',
+                        'frac_called_coloc_partner_runthr': 'BIN1 threshold calls',
+                        'frac_called_coloc_partner_minus_shuffle_runthr': 'BIN1 calls: excess over shuffle',
+                        'paired_fraction_partner_at_0p3um': 'RNASEH2B puncta paired with BIN1',
+                        'paired_frac_partner_at_rna1_shuffle': 'RNASEH2B pairing: shuffle baseline',
+                        'paired_frac_rna1_at_partner': 'BIN1 puncta paired with RNASEH2B',
+                        'paired_frac_rna1_at_partner_shuffle': 'BIN1 pairing: shuffle baseline',
+                    }.get(name, title)
+                if name == 'paired_frac_rna1_at_partner_minus_shuffle':
+                    title = 'BIN1 puncta paired with an RNASEH2B punctum: excess over shuffle'
+                elif name == 'paired_frac_partner_at_rna1_minus_shuffle':
+                    title = 'RNASEH2B puncta paired with a BIN1 punctum: excess over shuffle'
                 if name == 'rna1_nuclear_spot_fraction':
                     ax.set_ylabel('BIN1 intron puncta: % nuclear (per nucleus)')
                     title = 'BIN1 intron puncta, % nuclear'
                 import textwrap
-                ax.set_title('\n'.join(textwrap.wrap(title,38)),fontsize=9,pad=22)
+                ax.set_title('\n'.join(textwrap.wrap(title,28 if item.get('headline') else 38)),fontsize=9,pad=22)
                 fig.no_box(f,ax)
             spare_axes = list(axes.flat)[count:]
             if item.get('kind') == 'standard':

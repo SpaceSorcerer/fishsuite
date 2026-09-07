@@ -900,6 +900,7 @@ def postrun(run_dir, staging, input_dir, image_key, seed):
 @click.option('--deck-spec', type=click.Path(exists=True, dir_okay=False), default=None,
               help='Prepare workbook-traced deck assets and resolve the slide specification.')
 @click.option('--deck', is_flag=True, help='Export the prepared deck using optional python-pptx.')
+@click.option('--qc-cyto-calls', is_flag=True, help='Export every persisted cytoplasmic RNA1 call as calibrated QC crops and CSV.')
 @click.option("--stamp", default="", metavar="TEXT",
               help="Timestamp used in the default output directory name. Defaults to "
                    "now.")
@@ -908,7 +909,7 @@ def report(run_dir, groups, groups_file, reference, group_order, well_from_image
            primary_endpoint, sec_outlier_k, caveat_file, style, plot_style, technical_layer,
            alpha, qc_min_nuclei, sec_min_nuclei, engine_repo, preset,
            no_figures, no_coloc_panel, stamp, existing_coloc, baseline_manifest, deck_spec, deck,
-           miat_qki, miat_qki_count_report):
+           miat_qki, miat_qki_count_report, qc_cyto_calls):
     """Build the condition-versus-condition report for a finished run.
 
     Wells are the biological replicates and the condition GROUP is what gets
@@ -1019,6 +1020,7 @@ def report(run_dir, groups, groups_file, reference, group_order, well_from_image
             baseline_manifest=Path(baseline_manifest) if baseline_manifest else None,
             deck_spec=Path(deck_spec) if deck_spec else None,
             deck=deck,
+            qc_cyto_calls=qc_cyto_calls,
             stamp=stamp,
         )
     except (ReportInputError, PeakGateError) as exc:
