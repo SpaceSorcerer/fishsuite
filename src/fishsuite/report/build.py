@@ -494,7 +494,16 @@ def build_report(run_dir: Path, out_dir: Optional[Path] = None,
                  plot_style: str = "superplot", technical_layer: str = "none",
                  existing_coloc: Optional[Path] = None,
                  baseline_manifest: Optional[Path] = None,
-                 deck_spec: Optional[Path] = None, deck: bool = False) -> dict:
+                 deck_spec: Optional[Path] = None, deck: bool = False,
+                 miat_qki: Optional[Path] = None,
+                 miat_qki_count_report: Optional[Path] = None) -> dict:
+    if miat_qki is not None:
+        from .miat_qki import build as build_miat_qki
+        if out_dir is None:
+            raise _agg.ReportInputError('MIAT/QKI requires an explicit output directory')
+        if groups or exclude_fields or peak_floors or nucleus_filter != 'all' or existing_coloc or deck_spec or deck:
+            raise _agg.ReportInputError('MIAT/QKI cannot alter the fixed cohort or mix persisted-panel/deck inputs')
+        return build_miat_qki(miat_qki, out_dir, miat_qki_count_report, make_figures)
     _fig.validate_plot_options(plot_style, technical_layer)
     run_dir = Path(run_dir)
     stamp = stamp or datetime.now().strftime("%Y-%m-%d_%H%M")

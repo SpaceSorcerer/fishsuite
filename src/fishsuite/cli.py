@@ -783,7 +783,11 @@ def postrun(run_dir, staging, input_dir, image_key, seed):
 
 
 @cli.command()
-@click.option("--run", "run_dir", required=True,
+@click.option('--miat-qki', type=click.Path(exists=True, file_okay=False), default=None,
+              help='Report fixed-10 MIAT/QKI ratios from a persisted delivery data directory.')
+@click.option('--miat-qki-count-report', type=click.Path(exists=True, file_okay=False), default=None,
+              help='Separate COUNT localization report; never used as a ratio denominator.')
+@click.option("--run", "run_dir", required=False,
               type=click.Path(exists=True, file_okay=False),
               help="Finished fishsuite output directory to report on. It is READ, "
                    "never modified.")
@@ -903,7 +907,8 @@ def report(run_dir, groups, groups_file, reference, group_order, well_from_image
            out_dir, exclude_field, reason, all_pairs, nucleus_filter, peak_floor,
            primary_endpoint, sec_outlier_k, caveat_file, style, plot_style, technical_layer,
            alpha, qc_min_nuclei, sec_min_nuclei, engine_repo, preset,
-           no_figures, no_coloc_panel, stamp, existing_coloc, baseline_manifest, deck_spec, deck):
+           no_figures, no_coloc_panel, stamp, existing_coloc, baseline_manifest, deck_spec, deck,
+           miat_qki, miat_qki_count_report):
     """Build the condition-versus-condition report for a finished run.
 
     Wells are the biological replicates and the condition GROUP is what gets
@@ -918,6 +923,24 @@ def report(run_dir, groups, groups_file, reference, group_order, well_from_image
     from .report.build import build_report, load_groups_file
     from .report.aggregate import ReportInputError
     from .report.peak_gate import PeakGateError, parse_peak_floors
+
+    if not run_dir and not miat_qki:
+        raise click.UsageError('provide --run or --miat-qki')
+    if miat_qki:
+        if not out_dir:
+            raise click.UsageError('--miat-qki requires --out outside the read-only delivery')
+        if groups or groups_file or exclude_field or peak_floor or nucleus_filter != 'all' or existing_coloc or deck_spec or deck:
+            raise click.UsageError('--miat-qki uses its fixed cohort and cannot apply report regrouping, filters or deck/panel inputs')
+        try:
+            result = build_report(run_dir=Path(run_dir) if run_dir else None,
+                                  out_dir=Path(out_dir), miat_qki=Path(miat_qki),
+                                  miat_qki_count_report=Path(miat_qki_count_report) if miat_qki_count_report else None,
+                                  make_figures=not no_figures)
+        except (ValueError, AssertionError, FileNotFoundError) as exc:
+            raise click.ClickException(str(exc)) from exc
+        click.echo(f"MIAT/QKI workbook: {result['xlsx']}")
+        click.echo(f"MIAT/QKI figures: {len(result['figures'])}")
+        return
 
     if len(reason) != len(exclude_field):
         click.echo(

@@ -25,6 +25,17 @@ SHEET_ORDER: List[str] = [
 ]
 
 SHEET_DESCRIPTION: Dict[str, str] = {
+    'Ratio intervals': 'Fixed-10 MIAT/QKI: R = (A_KD/A_NT)/(T_KD/T_NT), using six matched well means per arm and within-arm A,T covariance. Marginal normal log-delta 95% intervals are not exact-test inversions or simultaneous intervals. All q95 ratio tests remain exploratory.',
+    'Retention sensitivity': 'Policy-specific plug-in normal R-MDE at 80% power, alpha .05 and .05/8, with SE and covariance. Detection thresholds around R=1 are not observed-CI limits, equivalence margins, or exact-permutation power.',
+    'Coverage': 'Fixed-10 policy-specific observed, candidate, usable and positive counts, with separate noncandidate, candidate-unusable, usable-negative and usable-positive states. Well coverage ratios have finite n, SD and arm t intervals; unknown calls are never negative biology.',
+    'COUNT localization': 'Separate COUNT all-eligible localization values copied from its own persisted report. Its population and detection differ from fixed-10 coloc; these values are forbidden as MIAT/QKI ratio denominators.',
+    'Ratio well values': 'Matched A,T well vectors with slide/arm IDs and original CSV row numbers. Nucleus means are averaged within FOV and FOV means equally within well; total T is not multiplied by the number of policies.',
+    'Nucleus roster': 'All four policy copies of the 370 fixed-10 nuclei, including four restored zero-spot nuclei per policy. Policy-specific observed/candidate/usable/q95 fields govern reconstruction; historical aliases are retained only as source data.',
+    'Assignments': 'All 400 assignments of three KD and three NT labels among six wells on each of two slides. A,T pairs move intact by well; two-sided abs(log R) uses >= observed minus 1e-12 and denominator 400. Original assignment file missing; enumeration reproduces every delivered R p-value.',
+    'Scalar contrasts': 'Ten exploratory scalar tests: two total MIAT endpoints and eight associated-pool endpoints, using raw Welch and Hedges g on six wells per arm, with a distinct Holm-ten family. Historical exact scalar p-values remain separately labelled.',
+    'Usable pool ratios': 'Coverage-matched sensitivity: positive A and usable-footprint T share support, preserving the full nucleus roster and equal-weight FOV/well hierarchy. Usable-support intensity mass is missing and remains NA with reason.',
+    'Historical union sensitivity': 'Separately sourced historical fixed-10 q95 union-deduplicated intensity sensitivity from pooled_Fig3. No union-deduplicated values are invented for the other policies.',
+    'Source provenance': 'Absolute named input paths and SHA256 hashes. Source files are read only; the report does not rerun segmentation, detection or spatial nulls.',
     "Localization counts": "Localization per nucleus and assigned cell territory. Authoritative counts are reconciled with spot assignments; zero-total fractions remain NA.",
     "Localization unassigned": "Unassigned spots (source nucleus_id 0), excluded from localization per nucleus and assigned cell territory and tabulated separately by image.",
     "Localization checks": "Source-column and NA-mask checks for localization per nucleus and assigned cell territory.",
@@ -115,7 +126,8 @@ SHEET_DESCRIPTION.update({
 
 def write(path: Path, sheets: Dict[str, pd.DataFrame],
           strike_rows: Dict[str, Sequence[int]] | None = None,
-          order: Sequence[str] | None = None) -> Path:
+          order: Sequence[str] | None = None,
+          descriptions: Dict[str, str] | None = None) -> Path:
     """Write the workbook. Row 1 of every sheet is its description, row 2 the header."""
     from openpyxl.styles import Alignment, Font, PatternFill
     from openpyxl.utils import get_column_letter
@@ -136,7 +148,7 @@ def write(path: Path, sheets: Dict[str, pd.DataFrame],
         for name in order:
             ws = xl.book[name[:31]]
             ncol = max(ws.max_column, 1)
-            ws.cell(row=1, column=1, value=_description(name))
+            ws.cell(row=1, column=1, value=(descriptions or {}).get(name, _description(name)))
             ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=ncol)
             head = ws.cell(row=1, column=1)
             head.alignment = Alignment(wrap_text=True, vertical="top")
