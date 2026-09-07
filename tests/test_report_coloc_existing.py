@@ -29,6 +29,9 @@ def test_missing_stale_and_frozen_guard(tmp_path):
     from fishsuite.report.aggregate import ReportInputError
     with pytest.raises(ReportInputError, match='missing'):
         load_existing_panel(tmp_path/'missing.xlsx', tmp_path/'missing.md', BASELINE)
+    (tmp_path/'DELIVERY_any').mkdir()
+    guard_output(tmp_path/'DELIVERY_any'/'report')  # unreleased delivery folder is a valid build target
+    (tmp_path/'DELIVERY_any'/'MANIFEST_SHA256.tsv').write_text('')
     with pytest.raises(ReportInputError, match='frozen'):
         guard_output(tmp_path/'DELIVERY_any'/'report')
     m = json.loads(BASELINE.read_text())

@@ -46,13 +46,32 @@ RUN_FILES = [
 ]
 
 
+FREEZE_MARKERS = ("MANIFEST_SHA256.tsv", "CHECKSUMS.sha256", "CHECKSUMS.txt")
+
+
+def is_frozen_delivery(directory: Path) -> bool:
+    """A DELIVERY_* folder is frozen once it carries a release manifest or a SUPERSEDED marker.
+
+    A freshly created, still-empty DELIVERY_* folder is a legitimate build target.
+    """
+    if not directory.name.upper().startswith("DELIVERY_"):
+        return False
+    if any((directory / m).is_file() for m in FREEZE_MARKERS):
+        return True
+    try:
+        return any(p.name.upper().startswith("SUPERSEDED_BY") for p in directory.iterdir())
+    except OSError:
+        return False
+
+
 def guard_output(path: Path) -> Path:
     """Never write into a frozen delivery, including through a junction/symlink."""
     from .aggregate import ReportInputError
     path = Path(path).absolute()
     for candidate in (path, path.resolve()):
-        if any(part.upper().startswith('DELIVERY_') for part in candidate.parts):
-            raise ReportInputError(f'frozen output forbidden: {path}')
+        for ancestor in (candidate, *candidate.parents):
+            if is_frozen_delivery(ancestor):
+                raise ReportInputError(f'frozen output forbidden: {path}')
     return path
 
 

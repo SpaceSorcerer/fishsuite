@@ -59,6 +59,8 @@ def test_frozen_writers_before_side_effect(tmp_path, monkeypatch, writer, via_ju
     from unittest.mock import Mock
     from fishsuite.report import figures, workbook, slides
     target = tmp_path/'DELIVERY_frozen'/'child'
+    (tmp_path/'DELIVERY_frozen').mkdir()
+    (tmp_path/'DELIVERY_frozen'/'MANIFEST_SHA256.tsv').write_text('')  # release manifest = frozen
     if via_junction:
         import subprocess
         frozen = Path('F:/Image Analysis Work/RNASEH2B_BIN1introns_2026_08_25/DELIVERY_RNASEH2B_BIN1intron_2026-09-05_v3')
@@ -92,6 +94,8 @@ def test_save_nonfrozen_and_descendant_guard(tmp_path, monkeypatch):
     manifest = []
     figures.save(figure, tmp_path, 'allowed', manifest, '', '')
     assert (tmp_path/'allowed.png').is_file() and (tmp_path/'allowed.svg').is_file()
+    (tmp_path/'DELIVERY_frozen').mkdir(exist_ok=True)
+    (tmp_path/'DELIVERY_frozen'/'MANIFEST_SHA256.tsv').write_text('')
     mkdir = Mock(side_effect=AssertionError('mkdir side effect'))
     monkeypatch.setattr(Path, 'mkdir', mkdir)
     with pytest.raises(RuntimeError, match='frozen output'):
