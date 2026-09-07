@@ -589,7 +589,7 @@ def draw_replicate_simple(ax, ctx: FigureContext, endpoint: str, well: pd.DataFr
     pw = well[well["endpoint"] == endpoint] if len(well) else well
     pf = field[field["endpoint"] == endpoint] if len(field) else field
     rows = contrasts[contrasts["endpoint"] == endpoint] if len(contrasts) else contrasts
-    seen, counts = [], []
+    seen, counts, well_values = [], [], []
     for xi, group in enumerate(ctx.group_order):
         col = ctx.colors[group]
         wells = pw[pw["group"] == group].sort_values("well_id") if len(pw) else pw
@@ -616,6 +616,7 @@ def draw_replicate_simple(ax, ctx: FigureContext, endpoint: str, well: pd.DataFr
                             linewidth=2, zorder=4)
             tick.set_gid(f"group-mean:{group}")
             seen.extend(wm)
+            well_values.extend(wm)
         nn = (int(pd.to_numeric(fields["n_nuclei_nonmissing"], errors="coerce").sum())
               if len(fields) and "n_nuclei_nonmissing" in fields else None)
         level = str(fields.iloc[0].get("level", "nucleus")) if len(fields) else ""
@@ -624,7 +625,7 @@ def draw_replicate_simple(ax, ctx: FigureContext, endpoint: str, well: pd.DataFr
     ax.set_xticks(range(len(ctx.group_order)), ctx.group_order)
     for tick, group in zip(ax.get_xticklabels(), ctx.group_order):
         tick.set_color(ctx.colors[group])
-    ax.set_xlim(-.62, len(ctx.group_order) - .38)
+    ax.set_xlim(-.6, len(ctx.group_order) - .4)
     ax.set_ylabel(ylabel, fontsize=6.6 if compact else 8.5)
     ax.tick_params(labelsize=6.2 if compact else 8)
     marker = ("Points are WELL means, the tested replicates; ticks are group means. "
@@ -641,7 +642,22 @@ def draw_replicate_simple(ax, ctx: FigureContext, endpoint: str, well: pd.DataFr
             ax.text(.98, hline_at, hline_label, transform=ax.get_yaxis_transform(),
                     ha="right", va="bottom", fontsize=5.6 if compact else 6.4)
     low, high = min(seen), max(seen)
-    span = high - low or abs(high) or 1.
+    from .endpoints import ENDPOINTS, a3_endpoints
+    unit = next((e.unit for e in (*ENDPOINTS, *a3_endpoints([endpoint]))
+                 if e.name == endpoint), "")
+    percent = fraction_scale(endpoint) == 100 or '%' in unit
+    zoom = percent and bool(well_values) and min(well_values) > 50
+    bottom = 50. if zoom else min(0., low)
+    base_top = 100. if percent else max(high, 1.)
+    # Reserve space in the final axis span, including all comparison levels.
+    matches = rows
+    if len(matches) and "reference_group" in matches:
+        matches = matches[matches.reference_group == ctx.reference]
+    nlevels = sum(g != ctx.reference and len(matches) > 0
+                  and g in set(matches.test_group) for g in ctx.group_order)
+    reserve = .20 + .14 * max(nlevels - 1, 0)
+    span = max(base_top - bottom, (high - bottom) / max(.1, 1. - reserve))
+    top = bottom + span
     ref_x = ctx.group_order.index(ctx.reference)
     details, level = [], 0
     for xi, group in enumerate(ctx.group_order):
@@ -654,12 +670,10 @@ def draw_replicate_simple(ax, ctx: FigureContext, endpoint: str, well: pd.DataFr
             continue
         r = match.iloc[0]
         p = r.get("p_welch", np.nan)
-        y = high + (.15 + .20 * level) * span
-        if fraction_scale(endpoint) == 100 and 'minus_shuffle' not in endpoint:
-            y = min(y, 92 - 8 * level)
+        y = high + (.08 + .14 * level) * span
         ax.plot([ref_x, xi], [y, y], color="black", linewidth=.8)
-        ax.text((ref_x + xi) / 2, y + .025 * span, f"{stars(p)}  p={fmt_p(p)}",
-                ha="center", va="bottom", fontsize=6.2 if compact else 8)
+        ax.text((ref_x + xi) / 2, y + .02 * span, f"{stars(p)}  p={fmt_p(p)}",
+                ha="center", va="bottom", fontsize=6.2 if compact else 7)
         def number(key):
             value = pd.to_numeric(r.get(key, np.nan), errors="coerce")
             return f"{value:.3g}" if np.isfinite(value) else "NA"
@@ -670,18 +684,73 @@ def draw_replicate_simple(ax, ctx: FigureContext, endpoint: str, well: pd.DataFr
                        f"{number('mde_hedges_g_at_family_alpha')}; "
                        f"usability filter: {r.get('usability_filter', 'none')}.")
         level += 1
-    ax.set_ylim(low - .10 * span, high + (.20 * max(level, 1) + .18) * span)
-    if fraction_scale(endpoint) == 100 and 'minus_shuffle' not in endpoint:
-        ax.set_ylim(0, 100)
+    ax.set_ylim(bottom, top if nlevels else base_top)
+    if percent:
+        ax.set_yticks(np.arange(bottom, 101, 10 if zoom else 20))
     return ("Two-sided Welch on well means; replicate unit: well; raw-p stars.\n"
             + " ".join(details) + " n: " + "; ".join(counts) + ".\n"
-            + f"Run: {ctx.run_path}")
+            + f"Run: {ctx.run_path}" + ("; axis 50–100 %" if zoom else ""))
 
 
 def draw_plot(ax, ctx: FigureContext, *args, **kwargs) -> str:
     """Shared endpoint dispatcher; both styles use the same palette and save path."""
     draw = draw_replicate_simple if ctx.plot_style == "replicate-simple" else draw_superplot
     return draw(ax, ctx, *args, **kwargs)
+
+
+def layout_replicate_simple(fig, ax, ctx, title, foot):
+    """Fit the compact standalone bands using rendered text dimensions."""
+    import re
+    width = max(24, int(fig.get_figwidth() * 10))
+    fig.text(.5, .98, textwrap.fill(title, width), ha="center", va="top",
+             fontsize=8, fontweight="bold")
+    thresholds = ctx.thresholds.replace(" detection threshold", "").replace(" (harmonized)", "")
+    thresholds = thresholds.replace("detection thresholds: not recorded by this run", "thresholds NA")
+    run = ctx.run_name if len(ctx.run_name) <= 23 else "…" + ctx.run_name[-22:]
+    # Full run provenance remains in the report; the printed header is two lines.
+    header = (f"Run {run} | {thresholds}\n"
+              f"Filter: {ctx.nucleus_filter}; {len(ctx.excluded_fields)} fields excluded")
+    head = fig.text(.5, .875, header, ha="center", va="top", fontsize=7, linespacing=1.05)
+    compact_foot = foot.split("\nRun:")[0]
+    compact_foot = compact_foot.replace("Two-sided Welch on well means; replicate unit: well; raw-p stars.",
+        "Two-sided Welch; well replicates; raw-p stars.")
+    compact_foot = compact_foot.replace("MDE g (80% power, alpha .05)", "MDE g (80%, α .05)")
+    compact_foot = compact_foot.replace("family alpha", "family α").replace("well means", "wells")
+    compact_foot = compact_foot.replace("defined nuclei", "nuclei")
+    if "axis 50–100 %" in foot:
+        compact_foot += " axis 50–100 %"
+    renderer = fig.canvas.get_renderer()
+    # Wrap by measured glyph width, rather than a minimum character count that
+    # was intended for the much wider superplot canvas.
+    probe = fig.text(0, 0, "", fontsize=6.5)
+    def wrap(text, max_pixels):
+        lines = []
+        for paragraph in text.splitlines():
+            line = ""
+            for word in paragraph.split():
+                candidate = (line + " " + word).strip()
+                probe.set_text(candidate)
+                if line and probe.get_window_extent(renderer).width > max_pixels:
+                    lines.append(line)
+                    line = word
+                else:
+                    line = candidate
+            lines.append(line)
+        return "\n".join(lines)
+    footer = fig.text(.035, .018, wrap(compact_foot, fig.bbox.width * .93),
+                      fontsize=6.5, va="bottom", linespacing=1.05, color="#333333")
+    probe.remove()
+    # Keep exactly two header lines at 7 pt, compressing horizontally only for
+    # unusually long run/threshold metadata.
+    head.set_text(header)
+    fig.canvas.draw()
+    if head.get_window_extent().width > fig.bbox.width * .96:
+        head.set_text(header.replace(f"Run {run} | ", ""))
+    fig.canvas.draw()
+    bottom = footer.get_window_extent().y1 / fig.bbox.height + .085
+    top = head.get_window_extent().y0 / fig.bbox.height - .035
+    ax.set_position([.22, bottom, .74, top - bottom])
+    ax.yaxis.label.set_size(7)
 
 
 def superplot_standalone(ctx: FigureContext, endpoint: str, title: str, ylabel: str,
@@ -694,12 +763,20 @@ def superplot_standalone(ctx: FigureContext, endpoint: str, title: str, ylabel: 
                          w: float = 7.6, h: float = 6.6) -> Dict[str, str]:
     if endpoint == "rna1_nuclear_spot_fraction":
         title = "BIN1 intron puncta, % nuclear"
+    simple = ctx.plot_style == "replicate-simple"
+    if simple:
+        w, h = 2.8 + .9 * max(0, len(ctx.group_order) - 2), 3.2
     fig = plt.figure(figsize=(w, h))
     ax = fig.add_axes([0.115, 0.300, 0.790, 0.560])
     foot = draw_plot(ax, ctx, endpoint, well, field, per_nucleus, contrasts,
                           ylabel, nuc_column, scale=scale, clip_pct=clip_pct,
                           hline_at=hline_at, hline_label=hline_label)
     no_box(fig, ax)
+    if simple:
+        layout_replicate_simple(fig, ax, ctx, title, foot)
+        return save(fig, out_dir, stem, manifest,
+                    f"{ctx.plot_style} of {endpoint} by condition group, wells as replicates.",
+                    "Per nucleus / Per field / Per well / Contrasts sheets")
     shift = stamp_head(fig, title, ctx.banner, ctx.filt)
     if shift:
         pos = ax.get_position()

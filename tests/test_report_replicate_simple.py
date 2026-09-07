@@ -158,7 +158,7 @@ def test_fraction_percent_display_and_footer(report_data):
         'rna1_nuclear_spot_fraction', r['well'], r['field'], pd.DataFrame(),
         r['contrasts'], 'fraction', None)
     assert ax.get_ylabel() == 'BIN1 intron puncta: % nuclear (per nucleus)'
-    assert ax.get_ylim() == (0, 100)
+    assert ax.get_ylim() == (50, 100)
     for artist in ax.collections:
         if str(artist.get_gid()).startswith('well:'):
             np.testing.assert_allclose(artist.get_offsets()[:,1], 90)
@@ -172,3 +172,57 @@ def test_fraction_percent_display_and_footer(report_data):
     'manders_m1_costes_only', 'paired_frac_partner_at_rna1_minus_shuffle'])
 def test_all_fraction_endpoints_use_percent(endpoint):
     assert fig.fraction_scale(endpoint) == 100
+
+
+@pytest.mark.parametrize("endpoint", ["rna1_nuclear_spot_fraction", "manders_m1_costes_only"])
+@pytest.mark.parametrize("values,lower", [([.5, .9], 0), ([.51, .9], 50), ([.1, .2], 0)])
+def test_percentage_window_uses_every_well(tmp_path, endpoint, values, lower):
+    wells = pd.DataFrame(dict(endpoint=[endpoint]*2, group=["WT", "QKI-KO"],
+        well_id=["WT_1", "KO_1"], well_mean_of_field_values=values))
+    canvas, ax = plt.subplots()
+    foot = fig.draw_plot(ax, context(tmp_path, plot_style="replicate-simple"), endpoint,
+        wells, pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), "fraction", None)
+    assert ax.get_ylim() == (lower, 100)
+    assert foot.count("axis 50–100 %") == (1 if lower == 50 else 0)
+    plt.close(canvas)
+
+
+@pytest.mark.parametrize("endpoint,well_value,field_value", [
+    ("rna1_nuclear_spot_fraction", .99, 1.), ("rna1_spots_per_nucleus", 10., 100.)])
+def test_bracket_clears_all_drawn_points(report_data, endpoint, well_value, field_value):
+    run, r = report_data
+    wells, fields = r["well"].copy(), r["field"].copy()
+    wells.loc[wells.endpoint == endpoint, "well_mean_of_field_values"] = well_value
+    fields.loc[fields.endpoint == endpoint, "field_value"] = field_value
+    canvas, ax = plt.subplots(figsize=(2.8, 3.2))
+    fig.draw_plot(ax, context(run, plot_style="replicate-simple", technical_layer="fov"),
+        endpoint, wells, fields, pd.DataFrame(), r["contrasts"], "Value", None)
+    maximum = max(float(a.get_offsets()[:, 1].max()) for a in ax.collections
+                  if str(a.get_gid()).startswith(("well:", "fov:")))
+    lo, hi = ax.get_ylim()
+    bracket = ax.lines[-1].get_ydata()[0]
+    assert bracket > maximum + .06 * (hi - lo)
+    assert maximum < bracket < ax.texts[-1].get_position()[1] < hi
+    canvas.canvas.draw()
+    assert ax.texts[-1].get_window_extent().y1 < ax.get_window_extent().y1
+    if endpoint == "rna1_spots_per_nucleus":
+        assert lo == 0
+    plt.close(canvas)
+
+
+@pytest.mark.parametrize("groups,width", [(["WT", "QKI-KO"], 2.8),
+                                           (["WT", "QKI-KO", "extra"], 3.7)])
+def test_compact_standalone_size(report_data, tmp_path, monkeypatch, groups, width):
+    run, r = report_data
+    ctx = context(run, plot_style="replicate-simple")
+    ctx.group_order = groups
+    ctx.colors = fig.group_colors(groups)
+    def capture(canvas, *args, **kwargs):
+        assert canvas.get_figwidth() == pytest.approx(width)
+        assert canvas.get_figheight() == pytest.approx(3.2)
+        assert canvas.axes[0].get_xlim() == pytest.approx((-.6, len(groups)-.4))
+        plt.close(canvas)
+        return {}
+    monkeypatch.setattr(fig, "save", capture)
+    fig.superplot_standalone(ctx, "rna1_spots_per_nucleus", "Puncta", "Puncta per nucleus",
+        r["well"], r["field"], pd.DataFrame(), r["contrasts"], None, tmp_path, "size", [])
