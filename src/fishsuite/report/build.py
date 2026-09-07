@@ -689,6 +689,20 @@ def build_report(run_dir: Path, out_dir: Optional[Path] = None,
         if template:
             from .slides import prepare_deck
             resolved_deck = prepare_deck(template,sheets,out_dir,data,persisted,ctx,well,field,contrasts,endpoints)
+    figs: List[dict] = []
+    if make_figures:
+        figs = render_figures(out_dir / "figures", run_dir, data, endpoints, absent,
+                              well, field, bio_nucleus, contrasts, group_order_resolved,
+                              reference, exclude_fields, labels, alpha,
+                              color_overrides=group_colors, plot_style=plot_style,
+                              technical_layer=technical_layer)
+
+    figure_index = pd.DataFrame(figs)
+    if 'Figure sources' in sheets:
+        figure_index = pd.concat([figure_index, sheets['Figure sources']], ignore_index=True)
+    if len(figure_index):
+        sheets['FIGURE_INDEX'] = figure_index
+
     xlsx = _wb.write(out_dir / "REPORT.xlsx", sheets, strike, order=list(sheets))
     if resolved_deck is not None:
         import yaml
@@ -708,14 +722,6 @@ def build_report(run_dir: Path, out_dir: Optional[Path] = None,
         run_dir, out_dir, preset=preset,
         groups={w: g for w, g in data["well_to_group"].items()},
         group_order=group_order_resolved, reference=reference)
-
-    figs: List[dict] = []
-    if make_figures:
-        figs = render_figures(out_dir / "figures", run_dir, data, endpoints, absent,
-                              well, field, bio_nucleus, contrasts, group_order_resolved,
-                              reference, exclude_fields, labels, alpha,
-                              color_overrides=group_colors, plot_style=plot_style,
-                              technical_layer=technical_layer)
 
     panel = {'source':str(persisted.path),'figures':panel_figures,'new_nulls':False} if persisted is not None else None
     if coloc_panel:
@@ -839,8 +845,9 @@ def render_figures(fig_dir: Path, run_dir: Path, data: dict,
              "",
              "This folder is cleared and rewritten on every build, so every file in "
              "it comes from the run and the settings named above.", ""]
-    index += [f"- `{m['png']}` / `{m['svg']}` — {m['description']} Source: {m['source']}"
-              for m in manifest]
+    index += [f"- `{m['png']}` / `{m['svg']}`"
+              + (f"; full: `{m['full_png']}` / `{m['full_svg']}`" if 'full_png' in m else '')
+              + f" - {m['description']} Source: {m['source']}" for m in manifest]
     (fig_dir / "FIGURE_INDEX.md").write_text("\n".join(index) + "\n", encoding="utf-8")
     return manifest
 

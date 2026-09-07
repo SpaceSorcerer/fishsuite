@@ -21,14 +21,21 @@ def test_recorded_deck_semantic_assets_and_localization(tmp_path):
                 'standard_coloc':'A09_standard_coloc'}
     assert [s['identity'] for s in resolved['slides']] == list(expected)
     for slide in resolved['slides']:
-        assert Path(slide['figures'][0]['path']).name == expected[slide['identity']]+'.png'
+        assert Path(slide['figures'][0]['path']).name == expected[slide['identity']]+('_focus.png' if slide.get('identity') in {'q1_count_size','q1_localization','q1_total_if','q2','q3','q4_reverse_anchor','standard_coloc'} else '.png')
         assert Path(slide['figures'][0]['path']).with_suffix('.svg').is_file()
         if slide['identity'] in {'q1_count_size','q1_total_if','q2','q3','q4_reverse_anchor'}:
             assert len(slide['figures']) == 3
+    index = pd.read_excel(result['xlsx'], sheet_name='FIGURE_INDEX', header=1)
+    assert index.path.fillna('').str.endswith('_focus.png').sum() == 7
+    sources = pd.read_csv(result['out_dir']/'slide_sources.csv')
+    paired = sources.loc[sources.figure.fillna('').str.endswith('_focus.png')]
+    assert len(paired) == 7
+    assert paired.full_figure.str.endswith('_full.png').all()
+    assert paired.full_figure.map(lambda p: Path(p).is_file()).all()
     crops = pd.read_excel(result['xlsx'], sheet_name='Localization crops', header=1)
     assert crops.crop_status.eq('available').all()
     assert crops.territory_boundary.eq('missing').all()
-    svg = (result['out_dir']/'figures/A05_BIN1_localization.svg').read_text()
+    svg = (result['out_dir']/'figures/A05_BIN1_localization_focus.svg').read_text()
     assert 'per nucleus and assigned cell territory' in svg.lower()
     assert 'Assigned-cytoplasmic puncta count' in svg
     ppt = Presentation(result['out_dir']/'Sam_RNASEH2B_BIN1.pptx')

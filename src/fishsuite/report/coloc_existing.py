@@ -191,5 +191,5 @@ def render_existing(panel: ExistingPanel, ctx, contrasts: pd.DataFrame, out_dir:
                             report_cells=';'.join(f'Coloc per well!{get_column_letter(pw.columns.get_loc(metric)+1)}{i+3}' for i in pw.index))
     (out_dir/'FIGURE_INDEX.md').write_text('# Persisted standard panel\n\n'
         'WT #595959; QKI-KO #D67AE5. Nuclear anchors only. No new nulls.\n\n' +
-        '\n'.join(f'- {r["png"]}: {r["endpoint"]}; source {panel.path} / per_well' for r in manifest), encoding='utf-8')
+        '\n'.join(f'- {r["png"]}; full: {r.get("full_png", "")}: {r["endpoint"]}; source {panel.path} / per_well' for r in manifest), encoding='utf-8')
     return manifest

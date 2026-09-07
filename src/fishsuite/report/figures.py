@@ -200,14 +200,37 @@ def save(fig, out_dir: Path, stem: str, manifest: List[dict], description: str,
          source: str) -> Dict[str, str]:
     from .provenance import guard_output
     out_dir = guard_output(out_dir)
-    png = guard_output(out_dir / f"{stem}.png")
-    svg = guard_output(out_dir / f"{stem}.svg")
+    guard_output(out_dir / f"{stem}.png")
+    guard_output(out_dir / f"{stem}.svg")
+    # Axes drawn by replicate-simple register a display-only scale setter.
+    setters = [ax._replicate_simple_axis for ax in fig.axes
+               if hasattr(ax, "_replicate_simple_axis")]
+    variants = ("full", "focus") if setters else (None,)
+    paths = {v: (guard_output(out_dir / f"{stem}{'_' + v if v else ''}.png"),
+                 guard_output(out_dir / f"{stem}{'_' + v if v else ''}.svg")) for v in variants}
     out_dir.mkdir(parents=True, exist_ok=True)
-    fig.savefig(png, dpi=DPI)
-    fig.savefig(svg)
+    import re
+    texts = [(t, t.get_text()) for t in fig.texts]
+    if setters and not any("axis:" in text for _, text in texts):
+        label = fig.text(.016, .008, "axis: focus window", fontsize=6, color="#333333")
+        texts.append((label, label.get_text()))
+    for variant in variants:
+        for setter in setters:
+            setter(variant)
+        for artist, original in texts:
+            artist.set_text(re.sub(r"(axis:\s*)focus(\s*)window",
+                                   lambda m: m[1] + variant + m[2]
+                                   + ("window" if variant == "focus" else "scale"), original)
+                            if variant else original)
+        png, svg = paths[variant]
+        fig.savefig(png, dpi=DPI)
+        fig.savefig(svg)
     plt.close(fig)
+    png, svg = paths[variants[-1]]
     rec = {"figure": stem, "png": png.name, "svg": svg.name,
            "description": description, "source": source}
+    if setters:
+        rec.update(full_png=paths["full"][0].name, full_svg=paths["full"][1].name)
     manifest.append(rec)
     return rec
 
@@ -634,7 +657,8 @@ def draw_replicate_simple(ax, ctx: FigureContext, endpoint: str, well: pd.DataFr
     if not seen:
         ax.text(.5, .5, "No finite well means available", transform=ax.transAxes,
                 ha="center", va="center")
-        return ctx.footer(marker + "\nNo values are substituted.")
+        ax._replicate_simple_axis = lambda variant: None
+        return ctx.footer(marker + "\nNo values are substituted.; axis: focus window")
     if hline_at is not None:
         ax.axhline(hline_at, color="#666666", linestyle="--", linewidth=.8)
         seen.append(hline_at)
@@ -647,17 +671,37 @@ def draw_replicate_simple(ax, ctx: FigureContext, endpoint: str, well: pd.DataFr
                  if e.name == endpoint), "")
     percent = fraction_scale(endpoint) == 100 or '%' in unit
     zoom = percent and bool(well_values) and min(well_values) > 50
-    bottom = 50. if zoom else min(0., low)
-    base_top = 100. if percent else max(high, 1.)
-    # Reserve space in the final axis span, including all comparison levels.
-    matches = rows
-    if len(matches) and "reference_group" in matches:
-        matches = matches[matches.reference_group == ctx.reference]
-    nlevels = sum(g != ctx.reference and len(matches) > 0
-                  and g in set(matches.test_group) for g in ctx.group_order)
-    reserve = .20 + .14 * max(nlevels - 1, 0)
-    span = max(base_top - bottom, (high - bottom) / max(.1, 1. - reserve))
-    top = bottom + span
+    brackets = []
+
+    def set_axis(variant):
+        focused = variant == "focus"
+        if percent:
+            bottom = 50. if focused and zoom else min(0., low)
+            base_top = 100.
+            step = 10. if bottom == 50 else 20.
+        else:
+            # Round outward, including constant and all-zero data.
+            width = max(high - low, abs(high) * .1, 1e-6)
+            step = 10. ** np.floor(np.log10(width)) / 2.
+            bottom = (np.floor(low / step) - 1) * step if focused else min(0., low)
+            if low >= 0:
+                bottom = max(0., bottom)
+            base_top = (np.floor(high / step) + 1) * step
+        reserve = .25 + .14 * max(len(brackets) - 1, 0)
+        span = max(base_top - bottom, (high - bottom) / max(.1, 1. - reserve)) if brackets else base_top - bottom
+        top = bottom + span
+        if not percent:
+            top = np.ceil(top / step) * step
+            span = top - bottom
+        for level, (line, text) in enumerate(brackets):
+            y = high + (.13 + .14 * level) * span
+            line.set_ydata([y, y])
+            text.set_y(y + .02 * span)
+        ax.set_ylim(bottom, top)
+        if percent:
+            ax.set_yticks(np.arange(bottom, 101, step))
+
+    ax._replicate_simple_axis = set_axis
     ref_x = ctx.group_order.index(ctx.reference)
     details, level = [], 0
     for xi, group in enumerate(ctx.group_order):
@@ -670,10 +714,10 @@ def draw_replicate_simple(ax, ctx: FigureContext, endpoint: str, well: pd.DataFr
             continue
         r = match.iloc[0]
         p = r.get("p_welch", np.nan)
-        y = high + (.08 + .14 * level) * span
-        ax.plot([ref_x, xi], [y, y], color="black", linewidth=.8)
-        ax.text((ref_x + xi) / 2, y + .02 * span, f"{stars(p)}  p={fmt_p(p)}",
-                ha="center", va="bottom", fontsize=6.2 if compact else 7)
+        line, = ax.plot([ref_x, xi], [high, high], color="black", linewidth=.8)
+        text = ax.text((ref_x + xi) / 2, high, f"{stars(p)}  p={fmt_p(p)}",
+                       ha="center", va="bottom", fontsize=6.2 if compact else 7)
+        brackets.append((line, text))
         def number(key):
             value = pd.to_numeric(r.get(key, np.nan), errors="coerce")
             return f"{value:.3g}" if np.isfinite(value) else "NA"
@@ -684,12 +728,10 @@ def draw_replicate_simple(ax, ctx: FigureContext, endpoint: str, well: pd.DataFr
                        f"{number('mde_hedges_g_at_family_alpha')}; "
                        f"usability filter: {r.get('usability_filter', 'none')}.")
         level += 1
-    ax.set_ylim(bottom, top if nlevels else base_top)
-    if percent:
-        ax.set_yticks(np.arange(bottom, 101, 10 if zoom else 20))
+    set_axis("focus")
     return ("Two-sided Welch on well means; replicate unit: well; raw-p stars.\n"
             + " ".join(details) + " n: " + "; ".join(counts) + ".\n"
-            + f"Run: {ctx.run_path}" + ("; axis 50–100 %" if zoom else ""))
+            + f"Run: {ctx.run_path}; axis: focus window")
 
 
 def draw_plot(ax, ctx: FigureContext, *args, **kwargs) -> str:
@@ -731,8 +773,8 @@ def layout_replicate_simple(fig, ax, ctx, title, foot):
     compact_foot = compact_foot.replace("MDE g (80% power, alpha .05)", "MDE g (80%, α .05)")
     compact_foot = compact_foot.replace("family alpha", "family α").replace("well means", "wells")
     compact_foot = compact_foot.replace("defined nuclei", "nuclei")
-    if "axis 50–100 %" in foot:
-        compact_foot += " axis 50–100 %"
+    if "axis: focus window" in foot:
+        compact_foot += " axis: focus window"
     renderer = fig.canvas.get_renderer()
     # Wrap by measured glyph width, rather than a minimum character count that
     # was intended for the much wider superplot canvas.
@@ -761,7 +803,7 @@ def layout_replicate_simple(fig, ax, ctx, title, foot):
     if head.get_window_extent().width > fig.bbox.width * .96:
         head.set_text(header.replace(f"Run {run} | ", ""))
     fig.canvas.draw()
-    bottom = footer.get_window_extent().y1 / fig.bbox.height + .085
+    bottom = footer.get_window_extent().y1 / fig.bbox.height + .125  # clear gap above the footer for the x tick labels
     top = head.get_window_extent().y0 / fig.bbox.height - .035
     ax.set_position([.22, bottom, .74, top - bottom])
     ax.yaxis.label.set_size(7)

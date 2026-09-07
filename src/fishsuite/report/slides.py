@@ -154,7 +154,8 @@ def build_deck(workbook: Path, spec: dict, destination: Path) -> Path:
                 for paragraph in caption.text_frame.paragraphs:
                     paragraph.font.name, paragraph.font.size = 'Arial', Pt(14)
             notes.append(f'Figure: {asset["path"]} | SHA256 {asset["sha256"]}')
-            sources.append(dict(slide=number, figure=asset['path'], sha256=asset['sha256']))
+            sources.append(dict(slide=number, figure=asset['path'], sha256=asset['sha256'],
+                                full_figure=asset.get('full_path', ''), full_sha256=asset.get('full_sha256', '')))
         if not definition.get('figures'):
             content = slide.shapes.add_textbox(Inches(.6), Inches(1.2), Inches(12), Inches(5.5))
             content.text_frame.text = definition.get('body','') + '\n' + '\n'.join(
@@ -350,9 +351,10 @@ def prepare_deck(template: dict, sheets: dict, out_dir: Path, data: dict,
         stem = item['asset']
         if item.get('kind') == 'localization':
             import shutil
-            for suffix in ('.png', '.svg'):
-                shutil.copyfile(out_dir/'localization'/('FIG_LOCALIZATION'+suffix), guard_output(figure_dir/(stem+suffix)))
-            path = figure_dir/(stem+'.png')
+            for variant in ('focus', 'full'):
+                for suffix in ('.png', '.svg'):
+                    shutil.copyfile(out_dir/'localization'/('FIG_LOCALIZATION_'+variant+suffix), guard_output(figure_dir/(stem+'_'+variant+suffix)))
+            path = figure_dir/(stem+'_focus.png')
             assets = [dict(path=str(path.resolve()), sha256=sha256(path), cohort=template['cohort'])]
         elif names:
             count = len(names)
@@ -410,8 +412,8 @@ def prepare_deck(template: dict, sheets: dict, out_dir: Path, data: dict,
             if item.get('qualification'):
                 f.text(.5,.95,item['qualification'],ha='center',fontsize=9,color='#595959')
             records=[]
-            fig.save(f,figure_dir,stem,records,item['title'],'Per well / Contrasts')
-            path=figure_dir/f'{stem}.png'
+            record = fig.save(f,figure_dir,stem,records,item['title'],'Per well / Contrasts')
+            path=figure_dir/record['png']
             assets=[dict(path=str(path.resolve()),sha256=sha256(path),cohort=template['cohort'])]
         elif item.get('kind')=='micrographs':
             f,axes=fig.plt.subplots(1,len(micro),figsize=(12.4,5.6),squeeze=False)
@@ -433,6 +435,9 @@ def prepare_deck(template: dict, sheets: dict, out_dir: Path, data: dict,
             fig.save(f,figure_dir,stem,[],item['title'],'; '.join(extra_sheets))
             path=figure_dir/f'{stem}.png'
             assets=[dict(path=str(path.resolve()),sha256=sha256(path),cohort=template['cohort'])]
+        if assets and Path(assets[0]['path']).stem.endswith('_focus'):
+            full_path = Path(assets[0]['path']).with_name(stem+'_full.png')
+            assets[0].update(full_path=str(full_path.resolve()), full_sha256=sha256(full_path))
         if item.get('micrographs'):
             assets.extend(dict(path=row['path'],sha256=row['sha256'],cohort=template['cohort'],
                                caption_ref=dict(sheet='Micrographs',cell=f'A{i+3}')) for i,row in enumerate(micro))

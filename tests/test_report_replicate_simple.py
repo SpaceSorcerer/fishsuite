@@ -85,12 +85,18 @@ def test_png_svg_and_standalone_dispatch(report_data, tmp_path):
     fig.superplot_standalone(ctx, "rna1_spots_per_nucleus", "Puncta", "Puncta per nucleus",
         r["well"], r["field"], pd.DataFrame(), r["contrasts"], None,
         tmp_path, "simple", manifest)
-    with Image.open(tmp_path / "simple.png") as image:
+    with Image.open(tmp_path / "simple_focus.png") as image:
         assert image.info["dpi"] == pytest.approx((600, 600), abs=.02)
-    svg = (tmp_path / "simple.svg").read_text(encoding="utf-8")
+    svg = (tmp_path / "simple_focus.svg").read_text(encoding="utf-8")
     for label in ("<text", "Arial", "Filter:", "Welch", "p=", "#595959", "#d67ae5"):
         assert label in svg
     assert "replicate-simple" in manifest[0]["description"]
+    assert manifest[0]["png"] == "simple_focus.png"
+    assert manifest[0]["full_png"] == "simple_full.png"
+    for variant in ("focus", "full"):
+        assert (tmp_path / f"simple_{variant}.png").is_file()
+        assert (tmp_path / f"simple_{variant}.svg").is_file()
+        assert f"axis: {variant} " in (tmp_path / f"simple_{variant}.svg").read_text(encoding="utf-8")
 
 
 def test_statistics_identical_across_style_options(report_data, tmp_path):
@@ -158,7 +164,8 @@ def test_fraction_percent_display_and_footer(report_data):
         'rna1_nuclear_spot_fraction', r['well'], r['field'], pd.DataFrame(),
         r['contrasts'], 'fraction', None)
     assert ax.get_ylabel() == 'BIN1 intron puncta: % nuclear (per nucleus)'
-    assert ax.get_ylim() == (50, 100)
+    assert ax.get_ylim()[0] == 50
+    assert ax.get_ylim()[1] >= 100
     for artist in ax.collections:
         if str(artist.get_gid()).startswith('well:'):
             np.testing.assert_allclose(artist.get_offsets()[:,1], 90)
@@ -183,13 +190,14 @@ def test_percentage_window_uses_every_well(tmp_path, endpoint, values, lower):
     foot = fig.draw_plot(ax, context(tmp_path, plot_style="replicate-simple"), endpoint,
         wells, pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), "fraction", None)
     assert ax.get_ylim() == (lower, 100)
-    assert foot.count("axis 50–100 %") == (1 if lower == 50 else 0)
+    assert "axis: focus window" in foot
     plt.close(canvas)
 
 
 @pytest.mark.parametrize("endpoint,well_value,field_value", [
     ("rna1_nuclear_spot_fraction", .99, 1.), ("rna1_spots_per_nucleus", 10., 100.)])
-def test_bracket_clears_all_drawn_points(report_data, endpoint, well_value, field_value):
+@pytest.mark.parametrize("axis_mode", ["focus", "full"])
+def test_bracket_clears_all_drawn_points(report_data, endpoint, well_value, field_value, axis_mode):
     run, r = report_data
     wells, fields = r["well"].copy(), r["field"].copy()
     wells.loc[wells.endpoint == endpoint, "well_mean_of_field_values"] = well_value
@@ -197,16 +205,17 @@ def test_bracket_clears_all_drawn_points(report_data, endpoint, well_value, fiel
     canvas, ax = plt.subplots(figsize=(2.8, 3.2))
     fig.draw_plot(ax, context(run, plot_style="replicate-simple", technical_layer="fov"),
         endpoint, wells, fields, pd.DataFrame(), r["contrasts"], "Value", None)
+    ax._replicate_simple_axis(axis_mode)
     maximum = max(float(a.get_offsets()[:, 1].max()) for a in ax.collections
                   if str(a.get_gid()).startswith(("well:", "fov:")))
     lo, hi = ax.get_ylim()
     bracket = ax.lines[-1].get_ydata()[0]
-    assert bracket > maximum + .06 * (hi - lo)
+    assert bracket >= maximum + .13 * (hi - lo)
     assert maximum < bracket < ax.texts[-1].get_position()[1] < hi
     canvas.canvas.draw()
     assert ax.texts[-1].get_window_extent().y1 < ax.get_window_extent().y1
     if endpoint == "rna1_spots_per_nucleus":
-        assert lo == 0
+        assert 0 <= lo < maximum
     plt.close(canvas)
 
 
@@ -238,4 +247,39 @@ def test_title_stays_single_line_and_footer_is_six_pt(tmp_path, title):
     assert 9 <= heading.get_fontsize() <= 10.5
     assert heading.get_window_extent().width <= canvas.bbox.width * .96
     assert canvas.texts[-1].get_fontsize() == 6
+    plt.close(canvas)
+
+
+@pytest.mark.parametrize("values,focus_low", [([60., 80.], 50.), ([20., 80.], 0.)])
+def test_saved_percentage_pair(report_data, tmp_path, values, focus_low):
+    run, r = report_data
+    endpoint = "rna1_nuclear_spot_fraction"
+    wells = r["well"].query("endpoint == @endpoint").copy()
+    wells["well_mean_of_field_values"] = np.resize(np.array(values)/100, len(wells))
+    canvas, ax = plt.subplots()
+    foot = fig.draw_plot(ax, context(run, plot_style="replicate-simple"), endpoint,
+        wells, pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), "fraction", None)
+    canvas.text(.01, .01, foot)
+    assert ax.get_ylim() == (focus_low, 100)
+    records = []
+    fig.save(canvas, tmp_path, "percent", records, "", "")
+    assert ax.get_ylim() == (focus_low, 100)
+    for variant in ("full", "focus"):
+        assert (tmp_path / f"percent_{variant}.png").is_file()
+        assert (tmp_path / f"percent_{variant}.svg").is_file()
+
+
+def test_nonnegative_focus_floor_and_full_zero(report_data, tmp_path):
+    run, r = report_data
+    endpoint = "rna1_spots_per_nucleus"
+    wells = r["well"].query("endpoint == @endpoint").copy()
+    wells["well_mean_of_field_values"] = np.linspace(71, 79, len(wells))
+    canvas, ax = plt.subplots()
+    fig.draw_plot(ax, context(run, plot_style="replicate-simple"), endpoint,
+        wells, pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), "count", None)
+    assert 0 < ax.get_ylim()[0] < 71
+    assert ax.get_ylim()[1] > 79
+    ax._replicate_simple_axis("full")
+    assert ax.get_ylim()[0] == 0
+    assert ax.get_ylim()[1] > 79
     plt.close(canvas)
