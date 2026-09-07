@@ -59,7 +59,8 @@ def is_frozen_delivery(directory: Path) -> bool:
     if any((directory / m).is_file() for m in FREEZE_MARKERS):
         return True
     try:
-        return any(p.name.upper().startswith("SUPERSEDED_BY") for p in directory.iterdir())
+        return any(p.name.upper().startswith(("SUPERSEDED_BY", "CHECKSUMS", "MANIFEST_SHA256"))
+                   for p in directory.iterdir())
     except OSError:
         return False
 
