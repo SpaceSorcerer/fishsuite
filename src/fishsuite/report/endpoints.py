@@ -88,6 +88,14 @@ ENDPOINTS: Tuple[Endpoint, ...] = (
              note="Total puncta detected in that nucleus, nuclear plus cytoplasmic."),
     Endpoint("rna1_nuclear_spots_per_nucleus", "nuclear_spot_count", "detection",
              "nuclear puncta per nucleus", "{rna1} nuclear puncta per nucleus"),
+    Endpoint("rna1_cyto_spots_per_nucleus", "cyto_spot_count", "detection",
+             "cytoplasmic puncta per nucleus and assigned cell territory",
+             "{rna1} assigned-cytoplasmic puncta",
+             note="A2 detection-family amendment: one additional count test. Read "
+                  "cyto_spot_count without replacing historical aliases. Zero counts "
+                  "remain zero. Territory is the run's recorded estimate, not a "
+                  "membrane-bounded cell; unassigned spots are excluded. Detection "
+                  "Holm and family-alpha MDE are amended, not baseline parity."),
     # ---- punctum size ----
     # The footprint endpoints are the size measurement. The moment-estimator
     # columns below them SATURATE and are kept only for continuity; see the note
@@ -426,6 +434,71 @@ ENDPOINTS: Tuple[Endpoint, ...] = (
              "{rna1} pooled empirical p at {protein} puncta, rotation null",
              level="image", source=IMAGE, descriptive_only=True),
 )
+
+
+# Opt-in A3 registry. The default registry remains the A0 + A2 proposal.
+# Freeze membership before computing any p value; never select by observed p.
+A3_PARTNER_ADDITIONS = (
+    'paired_frac_rna1_at_partner',
+    'paired_frac_rna1_at_partner_minus_shuffle',
+    'frac_called_coloc_partner_runthr',
+    'frac_called_coloc_partner_minus_shuffle_runthr',
+    'paired_frac_partner_at_rna1_minus_shuffle',
+)
+A3_PANEL_ALIASES = {
+    'frac_called_coloc_runthr': 'fraction_rna1_puncta_partner_positive_exact_footprint',
+    'paired_frac_partner_at_rna1': 'paired_fraction_partner_at_0p3um',
+}
+
+
+def a3_endpoints(panel_columns: Sequence[str]) -> List[Endpoint]:
+    """Additional measurements; observed aliases retain their original test identity."""
+    out = [Endpoint(c, c, 'detection', 'integrated arbitrary units', label,
+                    descriptive_only=True, absolute_intensity=True,
+                    note='Descriptive total IF; acquisition comparability is unverified. '
+                         'Assigned cell territory is Voronoi, not anatomical cell.')
+           for c, label in (
+               ('cell_total_intensity_protein', '{protein} total IF in assigned cell territory'),
+               ('nuclear_total_intensity_protein', '{protein} total nuclear IF'))]
+    out.append(Endpoint('rna1_local_mean_at_partner_puncta', 'rna1_local_mean_at_protein_spots',
+                        'partner', 'arbitrary units', '{rna1} signal at nuclear {protein} puncta',
+                        descriptive_only=True, absolute_intensity=True,
+                        note='Reverse continuous signal; distinct from calls and pairing.'))
+    for c in panel_columns:
+        if c in A3_PANEL_ALIASES:
+            continue
+        if not c.startswith(('paired_frac_', 'frac_called_coloc', 'pearson_r_csp',
+                             'li_icq_csp', 'manders_')) or c.endswith('_sd_across_fov'):
+            continue
+        anchor = ('nuclear partner puncta' if 'partner_at_rna1' in c or
+                  'coloc_partner' in c else 'nuclear RNA1 puncta')
+        if c.startswith(('pearson_', 'li_', 'manders_')):
+            anchor = 'retained nuclear pixels'
+        threshold = ('run batch threshold' if 'runthr' in c else
+                     'Costes converged only' if 'costes_only' in c else
+                     'Costes with fallback mixture' if 'costes' in c or 'coloc' in c else
+                     'persisted pairing distance')
+        if c.startswith('paired_frac_'):
+            label=('{protein} nuclear pairing to {rna1}' if 'partner_at_rna1' in c else
+                   '{rna1} nuclear pairing to {protein}')
+        elif c.startswith('frac_called_coloc'):
+            label=('{rna1} calls at nuclear {protein}' if 'coloc_partner' in c else
+                   '{protein} calls at nuclear {rna1}')
+            label+=' (run threshold)' if 'runthr' in c else ' (Costes with fallback)'
+        else:
+            label=c.replace('_',' ')
+        if 'minus_shuffle' in c:
+            label+=': excess over shuffle'
+        elif 'shuffle' in c:
+            label+=': shuffled'
+        out.append(Endpoint(c, c, 'partner', 'fraction' if 'frac' in c or 'manders' in c else 'coefficient',
+                            label, source='persisted coloc_standard_panel.xlsx:per_nucleus',
+                            descriptive_only=c not in A3_PARTNER_ADDITIONS,
+                            exploratory=True,
+                            note=f'Anchor denominator: {anchor}; {threshold}. '
+                                 'Observed, shuffled and excess values are separate measurements. '
+                                 'Persisted nulls only. A3 partner family amendment; no pruning on p.'))
+    return out
 
 
 def channel_labels(cfg: dict) -> Dict[str, str]:

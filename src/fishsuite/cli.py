@@ -867,6 +867,11 @@ def postrun(run_dir, staging, input_dir, image_key, seed):
               help="Figure style. 'brian' is the locked lab style: Okabe-Ito colours, "
                    "600-dpi PNG plus editable-text SVG, filter line and single "
                    "croppable footnote on every chart.")
+@click.option("--plot-style", type=click.Choice(["superplot", "replicate-simple"]),
+              default=None, help="Point layout; CLI overrides YAML plot_style. Default: superplot.")
+@click.option("--technical-layer", type=click.Choice(["none", "fov"]), default=None,
+              help="Optional muted FOVs in replicate-simple; CLI overrides YAML technical_layer. "
+                   "Default: none. Superplot retains its established layers.")
 @click.option("--alpha", default=0.05, show_default=True, type=float,
               help="Significance level for the Welch gate and the Holm family.")
 @click.option("--qc-min-nuclei", default=5, show_default=True, type=int,
@@ -880,18 +885,25 @@ def postrun(run_dir, staging, input_dir, image_key, seed):
 @click.option("--preset", default=None, type=click.Path(exists=True, dir_okay=False),
               help="Preset YAML the run used; its md5 is recorded in Run provenance.")
 @click.option("--no-figures", is_flag=True,
-              help="Write the workbook and readout only; skip every figure.")
+              help="Skip standard report/panel figures. An explicit --deck-spec still prepares its slide assets.")
 @click.option("--no-coloc-panel", is_flag=True,
               help="Skip the standard colocalization panel on an rna_rna or "
                    "rna_protein run.")
+@click.option('--existing-coloc', type=click.Path(exists=True, dir_okay=False), default=None,
+              help='Import a frozen standard-panel workbook; never generate new nulls.')
+@click.option('--baseline-manifest', type=click.Path(exists=True, dir_okay=False), default=None,
+              help='A0 source hashes and frozen registry for persisted panel validation.')
+@click.option('--deck-spec', type=click.Path(exists=True, dir_okay=False), default=None,
+              help='Prepare workbook-traced deck assets and resolve the slide specification.')
+@click.option('--deck', is_flag=True, help='Export the prepared deck using optional python-pptx.')
 @click.option("--stamp", default="", metavar="TEXT",
               help="Timestamp used in the default output directory name. Defaults to "
                    "now.")
 def report(run_dir, groups, groups_file, reference, group_order, well_from_image,
            out_dir, exclude_field, reason, all_pairs, nucleus_filter, peak_floor,
-           primary_endpoint, sec_outlier_k, caveat_file, style,
+           primary_endpoint, sec_outlier_k, caveat_file, style, plot_style, technical_layer,
            alpha, qc_min_nuclei, sec_min_nuclei, engine_repo, preset,
-           no_figures, no_coloc_panel, stamp):
+           no_figures, no_coloc_panel, stamp, existing_coloc, baseline_manifest, deck_spec, deck):
     """Build the condition-versus-condition report for a finished run.
 
     Wells are the biological replicates and the condition GROUP is what gets
@@ -926,6 +938,9 @@ def report(run_dir, groups, groups_file, reference, group_order, well_from_image
             caveat = Path(caveat_file).read_text(encoding="utf-8").strip()
         if groups_file:
             cfg = load_groups_file(Path(groups_file))
+            plot_style = plot_style if plot_style is not None else cfg["plot_style"]
+            technical_layer = (technical_layer if technical_layer is not None
+                               else cfg["technical_layer"])
             # Command-line flags override the file, so a staged file is a default
             # rather than something that silently wins over what was just typed.
             specs = specs or cfg["specs"]
@@ -973,8 +988,14 @@ def report(run_dir, groups, groups_file, reference, group_order, well_from_image
             engine_repo=Path(engine_repo) if engine_repo else None,
             preset=Path(preset) if preset else None,
             style=style,
+            plot_style=plot_style or "superplot",
+            technical_layer=technical_layer or "none",
             make_figures=not no_figures,
             coloc_panel=not no_coloc_panel,
+            existing_coloc=Path(existing_coloc) if existing_coloc else None,
+            baseline_manifest=Path(baseline_manifest) if baseline_manifest else None,
+            deck_spec=Path(deck_spec) if deck_spec else None,
+            deck=deck,
             stamp=stamp,
         )
     except (ReportInputError, PeakGateError) as exc:
@@ -999,7 +1020,11 @@ def report(run_dir, groups, groups_file, reference, group_order, well_from_image
     if r["absent"]:
         click.echo(f"absent from this run (reported as NA): {', '.join(r['absent'])}")
     if r.get("coloc_panel"):
-        click.echo(f"coloc panel : {r['coloc_panel']}")
+        panel=r['coloc_panel']
+        if panel.get('source'):
+            click.echo(f"coloc panel : persisted {panel['source']}; {len(panel.get('figures',[]))} figures; no new nulls")
+        else:
+            click.echo(f"coloc panel : {panel}")
 
 
 @cli.command(short_help="CPU backfill: per-spot Gaussian size fit onto a finished run.")

@@ -89,6 +89,8 @@ def load_groups_file(path: Path) -> dict:
         groups:            {GROUP: [well, well, ...]}
         group_order:       [GROUP, ...]          # first entry is the reference
         group_colors:      {GROUP: "#RRGGBB", ...}  # this set's own colour key
+        plot_style:        superplot | replicate-simple
+        technical_layer:   none | fov            # replicate-simple only
         primary_endpoint:  ENDPOINT_NAME        # named in READOUT line 2, listed first
         sec_outlier_k:     3.0                   # control-field outlier multiple
         reference:         GROUP
@@ -104,6 +106,11 @@ def load_groups_file(path: Path) -> dict:
     raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
     if not isinstance(raw, dict):
         raise _agg.ReportInputError(f"{path} must be a mapping, not {type(raw).__name__}")
+    try:
+        _fig.validate_plot_options(raw.get("plot_style", "superplot"),
+                                   raw.get("technical_layer", "none"))
+    except ValueError as exc:
+        raise _agg.ReportInputError(str(exc)) from exc
     groups = raw.get("groups") or {}
     specs = [f"{g}=" + ",".join(str(w) for w in (wells or []))
              for g, wells in groups.items() if wells]
@@ -114,6 +121,8 @@ def load_groups_file(path: Path) -> dict:
         if g not in groups and not any(sp.startswith(f"{g}=") for sp in specs):
             specs.append(f"{g}={g}")
     return {"specs": specs, "group_order": order,
+            "plot_style": raw.get("plot_style", "superplot"),
+            "technical_layer": raw.get("technical_layer", "none"),
             "reference": raw.get("reference") or (order[0] if order else None),
             "well_from_image": raw.get("well_from_image") or None,
             "exclude_fields": {str(k): str(v) for k, v in
@@ -325,7 +334,7 @@ def provenance_sheet(data: dict, run_dir: Path, out_dir: Path,
         p = Path(p)
         add(f"{name} path", p)
         if name == "engine repo":
-            add("engine git HEAD", _engine_head(p))
+            add("inspected engine repo HEAD (not producing identity)", _engine_head(p))
         elif p.is_file():
             add("preset md5", _md5(p))
 
@@ -336,6 +345,8 @@ def provenance_sheet(data: dict, run_dir: Path, out_dir: Path,
 
     for k, v in library_versions().items():
         add(f"version {k}", v)
+    add("reporter commit", _engine_head(Path(__file__).resolve().parents[3]))
+    add("producing engine commit", _prov.producing_commit(run_dir))
     return pd.DataFrame(rows, columns=["Item", "Value"])
 
 
@@ -479,10 +490,46 @@ def build_report(run_dir: Path, out_dir: Optional[Path] = None,
                  alpha: float = ALPHA, engine_repo: Optional[Path] = None,
                  preset: Optional[Path] = None, style: str = "brian",
                  make_figures: bool = True, coloc_panel: bool = True,
-                 stamp: str = "", argv: Optional[Sequence[str]] = None) -> dict:
+                 stamp: str = "", argv: Optional[Sequence[str]] = None,
+                 plot_style: str = "superplot", technical_layer: str = "none",
+                 existing_coloc: Optional[Path] = None,
+                 baseline_manifest: Optional[Path] = None,
+                 deck_spec: Optional[Path] = None, deck: bool = False) -> dict:
+    _fig.validate_plot_options(plot_style, technical_layer)
     run_dir = Path(run_dir)
     stamp = stamp or datetime.now().strftime("%Y-%m-%d_%H%M")
     out_dir = Path(out_dir) if out_dir else (run_dir / f"report_{stamp}")
+    _prov.guard_output(out_dir)
+    # Preflight siblings as well as the root: an existing child can be a link.
+    for name in ('REPORT.xlsx', 'per_well.csv', 'contrasts.csv', 'figures',
+                 'localization', 'coloc_existing', 'deck_figures',
+                 'deck_spec.resolved.yaml', 'Sam_RNASEH2B_BIN1.pptx', 'slide_sources.csv'):
+        _prov.guard_output(out_dir / name)
+    persisted = None
+    template = None
+    if deck_spec:
+        import yaml
+        if not Path(deck_spec).is_file():
+            raise _agg.ReportInputError(f'missing deck spec: {deck_spec}')
+        template = yaml.safe_load(Path(deck_spec).read_text(encoding='utf-8'))
+        existing_coloc = existing_coloc or template.get('existing_coloc')
+        baseline_manifest = baseline_manifest or template.get('baseline_manifest')
+    if deck and not template:
+        raise _agg.ReportInputError('--deck requires --deck-spec')
+    if existing_coloc:
+        from .coloc_existing import load_existing_panel, verify_pinned
+        if peak_floors or nucleus_filter != 'all' or exclude_fields:
+            raise _agg.ReportInputError('persisted panel cannot be used with new gates or exclusions')
+        persisted = load_existing_panel(Path(existing_coloc), Path(existing_coloc).with_name('FIGURE_INDEX.md'), baseline_manifest,
+                                        (template or {}).get('figure_index_sha256'))
+        for filename in ('nuclei_metrics.csv','spot_metrics.csv','per_image_summary.csv','run_config.json','versions.txt'):
+            verify_pinned(run_dir/filename,persisted.manifest)
+        # Explicit persisted source wins over the legacy automatic panel generator.
+        coloc_panel = False
+        plot_style, technical_layer = 'replicate-simple', 'none'
+        group_colors = {'WT':'#595959','QKI-KO':'#D67AE5'}
+    if template and persisted is None:
+        raise _agg.ReportInputError('deck preparation requires a persisted panel')
     out_dir.mkdir(parents=True, exist_ok=True)
     exclude_fields = dict(exclude_fields or {})
 
@@ -538,12 +585,18 @@ def build_report(run_dir: Path, out_dir: Optional[Path] = None,
         gate_record["stale_columns"] = list(stale_after_gate)
 
     endpoints, absent = _ep.resolve(data["nuclei"], data["per_image"])
+    if persisted is not None:
+        from .coloc_existing import integrate_panel, validate_pairing
+        validate_pairing(persisted.tables['per_nucleus'], pd.read_csv(run_dir/'spot_metrics.csv'))
+        endpoints, added_endpoints = integrate_panel(data,persisted,endpoints)
     field = _agg.per_field_long(data["nuclei"], data["per_image"], endpoints,
                                 data["labels"], qc_min_nuclei)
     well = _agg.per_well_long(field)
     contrasts = _agg.build_contrasts(well, field, endpoints, absent, group_order_resolved,
                                      reference, labels, alpha,
                                      all_pairs=all_pairs or len(group_order_resolved) > 2)
+    if persisted is not None:
+        contrasts = _agg.retain_descriptive_panel_policy(contrasts,added_endpoints)
     sec = _agg.secondary_only_table(data["nuclei"], data["per_image"], data["labels"],
                                     exclude_fields, sec_min_nuclei, sec_outlier_k)
 
@@ -591,10 +644,61 @@ def build_report(run_dir: Path, out_dir: Optional[Path] = None,
     }
     strike = {"Secondary-only": list(sec.index[sec["excluded"]])
               if "excluded" in sec.columns else []}
-    xlsx = _wb.write(out_dir / "REPORT.xlsx", sheets, strike)
+    localization = None
+    if {'nuclear_spot_count', 'cyto_spot_count', 'nuclear_spot_fraction'} <= set(pd.read_csv(run_dir/'nuclei_metrics.csv', nrows=0)):
+        source_nuclei = pd.read_csv(run_dir/'nuclei_metrics.csv')
+        source_spots = pd.read_csv(run_dir/'spot_metrics.csv')
+        localization = _agg.reconcile_localization(source_nuclei, source_spots)
+        if localization['status'] != 'ok':
+            raise _agg.ReportInputError('Localization reconciliation blocked: ' + '; '.join(localization['errors']))
+        for key, name in [('per_nucleus', 'Localization counts'), ('unassigned', 'Localization unassigned'),
+                          ('checks', 'Localization checks'), ('territory', 'Localization territory')]:
+            sheets[name] = localization[key]
+        data['localization_audit'] = localization
+        if make_figures and not template and not peak_floors and nucleus_filter == 'all' and not exclude_fields:
+            localization_ctx = _fig.FigureContext(run_dir, data['cfg'], data.get('thresholds'),
+                group_order_resolved, reference, alpha, exclude_fields, labels, color_overrides=group_colors)
+            metadata = ['image', 'nucleus_id'] + [c for c in ('group', 'well_id', 'secondary_only') if c in data['nuclei']]
+            render_nuclei = source_nuclei.drop(columns=[c for c in metadata[2:] if c in source_nuclei]).merge(
+                data['nuclei'][metadata], on=['image', 'nucleus_id'], how='left', validate='one_to_one')
+            rendered = _fig.render_localization(localization_ctx, well, field, render_nuclei, source_spots,
+                                                 contrasts, out_dir/'localization')
+            sheets['Localization crops'] = pd.DataFrame(rendered['crops'])
+    resolved_deck = None
+    panel_figures = []
+    if persisted is not None:
+        from dataclasses import asdict
+        sheets.update({
+            'Coloc per nucleus':persisted.tables['per_nucleus'],
+            'Coloc per field':persisted.tables['per_FOV'],
+            'Coloc per well':persisted.tables['per_well'],
+            'Coloc contrasts':persisted.tables['contrasts'],
+            'Coloc line profiles':persisted.tables['line_profiles'],
+            'Coloc source cells':persisted.sources,
+            'Endpoint definitions':pd.DataFrame([asdict(e) for e in endpoints]).assign(
+                alt_columns=lambda x:x.alt_columns.map(str)),
+            'Multiplicity plan':contrasts[['endpoint','family','in_holm_family','holm_exclusion_reason','holm_family_size']],
+        })
+        ctx = _fig.FigureContext(run_dir,data['cfg'],data.get('thresholds'),group_order_resolved,
+                                reference,alpha,exclude_fields,labels,color_overrides=group_colors,
+                                plot_style='replicate-simple',technical_layer='none')
+        if make_figures:
+            from .coloc_existing import render_existing
+            panel_figures = render_existing(persisted,ctx,contrasts,out_dir/'coloc_existing')
+            sheets['Coloc figure sources']=pd.DataFrame(panel_figures)
+        if template:
+            from .slides import prepare_deck
+            resolved_deck = prepare_deck(template,sheets,out_dir,data,persisted,ctx,well,field,contrasts,endpoints)
+    xlsx = _wb.write(out_dir / "REPORT.xlsx", sheets, strike, order=list(sheets))
+    if resolved_deck is not None:
+        import yaml
+        from .slides import validate_deck, build_deck
+        resolved_deck['workbook_sha256'] = _prov.sha256(xlsx)
+        validate_deck(xlsx,resolved_deck)
+        (out_dir/'deck_spec.resolved.yaml').write_text(yaml.safe_dump(resolved_deck,sort_keys=False),encoding='utf-8')
 
-    well.to_csv(out_dir / "per_well.csv", index=False)
-    contrasts.to_csv(out_dir / "contrasts.csv", index=False)
+    well.to_csv(_prov.guard_output(out_dir / "per_well.csv"), index=False)
+    contrasts.to_csv(_prov.guard_output(out_dir / "contrasts.csv"), index=False)
     (out_dir / "READOUT.md").write_text(
         build_readout(run_dir, out_dir, contrasts, well, group_order_resolved, reference, sec,
                       absent, labels, alpha, caveat, primary_endpoint),
@@ -610,25 +714,33 @@ def build_report(run_dir: Path, out_dir: Optional[Path] = None,
         figs = render_figures(out_dir / "figures", run_dir, data, endpoints, absent,
                               well, field, bio_nucleus, contrasts, group_order_resolved,
                               reference, exclude_fields, labels, alpha,
-                              color_overrides=group_colors)
+                              color_overrides=group_colors, plot_style=plot_style,
+                              technical_layer=technical_layer)
 
-    panel = None
+    panel = {'source':str(persisted.path),'figures':panel_figures,'new_nulls':False} if persisted is not None else None
     if coloc_panel:
         panel = run_coloc_standard_panel(run_dir, out_dir)
 
     (out_dir / "versions.txt").write_text(
         "\n".join(f"{k}: {v}" for k, v in library_versions().items())
         + f"\nseed: {SEED}\nbuilt_utc: "
-        + datetime.now(timezone.utc).isoformat(timespec="seconds") + "\n",
+        + datetime.now(timezone.utc).isoformat(timespec="seconds") + "\n"
+        + f"reporter commit: {_engine_head(Path(__file__).resolve().parents[3])}\n"
+        + f"producing engine commit: {_prov.producing_commit(run_dir)}\n",
         encoding="utf-8")
     with open(out_dir / "command.log", "a", encoding="utf-8") as fh:
         fh.write(f"{datetime.now(timezone.utc).isoformat(timespec='seconds')}\t"
                  f"{sys.executable} {' '.join(argv or sys.argv)}\n")
+    # Preserve the completed report even when the optional deck dependency is missing.
+    if deck:
+        from .slides import build_deck
+        build_deck(xlsx,resolved_deck,out_dir/'Sam_RNASEH2B_BIN1.pptx')
 
     return dict(out_dir=out_dir, xlsx=xlsx, contrasts=contrasts, well=well, field=field,
                 sec=sec, absent=absent, group_order=group_order_resolved, reference=reference,
                 figures=figs, coloc_panel=panel, endpoints=endpoints, labels=labels,
-                source_run=source, peak_gate=gate_record)
+                source_run=source, peak_gate=gate_record,
+                plot_style=plot_style, technical_layer=technical_layer)
 
 
 def render_figures(fig_dir: Path, run_dir: Path, data: dict,
@@ -637,9 +749,10 @@ def render_figures(fig_dir: Path, run_dir: Path, data: dict,
                    contrasts: pd.DataFrame, group_order: Sequence[str],
                    reference: str, exclude_fields: Dict[str, str],
                    labels: Dict[str, str], alpha: float,
-                   color_overrides: Optional[Dict[str, str]] = None) -> List[dict]:
+                   color_overrides: Optional[Dict[str, str]] = None,
+                   plot_style: str = "superplot", technical_layer: str = "none") -> List[dict]:
     _fig.set_style()
-    fig_dir = Path(fig_dir)
+    fig_dir = _prov.guard_output(fig_dir)
     fig_dir.mkdir(parents=True, exist_ok=True)
     # Clear the previous build's figures before writing this one. Endpoint
     # numbering shifts whenever the registry changes, so rebuilding into an
@@ -658,6 +771,7 @@ def render_figures(fig_dir: Path, run_dir: Path, data: dict,
     ctx = _fig.FigureContext(run_dir, data["cfg"], data.get("thresholds"), group_order,
                              reference, alpha, exclude_fields, labels,
                              color_overrides=color_overrides,
+                             plot_style=plot_style, technical_layer=technical_layer,
                              nucleus_filter=data.get("nucleus_filter", "all"),
                              n_nuclei_all=data.get("n_nuclei_all"),
                              n_nuclei_after_nucleus_filter=data.get(
@@ -674,8 +788,16 @@ def render_figures(fig_dir: Path, run_dir: Path, data: dict,
 
     for i, ep in enumerate(drawn, start=1):
         hline = 1.0 if "enrichment" in ep.name and "null" in (ep.unit + ep.name) else None
+        # The historical source may count assigned (nuclear + cytoplasmic) spots.
+        # Keep its frozen endpoint/value, but do not assert nuclear-only density.
+        title = (f"Recorded {labels.get('rna1', 'RNA1')} density (source-defined)"
+                 if ep.name == "rna1_nuclear_spots_per_um2" else ep.pretty(labels))
+        unit = ("puncta per square micrometre of nuclear area; historical source definition"
+                if ep.name == "rna1_nuclear_spots_per_um2" else ep.unit)
+        if ep.name in {'rna1_nuclear_spot_fraction', 'rna1_nuclear_spots_per_nucleus', 'rna1_cyto_spots_per_nucleus'}:
+            unit += '\nper nucleus and assigned cell territory'
         _fig.superplot_standalone(
-            ctx, ep.name, ep.pretty(labels), f"{ep.pretty(labels)}\n({ep.unit})",
+            ctx, ep.name, title, f"{title}\n({unit})",
             well, field, per_nucleus, contrasts, _nuc_column(ep), fig_dir,
             f"fig{i:02d}_{ep.name}", manifest,
             hline_at=hline, hline_label="no enrichment" if hline else "")
@@ -700,11 +822,16 @@ def render_figures(fig_dir: Path, run_dir: Path, data: dict,
                   hline_label="no enrichment" if ("enrichment" in ep.name
                                                   and "null" in ep.name) else "")
              for ep in drawn if ep.primary][:4]
+    for spec in specs:
+        if spec['endpoint'] == 'rna1_nuclear_spot_fraction':
+            spec['ylabel'] += '\nper nucleus and assigned cell territory'
     if specs:
         _fig.composite_main(ctx, specs, panels, luts, well, field, per_nucleus,
                             contrasts, fig_dir, manifest, stem="FIG_MAIN")
 
     index = ["# Figure index", "",
+             f"Plot style: {plot_style}; technical layer: {technical_layer} "
+             "(technical_layer applies to replicate-simple only).",
              f"Produced by `fishsuite report` from run `{run_dir}`.", "",
              f"Condition colours: "
              + "; ".join(f"{g} `{ctx.colors.get(g, '')}`" for g in group_order) + ".",

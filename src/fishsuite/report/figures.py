@@ -198,10 +198,11 @@ def stamp_head(fig, title: str, subtitle: str, filt: str, wrap: int = 132) -> fl
 
 def save(fig, out_dir: Path, stem: str, manifest: List[dict], description: str,
          source: str) -> Dict[str, str]:
-    out_dir = Path(out_dir)
+    from .provenance import guard_output
+    out_dir = guard_output(out_dir)
+    png = guard_output(out_dir / f"{stem}.png")
+    svg = guard_output(out_dir / f"{stem}.svg")
     out_dir.mkdir(parents=True, exist_ok=True)
-    png = out_dir / f"{stem}.png"
-    svg = out_dir / f"{stem}.svg"
     fig.savefig(png, dpi=DPI)
     fig.savefig(svg)
     plt.close(fig)
@@ -214,6 +215,13 @@ def save(fig, out_dir: Path, stem: str, manifest: List[dict], description: str,
 # ------------------------------------------------------------------- context
 
 
+def validate_plot_options(plot_style: str, technical_layer: str) -> None:
+    if plot_style not in ("superplot", "replicate-simple"):
+        raise ValueError("plot_style must be superplot or replicate-simple")
+    if technical_layer not in ("none", "fov"):
+        raise ValueError("technical_layer must be none or fov")
+
+
 class FigureContext:
     """Everything every figure footer must carry, assembled once per report."""
 
@@ -223,7 +231,11 @@ class FigureContext:
                  color_overrides: Optional[Dict[str, str]] = None,
                  nucleus_filter: str = "all",
                  n_nuclei_all: Optional[int] = None,
-                 n_nuclei_after_nucleus_filter: Optional[int] = None):
+                 n_nuclei_after_nucleus_filter: Optional[int] = None,
+                 plot_style: str = "superplot", technical_layer: str = "none"):
+        validate_plot_options(plot_style, technical_layer)
+        self.plot_style = plot_style
+        self.technical_layer = technical_layer
         self.run_dir = Path(run_dir)
         self.run_name = self.run_dir.name
         self.run_path = str(self.run_dir)
@@ -330,6 +342,9 @@ class FigureContext:
                 f"{self.thresholds}. {self.segmentation}. Replicate unit: the well "
                 f"(fields of view are technical replicates; nuclei are the measurement "
                 f"unit). Test: Welch t on well means.")
+        note = getattr(self, 'localization_note', '')
+        if note:
+            base += '\n' + note
         return (extra + "\n" + base) if extra else base
 
 
@@ -350,6 +365,10 @@ def draw_superplot(ax, ctx: FigureContext, endpoint: str, well: pd.DataFrame,
     """
     rng = np.random.default_rng(SEED)
     order = ctx.group_order
+    if fraction_scale(endpoint) == 100:
+        scale = 100.
+        ylabel = ('BIN1 intron puncta: % nuclear (per nucleus)' if endpoint == 'rna1_nuclear_spot_fraction'
+                  else ylabel.replace('fraction', 'percent') + (' (%)' if '%' not in ylabel else ''))
     pw = well[well["endpoint"] == endpoint] if len(well) else well
     pf = field[field["endpoint"] == endpoint] if len(field) else field
     crow = contrasts[contrasts["endpoint"] == endpoint] if len(contrasts) else contrasts
@@ -474,6 +493,8 @@ def draw_superplot(ax, ctx: FigureContext, endpoint: str, well: pd.DataFrame,
         mde = r0.get("mde_hedges_g_at_family_alpha", np.nan)
         g = r0.get("hedges_g", np.nan)
         row_star = top + (0.13 + 0.13 * level) * span
+        if fraction_scale(endpoint) == 100 and 'minus_shuffle' not in endpoint:
+            row_star = min(row_star, 92 - 8 * level)
         ax.plot([ref_x, ref_x, xi, xi],
                 [row_star - 0.035 * span, row_star, row_star, row_star - 0.035 * span],
                 color="black", linewidth=0.8, zorder=8, clip_on=False)
@@ -535,7 +556,132 @@ def draw_superplot(ax, ctx: FigureContext, endpoint: str, well: pd.DataFrame,
                  "clip and are not drawn. No value is removed from any statistic: every "
                  "test runs on well means.")
     foot += f"\nSource: Per nucleus, Per field, Per well and Contrasts sheets; endpoint {endpoint}."
+    if fraction_scale(endpoint) == 100 and 'minus_shuffle' not in endpoint:
+        ax.set_ylim(0, 100)
+    if endpoint == 'rna1_nuclear_spot_fraction':
+        return ("Two-sided Welch on well means; replicate unit: well.\n"
+                + " ".join(p_lines) + " " + n_line + f"\nRun: {ctx.run_path}")
     return ctx.footer(foot)
+
+
+def fraction_scale(endpoint):
+    from .endpoints import ENDPOINTS, a3_endpoints
+    return 100. if any(e.name == endpoint and 'fraction' in e.unit
+                       for e in (*ENDPOINTS, *a3_endpoints([endpoint]))) else 1.
+
+
+def draw_replicate_simple(ax, ctx: FigureContext, endpoint: str, well: pd.DataFrame,
+                          field: pd.DataFrame, per_nucleus: pd.DataFrame,
+                          contrasts: pd.DataFrame, ylabel: str, nuc_column: Optional[str],
+                          scale: float = 1.0, clip_pct: Optional[float] = None,
+                          compact: bool = False, hline_at: Optional[float] = None,
+                          hline_label: str = "") -> str:
+    """Draw persisted well means without recomputing statistics or using nuclei.
+
+    ``clip_pct`` is deliberately unused: a nucleus percentile must never hide a
+    biological replicate. FOVs are optional technical context, never tested points.
+    The signature matches draw_superplot for standalone, composite and native callers.
+    """
+    if fraction_scale(endpoint) == 100:
+        scale = 100.
+        ylabel = ('BIN1 intron puncta: % nuclear (per nucleus)' if endpoint == 'rna1_nuclear_spot_fraction'
+                  else ylabel.replace('fraction', 'percent') + (' (%)' if '%' not in ylabel else ''))
+    pw = well[well["endpoint"] == endpoint] if len(well) else well
+    pf = field[field["endpoint"] == endpoint] if len(field) else field
+    rows = contrasts[contrasts["endpoint"] == endpoint] if len(contrasts) else contrasts
+    seen, counts = [], []
+    for xi, group in enumerate(ctx.group_order):
+        col = ctx.colors[group]
+        wells = pw[pw["group"] == group].sort_values("well_id") if len(pw) else pw
+        fields = pf[pf["group"] == group] if len(pf) else pf
+        wm = (pd.to_numeric(wells["well_mean_of_field_values"], errors="coerce")
+              .dropna().to_numpy() * scale) if len(wells) else np.array([])
+        wm = wm[np.isfinite(wm)]
+        fm = (pd.to_numeric(fields["field_value"], errors="coerce").dropna()
+              .to_numpy() * scale) if len(fields) else np.array([])
+        fm = fm[np.isfinite(fm)]
+        if ctx.technical_layer == "fov" and len(fm):
+            art = ax.scatter(xi + np.linspace(-.22, .22, len(fm)), fm, s=12,
+                             facecolor=shade(col, .18), edgecolor=shade(col, .35),
+                             linewidths=.5, zorder=2)
+            art.set_gid(f"fov:{group}")
+            seen.extend(fm)
+        if len(wm):
+            offsets = np.linspace(-.14, .14, len(wm)) if len(wm) > 1 else np.zeros(1)
+            art = ax.scatter(xi + offsets, wm, s=42 if compact else 60,
+                             facecolor=(*shade(col, 1), .45), edgecolor=col,
+                             linewidths=1.1, zorder=5)
+            art.set_gid(f"well:{group}")
+            tick = ax.hlines(float(wm.mean()), xi - .28, xi + .28, color=col,
+                            linewidth=2, zorder=4)
+            tick.set_gid(f"group-mean:{group}")
+            seen.extend(wm)
+        nn = (int(pd.to_numeric(fields["n_nuclei_nonmissing"], errors="coerce").sum())
+              if len(fields) and "n_nuclei_nonmissing" in fields else None)
+        level = str(fields.iloc[0].get("level", "nucleus")) if len(fields) else ""
+        counts.append(f"{group}: {len(wm)} wells, {len(fm)} FOVs"
+                      + (f", {nn} defined nuclei" if nn is not None and level == "nucleus" else ""))
+    ax.set_xticks(range(len(ctx.group_order)), ctx.group_order)
+    for tick, group in zip(ax.get_xticklabels(), ctx.group_order):
+        tick.set_color(ctx.colors[group])
+    ax.set_xlim(-.62, len(ctx.group_order) - .38)
+    ax.set_ylabel(ylabel, fontsize=6.6 if compact else 8.5)
+    ax.tick_params(labelsize=6.2 if compact else 8)
+    marker = ("Points are WELL means, the tested replicates; ticks are group means. "
+              + ("Muted small points are technical FOV means." if ctx.technical_layer == "fov"
+                 else "No technical layer is drawn."))
+    if not seen:
+        ax.text(.5, .5, "No finite well means available", transform=ax.transAxes,
+                ha="center", va="center")
+        return ctx.footer(marker + "\nNo values are substituted.")
+    if hline_at is not None:
+        ax.axhline(hline_at, color="#666666", linestyle="--", linewidth=.8)
+        seen.append(hline_at)
+        if hline_label:
+            ax.text(.98, hline_at, hline_label, transform=ax.get_yaxis_transform(),
+                    ha="right", va="bottom", fontsize=5.6 if compact else 6.4)
+    low, high = min(seen), max(seen)
+    span = high - low or abs(high) or 1.
+    ref_x = ctx.group_order.index(ctx.reference)
+    details, level = [], 0
+    for xi, group in enumerate(ctx.group_order):
+        if group == ctx.reference or not len(rows):
+            continue
+        match = rows[rows["test_group"] == group]
+        if "reference_group" in match:
+            match = match[match["reference_group"] == ctx.reference]
+        if not len(match):
+            continue
+        r = match.iloc[0]
+        p = r.get("p_welch", np.nan)
+        y = high + (.15 + .20 * level) * span
+        if fraction_scale(endpoint) == 100 and 'minus_shuffle' not in endpoint:
+            y = min(y, 92 - 8 * level)
+        ax.plot([ref_x, xi], [y, y], color="black", linewidth=.8)
+        ax.text((ref_x + xi) / 2, y + .025 * span, f"{stars(p)}  p={fmt_p(p)}",
+                ha="center", va="bottom", fontsize=6.2 if compact else 8)
+        def number(key):
+            value = pd.to_numeric(r.get(key, np.nan), errors="coerce")
+            return f"{value:.3g}" if np.isfinite(value) else "NA"
+        details.append(f"{group} vs {ctx.reference}: raw Welch p {fmt_p(p)}; "
+                       f"Holm p {fmt_p(r.get('p_welch_holm_within_family', np.nan))}; "
+                       f"Hedges g {number('hedges_g')}; MDE g (80% power, alpha .05) "
+                       f"{number('mde_hedges_g_alpha_0p05')}, family alpha "
+                       f"{number('mde_hedges_g_at_family_alpha')}; "
+                       f"usability filter: {r.get('usability_filter', 'none')}.")
+        level += 1
+    ax.set_ylim(low - .10 * span, high + (.20 * max(level, 1) + .18) * span)
+    if fraction_scale(endpoint) == 100 and 'minus_shuffle' not in endpoint:
+        ax.set_ylim(0, 100)
+    return ("Two-sided Welch on well means; replicate unit: well; raw-p stars.\n"
+            + " ".join(details) + " n: " + "; ".join(counts) + ".\n"
+            + f"Run: {ctx.run_path}")
+
+
+def draw_plot(ax, ctx: FigureContext, *args, **kwargs) -> str:
+    """Shared endpoint dispatcher; both styles use the same palette and save path."""
+    draw = draw_replicate_simple if ctx.plot_style == "replicate-simple" else draw_superplot
+    return draw(ax, ctx, *args, **kwargs)
 
 
 def superplot_standalone(ctx: FigureContext, endpoint: str, title: str, ylabel: str,
@@ -546,9 +692,11 @@ def superplot_standalone(ctx: FigureContext, endpoint: str, title: str, ylabel: 
                          clip_pct: Optional[float] = None,
                          hline_at: Optional[float] = None, hline_label: str = "",
                          w: float = 7.6, h: float = 6.6) -> Dict[str, str]:
+    if endpoint == "rna1_nuclear_spot_fraction":
+        title = "BIN1 intron puncta, % nuclear"
     fig = plt.figure(figsize=(w, h))
     ax = fig.add_axes([0.115, 0.300, 0.790, 0.560])
-    foot = draw_superplot(ax, ctx, endpoint, well, field, per_nucleus, contrasts,
+    foot = draw_plot(ax, ctx, endpoint, well, field, per_nucleus, contrasts,
                           ylabel, nuc_column, scale=scale, clip_pct=clip_pct,
                           hline_at=hline_at, hline_label=hline_label)
     no_box(fig, ax)
@@ -562,11 +710,195 @@ def superplot_standalone(ctx: FigureContext, endpoint: str, title: str, ylabel: 
         ax.set_position([pos.x0, band, pos.width, max(pos.y1 - band, 0.20)])
     stamp_foot(fig, foot)
     return save(fig, out_dir, stem, manifest,
-                f"SuperPlot of {endpoint} by condition group, wells as replicates.",
+                f"{ctx.plot_style} of {endpoint} by condition group, wells as replicates.",
                 "Per nucleus / Per field / Per well / Contrasts sheets")
 
 
 # --------------------------------------------------------------- micrographs
+
+
+def validate_territory_mask(cell, nuclear, roster, assigned_spots):
+    """Validate persisted full-frame territory labels without constructing any."""
+    from .aggregate import ReportInputError
+    if cell.shape != nuclear.shape:
+        raise ReportInputError('Recorded territory mask and nuclear dimensions differ')
+    if not np.isin(cell, [0, *roster.nucleus_id.tolist()]).all():
+        raise ReportInputError('Recorded territory mask has labels outside nucleus roster')
+    if 'cell_area_px' not in roster or roster.cell_area_px.isna().any():
+        raise ReportInputError('Missing cell_area_px for recorded territory mask validation')
+    if any(
+            int((cell == r.nucleus_id).sum()) != r.cell_area_px for r in roster.itertuples()):
+        raise ReportInputError('Recorded territory mask does not reconcile to cell_area_px')
+    inside = nuclear > 0
+    if not np.array_equal(cell[inside], nuclear[inside]):
+        raise ReportInputError('Recorded territory mask does not contain same-ID nuclei')
+    if {'x_px', 'y_px'} <= set(assigned_spots) and len(assigned_spots):
+        xy = assigned_spots[['x_px', 'y_px']].apply(pd.to_numeric, errors='coerce').to_numpy(float)
+        if not np.isfinite(xy).all():
+            raise ReportInputError('Missing assigned-spot coordinates for territory validation')
+        xy = np.rint(xy).astype(int)
+        if ((xy < 0).any() or (xy[:, 0] >= cell.shape[1]).any() or (xy[:, 1] >= cell.shape[0]).any()
+                or not np.array_equal(cell[xy[:, 1], xy[:, 0]], assigned_spots.nucleus_id)):
+            raise ReportInputError('Assigned spots do not reconcile to recorded territory mask')
+
+
+def render_localization(ctx: FigureContext, well: pd.DataFrame, field: pd.DataFrame,
+                        nuclei: pd.DataFrame, spots: pd.DataFrame,
+                        contrasts: pd.DataFrame, out_dir: Path,
+                        pub_dir: Optional[Path] = None,
+                        territory_masks: Optional[Dict[str, Path]] = None) -> dict:
+    """Reusable localization proposal renderer, using existing report tables.
+
+    Pass the complete source nucleus/spot roster and ungated well/FOV tables.
+    Audits never overwrite measurements. Percent is display-only. Optional
+    territory_masks must be persisted full-frame cell labels keyed by image;
+    absent geometry is labelled missing and is NEVER regenerated here.
+    This API is separate from the historical FIG_MAIN and preserves its layout.
+    """
+    from .aggregate import reconcile_localization, ReportInputError
+    from copy import copy
+    from .provenance import guard_output
+    out_dir = guard_output(out_dir)
+    for name in ('per_nucleus', 'unassigned', 'checks', 'territory'):
+        guard_output(out_dir / f'localization_{name}.csv')
+    for name in ('localization_crops.json', 'localization_manifest.json'):
+        guard_output(out_dir / name)
+    for stem in ('rna1_nuclear_spot_fraction_localization', 'rna1_nuclear_spots_per_nucleus_localization',
+                 'rna1_cyto_spots_per_nucleus_localization', 'FIG_LOCALIZATION'):
+        for suffix in ('.png', '.svg'):
+            guard_output(out_dir / (stem + suffix))
+    audit = reconcile_localization(nuclei, spots)
+    if audit['status'] != 'ok':
+        raise ReportInputError('Localization rendering blocked: ' + '; '.join(audit['errors']))
+    if ctx.nucleus_filter not in ('all', '') or ctx.excluded_fields:
+        raise ReportInputError('Localization proposal requires all retained nuclei and no excluded fields')
+    specs = [dict(endpoint='rna1_nuclear_spot_fraction', column='nuclear_spot_fraction',
+                  label='BIN1 intron puncta: % nuclear (per nucleus)', scale=100.),
+             dict(endpoint='rna1_nuclear_spots_per_nucleus', column='nuclear_spot_count',
+                  label='Nuclear puncta count', scale=1.),
+             dict(endpoint='rna1_cyto_spots_per_nucleus', column='cyto_spot_count',
+                  label='Assigned-cytoplasmic puncta count', scale=1.)]
+    if any(s['endpoint'] not in set(well.endpoint) for s in specs):
+        raise ReportInputError('Localization rendering needs all three registered endpoints')
+    bio = nuclei.loc[~nuclei.secondary_only.astype(bool)] if 'secondary_only' in nuclei else nuclei
+    for spec in specs:
+        pf = field[field.endpoint == spec['endpoint']]
+        expected = bio.groupby('image')[spec['column']].mean().sort_index()
+        actual = pf.set_index('image').field_value.sort_index()
+        if (not expected.index.equals(actual.index) or not np.allclose(expected, actual, atol=1e-12, rtol=1e-10, equal_nan=True)):
+            raise ReportInputError('Localization field values differ from full-roster source means')
+        expected_w = pf.groupby(['group', 'well_id']).field_value.mean().sort_index()
+        actual_w = well[well.endpoint == spec['endpoint']].set_index(['group', 'well_id']).well_mean_of_field_values.sort_index()
+        if (not expected_w.index.equals(actual_w.index) or not np.allclose(expected_w, actual_w, atol=1e-12, rtol=1e-10, equal_nan=True)):
+            raise ReportInputError('Localization well values differ from equal-weight FOV means')
+    # This view always uses the A1 main well points. No measurement or inferential
+    # value is recalculated for a change in plot style or percent display units.
+    view = copy(ctx)
+    view.plot_style = 'replicate-simple'
+    view.localization_note = ('Per nucleus and assigned cell territory. Nuclear fraction displayed ×100; stored as 0–1. '
+        'Detection Holm and family-alpha MDE include the added cytoplasmic test; amended, not baseline parity.')
+    view.filt = (f'Filter: all retained nuclei; zero counts retained; zero-total fraction NA; '
+                 f'no added peak/nucleus gates. Test: two-sided well-mean Welch; alpha {ctx.alpha:g}.')
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    for key in ['per_nucleus', 'unassigned', 'checks', 'territory']:
+        audit[key].to_csv(guard_output(out_dir / f'localization_{key}.csv'), index=False)
+    manifests = []
+    rna_name = ctx.channel_labels.get('rna1', 'RNA1')
+    for spec in specs:
+        superplot_standalone(view, spec['endpoint'], f"{rna_name}: {spec['label']}",
+            spec['label'] + ('\nper nucleus and assigned cell territory' if spec['scale'] == 1 else ''),
+            well, field, nuclei, contrasts, spec['column'], out_dir,
+            spec['endpoint'] + '_localization', manifests, scale=spec['scale'])
+    pub_dir = pub_dir or publication_image_dir(ctx.run_dir)
+    luts, lut_source = read_luts(ctx.run_dir, pub_dir)
+    panels = []
+    records = []
+    for group in view.group_order:
+        f = pick_field(field, group, 'rna1_nuclear_spot_fraction')
+        n = pick_nucleus(nuclei, f['image'], 'nuclear_spot_fraction') if f else None
+        record = dict(group=group, selection='FOV nearest group median nuclear fraction; nucleus nearest FOV median',
+                      crop_status='missing', territory_boundary='missing')
+        p = None
+        if f and n and pub_dir:
+            row = nuclei[(nuclei.image == f['image']) & (nuclei.nucleus_id == n['nucleus_id'])].iloc[0]
+            vox = pd.to_numeric(row.get('voxel_xy_um', np.nan), errors='coerce')
+            p = crop_for(ctx.run_dir, pub_dir, f['image'], n['nucleus_id'], vox)
+            record.update(image=f['image'], well_id=f['well_id'], nucleus_id=n['nucleus_id'])
+            for col in ['cyto_estimation_method', 'cyto_area_px', 'cell_area_px', 'nucleus_area_px', 'voxel_xy_um']:
+                value = row.get(col)
+                record[col] = None if pd.isna(value) else (value.item() if isinstance(value, np.generic) else value)
+            if p is not None:
+                record.update(crop_status='available', png=str(p['png']), nuclear_mask_path=p['nuclear_mask_path'],
+                              x0=p['x0'], y0=p['y0'], width=p['crop'].shape[1], height=p['crop'].shape[0])
+                mask_path = (territory_masks or {}).get(f['image'])
+                if mask_path is not None and Path(mask_path).is_file():
+                    import tifffile
+                    cell = tifffile.imread(str(mask_path))
+                    if cell.shape != p['image_shape']:
+                        raise ReportInputError('Recorded territory mask and image dimensions differ')
+                    roster = nuclei[nuclei.image == f['image']]
+                    assigned = spots[(spots.channel == 'rna1') & (spots.image == f['image']) & (spots.nucleus_id > 0)]
+                    validate_territory_mask(cell, tifffile.imread(p['nuclear_mask_path']), roster, assigned)
+                    p['territory_mask'] = cell[p['y0']:p['y0'] + CROP_PX, p['x0']:p['x0'] + CROP_PX] == n['nucleus_id']
+                    record.update(territory_boundary='recorded', territory_mask_path=str(mask_path))
+                selected = spots[(spots.channel == 'rna1') & (spots.image == f['image']) & (spots.nucleus_id == n['nucleus_id'])].drop_duplicates(['image', 'channel', 'spot_id'])
+                p.update(group=group, record=record, assigned_spots=selected)
+        panels.append(p)
+        records.append(record)
+    (out_dir / 'localization_crops.json').write_text(json.dumps(records, indent=2, allow_nan=False), encoding='utf-8')
+    canvas = plt.figure(figsize=(11.4, 10.0))
+    canvas.text(.06, .975, f'{rna_name} localization and assigned counts', fontsize=14, va='top')
+    canvas.text(.06, .935, 'Per nucleus and assigned cell territory; nuclei → equal-weight FOVs → wells', fontsize=9)
+    canvas.text(.06, .905, view.filt, fontsize=6.4)
+    canvas.text(.06, .875, '\n'.join(textwrap.wrap(view.banner, width=175)), fontsize=5.4, va='top')
+    foots = []
+    for k, spec in enumerate(specs):
+        ax = canvas.add_axes([.08 + k * .32, .61, .235, .23])
+        foot = draw_plot(ax, view, spec['endpoint'], well, field, nuclei, contrasts,
+                         spec['label'], spec['column'], scale=spec['scale'], compact=True)
+        foots.append(foot.splitlines()[1])
+        if spec['endpoint'] == 'rna1_nuclear_spot_fraction':
+            ax.set_title('BIN1 intron puncta, % nuclear', fontsize=7)
+        canvas.text(.04 + k * .32, .855, chr(65 + k), fontsize=11, fontweight='bold')
+    for k, (p, record) in enumerate(zip(panels, records)):
+        ax = canvas.add_axes([.09 + k * .86 / len(panels), .245, .76 / len(panels), .26])
+        ax.set_axis_off()
+        ax.set_title(record['group'], color=view.colors[record['group']], fontsize=9)
+        if p is None:
+            ax.text(.5, .5, 'Documented crop missing', transform=ax.transAxes, ha='center')
+            continue
+        ax.imshow(p['crop'], interpolation='nearest')
+        ax.contour(p['nuclear_mask'].astype(float), levels=[.5], colors=['#00FFFF'], linewidths=.7)
+        if 'territory_mask' in p:
+            ax.contour(p['territory_mask'].astype(float), levels=[.5], colors=['white'], linewidths=.8)
+        ss = p['assigned_spots']
+        if {'x_px', 'y_px'} <= set(ss):
+            cyto = pd.to_numeric(ss.in_cytoplasm, errors='coerce').eq(1)
+            ax.scatter(ss.loc[cyto, 'x_px'] - p['x0'], ss.loc[cyto, 'y_px'] - p['y0'],
+                       facecolors='none', edgecolors='white', s=18, linewidths=.7)
+        ax.set_xlim(0, p['crop'].shape[1] - 1)
+        ax.set_ylim(p['crop'].shape[0] - 1, 0)
+        _bar(ax, p['crop'].shape[0], p['um_per_px'])
+        ax.text(.5, -.035, f"{record['well_id']} | nucleus {record['nucleus_id']} | {record.get('cyto_estimation_method', 'missing')}\n"
+                f"Territory boundary: {record['territory_boundary']}", transform=ax.transAxes, ha='center', va='top', fontsize=6)
+    canvas.text(.06, .535, 'D   Documented crops: cyan = retained nuclear outline; white rings = assigned cytoplasmic RNA1 spots', fontsize=8)
+    canvas.text(.06, .19, 'Recorded areas describe assigned territory, not membrane-bounded cells. Missing boundaries are not reconstructed.\n'
+                'Unassigned spots are excluded from nucleus denominators and tabulated separately. Crop coordinates and geometry: localization_crops.json.', fontsize=6.5)
+    for k, (name, color) in enumerate(luts):
+        canvas.text(.06 + k * .27, .16, '■', color=color, fontsize=9)
+        canvas.text(.076 + k * .27, .16, name, fontsize=7)
+    footer = ('Two-sided Welch on well means; replicate unit: well.\n'
+              + '\n'.join(foots) + f'\nRun: {ctx.run_path}')
+    stamp_foot(canvas, footer, size=5.4, y=.025)
+    save(canvas, out_dir, 'FIG_LOCALIZATION', manifests,
+         'Localization proposal: percent nuclear and nuclear/cytoplasmic counts, equal-weight FOV to well; recorded crops, missing territory boundaries explicit.',
+         'Source nuclei_metrics.csv / spot_metrics.csv; report Per field / Per well / Contrasts; localization_crops.json')
+    (out_dir / 'localization_manifest.json').write_text(json.dumps(dict(
+        figures=manifests, source_run=str(ctx.run_dir), channel_key_source=lut_source,
+        duplicate_rows=audit['duplicate_rows'],
+        audit_status=audit['status'], family_amendment='detection: added rna1_cyto_spots_per_nucleus; amended Holm, not parity'), indent=2), encoding='utf-8')
+    return dict(audit=audit, figures=manifests, crops=records)
 
 
 def publication_image_dir(run_dir: Path) -> Optional[Path]:
@@ -733,7 +1065,10 @@ def crop_for(run_dir: Path, pub_dir: Path, image: str, nucleus_id: int,
     y0 = int(np.clip(cy - half, 0, max(H - CROP_PX, 0)))
     x0 = int(np.clip(cx - half, 0, max(W - CROP_PX, 0)))
     return {"crop": img[y0:y0 + CROP_PX, x0:x0 + CROP_PX], "png": png,
-            "um_per_px": um_per_px, "image": image, "nucleus_id": nucleus_id}
+            "um_per_px": um_per_px, "image": image, "nucleus_id": nucleus_id,
+            "x0": x0, "y0": y0, "nuclear_mask_path": str(mask),
+            "nuclear_mask": lab[y0:y0 + CROP_PX, x0:x0 + CROP_PX] == nucleus_id,
+            "image_shape": (H, W)}
 
 
 def collect_panels(ctx: FigureContext, field: pd.DataFrame, per_nucleus: pd.DataFrame,
@@ -849,7 +1184,7 @@ def composite_main(ctx: FigureContext, specs: Sequence[dict], panels: List[dict]
         axes.append((ax, spec))
     foots = []
     for k, (ax, spec) in enumerate(axes):
-        f = draw_superplot(ax, ctx, spec["endpoint"], well, field, per_nucleus,
+        f = draw_plot(ax, ctx, spec["endpoint"], well, field, per_nucleus,
                            contrasts, spec["ylabel"], spec.get("nuc_column"),
                            compact=True, scale=spec.get("scale", 1.0),
                            hline_at=spec.get("hline_at"),
@@ -861,7 +1196,9 @@ def composite_main(ctx: FigureContext, specs: Sequence[dict], panels: List[dict]
         fig.text(max(pos.x0 - 0.055, 0.004), min(pos.y1 + 0.012, 0.995),
                  chr(ord("A") + k), fontsize=10, fontweight="bold", va="bottom",
                  ha="left")
-        foots.append(f.splitlines()[2] if len(f.splitlines()) > 2 else "")
+        foots.append(f.splitlines()[1]
+                     if ctx.plot_style == "replicate-simple" and len(f.splitlines()) > 1
+                     else (f.splitlines()[2] if len(f.splitlines()) > 2 else ""))
     if has_img:
         n = len(panels)
         y0 = top - body_h - img_h + 0.055
@@ -890,9 +1227,15 @@ def composite_main(ctx: FigureContext, specs: Sequence[dict], panels: List[dict]
           "otherwise. The Holm-adjusted p and the minimum detectable effect for every "
           "panel are on that panel's standalone figure and in the Contrasts sheet.\n"
         + "\n".join(x for x in foots if x))
+    if ctx.plot_style == "replicate-simple":
+        foot = ctx.footer(f"Panels: {lettered}.\n"
+                          "Points are well means; ticks are group means. "
+                          + ("Muted small points are FOV means. " if ctx.technical_layer == "fov" else "")
+                          + "Two-sided Welch on wells; raw p above each comparison.\n"
+                          + "\n".join(foots))
     stamp_foot(fig, foot)
     return save(fig, out_dir, stem, manifest,
-                "Composite: primary endpoints by condition group plus representative "
+                f"Composite ({ctx.plot_style}): primary endpoints by condition group plus representative "
                 "micrographs.",
                 "Per nucleus / Per field / Per well / Contrasts sheets and the run's "
                 "publication images")

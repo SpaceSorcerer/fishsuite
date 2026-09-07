@@ -25,6 +25,11 @@ SHEET_ORDER: List[str] = [
 ]
 
 SHEET_DESCRIPTION: Dict[str, str] = {
+    "Localization counts": "Localization per nucleus and assigned cell territory. Authoritative counts are reconciled with spot assignments; zero-total fractions remain NA.",
+    "Localization unassigned": "Unassigned spots (source nucleus_id 0), excluded from localization per nucleus and assigned cell territory and tabulated separately by image.",
+    "Localization checks": "Source-column and NA-mask checks for localization per nucleus and assigned cell territory.",
+    "Localization territory": "Recorded geometry for localization per nucleus and assigned cell territory; an assigned territory is not an anatomical cell boundary.",
+    "Localization crops": "Crop selection and provenance for localization per nucleus and assigned cell territory; missing boundary masks are explicit.",
     "Read me": (
         "What this workbook is, which fishsuite run produced it, how the replicate "
         "structure works and what each other sheet holds. Read the replicate-unit row "
@@ -41,7 +46,7 @@ SHEET_DESCRIPTION: Dict[str, str] = {
         "condition groups: the nuclear fraction of each nucleus's puncta, the "
         "area-normalised density, and nuclear-to-cytoplasmic intensity ratios. These "
         "are within-nucleus ratios, so a shifted detection floor moves numerator and "
-        "denominator together."),
+        "denominator together. Non-detection is not evidence of no effect; MDE is not an exclusion bound."),
     "Partner at puncta by group": (
         "Whether the partner channel is enriched at the anchor channel's puncta, "
         "against the engine's own per-nucleus nulls, plus punctum-to-punctum pairing "
@@ -88,6 +93,26 @@ def _description(name: str) -> str:
     return SHEET_DESCRIPTION.get(name, "")
 
 
+SHEET_DESCRIPTION.update({
+    'Coloc figure sources':'Re-rendered persisted panel figure hashes with exact source workbook and imported report per-well cells. Original values remain unchanged; biological wells only.',
+    'Deck specification':'Curated slide titles, readouts and qualifications from the requested deck specification. Measurement claims resolve separately to report data cells.',
+    'Endpoint coverage':'Defined nucleus counts and eligible counts are distinct. Summed per-field finite counts retain endpoint-specific missingness and usability masks; no imputation.',
+    'Coloc per nucleus':'Persisted standard-panel values for both nuclear anchors. Missing calls are not negatives. Costes-only values require convergence; fallback mixtures remain separate.',
+    'Coloc per field':'Persisted field means, retained verbatim. Fields are technical replicates within biological wells.',
+    'Coloc per well':'Exact persisted per-well panel numbers. The group column aliases source line; source values and their cells are retained in Coloc source cells.',
+    'Coloc contrasts':'Historical panel contrasts, unchanged. Descriptive rows have no p values. New exploratory partner tests appear separately in Contrasts, with amended Holm.',
+    'Coloc line profiles':'Persisted profile samples, with image, well, nuclear anchor and calibrated distance. No pixel resampling or new null draws.',
+    'Coloc source cells':'Exact source workbook sheet/cell addresses and file SHA256 hashes, plus the frozen figure index. All source files are read only.',
+    'Endpoint definitions':'Full endpoint map including total IF (descriptive, acquisition-qualified), nuclear-forward pairing, and distinct reverse signal/calls/pairing denominators. Whole-territory pairing retains its historical identity.',
+    'Multiplicity plan':'Frozen original members plus declared additions: detection 4 to 5 (A2); partner 22 to 27 (A3); localization unchanged. Observed call/pairing aliases are counted once. No pruning on p.',
+    'Slide values':'Slide values resolved after workbook layout; each value names its source measurement/provenance sheet and cell. MEASURED direction follows the observed contrast.',
+    'Figure sources':'Figure paths and SHA256 hashes, endpoints, cohort, filters and tests. Speaker notes resolve numeric values to workbook cells.',
+    'Nucleus selection':'Retained labels are the starting population. Pre-area/pre-border candidates and exclusions remain missing. Endpoint usability masks act later.',
+    'Selection evidence':'Verbatim A0 nucleus-selection evidence and source hash, kept as provenance rather than an instruction to execute.',
+    'Micrographs':'Exact persisted micrograph paths, hashes, image identities, planes and source pixel calibration. The native annotated scale bar is retained; its pixel length is checked against the source calibration. No new segmentation.',
+})
+
+
 def write(path: Path, sheets: Dict[str, pd.DataFrame],
           strike_rows: Dict[str, Sequence[int]] | None = None,
           order: Sequence[str] | None = None) -> Path:
@@ -98,6 +123,8 @@ def write(path: Path, sheets: Dict[str, pd.DataFrame],
     strike_rows = strike_rows or {}
     order = list(order or SHEET_ORDER)
     path = Path(path)
+    from .provenance import guard_output
+    guard_output(path)
     path.parent.mkdir(parents=True, exist_ok=True)
 
     with pd.ExcelWriter(path, engine="openpyxl") as xl:

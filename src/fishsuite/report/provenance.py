@@ -46,6 +46,29 @@ RUN_FILES = [
 ]
 
 
+def guard_output(path: Path) -> Path:
+    """Never write into a frozen delivery, including through a junction/symlink."""
+    from .aggregate import ReportInputError
+    path = Path(path).absolute()
+    for candidate in (path, path.resolve()):
+        if any(part.upper().startswith('DELIVERY_') for part in candidate.parts):
+            raise ReportInputError(f'frozen output forbidden: {path}')
+    return path
+
+
+def producing_commit(run_dir: Path) -> str:
+    """Only a run-embedded identity is a producing commit; HEAD is never a fallback."""
+    import re
+    path = Path(run_dir) / 'versions.txt'
+    if path.is_file():
+        for line in path.read_text(encoding='utf-8').splitlines():
+            key, sep, value = line.partition(':')
+            if sep and key.strip().lower() in {'producing engine commit', 'engine_commit', 'git_commit'}:
+                if re.fullmatch(r'[0-9a-fA-F]{40}', value.strip()):
+                    return value.strip()
+    return 'missing from run'
+
+
 def sha256(path: Path) -> str:
     h = hashlib.sha256()
     with open(path, "rb") as fh:

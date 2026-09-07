@@ -66,6 +66,10 @@ dev = [
 gui = [
     "PySide6>=6.6",
 ]
+# Optional PowerPoint export for `fishsuite report --deck` (report/slides.py imports lazily).
+deck = [
+    "python-pptx>=1.0",
+]
 # AMD GPU acceleration for cellpose. Windows only, and opt-in: CUDA and CPU
 # users must not be made to install it.
 directml = [

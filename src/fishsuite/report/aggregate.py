@@ -83,6 +83,102 @@ def groups_from_run_config(cfg: dict) -> Tuple[Dict[str, str], List[str]]:
 # ---------------------------------------------------------------- run loading
 
 
+def reconcile_localization(nuclei: pd.DataFrame, spots: pd.DataFrame) -> dict:
+    """Audit source RNA1 assignments against the FULL retained nucleus roster.
+
+    Never changes a source column or filters a nucleus. Identical assignment
+    duplicates count once per (image, channel, spot_id); conflicting identities
+    block interpretation. Missing inputs remain missing, never inferred zeros.
+    Counts are exact; fractions use atol=1e-12, rtol=1e-10 with exact NA masks.
+    """
+    keys = ['image', 'nucleus_id']
+    out = dict(status='blocked', errors=[], duplicate_rows=0,
+               per_nucleus=pd.DataFrame(), unassigned=pd.DataFrame(),
+               checks=pd.DataFrame(), territory=pd.DataFrame())
+    need = {'image', 'nucleus_id', 'channel', 'spot_id', 'in_nucleus', 'in_cytoplasm'}
+    missing = sorted(need - set(spots.columns))
+    if missing or not set(keys) <= set(nuclei.columns):
+        out['errors'].append(f'missing localization identity/assignment columns: {missing}')
+        return out
+    roster = nuclei[keys].copy().reset_index(drop=True)
+    if roster.isna().any().any() or roster.duplicated(keys).any() or (pd.to_numeric(roster.nucleus_id, errors='coerce').fillna(0) <= 0).any():
+        out['errors'].append('invalid or duplicate nucleus roster identity')
+        return out
+    rna = spots.loc[spots.channel.eq('rna1'), sorted(need)].copy()
+    identity = ['image', 'channel', 'spot_id']
+    if rna[identity].isna().any().any():
+        out['errors'].append('missing spot identity')
+        return out
+    for c in ['in_nucleus', 'in_cytoplasm']:
+        rna[c] = rna[c].replace({'True': 1, 'False': 0, 'true': 1, 'false': 0})
+        rna[c] = pd.to_numeric(rna[c], errors='coerce')
+        if not rna[c].isin([0, 1]).all():
+            out['errors'].append(f'invalid compartment flag: {c}')
+    rna['nucleus_id'] = pd.to_numeric(rna.nucleus_id, errors='coerce')
+    if rna.nucleus_id.isna().any() or (rna.nucleus_id < 0).any() or (rna.nucleus_id % 1 != 0).any():
+        out['errors'].append('invalid spot nucleus identity')
+    if out['errors']:
+        return out
+    unique_assignments = rna.drop_duplicates(identity + ['nucleus_id', 'in_nucleus', 'in_cytoplasm'])
+    if unique_assignments.duplicated(identity).any():
+        out['errors'].append('conflicting spot identity')
+        return out
+    out['duplicate_rows'] = int(len(rna) - len(unique_assignments))
+    rna = unique_assignments
+    unassigned = rna.nucleus_id.eq(0)
+    flags = rna.in_nucleus + rna.in_cytoplasm
+    if ((unassigned & flags.ne(0)) | (~unassigned & flags.ne(1))).any():
+        out['errors'].append('invalid nuclear/cytoplasmic count partition')
+    out['unassigned'] = (rna[unassigned].groupby('image').size()
+                         .rename('spot_count').reset_index())
+    assigned = rna[~unassigned]
+    joined = assigned.merge(roster, on=keys, how='left', indicator=True)
+    if joined['_merge'].ne('both').any():
+        out['errors'].append('assigned spot outside nucleus roster')
+    counts = assigned.groupby(keys, sort=False).agg(
+        source_nuclear_spots=('in_nucleus', 'sum'), source_cyto_spots=('in_cytoplasm', 'sum')).reset_index()
+    audit = roster.merge(counts, on=keys, how='left', validate='one_to_one')
+    for c in ['source_nuclear_spots', 'source_cyto_spots']:
+        audit[c] = audit[c].fillna(0).astype('int64')
+    audit['source_assigned_spots'] = audit.source_nuclear_spots + audit.source_cyto_spots
+    audit['source_nuclear_fraction'] = audit.source_nuclear_spots / audit.source_assigned_spots.where(audit.source_assigned_spots > 0)
+    checks = []
+    bindings = {'nuclear_spot_count': 'source_nuclear_spots', 'cyto_spot_count': 'source_cyto_spots',
+        'rna_spot_count': 'source_assigned_spots', 'n_spots_rna1': 'source_assigned_spots',
+        'n_cytoplasmic_rna1_spots_per_cell': 'source_cyto_spots',
+        'nuclear_spot_fraction': 'source_nuclear_fraction'}
+    for col, expected in bindings.items():
+        if col not in nuclei:
+            checks.append(dict(column=col, status='missing', mismatches=None, na_mask_exact=False))
+            continue
+        actual = pd.to_numeric(nuclei[col], errors='coerce').reset_index(drop=True)
+        want = audit[expected]
+        mask_ok = np.array_equal(actual.isna(), want.isna())
+        eq = (np.isclose(actual, want, atol=1e-12, rtol=1e-10, equal_nan=True)
+              if col == 'nuclear_spot_fraction' else actual.eq(want).to_numpy())
+        audit[col] = actual
+        checks.append(dict(column=col, status='ok' if eq.all() and mask_ok else 'mismatch',
+                           mismatches=int((~eq).sum()), na_mask_exact=bool(mask_ok)))
+    out['checks'] = pd.DataFrame(checks)
+    if any(c['status'] == 'mismatch' for c in checks):
+        out['errors'].append('source count/fraction or alias mismatch')
+    required = {'nuclear_spot_count', 'cyto_spot_count', 'nuclear_spot_fraction'}
+    if required - set(nuclei):
+        out['errors'].append('missing authoritative localization columns')
+    geometry = ['cyto_estimation_method', 'cyto_area_px', 'cell_area_px', 'nucleus_area_px', 'voxel_xy_um']
+    territory = roster.copy()
+    for col in geometry:
+        territory[col] = nuclei[col].reset_index(drop=True) if col in nuclei else pd.NA
+    territory['geometry_complete'] = territory[geometry].notna().all(axis=1)
+    territory['area_partition_matches'] = (
+        pd.to_numeric(territory.cell_area_px, errors='coerce') ==
+        pd.to_numeric(territory.nucleus_area_px, errors='coerce') + pd.to_numeric(territory.cyto_area_px, errors='coerce')).astype('boolean').where(
+            territory[['cell_area_px', 'nucleus_area_px', 'cyto_area_px']].notna().all(axis=1), pd.NA)
+    out.update(per_nucleus=audit, territory=territory,
+               status='blocked' if out['errors'] else 'ok')
+    return out
+
+
 def label_frame(per_image: pd.DataFrame, well_to_group: Dict[str, str],
                 exclude_fields: Dict[str, str],
                 well_from_image: Optional[str] = None) -> pd.DataFrame:
@@ -572,6 +668,24 @@ def build_contrasts(well: pd.DataFrame, field: pd.DataFrame,
     out["_f"] = out["family"].map(fam_rank).fillna(99)
     out = out.sort_values(["_f", "endpoint", "reference_group", "test_group"]).drop(columns="_f")
     return out.reset_index(drop=True)
+
+
+def retain_descriptive_panel_policy(contrasts: pd.DataFrame, additions: Sequence[_ep.Endpoint]) -> pd.DataFrame:
+    """Do not turn historical descriptive panel rows into newly tested hypotheses.
+
+    Arm summaries and Hedges g remain descriptive. Raw/adjusted tests, confidence
+    intervals and MDE are missing by design for these imported sensitivity rows.
+    Existing reporter rows and the declared A3 additions are untouched.
+    """
+    result = contrasts.copy()
+    names = {e.name for e in additions if e.descriptive_only and
+             e.source.startswith('persisted coloc_standard_panel')}
+    mask = result.endpoint.isin(names)
+    columns = [c for c in result if c.startswith(('p_', 'ci_', 'mde_', 'significant_', 'tukey_', 'well_tukey_'))]
+    columns += [c for c in ('t','df','observed_g_reaches_mde','well_p_tukey_fov') if c in result]
+    for col in columns:
+        result.loc[mask,col] = np.nan
+    return result
 
 
 def family_sheet(contrasts: pd.DataFrame, well: pd.DataFrame, family: str,
