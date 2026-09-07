@@ -166,6 +166,8 @@ def test_default_rendering_omitted_localization_aliases(tmp_path):
                           make_figures=True, coloc_panel=False)
     audit = pd.read_excel(result['xlsx'], sheet_name='Localization counts', header=1)
     assert audit.source_nuclear_fraction.isna().sum() == 1
-    assert (tmp_path/'report/localization/FIG_LOCALIZATION.svg').is_file()
+    for variant in ('focus', 'full'):  # locked style: every figure is a _focus/_full pair
+        assert (tmp_path/f'report/localization/FIG_LOCALIZATION_{variant}.svg').is_file()
+        assert (tmp_path/f'report/localization/FIG_LOCALIZATION_{variant}.png').is_file()
 
 
