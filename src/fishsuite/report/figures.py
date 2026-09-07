@@ -701,9 +701,23 @@ def draw_plot(ax, ctx: FigureContext, *args, **kwargs) -> str:
 def layout_replicate_simple(fig, ax, ctx, title, foot):
     """Fit the compact standalone bands using rendered text dimensions."""
     import re
-    width = max(24, int(fig.get_figwidth() * 10))
-    fig.text(.5, .98, textwrap.fill(title, width), ha="center", va="top",
-             fontsize=8, fontweight="bold")
+    renderer = fig.canvas.get_renderer()
+    heading = fig.text(.5, .98, " ".join(title.split()), ha="center", va="top",
+                       fontsize=10.5, fontweight="bold")
+    while heading.get_window_extent(renderer).width > fig.bbox.width * .96 and heading.get_fontsize() > 9:
+        heading.set_fontsize(max(9, heading.get_fontsize() - .25))
+    # Wrap only after the single line has exhausted the permitted font range.
+    if heading.get_window_extent(renderer).width > fig.bbox.width * .96:
+        words, lines, line = title.split(), [], ""
+        for word in words:
+            candidate = (line + " " + word).strip()
+            heading.set_text(candidate)
+            if line and heading.get_window_extent(renderer).width > fig.bbox.width * .96:
+                lines.append(line)
+                line = word
+            else:
+                line = candidate
+        heading.set_text("\n".join([*lines, line]))
     thresholds = ctx.thresholds.replace(" detection threshold", "").replace(" (harmonized)", "")
     thresholds = thresholds.replace("detection thresholds: not recorded by this run", "thresholds NA")
     run = ctx.run_name if len(ctx.run_name) <= 23 else "…" + ctx.run_name[-22:]
@@ -722,7 +736,7 @@ def layout_replicate_simple(fig, ax, ctx, title, foot):
     renderer = fig.canvas.get_renderer()
     # Wrap by measured glyph width, rather than a minimum character count that
     # was intended for the much wider superplot canvas.
-    probe = fig.text(0, 0, "", fontsize=6.5)
+    probe = fig.text(0, 0, "", fontsize=6)
     def wrap(text, max_pixels):
         lines = []
         for paragraph in text.splitlines():
@@ -738,7 +752,7 @@ def layout_replicate_simple(fig, ax, ctx, title, foot):
             lines.append(line)
         return "\n".join(lines)
     footer = fig.text(.035, .018, wrap(compact_foot, fig.bbox.width * .93),
-                      fontsize=6.5, va="bottom", linespacing=1.05, color="#333333")
+                      fontsize=6, va="bottom", linespacing=1.05, color="#333333")
     probe.remove()
     # Keep exactly two header lines at 7 pt, compressing horizontally only for
     # unusually long run/threshold metadata.

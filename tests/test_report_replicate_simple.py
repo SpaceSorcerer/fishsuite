@@ -226,3 +226,16 @@ def test_compact_standalone_size(report_data, tmp_path, monkeypatch, groups, wid
     monkeypatch.setattr(fig, "save", capture)
     fig.superplot_standalone(ctx, "rna1_spots_per_nucleus", "Puncta", "Puncta per nucleus",
         r["well"], r["field"], pd.DataFrame(), r["contrasts"], None, tmp_path, "size", [])
+
+
+@pytest.mark.parametrize("title", ["Puncta", "BIN1 intron puncta, % nuclear"])
+def test_title_stays_single_line_and_footer_is_six_pt(tmp_path, title):
+    canvas, ax = plt.subplots(figsize=(2.8, 3.2))
+    fig.layout_replicate_simple(canvas, ax, context(tmp_path), title, "Two-sided Welch; well replicates.")
+    canvas.canvas.draw()
+    heading = canvas.texts[0]
+    assert "\n" not in heading.get_text()
+    assert 9 <= heading.get_fontsize() <= 10.5
+    assert heading.get_window_extent().width <= canvas.bbox.width * .96
+    assert canvas.texts[-1].get_fontsize() == 6
+    plt.close(canvas)

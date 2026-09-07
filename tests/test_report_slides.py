@@ -188,3 +188,26 @@ def test_export_allows_explicit_source_identifiers(tmp_path):
                  values=[dict(sheet='Micrographs', cell='A3', label='file stem')])
     path = build_deck(book, dict(workbook_sha256=sha256(book), slides=[slide]), tmp_path/'ids.pptx')
     assert Presentation(path).slides[0].shapes[0].text == slide['title']
+
+
+def test_micrograph_labels_are_slide_readable_and_inside_panel(tmp_path):
+    import numpy as np
+    import matplotlib.pyplot as plt
+    from fishsuite.report.slides import draw_micrograph_panel
+    path = tmp_path / "micrograph.png"
+    plt.imsave(path, np.zeros((100, 150, 3)))
+    canvas, ax = plt.subplots(figsize=(6.2, 4.8))
+    row = dict(path=str(path), group="WT", bar_um=5., voxel_xy_um=.1,
+               native_bar_px=50, width_px=150, height_px=100)
+    draw_micrograph_panel(ax, row)
+    canvas.canvas.draw()
+    assert all(t.get_fontsize() >= 14 for t in [ax.title, *ax.texts])
+    for text in ax.texts:
+        box = text.get_window_extent()
+        panel = ax.get_window_extent()
+        assert panel.contains(box.x0, box.y0) and panel.contains(box.x1, box.y1)
+    bar = ax.lines[-1]
+    assert abs(np.diff(bar.get_xdata())[0]) == 50
+    assert min(bar.get_xdata()) > ax.get_xlim()[0]
+    assert max(bar.get_xdata()) < ax.get_xlim()[1]
+    plt.close(canvas)

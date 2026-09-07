@@ -152,7 +152,7 @@ def build_deck(workbook: Path, spec: dict, destination: Path) -> Path:
                 caption = slide.shapes.add_textbox(Inches(left), Inches(top-.2), Inches(width), Inches(.2))
                 caption.text_frame.text = asset['caption_value']
                 for paragraph in caption.text_frame.paragraphs:
-                    paragraph.font.name, paragraph.font.size = 'Arial', Pt(11)
+                    paragraph.font.name, paragraph.font.size = 'Arial', Pt(14)
             notes.append(f'Figure: {asset["path"]} | SHA256 {asset["sha256"]}')
             sources.append(dict(slide=number, figure=asset['path'], sha256=asset['sha256']))
         if not definition.get('figures'):
@@ -167,6 +167,35 @@ def build_deck(workbook: Path, spec: dict, destination: Path) -> Path:
     ppt.save(destination)
     pd.DataFrame(sources).to_csv(sources_path, index=False)
     return destination
+
+
+def draw_micrograph_panel(ax, row, color="black"):
+    """Display crop with a padded annotation band; source raster is unchanged.
+
+    Omit the bottom six percent containing the verified native annotation, then
+    redraw the calibrated bar in padding. Coordinates retain source-pixel scale.
+    At the full-width deck placement, all annotation text is at least 18 pt.
+    """
+    pixels = figures.plt.imread(row['path'])
+    height, width = pixels.shape[:2]
+    stop = int(height * .94)
+    ax.imshow(pixels[:stop], extent=(-.5, width-.5, stop-.5, -.5))
+    ax.set_facecolor('black')
+    ax.set_xlim(-.5, width-.5)
+    ax.set_ylim(height * 1.18, -.5)
+    from matplotlib.patches import Rectangle
+    ax.add_patch(Rectangle((-.5, stop-.5), width, height * .25,
+                           color='black', zorder=2))
+    bar_px = float(row['bar_um']) / float(row['voxel_xy_um'])
+    right = width * .94
+    if bar_px > width * .88:
+        raise ReportInputError('calibrated scale bar does not fit micrograph panel')
+    ax.plot([right-bar_px, right], [height*1.10]*2, color='white', lw=3,
+            solid_capstyle='butt', zorder=3)
+    ax.text(right-bar_px/2, height*.99, f"{row['bar_um']:g} µm",
+            ha='center', va='center', fontsize=18, color='white', zorder=3)
+    ax.set_title(row['group'], fontsize=20, color=color)
+    ax.axis('off')
 
 
 def prepare_deck(template: dict, sheets: dict, out_dir: Path, data: dict,
@@ -387,8 +416,7 @@ def prepare_deck(template: dict, sheets: dict, out_dir: Path, data: dict,
         elif item.get('kind')=='micrographs':
             f,axes=fig.plt.subplots(1,len(micro),figsize=(12.4,5.6),squeeze=False)
             for ax,row in zip(axes.flat,micro):
-                ax.imshow(fig.plt.imread(row['path']))
-                ax.set_title(row['group'],color=ctx.colors[row['group']]); ax.axis('off')
+                draw_micrograph_panel(ax, row, ctx.colors[row['group']])
             f.subplots_adjust(left=.02,right=.98,top=.92,bottom=.04)
             records=[]
             fig.save(f,figure_dir,stem,records,item['title'],'Micrographs')
