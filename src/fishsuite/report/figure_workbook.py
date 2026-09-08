@@ -2,27 +2,79 @@
 from pathlib import Path
 from types import SimpleNamespace
 import json
+import hashlib
+import re
 import numpy as np
 import pandas as pd
 from . import figures
 from .provenance import guard_output
 
 
+SHORT_SHEET_NAMES = {
+    'rna1_spots_per_nucleus': 'bin1_puncta_per_nucleus',
+    'rna1_nuclear_spots_per_nucleus': 'bin1_nuclear_puncta',
+    'rna1_cyto_spots_per_nucleus': 'bin1_cyto_puncta',
+    'rna1_punctum_footprint_area_um2': 'bin1_punctum_area',
+    'rna1_punctum_equivalent_diameter_um': 'bin1_punctum_diameter',
+    'rna1_nuclear_spot_fraction': 'bin1_pct_nuclear_legacy',
+    'nuclear_spot_fraction_dapi': 'bin1_pct_nuclear',
+    'protein_nuclear_mean': 'rnaseh2b_nuclear_mean',
+    'protein_nuclear_mean_seconly_corrected': 'rnaseh2b_mean_corrected',
+    'protein_spots_per_nucleus': 'rnaseh2b_puncta',
+    'partner_rotation_enrichment_at_rna1': 'rnaseh2b_enrich_at_bin1',
+    'partner_rotation_enrichment_at_rna1_allnuclei': 'rnaseh2b_enrich_all_nuc',
+    'paired_frac_rna1_at_partner_minus_shuffle': 'pairing_excess_shuffle',
+    'paired_frac_partner_at_rna1_minus_shuffle': 'reverse_pairing_excess',
+    'paired_frac_rna1_at_partner_shuffle': 'pairing_shuffle',
+    'partner_mean_in_exact_rna1_footprint': 'rnaseh2b_at_bin1_mean',
+    'partner_enrichment_in_exact_rna1_footprint': 'rnaseh2b_local_enrich',
+    'fraction_rna1_puncta_partner_positive_exact_footprint': 'bin1_partner_positive',
+}
+VALUE_COLUMNS = ['well_group','condition','well','image','nucleus_id','value']
+
+
+def sheet_name(endpoint, slide, number, used):
+    """Reserve four characters for _nuc; resolve Excel's case-insensitive collisions."""
+    prefix=f'{slide:02d}_'
+    label=SHORT_SHEET_NAMES.get(endpoint)
+    name=prefix+label if label else ''
+    attempt=0
+    while not name or len(name)>27 or name.casefold() in used or (name+'_nuc').casefold() in used:
+        digest=hashlib.sha256(f'{endpoint}|{slide}|{number}|{attempt}'.encode()).hexdigest()[:10]
+        words=re.findall('[a-z0-9]+',endpoint.lower())
+        abbreviation='_'.join(w[:3] for w in words)[:max(0,27-len(prefix)-11)].rstrip('_')
+        name=f'{prefix}{abbreviation}_{digest}'
+        attempt+=1
+    used.update([name.casefold(),(name+'_nuc').casefold()])
+    return name
+
+
+def source_columns(frame):
+    """The source condition is the folder; group is the collapsed condition."""
+    return frame.rename(columns={'condition':'well_group','group':'condition','well_id':'well'})
+
+
+def ordered_values(frame):
+    frame=frame.copy()
+    for column in VALUE_COLUMNS:
+        if column not in frame: frame[column]=np.nan
+    return frame[VALUE_COLUMNS+[c for c in frame if c not in VALUE_COLUMNS]]
+
+
 def well_table(well):
-    result=well.rename(columns={'group':'condition','well_id':'well','well_mean_of_field_values':'value'})[['condition','well','value']].copy()
+    result=source_columns(well).rename(columns={'well_mean_of_field_values':'value'})
+    result=result[[c for c in ['well_group','condition','well','value'] if c in result]].copy()
     summary=result.groupby('condition').value.agg(SD='std',n='count')
     return result.join(summary,on='condition')
 
 
 def write_tables(out,sheets,spec,captured):
     """One primary values table per embedded figure; nucleus tables when available."""
-    import re
-    metadata={}; missing=[]
+    metadata={}; missing=[]; index=[]; used={'sheet index'}
     with pd.ExcelWriter(out/'DATA_FOR_FIGURES.xlsx',engine='openpyxl') as writer:
         for slide,item in enumerate(spec['slides'],1):
             for number,asset in enumerate(item['figures'],1):
                 path=Path(asset['path']);stem=path.stem.removesuffix('_focus')
-                name=f's{slide:02d}_{number:02d}_'+re.sub('[^A-Za-z0-9_]','',stem.removeprefix('FIG_'))[:15]
                 data=captured.get((slide,number))
                 meta=dict(title=asset.get('caption') or item['title'],image=str(path.relative_to(out)),kind='image',ylabel='')
                 values=pd.DataFrame(columns=['condition','well','value','SD','n'])
@@ -33,23 +85,28 @@ def write_tables(out,sheets,spec,captured):
                     meta.update(kind='well',ylabel=data['ylabel'],endpoint=data['endpoint'],axis_group=data.get('axis_group',''))
                     if len(data['nuclei']):
                         raw=data['nuclei']
-                        nuclei=raw.rename(columns={'group':'condition','well_id':'well',data['nuc_column']:'value'})
-                        nuclei=nuclei[[c for c in ['condition','well','image','nucleus_id','value'] if c in nuclei]].copy()
+                        nuclei=source_columns(raw).rename(columns={data['nuc_column']:'value'})
+                        nuclei=nuclei[[c for c in VALUE_COLUMNS if c in nuclei]].copy()
                         nuclei['value']*=data['scale']
                 else:
                     values,nuclei,extra=custom_values(stem,item,sheets,out)
                     meta.update(extra)
-                    if values.empty and meta['kind']!='image': missing.append(name+': no numeric source')
-                primary=['condition','well','value','SD','n']
-                values=values[primary+[c for c in values if c not in primary]]
+                endpoint=meta.get('endpoint',stem.removeprefix('FIG_'))
+                name=sheet_name(endpoint,slide,number,used)
+                if values.empty and meta['kind']!='image': missing.append(name+': no numeric source')
+                values=ordered_values(values)
                 values.to_excel(writer,sheet_name=name,index=False)
                 if not nuclei.empty:
-                    keep=['condition','well','image','nucleus_id','nucleus_uid','object_id','spot_id','class','x','value']
+                    keep=VALUE_COLUMNS+['nucleus_uid','object_id','spot_id','class','x']
                     nuclei=nuclei[[c for c in keep if c in nuclei]]
-                    suffix={'hexbin':'pixels','ecdf':'spots','stacked':'spots','hist':'objects','fieldpoints':'fovs'}.get(meta['kind'],'nuclei')
-                    nuclei.to_excel(writer,sheet_name=name+'_'+suffix,index=False)
-                    meta['nuclei_sheet']=name+'_'+suffix
+                    ordered_values(nuclei).to_excel(writer,sheet_name=name+'_nuc',index=False)
+                    meta['nuclei_sheet']=name+'_nuc'
                 metadata[name]=meta
+                for table,kind in [(name,'figure')]+([(name+'_nuc','source')] if not nuclei.empty else []):
+                    index.append(dict(sheet_name=table,endpoint_id=endpoint,figure_file=meta['image'],
+                                      slide=slide,table_kind=kind,metadata_json=json.dumps(meta)))
+        pd.DataFrame(index,columns=['sheet_name','endpoint_id','figure_file','slide','table_kind','metadata_json']).to_excel(
+            writer,sheet_name='Sheet index',index=False)
     (out/'DATA_FOR_FIGURES.json').write_text(json.dumps(metadata,indent=2),encoding='utf-8')
     (out/'regenerate_figures.py').write_text(
         'from pathlib import Path\nimport argparse\nfrom fishsuite.report.figure_workbook import render\n'
@@ -116,7 +173,7 @@ def custom_values(stem,item,sheets,out):
         meta={'kind':'stacked','ylabel':'BIN1 spots (%)'}
     elif stem=='FIG_LOCALIZATION_object_area':
         nuclei=sheets['DAPI objects'].loc[lambda x:~x.secondary_only & x.unretained.astype(bool)].copy()
-        nuclei=nuclei.rename(columns={'well_id':'well','group':'condition','area_px':'value','dapi_object_id':'object_id'})
+        nuclei=source_columns(nuclei).rename(columns={'area_px':'value','dapi_object_id':'object_id'})
         values=nuclei.groupby(['condition','well']).value.agg(value='mean',SD='std',n='count').reset_index()
         meta={'kind':'hist','xlabel':'Unretained DAPI object area (pixels)','ylabel':'Objects'}
     elif stem.startswith('FIG_SECONLY_'):
@@ -162,7 +219,12 @@ def render(path,sheet,out):
     path=Path(path).resolve();out=guard_output(Path(out));out.mkdir(parents=True,exist_ok=True)
     metadata=json.loads(path.with_suffix('.json').read_text()) if path.with_suffix('.json').exists() else {}
     with pd.ExcelFile(path) as book:
-        names=[sheet] if sheet else list(metadata) if metadata else [n for n in book.sheet_names if not n.endswith('_nuclei')]
+        if not metadata and 'Sheet index' in book.sheet_names:
+            index=pd.read_excel(book,sheet_name='Sheet index')
+            metadata={row.sheet_name:json.loads(row.metadata_json) for row in index.itertuples()
+                      if row.table_kind=='figure'}
+        names=[sheet] if sheet else list(metadata) if metadata else [n for n in book.sheet_names
+            if n!='Sheet index' and not n.endswith(('_nuc','_nuclei'))]
         from .endpoints import Endpoint
         definitions=[]; grouped=[]
         for key,entry in metadata.items():
