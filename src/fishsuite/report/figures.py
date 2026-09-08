@@ -212,8 +212,17 @@ def save(fig, out_dir: Path, stem: str, manifest: List[dict], description: str,
     import re
     texts = [(t, t.get_text()) for t in fig.texts]
     if setters and not any("axis:" in text for _, text in texts) and not any("mixed model p" in text for _, text in texts):
-        label = fig.text(.016, .008, "axis: focus window", fontsize=6, color="#333333")
-        texts.append((label, label.get_text()))
+        run_footer = next((t for t, text in texts if '; run ' in text), None)
+        if run_footer is not None:
+            run_footer.set_text(run_footer.get_text().replace('; run ', '; axis: focus window; run '))
+            fig.canvas.draw()
+            width = run_footer.get_window_extent().width
+            if width > fig.bbox.width*.96:
+                run_footer.set_fontsize(run_footer.get_fontsize()*fig.bbox.width*.95/width)
+            texts = [(t, t.get_text()) for t in fig.texts]
+        else:
+            label = fig.text(.016, .008, "axis: focus window", fontsize=6, color="#333333")
+            texts.append((label, label.get_text()))
     for variant in variants:
         for setter in setters:
             setter(variant)
@@ -766,20 +775,18 @@ def draw_plot(ax, ctx: FigureContext, *args, **kwargs) -> str:
 
 
 def layout_replicate_simple(fig, ax, ctx, title, foot):
-    """A14: one run line and one inference/count line; metadata stays in workbook."""
-    heading = fig.text(.5, .98, '\n'.join(textwrap.wrap(' '.join(title.split()), 30)),
+    """One fitted title and one footer ending with the source run name."""
+    heading = fig.text(.5, .98, ' '.join(title.split()),
                        ha='center', va='top', fontsize=11, fontweight='bold')
+    footer = fig.text(.02, .018, ' '.join(foot.split()) + '; run ' + ctx.run_name,
+                      fontsize=6, va='bottom')
     fig.canvas.draw()
-    header_y = min(.82, heading.get_window_extent().y0 / fig.bbox.height - .02)
-    head = fig.text(.5, header_y, ctx.run_name, ha='center', va='top', fontsize=6)
-    footer = fig.text(.02, .018, ' '.join(foot.split()), fontsize=6, va='bottom')
-    fig.canvas.draw()
-    for artist in (head, footer):
+    for artist in (heading, footer):
         width = artist.get_window_extent().width
         if width > fig.bbox.width * .96:
-            artist.set_fontsize(artist.get_fontsize() * fig.bbox.width * .96 / width)
+            artist.set_fontsize(artist.get_fontsize() * fig.bbox.width * .95 / width)
     fig.canvas.draw()
-    top = head.get_window_extent().y0 / fig.bbox.height - .035
+    top = heading.get_window_extent().y0 / fig.bbox.height - .055
     ax.set_position([.25, .17, .70, top - .17])
     ax.yaxis.label.set_text('\n'.join(textwrap.wrap(ax.yaxis.label.get_text(), 25)))
     ax.yaxis.label.set_size(9)
@@ -1344,8 +1351,10 @@ def composite_main(ctx: FigureContext, specs: Sequence[dict], panels: List[dict]
         for artist in list(fig.texts):
             if artist.get_fontsize() < 10:
                 artist.remove()
-        fig.text(.5,.98,ctx.run_name,ha='center',va='top',fontsize=9)
-        footer=fig.text(.02,.015,' | '.join(foots),fontsize=6,va='bottom')
+        for artist in fig.texts:
+            if artist.get_position()[1] > .9:
+                artist.set_text(' '.join(artist.get_text().split()))
+        footer=fig.text(.02,.015,' | '.join(foots) + '; run ' + ctx.run_name,fontsize=6,va='bottom')
         fig.canvas.draw()
         width=footer.get_window_extent().width
         if width>fig.bbox.width*.96:

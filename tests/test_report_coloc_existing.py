@@ -6,6 +6,87 @@ import numpy as np
 import pandas as pd
 import pytest
 
+
+def test_simple_panel_hierarchy_and_costes(tmp_path):
+    from fishsuite.report.coloc_existing import read_simple_metrics, simple_rollups
+    frame = pd.DataFrame(dict(image=['a','a','b'], nucleus_id=[1,2,1],
+        condition=['WT_1']*3, line=['WT']*3, secondary_only=[False]*3,
+        pearson_r_csp=[.1,.3,.8], li_icq_csp=[.05,.15,.4],
+        manders_m1_costes_only=[.2,np.nan,.6], manders_m2_costes_only=[.4,np.nan,.8],
+        manders_m1_costes=[.2,.99,.6], costes_converged=[True,False,True]))
+    path = tmp_path/'panel.csv'
+    frame.to_csv(path,index=False)
+    nuclei = read_simple_metrics(path)
+    fields,wells = simple_rollups(nuclei)
+    assert fields.loc[fields.image.eq('a'),'pearson_r_csp'].item() == pytest.approx(.2)
+    assert wells.pearson_r_csp.item() == pytest.approx(.5)
+    assert wells.manders_m1_costes_only.item() == pytest.approx(.4)
+    assert nuclei.source_file.eq(str(path.resolve())).all()
+    frame.loc[1,'manders_m1_costes_only']=.99
+    frame.to_csv(path,index=False)
+    with pytest.raises(RuntimeError,match='Costes'):
+        read_simple_metrics(path)
+
+
+def test_representative_nucleus_median_tie_and_secondary():
+    from fishsuite.report.coloc_existing import representative_nuclei
+    frame=pd.DataFrame(dict(group=['WT']*5,well_id=['w']*5,image=['b','a','c','d','e'],
+        nucleus_id=[1]*5,pearson_r_csp=[.2,.4,np.nan,.99,.8],
+        secondary_only=[False,False,False,True,False]))
+    selected=representative_nuclei(frame)
+    assert selected.image.tolist()==['a']
+    assert selected.arm_median_pearson.item()==.4
+    tied=frame.iloc[:2]
+    assert representative_nuclei(tied).image.tolist()==['a']
+
+
+def test_simple_figure_preserves_fraction_units(tmp_path,monkeypatch):
+    from fishsuite.report import figures
+    from fishsuite.report.coloc_existing import SIMPLE_METRICS,simple_rollups,render_simple_coloc
+    n=pd.DataFrame(dict(group=['WT','WT','KO','KO'],well_id=['a','b','c','d'],
+        image=['a','b','c','d'],secondary_only=[False]*4))
+    for metric in SIMPLE_METRICS:n[metric]=[.2,.3,.4,.45]
+    f,w=simple_rollups(n)
+    c=pd.DataFrame([dict(endpoint=m,test_group='KO',reference_group='WT',p_mixed=.2,
+        p_welch=.3,sensitivity_mixed_status='ok') for m in SIMPLE_METRICS])
+    def inspect(canvas,*args):
+        assert len(canvas.texts) == 1
+        assert canvas.texts[0].get_text().endswith("; run test_run")
+        assert "\n" not in canvas.texts[0].get_text()
+        for ax in canvas.axes:
+            assert not any(t.get_text()=='descriptive, no test' and t.get_visible() for t in ax.texts)
+        for ax in canvas.axes[1:3]:
+            assert '%' not in ax.get_ylabel()
+            ax._replicate_simple_axis('full')
+            assert ax.get_ylim()==(0,1)
+            for collection in ax.collections:
+                if (collection.get_gid() or '').startswith('well:'):
+                    assert np.max(collection.get_offsets()[:,1])<=1
+        figures.plt.close(canvas)
+    monkeypatch.setattr(figures,'save',inspect)
+    render_simple_coloc(n,f,w,c,tmp_path,'MIAT','QKI','WT',run_name='test_run')
+
+
+def test_cytofluorogram_exact_pixels_shared_axes_and_failed_costes(tmp_path,monkeypatch):
+    from fishsuite.report.coloc_existing import render_cytofluorogram
+    from fishsuite.report import figures
+    x=np.arange(1.,21.);y=x+np.sin(x)
+    selected=pd.DataFrame(dict(group=['WT','KO'],well_id=['w','k'],image=['a','b'],
+        nucleus_id=[1,2],n_pix=[20,20],pearson_r_csp=[np.corrcoef(x,y)[0,1]]*2,
+        costes_converged=[True,False],costes_thr_rna1=[10,np.nan],costes_thr_partner=[12,np.nan]))
+    pixels={('w','a',1):(x,y),('k','b',2):(2*x,2*y)}
+    def inspect(canvas,*args):
+        a,b=canvas.axes
+        assert a.get_xlim()==b.get_xlim() and a.get_ylim()==b.get_ylim()
+        assert len(a.lines)==2 and len(b.lines)==0
+        assert any('Costes failed' in t.get_text() for t in b.texts)
+        figures.plt.close(canvas)
+    monkeypatch.setattr(figures,'save',inspect)
+    render_cytofluorogram(selected,pixels,tmp_path,'MIAT','QKI')
+    selected.loc[0,'pearson_r_csp']=0
+    with pytest.raises(RuntimeError,match='Pearson differs'):
+        render_cytofluorogram(selected,pixels,tmp_path,'MIAT','QKI')
+
 ROOT = Path('F:/Image Analysis Work/RNASEH2B_BIN1introns_2026_08_25')
 PANEL = ROOT / 'DELIVERY_RNASEH2B_BIN1intron_2026-09-05_v3/02_colocalization_panel/coloc_standard_panel.xlsx'
 RUN = ROOT / '13b_FULL_HARMONIZED_T36_FIXEDNUCLEAR_2026-09-05/RUN_T36_fixed_2026-09-05_0915'

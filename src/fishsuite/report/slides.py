@@ -117,6 +117,23 @@ def validate_deck(workbook: Path, spec: dict) -> list:
 
 def speaker_notes(workbook, definition):
     """Short spoken summary from already validated workbook cells, never cell refs."""
+    if definition.get('identity') in ('simple_coloc','cytofluorogram'):
+        groups={}
+        for item in definition.get('values',[]):
+            if item['sheet']=='Simple coloc metrics':
+                row,_=coordinate_to_tuple(item['cell'])
+                groups.setdefault(row,{})[item.get('label','')]=item['value']
+        lines=[f'Workbook: {Path(workbook).resolve()}', 'Levels of comparison: per nucleus → per FOV → per well.']
+        for row in groups.values():
+            lines.append(f"{row.get('endpoint')}: {row.get('reference_group')} well mean {row.get('mean_ref')}; {row.get('test_group')} well mean {row.get('mean_test')}; mixed p {row.get('p_mixed')}; Welch (wells) p {row.get('p_welch')}. {row.get('sensitivity_mixed_status')}.")
+            for arm in ('reference','test'):
+                lines.append(f"{arm}: {row.get('sensitivity_n_nuclei_'+arm)} defined nuclei, {row.get('sensitivity_n_fovs_'+arm)} FOVs, {row.get('sensitivity_n_wells_'+arm)} wells; nucleus median {row.get('sensitivity_nucleus_median_'+arm)}.")
+        lines += ['Nucleus-level model: fixed arm, random well and FOV within well. Two-sided asymptotic Wald p; exploratory, unadjusted.',
+                  'Manders uses Costes-converged nuclei only; failed thresholds remain missing. Pearson and ICQ use all defined biological nuclei.']
+        if definition['identity']=='cytofluorogram':
+            lines.append('One nucleus per arm, nearest its median Pearson r; descriptive pixel density on identical raw-intensity axes. No pixel-level test.')
+            lines.extend(f"{v.get('label')}: {v['value']}" for v in definition.get('values',[]) if v['sheet']=='Simple coloc representatives')
+        return '\n'.join(lines)
     endpoints = {}
     for item in definition.get('values', []):
         label = item.get('label', '')
@@ -213,6 +230,31 @@ def build_deck(workbook: Path, spec: dict, destination: Path) -> Path:
     ppt.save(destination)
     pd.DataFrame(sources).to_csv(sources_path, index=False)
     return destination
+
+
+def simple_coloc_slides(sheets, assets, rna, partner, cohort):
+    """The same two workbook-traced identities for either channel pair."""
+    refs=[]
+    for sheet in ('Simple coloc metrics','Simple coloc representatives'):
+        if sheet not in sheets: continue
+        table=sheets[sheet]
+        for i,row in table.iterrows():
+            for j,column in enumerate(table.columns):
+                refs.append(dict(sheet=sheet,cell=f'{get_column_letter(j+1)}{i+3}',
+                                 label=column,allow_missing=True,display=False))
+    sentence='Pearson and ICQ describe intensity agreement; Manders describes directional signal overlap at converged Costes thresholds.'
+    sheets['Simple coloc readout']=pd.DataFrame({'sentence':[sentence,'Each panel shows the nucleus closest to its arm’s median Pearson correlation.']})
+    result=[]
+    for i,(identity,title,path) in enumerate(zip(
+            ['simple_coloc','cytofluorogram'],
+            [f'Pixel colocalization, {rna} × {partner}',f'Cytofluorogram, {rna} × {partner}'],assets)):
+        path=Path(path)
+        asset=dict(path=str(path.resolve()),sha256=sha256(path),cohort=cohort)
+        full=path.with_name(path.name.replace('_focus','_full'))
+        if full!=path and full.is_file(): asset.update(full_path=str(full.resolve()),full_sha256=sha256(full))
+        result.append(dict(identity=identity,title=title,figures=[asset],values=refs+[
+            dict(sheet='Simple coloc readout',cell=f'A{i+3}',label='readout',display=True)]))
+    return result
 
 
 def draw_micrograph_panel(ax, row, color="black"):
@@ -470,7 +512,11 @@ def prepare_deck(template: dict, sheets: dict, out_dir: Path, data: dict,
                     ax.set_ylabel('BIN1 intron puncta: % nuclear (per nucleus)')
                     title = 'BIN1 intron puncta, % nuclear'
                 import textwrap
-                ax.set_title('\n'.join(textwrap.wrap(title,28 if item.get('headline') else 38)),fontsize=11,pad=22)
+                heading = ax.set_title(' '.join(title.split()),fontsize=11,pad=22)
+                f.canvas.draw()
+                width = heading.get_window_extent().width
+                if width > ax.bbox.width*.96:
+                    heading.set_fontsize(11*ax.bbox.width*.95/width)
                 fig.no_box(f,ax)
             spare_axes = list(axes.flat)[count:]
             if item.get('kind') == 'standard':
@@ -490,7 +536,6 @@ def prepare_deck(template: dict, sheets: dict, out_dir: Path, data: dict,
             else:
                 for ax in spare_axes:
                     ax.set_visible(False)
-            f.text(.5,.98,ctx.run_name,ha='center',va='top',fontsize=9)
             summaries = []
             for name in names:
                 row = contrasts.loc[contrasts.endpoint.eq(name)].iloc[0]
@@ -498,7 +543,7 @@ def prepare_deck(template: dict, sheets: dict, out_dir: Path, data: dict,
                 status = str(row.get('sensitivity_mixed_status', ''))
                 fallback = '; mixed model did not converge' if 'converg' in status and status != 'ok' else ''
                 summaries.append(f"mixed model p {fig.fmt_p(row.get('p_mixed',np.nan))}; Welch (wells) p {fig.fmt_p(row.p_welch)}; n {counts}{fallback}")
-            footer = f.text(.01,.02,' | '.join(summaries),fontsize=6,va='bottom')
+            footer = f.text(.01,.02,' | '.join(summaries) + '; run ' + ctx.run_name,fontsize=6,va='bottom')
             f.canvas.draw()
             width = footer.get_window_extent().width
             if width > f.bbox.width*.98:
@@ -564,4 +609,22 @@ def prepare_deck(template: dict, sheets: dict, out_dir: Path, data: dict,
         resolved.append(dict(identity=item['identity'],title=item['title'],question=item.get('question', ''),title_cell=title_ref,values=refs,figures=assets))
     sheets['Slide values']=pd.DataFrame(values)
     sheets['Figure sources']=pd.DataFrame(figure_rows)
+    if template.get('simple_coloc_csv'):
+        from .coloc_existing import (read_simple_metrics, simple_statistics,
+            representative_nuclei, render_simple_coloc, load_representative_pixels,
+            render_cytofluorogram)
+        nuclei=read_simple_metrics(Path(template['simple_coloc_csv']))
+        fields,wells,tests=simple_statistics(nuclei,ctx.reference)
+        selected=representative_nuclei(nuclei)
+        rna=template.get('simple_coloc_rna_label',ctx.channel_labels['rna1'])
+        partner=template.get('simple_coloc_partner_label',ctx.channel_labels['protein'])
+        pixels,pixel_sources=load_representative_pixels(selected,ctx.run_dir,
+                                                       template['simple_coloc_image_paths'])
+        render_simple_coloc(nuclei,fields,wells,tests,figure_dir,rna,partner,ctx.reference)
+        render_cytofluorogram(selected,pixels,figure_dir,rna,partner)
+        sheets.update({'Simple coloc metrics':tests,'Simple coloc nuclei':nuclei,
+                       'Simple coloc FOVs':fields,'Simple coloc wells':wells,
+                       'Simple coloc representatives':selected,'Simple coloc pixel sources':pixel_sources})
+        resolved.extend(simple_coloc_slides(sheets,[figure_dir/'FIG_SIMPLE_COLOC_focus.png',
+            figure_dir/'FIG_CYTOFLUOROGRAM.png'],rna,partner,template['cohort']))
     return dict(schema='resolved-deck-1',cohort=template['cohort'],slides=resolved)

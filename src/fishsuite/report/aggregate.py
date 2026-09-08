@@ -645,7 +645,9 @@ def build_contrasts(well: pd.DataFrame, field: pd.DataFrame,
     out.loc[out.p_mixed.isna(), 'p_mixed_holm'] = np.nan
     out["significant_raw_0p05"] = (out["p_welch"] < alpha).astype(object)
     out.loc[~np.isfinite(out["p_welch"]), "significant_raw_0p05"] = pd.NA
-    out["significant_holm_0p05"] = (out["p_headline_holm"] < alpha).astype(object)
+    out["significant_holm_0p05"] = (out["p_welch_holm_within_family"] < alpha).astype(object)
+    out["significant_headline_holm_0p05"] = (out["p_headline_holm"] < alpha).astype(object)
+    out.loc[~out["in_holm_family"], "significant_headline_holm_0p05"] = pd.NA
     out.loc[~out["in_holm_family"], "significant_holm_0p05"] = pd.NA
 
     out["mde_hedges_g_alpha_0p05"] = np.nan

@@ -21,6 +21,7 @@ DECISION = ('Mixed-model headline decision 2026-09-07 after data inspection; '
             'p_mixed and p_mixed_holm contain mixed inference only; p_headline and '
             'p_headline_holm include the declared Welch fallbacks. Holm uses the '
             'headline family; p_welch and its separate Holm values remain available. '
+            'significant_holm_0p05 retains legacy Welch Holm; significant_headline_holm_0p05 reports headline Holm. '
             'Absolute intensity and declared descriptive endpoints remain descriptive. '
             'Well dots, means and SD retain equal FOV weighting. Hedges g and MDE '
             'describe the well-means comparison, not mixed-model power.')
@@ -64,7 +65,7 @@ def assemble(run, panel, prior, spec_path, out):
     shutil.copyfile(prior/'SOURCE_RUN.md', out/'SOURCE_RUN.md')
     correction = out/'data/RNASEH2B_TOTAL_CORRECTED.csv'
     shutil.copyfile(prior/'data/RNASEH2B_TOTAL_CORRECTED.csv', correction)
-    spec = yaml.safe_load(spec_path.read_text())
+    spec = yaml.safe_load(spec_path.read_text(encoding='utf-8'))
     spec.update(current_cohort_narrative=True, existing_coloc=str(panel), cohort=run.name,
                 secondary_corrected_csv=str(correction), micrographs=str(out/'micrographs'),
                 figure_index_sha256=sha256(panel.with_name('FIGURE_INDEX.md')))
@@ -85,7 +86,7 @@ def assemble(run, panel, prior, spec_path, out):
         row=overlays.loc[overlays.line.eq(group)].sort_values('well_id').iloc[0]
         for image in (run/'publication_images').glob(row.stem+'__*.png'):
             shutil.copyfile(image,out/'micrographs'/image.name)
-        spec['micrograph_bar_um'][row.stem+'__merge_all.png']=json.loads((run/'run_config.json').read_text())['config_resolved']['output']['scalebar_um']
+        spec['micrograph_bar_um'][row.stem+'__merge_all.png']=json.loads((run/'run_config.json').read_text(encoding='utf-8'))['config_resolved']['output']['scalebar_um']
     spec['micrograph_hashes'] = {f.name:sha256(f) for f in (out/'micrographs').glob('*__merge_all.png')}
     selection = out/'data/NUCLEUS_SELECTION.md'
     selection.write_text('Retained labels from '+str(run)+'. Minimum nucleus area: 4000 pixels. '
@@ -97,7 +98,7 @@ def assemble(run, panel, prior, spec_path, out):
     manifest={'named_files':[dict(path=str(f),sha256=sha256(f)) for f in
               [panel,*[run/n for n in ['nuclei_metrics.csv','spot_metrics.csv','per_image_summary.csv','run_config.json','versions.txt']]]],
               'endpoint_registry':[asdict(e) for e in eps], 'persisted_masks':[]}
-    provenance=json.loads((out/'dapi/dapi_provenance.json').read_text())
+    provenance=json.loads((out/'dapi/dapi_provenance.json').read_text(encoding='utf-8'))
     for row in provenance['sources']:
         path=Path(row['mask_path'])
         with Image.open(path) as im: shape=[im.height,im.width]
@@ -161,7 +162,7 @@ def finalize(out,prior,run,panel):
             ws.cell(1,1).value=DECISION+' Thresholds, filters, Holm, effect sizes and MDE are recorded in endpoint/provenance rows.'
     book.save(out/'REPORT.xlsx')
     # Workbook bytes changed: revalidate typed cells and rebuild using the new hash.
-    spec=yaml.safe_load((out/'deck_spec.resolved.yaml').read_text())
+    spec=yaml.safe_load((out/'deck_spec.resolved.yaml').read_text(encoding='utf-8'))
     spec['workbook_sha256']=sha256(out/'REPORT.xlsx')
     (out/'deck_spec.resolved.yaml').write_text(yaml.safe_dump(spec,sort_keys=False),encoding='utf-8')
     slides.build_deck(out/'REPORT.xlsx',spec,out/'Sam_RNASEH2B_BIN1.pptx')
@@ -209,7 +210,7 @@ def finalize(out,prior,run,panel):
     shutil.copyfile(panel,out/'data/coloc_standard_panel_floor4000.xlsx')
     (out/'README.md').write_text('v5: floor-4000 report and same-floor standard colocalization panel.\nStart with REPORT.xlsx and Sam_RNASEH2B_BIN1.pptx; full-scale variant: Sam_RNASEH2B_BIN1_full.pptx.\n'+DECISION+'\n'+lineage,encoding='utf-8')
     (out/'READOUT.md').write_text(DECISION+'\n\n'+'\n'.join(lines)+'\n'+lineage,encoding='utf-8')
-    (out/'versions.txt').write_text((run/'versions.txt').read_text()+'\nreporter: uncommitted worktree, Claude commits\n'+lineage,encoding='utf-8')
+    (out/'versions.txt').write_text((run/'versions.txt').read_text(encoding='utf-8')+'\nreporter: uncommitted worktree, Claude commits\n'+lineage,encoding='utf-8')
     import sys
     command="& '"+sys.executable+"' -m fishsuite.report.final_delivery "+' '.join("'"+v.replace("'","''")+"'" for v in sys.argv[1:])
     (out/'BUILD_COMMANDS.md').write_text("Reporter module: fishsuite.report.final_delivery. No one-off delivery scripts.\n\n"
@@ -248,7 +249,7 @@ def refresh(out, prior, run, panel):
     from .coloc_existing import load_existing_panel, integrate_panel, render_existing
     from .stats import holm
     sheets=pd.read_excel(out/'REPORT.xlsx',sheet_name=None,header=1)
-    spec=yaml.safe_load((out/'data/deck_spec.yaml').read_text())
+    spec=yaml.safe_load((out/'data/deck_spec.yaml').read_text(encoding='utf-8'))
     data=aggregate.load_run(run,{'WT_1':'WT','WT_2':'WT','WT_3':'WT','KO_1':'QKI-KO','KO_2':'QKI-KO','KO_3':'QKI-KO'}, {})
     pn=sheets['Per nucleus']
     cols=['image','nucleus_id']+[c for c in pn if c not in data['nuclei']]
@@ -270,7 +271,8 @@ def refresh(out, prior, run, panel):
         contrasts.loc[member,'p_headline_holm']=adj
         contrasts.loc[member,'p_mixed_holm']=adj
     contrasts.loc[contrasts.p_mixed.isna(),'p_mixed_holm']=float('nan')
-    contrasts['significant_holm_0p05']=contrasts.p_headline_holm.lt(.05).where(contrasts.in_holm_family)
+    contrasts['significant_holm_0p05']=contrasts.p_welch_holm_within_family.lt(.05).where(contrasts.in_holm_family)
+    contrasts['significant_headline_holm_0p05']=contrasts.p_headline_holm.lt(.05).where(contrasts.in_holm_family)
     contrasts.to_csv(out/'contrasts.csv',index=False)
     # Family summaries use the same rebuilt headline columns.
     for family,name in [('detection','Spots per nucleus by group'),('localization','Nuclear fraction by group'),('partner','Partner at puncta by group')]:

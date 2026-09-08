@@ -292,8 +292,11 @@ def render_dapi(ctx, data, nuclei, well, field, contrasts, out_dir):
                                   scale=scale, compact=True))
         fig.no_box(canvas, ax)
     draw_qc(axes[1], data, ctx)
-    canvas.text(.5,.98,ctx.run_name,fontsize=9,ha='center',va='top')
-    canvas.text(.02,.025,' | '.join(foots),fontsize=6,va='bottom')
+    canvas.text(.5,.98,'BIN1 intron localization',fontsize=12,ha='center',va='top')
+    foot = canvas.text(.02,.025,' | '.join(foots) + '; run ' + ctx.run_name,fontsize=6,va='bottom')
+    canvas.canvas.draw()
+    width = foot.get_window_extent().width
+    if width > canvas.bbox.width*.96: foot.set_fontsize(6*canvas.bbox.width*.96/width)
     fig.save(canvas, out_dir, 'FIG_LOCALIZATION', [], 'DAPI-corrected localization and QC', 'DAPI tables / Per well / Contrasts')
     q, qa = fig.plt.subplots(1,2,figsize=(12.4,4.4))
     q.subplots_adjust(left=.08,right=.97,top=.87,bottom=.32,wspace=.35)

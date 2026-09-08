@@ -104,7 +104,7 @@ SHEET_DESCRIPTION: Dict[str, str] = {
 }
 
 
-SHEET_DESCRIPTION['Contrasts'] = ('Mixed-model headline decision 2026-09-07 after data inspection; Welch on well means remains reported. p_mixed / p_mixed_holm are nucleus-level mixed p and headline-family adjustment. p_headline / p_headline_holm also include explicitly labeled Welch fallbacks. p_welch retains the well-mean comparison. Endpoint thresholds, usability filters, Hedges g, Holm and well-based MDE are recorded in this workbook; MDE is not mixed-model power.')
+SHEET_DESCRIPTION['Contrasts'] = ('Mixed-model headline decision 2026-09-07 after data inspection; Welch on well means remains reported. p_mixed / p_mixed_holm are nucleus-level mixed p and headline-family adjustment. p_headline / p_headline_holm also include explicitly labeled Welch fallbacks. p_welch retains the well-mean comparison. significant_holm_0p05 retains the legacy Welch Holm flag; significant_headline_holm_0p05 reports the mixed/fallback headline Holm flag. Endpoint thresholds, usability filters, Hedges g, Holm and well-based MDE are recorded in this workbook; MDE is not mixed-model power.')
 
 
 def _description(name: str) -> str:

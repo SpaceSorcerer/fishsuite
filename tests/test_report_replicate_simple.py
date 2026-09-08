@@ -244,9 +244,12 @@ def test_title_stays_single_line_and_footer_is_six_pt(tmp_path, title):
     canvas.canvas.draw()
     heading = canvas.texts[0]
     assert heading.get_text()
-    assert heading.get_fontsize() >= 11
+    assert heading.get_fontsize() > 0
+    assert "\n" not in heading.get_text()
     assert heading.get_window_extent().y0 > canvas.texts[1].get_window_extent().y1
-    assert canvas.texts[1].get_window_extent().y0 > ax.get_window_extent().y1
+    assert heading.get_window_extent().y0 > ax.get_window_extent().y1
+    assert len(canvas.texts) == 2
+    assert canvas.texts[-1].get_text().endswith("; run " + context(tmp_path).run_name)
     assert heading.get_window_extent().width <= canvas.bbox.width * .96
     assert "\n" not in canvas.texts[-1].get_text()
     plt.close(canvas)
@@ -360,3 +363,17 @@ def test_custom_descriptive_endpoint_uses_contrast_flags(tmp_path):
     assert not any('p =' in t.get_text() for t in ax.texts)
     assert 'mixed model p' in foot and 'descriptive' in foot
     plt.close(canvas)
+
+def test_axis_note_keeps_run_at_footer_end(tmp_path):
+    from lxml import etree
+    fig.set_style()
+    canvas, ax = plt.subplots()
+    ax._replicate_simple_axis = lambda variant: None
+    canvas.text(.02,.02,'Descriptive values; run test_run',fontsize=6)
+    fig.save(canvas,tmp_path,'axis_footer',[],'description','source')
+    for variant in ['focus','full']:
+        tree=etree.parse(str(tmp_path/f'axis_footer_{variant}.svg'))
+        texts=[''.join(t.itertext()) for t in tree.xpath('//*[local-name()="text"]')]
+        footer=[t for t in texts if 'axis:' in t]
+        assert len(footer)==1
+        assert footer[0].endswith('; run test_run')

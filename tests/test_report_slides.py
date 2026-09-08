@@ -4,6 +4,19 @@ import pytest
 import pandas as pd
 
 
+@pytest.mark.parametrize('rna,partner',[('BIN1 intron','RNASEH2B'),('MIAT','QKI')])
+def test_simple_coloc_slide_identities(tmp_path,rna,partner):
+    from fishsuite.report.slides import simple_coloc_slides
+    assets=[]
+    for name in ['FIG_SIMPLE_COLOC_focus','FIG_CYTOFLUOROGRAM']:
+        p=tmp_path/(name+'.png'); p.write_bytes(b'asset'); assets.append(p)
+    sheets={'Simple coloc metrics':pd.DataFrame({'endpoint':['Pearson r'],'p_mixed':[.1]})}
+    slides=simple_coloc_slides(sheets,assets,rna,partner,'retained')
+    assert [s['identity'] for s in slides]==['simple_coloc','cytofluorogram']
+    assert slides[0]['title']==f'Pixel colocalization, {rna} × {partner}'
+    assert all(s['values'] for s in slides)
+
+
 def test_recorded_deck_semantic_assets_and_localization(tmp_path, monkeypatch):
     import yaml
     from fishsuite.report.build import build_report
