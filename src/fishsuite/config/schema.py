@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Optional, List, Dict, Any, Literal
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, AliasChoices, model_validator
 
 
 class ExperimentCfg(BaseModel):
@@ -59,7 +59,26 @@ class ConditionsCfg(BaseModel):
     # Plotting / reporting order of the group labels. Groups present in the data
     # but absent from this list are appended in sorted order. The FIRST entry is
     # the default reference group for ``fishsuite report``.
-    group_order: List[str] = Field(default_factory=list)
+    group_order: List[str] = Field(default_factory=list, validation_alias=AliasChoices('group_order', 'order'))
+    group_colors: Dict[str, str] = Field(default_factory=dict, validation_alias=AliasChoices('group_colors', 'colors'))
+
+    @model_validator(mode='after')
+    def validate_groups(self):
+        owners = {}
+        for group, wells in self.groups.items():
+            if not group.strip() or not wells or any(not w.strip() for w in wells):
+                raise ValueError('groups require nonempty names and well lists')
+            for well in wells:
+                if well in owners:
+                    raise ValueError(f'well {well!r} assigned to both {owners[well]!r} and {group!r}')
+                owners[well] = group
+        if len(set(self.group_order)) != len(self.group_order):
+            raise ValueError('group order contains duplicates')
+        if self.group_colors:
+            from matplotlib.colors import is_color_like
+            if any(not is_color_like(c) for c in self.group_colors.values()):
+                raise ValueError('invalid group color')
+        return self
 
     def group_of(self, condition: str) -> str:
         """Group label for one condition, falling back to the condition itself."""

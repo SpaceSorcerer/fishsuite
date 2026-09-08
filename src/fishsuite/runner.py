@@ -2792,6 +2792,12 @@ def run_batch(
             )
             _lf.write(f"\n# exit code: {rc}\n")
 
+        # External legacy downstream checkouts do not have the package hook.
+        # Guarantee the same native condition output for this supported override.
+        if _groups_cfg and _module != 'fishsuite.core._vendor.analysis.single_condition_plots':
+            from .core.native_by_condition import finalize_native
+            finalize_native(output_dir)
+
         # Runner success stays independent of this step, but a silent failure
         # here used to leave the run with no figures/ and no visible complaint.
         _figs = output_dir / "figures"
@@ -2807,24 +2813,8 @@ def run_batch(
     except Exception as _exc:
         _console.print(f"[yellow]downstream failed[/yellow]: {_exc!r}")
 
-    # ── By-group SuperPlots, when conditions.groups is set ─────────────────
-    # The run's native figure step splits on `condition`, which is one WELL, so
-    # with groups configured it draws one panel per well and never shows the
-    # condition. These add the missing view: one panel per condition GROUP with
-    # its wells as the replicate points inside it. Written alongside the native
-    # figures, never in place of them. Best effort: a failure here never fails
-    # the run.
-    if _groups_cfg:
-        try:
-            _n_bg = _write_by_group_figures(output_dir, cfg)
-            _console.print(
-                f"[dim]by-group figures: {_n_bg} PNG(s) under "
-                f"{output_dir / 'figures' / 'by_group'}[/dim]"
-                if _n_bg else
-                "[yellow]by-group figures produced nothing; the run is "
-                "unaffected[/yellow]")
-        except Exception as _exc:
-            _console.print(f"[yellow]by-group figures failed[/yellow]: {_exc!r}")
+    # Grouped native output is finalized by the downstream module using the
+    # report renderer; no additional, competing by_group plots are emitted.
 
     return dict(
         n_images=len(images),

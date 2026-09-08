@@ -50,6 +50,24 @@ def run(config, input_dir, output_dir, parallel, resume, dry_run, verbose):
     click.echo(f"Summary: {summary}")
 
 
+@cli.command('native-figures')
+@click.option('--run', 'run_dir', required=True, type=click.Path(exists=True, file_okay=False))
+@click.option('--groups', 'groups_file', required=True, type=click.Path(exists=True, dir_okay=False))
+@click.option('--out', type=click.Path(file_okay=False), default=None)
+def native_figures(run_dir, groups_file, out):
+    """Rebuild native condition figures from finished CSVs in a NEW folder.
+
+    Grouping only: report YAML peak floors and nucleus filters are not applied.
+    Frozen runs require --out outside the run. No detection or segmentation.
+    """
+    from .core.native_by_condition import regenerate, read_groups
+    try:
+        result = regenerate(Path(run_dir), read_groups(Path(groups_file)), Path(out) if out else None)
+    except (ValueError, OSError) as exc:
+        raise click.ClickException(str(exc)) from exc
+    click.echo(f"Native condition figures: {result['out']}")
+
+
 @cli.command()
 def init():
     """Interactive setup wizard (Phase-3 placeholder)."""

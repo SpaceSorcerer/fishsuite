@@ -9436,6 +9436,11 @@ def main() -> int:
     # browsable.
     _organize_flat_figures_into_subfolders(figures_dir)
 
+    # Grouped runs promote condition comparisons to the normal native output.
+    # The shared report renderer owns the replicate statistics and styling.
+    from fishsuite.core.native_by_condition import finalize_native
+    finalize_native(out_dir)
+
     _combined_label = str(combined_png) if combined_png is not None else "(combined panel skipped)"
     print(f"Wrote {_combined_label} (+ {len(PLOT_LAYOUT)} standalone subplots, "
           f"{n_per_image} per-image panels in {per_image_dir.name}/, "

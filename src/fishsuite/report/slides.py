@@ -270,6 +270,8 @@ def simple_coloc_slides(sheets, assets, rna, partner, cohort):
                 refs.append(dict(sheet=sheet,cell=f'{get_column_letter(j+1)}{i+3}',
                                  label=column,allow_missing=True,display=False))
     sentence='Pearson and ICQ describe intensity agreement; Manders describes directional signal overlap at converged Costes thresholds.'
+    if 'RNASEH2B' in partner.upper():
+        sentence='Pearson r and ICQ are threshold-free and unchanged by KO; Manders M1/M2 track the RNASEH2B intensity threshold (lower RNASEH2B in KO), so they are not used as colocalization readouts here.'
     sheets['Simple coloc readout']=pd.DataFrame({'sentence':[sentence,'Each panel shows the nucleus closest to its arm’s median Pearson correlation.']})
     result=[]
     for i,(identity,title,path) in enumerate(zip(

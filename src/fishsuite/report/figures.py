@@ -400,7 +400,7 @@ def draw_superplot(ax, ctx: FigureContext, endpoint: str, well: pd.DataFrame,
     order = ctx.group_order
     if fraction_scale(endpoint) == 100:
         scale = 100.
-        ylabel = ('BIN1 intron puncta: % nuclear (per nucleus)' if endpoint == 'rna1_nuclear_spot_fraction'
+        ylabel = (getattr(ctx, 'channel_labels', {}).get('rna1', 'BIN1 intron') + ' puncta: % nuclear (per nucleus)' if endpoint == 'rna1_nuclear_spot_fraction'
                   else ylabel.replace('fraction', 'percent') + (' (%)' if '%' not in ylabel and 'percentage points' not in ylabel else ''))
     pw = well[well["endpoint"] == endpoint] if len(well) else well
     pf = field[field["endpoint"] == endpoint] if len(field) else field
@@ -619,7 +619,7 @@ def draw_replicate_simple(ax, ctx: FigureContext, endpoint: str, well: pd.DataFr
     """
     if fraction_scale(endpoint) == 100:
         scale = 100.
-        ylabel = ('BIN1 intron puncta: % nuclear (per nucleus)' if endpoint == 'rna1_nuclear_spot_fraction'
+        ylabel = (getattr(ctx, 'channel_labels', {}).get('rna1', 'BIN1 intron') + ' puncta: % nuclear (per nucleus)' if endpoint == 'rna1_nuclear_spot_fraction'
                   else ylabel.replace('fraction', 'percent') + (' (%)' if '%' not in ylabel and 'percentage points' not in ylabel else ''))
     pw = well[well["endpoint"] == endpoint] if len(well) else well
     pf = field[field["endpoint"] == endpoint] if len(field) else field
@@ -665,7 +665,8 @@ def draw_replicate_simple(ax, ctx: FigureContext, endpoint: str, well: pd.DataFr
         counts.append(f"{group}: {len(wm)} wells"
                       + (f", {len(fm)} FOVs" if len(field) else "")
                       + (f", {nn} defined nuclei" if nn is not None and level == "nucleus" else ""))
-    ax.set_xticks(range(len(ctx.group_order)), ctx.group_order)
+    ax.set_xticks(range(len(ctx.group_order)),
+                  ['Sec-Only' if g == 'Secondary-only' else g for g in ctx.group_order])
     for tick, group in zip(ax.get_xticklabels(), ctx.group_order):
         tick.set_color(ctx.colors[group])
     ax.set_xlim(-.6, len(ctx.group_order) - .4)
