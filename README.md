@@ -149,6 +149,9 @@ DirectML targets a single AMD GPU — run one GPU job at a time.
 
 ## Quickstart
 
+Start with the [short PowerShell guide](docs/QUICKSTART.md) for this workstation.
+For the desktop launcher and report controls, see [GUI status](docs/GUI_STATUS.md).
+
 Pick the preset closest to your experiment, dry-run it to verify the discovered roster, then run for real and check the outputs.
 
 ```powershell
