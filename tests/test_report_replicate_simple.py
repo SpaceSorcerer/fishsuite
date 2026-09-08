@@ -62,6 +62,60 @@ def test_a20_workbook_cli_renders_edited_well_values(tmp_path):
     assert not any('999' in text for text in labels)
 
 
+def test_figure_workbook_names_columns_and_regeneration(tmp_path, monkeypatch):
+    import json
+    import runpy
+    import sys
+    from fishsuite.report.figure_workbook import write_tables
+    endpoint='rna1_spots_per_nucleus'
+    well=pd.DataFrame(dict(group=['WT','WT','KO','KO'],well_id=['w1','w2','k1','k2'],
+                           well_mean_of_field_values=[1.,2.,4.,6.]))
+    nuclei=pd.DataFrame(dict(condition=['WT_folder','KO_folder'],group=['WT','KO'],
+        well_id=['w1','k1'],image=['a','b'],nucleus_id=[1,2],count=[1.,4.]))
+    endpoints=[endpoint, endpoint, 'unknown_endpoint_with_a_very_long_shared_prefix_alpha',
+               'unknown_endpoint_with_a_very_long_shared_prefix_beta']
+    spec={'slides':[{'title':'Puncta','figures':[{'path':str(tmp_path/f'FIG_{e}_{i}.png')}
+                                             for i,e in enumerate(endpoints)]}]}
+    captured={(1,i):dict(well=well,nuclei=nuclei,scale=1,ylabel='Puncta',endpoint=e,nuc_column='count')
+              for i,e in enumerate(endpoints,1)}
+    assert write_tables(tmp_path,{},spec,captured)==[]
+    source=tmp_path/'DATA_FOR_FIGURES.xlsx'
+    with pd.ExcelFile(source) as book:
+        names=book.sheet_names
+        assert all(len(n)<=31 for n in names)
+        assert len(names)==len(set(n.casefold() for n in names))
+        assert 'Sheet index' in names
+        assert '01_bin1_puncta_per_nucleus' in names
+        index=pd.read_excel(book,sheet_name='Sheet index')
+        assert set(index.sheet_name)==set(names)-{'Sheet index'}
+        assert set(index.endpoint_id)==set(endpoints)
+        assert index.slide.eq(1).all()
+        assert set(index.figure_file)=={f'FIG_{e}_{i}.png' for i,e in enumerate(endpoints)}
+        raw=pd.read_excel(book,sheet_name='01_bin1_puncta_per_nucleus_nuc')
+        assert list(raw.columns)==['well_group','condition','well','image','nucleus_id','value']
+        assert raw.well_group.tolist()==['WT_folder','KO_folder']
+        assert raw.condition.tolist()==['WT','KO']
+        assert raw.value.tolist()==[1.,4.]
+    metadata=json.loads(source.with_suffix('.json').read_text())
+    assert all(m['nuclei_sheet']==n+'_nuc' for n,m in metadata.items())
+    assert write_tables(tmp_path,{},spec,captured)==[]
+    with pd.ExcelFile(source) as book:
+        assert book.sheet_names==names
+    name='01_bin1_puncta_per_nucleus'
+    result=CliRunner().invoke(cli,['figure','--from-xlsx',str(source),'--sheet',name,'--out',str(tmp_path/'cli')])
+    assert result.exit_code==0,result.output
+    assert (tmp_path/'cli'/f'{name}_focus.svg').is_file()
+    monkeypatch.setattr(sys,'argv',['regenerate_figures.py','--sheet',name,'--out',str(tmp_path/'script')])
+    runpy.run_path(str(tmp_path/'regenerate_figures.py'),run_name='__main__')
+    assert (tmp_path/'script'/f'{name}_focus.svg').is_file()
+    source.with_suffix('.json').unlink()
+    result=CliRunner().invoke(cli,['figure','--from-xlsx',str(source),'--sheet',name,'--out',str(tmp_path/'standalone')])
+    assert result.exit_code==0,result.output
+    monkeypatch.setattr(sys,'argv',['regenerate_figures.py','--out',str(tmp_path/'standalone')])
+    runpy.run_path(str(tmp_path/'regenerate_figures.py'),run_name='__main__')
+    assert len(list((tmp_path/'standalone').glob('*_focus.svg')))==len(endpoints)
+
+
 def test_a20_panel_reads_only_recorded_plane():
     import importlib.util
     from pathlib import Path
