@@ -54,6 +54,19 @@ The pipeline is organized around four building blocks:
 
 It is for wet-and-dry-lab biologists who acquire RNA-FISH / IF stacks and want reproducible, committee-defensible quantification with explorable Excel deliverables — without manual ImageJ work.
 
+## Report features added September 7–8, 2026
+
+- Locked replicate-simple well points, mean ± SD columns, shared arm axes, full/focus PNG and editable SVG.
+- Mixed-model headline with explicit Welch fallback/footer; Student and FOV-outlier sensitivities.
+- DAPI-based localization endpoints, unretained-object census and cytoplasmic-call QC.
+- Validated persisted coloc import, Pearson/ICQ and Costes-converged-only Manders figures.
+- Preferential-coloc ratios with covariance CI, exact tests, R-MDE and qualified readouts.
+- Workbook-traced deck export, independent chart assets and matched per-well micrograph panels.
+- `conditions.groups` collapses native figures by condition; `native-figures` regenerates from finished CSVs.
+- Release-marker guards and separate reporter/producing-commit provenance.
+
+See [flags, examples and implementation limits](docs/REPORT_FEATURES_2026-09-08.md), including the current `figures/` versus `deck_figures` distinction.
+
 ## Highlights
 
 - **Single CLI** (`fishsuite`) with `run`, `preview`, `presets`, `init`, `gui` and three CPU-only post-run utilities (`backfill`, `walkthrough`, `postrun`).
