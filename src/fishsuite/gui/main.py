@@ -241,6 +241,9 @@ if _QT_OK:
             self._build_tab_cytoplasm()
             self._build_tab_output()
             self._build_tab_run()
+            from .report_tab import ReportTab
+            self.report_tab = ReportTab(self)
+            self._tabs.addTab(self.report_tab, "Report")
             self._build_tab_yaml()
 
             # ---- Footer ----
@@ -2062,6 +2065,11 @@ if _QT_OK:
             header.addWidget(self.run_output_label)
             v.addLayout(header)
 
+            v.addWidget(QLabel("conditions.groups — YAML mapping: condition: [well1, well2]"))
+            self.run_groups = QPlainTextEdit("{}")
+            self.run_groups.setMaximumHeight(85)
+            self.run_groups.textChanged.connect(self._on_field_changed)
+            v.addWidget(self.run_groups)
             # Run buttons
             btn_row = QHBoxLayout()
             self.run_btn = QPushButton("▶  Start")
@@ -2397,6 +2405,7 @@ if _QT_OK:
                 w_.blockSignals(False)
             # ---- conditions ----
             co = c.get("conditions", {})
+            self.run_groups.setPlainText(yaml.safe_dump(co.get("groups") or {}, sort_keys=False))
             self.cond_mode.blockSignals(True)
             self.cond_mode.setCurrentText(str(co.get("mode", "subfolders")))
             self.cond_mode.blockSignals(False)
@@ -2747,7 +2756,9 @@ if _QT_OK:
                 "date": self.exp_date.text(),
                 "analyst": self.exp_analyst.text(),
             }
+            from .report_tab import parse_groups
             base["conditions"] = {
+                "groups": parse_groups(self.run_groups.toPlainText()),
                 "mode": self.cond_mode.currentText(),
                 "subfolder_conditions": self.subf_table.to_dict(),
                 "sec_only_folders": [self.sec_list.item(i).text()
@@ -2927,7 +2938,12 @@ if _QT_OK:
         def _on_field_changed(self, *_a) -> None:
             if self._loading_widgets:
                 return
-            self._cfg = self._read_widgets_into_cfg()
+            try:
+                self._cfg = self._read_widgets_into_cfg()
+            except (ValueError, yaml.YAMLError) as exc:
+                self.run_btn.setEnabled(False)
+                self._footer_status.setText(f"Invalid conditions.groups: {exc}")
+                return
             self._refresh_readiness()
             self._refresh_output_preview()
             self._refresh_channel_preview()
@@ -2945,6 +2961,11 @@ if _QT_OK:
             for k, st in statuses.items():
                 self._set_tab_status(k, st)
             ok = _ready.overall_ready(statuses)
+            from .report_tab import parse_groups
+            try:
+                parse_groups(self.run_groups.toPlainText())
+            except (ValueError, yaml.YAMLError):
+                ok = False
             self.run_btn.setEnabled(ok and not self._runner.is_running())
             if ok:
                 self._footer_status.setText("Ready to run")
@@ -3499,6 +3520,8 @@ if _QT_OK:
             return self._settings
 
         def closeEvent(self, ev: QCloseEvent) -> None:
+            if self.report_tab.runner.is_running():
+                self.report_tab.runner.stop()
             try:
                 s = self._capture_settings_for_save()
                 _state.save_settings(s)
@@ -3517,6 +3540,11 @@ if _QT_OK:
         # ==================================================================
 
         def _on_run_clicked(self) -> None:
+            try:
+                self._cfg = self._read_widgets_into_cfg()
+            except (ValueError, yaml.YAMLError) as exc:
+                QMessageBox.warning(self, "Invalid conditions.groups", str(exc))
+                return
             # Sanity recheck just before launching.
             statuses = _ready.evaluate_all(
                 self._cfg,
@@ -3746,7 +3774,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                                      description="fishsuite desktop launcher")
     parser.add_argument("--print-toolkit", action="store_true",
                         help="Print which UI toolkit is available, then exit.")
-    args = parser.parse_args(argv)
+    args = parser.parse_args([] if argv is None else argv)
     if args.print_toolkit:
         print("PySide6" if _QT_OK else "(none)")
         return 0
@@ -3771,4 +3799,4 @@ def main(argv: Optional[List[str]] = None) -> int:
 
 
 if __name__ == "__main__":  # pragma: no cover
-    sys.exit(main())
+    sys.exit(main(sys.argv[1:]))
