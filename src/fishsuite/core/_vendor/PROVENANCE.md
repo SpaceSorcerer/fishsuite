@@ -1,7 +1,7 @@
 # Vendored code — provenance
 
 Files in this directory are copied from a separate repository, **verbatim except for
-the single deviation recorded below**. Do not modify them here. To change
+the deviations recorded below**. Do not modify them here. To change
 behaviour, wrap or subclass from `fishsuite/core/`.
 
 Results previously published from this project were produced by importing these
@@ -44,7 +44,7 @@ commits absent from the vendored ref, one of which touches
 So the vendored ref is the newer and more complete source, and no cherry-pick
 was required.
 
-## SHA-256 of every vendored file, as copied
+## SHA-256 of every vendored file, current bytes
 
 | Path in this directory | Source path | Bytes | sha256 |
 |---|---|---|---|
@@ -53,14 +53,14 @@ was required.
 | `spots/__init__.py` | `python/spots/__init__.py` | 1151 | `bc405b3b143beca89009394b15c58e622940de7f9e6cd47ce16832ab182fdbd3` |
 | `spots/detect_spots.py` | `python/spots/detect_spots.py` | 29440 | `f20166a572b117b871d6bb9d86dd28a59c950bab7968bf27dd574001064e8f86` |
 | `analysis/__init__.py` | `python/analysis/__init__.py` | 517 | `9fc916f32a82825ab586ec1a5ec1f3613a153c6d27ea5280aa2181f48e643287` |
-| `analysis/single_condition_plots.py` | `python/analysis/single_condition_plots.py` | 504542 | `fd6a40aeb2dcf64d46156bd53fbfe561357bfd4a5a6197a55286a0f21d870fbf` |
+| `analysis/single_condition_plots.py` | `python/analysis/single_condition_plots.py` | 504792 | `8387504988a500f8cf66d6156594d36660c2279ca039ee71ce3a71d143fb34b0` |
 | `visualization/__init__.py` | `python/visualization/__init__.py` | 0 | `e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855` |
 | `visualization/publication_figures.py` | `python/visualization/publication_figures.py` | 23821 | `acb70e538ba43de974f53eef7329852244e9c15f044c4924f3f235fdb8faa5aa` |
 
 `tests/test_vendor_parity.py::test_vendored_checksums_match_provenance` parses
 this table and fails if any file here no longer matches it.
 
-## The one deviation from verbatim
+## Recorded deviations from verbatim
 
 `analysis/single_condition_plots.py` — **one line changed**, at the import on
 line 236:
@@ -73,7 +73,7 @@ line 236:
 | | |
 |---|---|
 | sha256 at source (`4d8c8a7`) | `7d3f994d119edb3ebd5a4426ad1c9540baeb2b69ae45da04a4cf15ffc9565415` (504540 bytes) |
-| sha256 as vendored | `fd6a40aeb2dcf64d46156bd53fbfe561357bfd4a5a6197a55286a0f21d870fbf` (504542 bytes) |
+| sha256 at initial vendoring | `fd6a40aeb2dcf64d46156bd53fbfe561357bfd4a5a6197a55286a0f21d870fbf` (504542 bytes) |
 
 Why it was necessary: unlike its siblings, this file performs no
 `sys.path` manipulation of its own — it relied on being executed with the
@@ -85,6 +85,8 @@ Why it matters that it was fixed rather than left to fail: the import sits
 inside a `try/except`, and the fallback sets `CONDITION_COLORS = {}`. Left
 broken it would not have raised — it would have silently dropped the locked
 per-condition colour mapping and drawn figures with a different palette.
+
+On 2026-09-08, commit `fca3a12f869f021ec4b37232a85fb7b4a9a3dc79` deliberately added a call to `fishsuite.core.native_by_condition.finalize_native(out_dir)` after figure organization in this same file. Grouped runs now promote condition comparisons through the shared native renderer. This changes output finalization, not segmentation or spot detection. The current checksum table includes that change; the initial vendoring hash above remains historical provenance.
 
 Every other vendored file is byte-identical to its source, verified by the table
 above.

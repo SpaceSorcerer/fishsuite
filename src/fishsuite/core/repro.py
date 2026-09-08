@@ -163,7 +163,12 @@ def engine_git_commit() -> str:
     """
     try:
         import subprocess
-        repo = Path(__file__).resolve().parents[2]
+        repo = Path(__file__).resolve().parents[3]
+        # Git walks ancestors by default. An exported package nested inside an
+        # unrelated checkout must not inherit that checkout's provenance.
+        # Worktrees use a .git file, while ordinary checkouts use a directory.
+        if not (repo / ".git").exists():
+            return "unknown"
         def _git(*args: str) -> str:
             return subprocess.run(("git", "-C", str(repo)) + args,
                                   capture_output=True, text=True, timeout=10,

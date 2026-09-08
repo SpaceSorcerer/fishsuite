@@ -663,6 +663,20 @@ def draw_replicate_simple(ax, ctx: FigureContext, endpoint: str, well: pd.DataFr
     if nuc_column and nuc_column in per_nucleus:
         exported_nuclei=per_nucleus.copy()
         if len(pw):
+            missing_labels = [c for c in ('group', 'well_id') if c not in exported_nuclei]
+            if missing_labels:
+                from .aggregate import ReportInputError
+                label_columns = ['image', 'group', 'well_id']
+                if 'image' not in exported_nuclei or not set(label_columns) <= set(pf):
+                    raise ReportInputError('Nucleus figure export needs field group/well labels keyed by image')
+                labels = pf[label_columns].drop_duplicates()
+                if labels.image.duplicated().any():
+                    raise ReportInputError('Ambiguous field group/well labels for nucleus figure export')
+                # Raw engine tables do not carry report group assignments. Use
+                # the explicit FOV mapping, never infer groups from filenames.
+                keys = ['image'] + [c for c in ('group', 'well_id') if c not in missing_labels]
+                exported_nuclei = exported_nuclei.merge(
+                    labels, on=keys, how='left', validate='many_to_one')
             roster=pw.loc[pw.well_mean_of_field_values.notna(),['group','well_id']].drop_duplicates()
             exported_nuclei=exported_nuclei.merge(roster,on=['group','well_id'],how='inner',validate='many_to_one')
         from .endpoints import ENDPOINTS
@@ -990,6 +1004,9 @@ def render_localization(ctx: FigureContext, well: pd.DataFrame, field: pd.DataFr
     out_dir.mkdir(parents=True, exist_ok=True)
     for key in ['per_nucleus', 'unassigned', 'checks', 'territory']:
         audit[key].to_csv(guard_output(out_dir / f'localization_{key}.csv'), index=False)
+    # This public renderer also runs when general report figures are disabled.
+    # Do not depend on an earlier renderer to enable editable SVG text.
+    set_style()
     manifests = []
     rna_name = ctx.channel_labels.get('rna1', 'RNA1')
     for spec in specs:

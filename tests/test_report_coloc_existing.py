@@ -40,31 +40,55 @@ def test_representative_nucleus_median_tie_and_secondary():
     assert representative_nuclei(tied).image.tolist()==['a']
 
 
-def test_simple_figure_preserves_fraction_units(tmp_path,monkeypatch):
+@pytest.mark.parametrize('lab_floors', [False, True])
+@pytest.mark.parametrize('negative', [False, True])
+def test_simple_figure_preserves_fraction_units(tmp_path,monkeypatch,lab_floors,negative):
     from fishsuite.report import figures
     from fishsuite.report.coloc_existing import SIMPLE_METRICS,simple_rollups,render_simple_coloc
     n=pd.DataFrame(dict(group=['WT','WT','KO','KO'],well_id=['a','b','c','d'],
         image=['a','b','c','d'],secondary_only=[False]*4))
     for metric in SIMPLE_METRICS:n[metric]=[.2,.3,.4,.45]
-    f,w=simple_rollups(n)
+    if negative:
+        n.loc[0, 'pearson_r_csp'] = -.2
+        n.loc[0, 'li_icq_csp'] = -.1
+    metrics = SIMPLE_METRICS
+    if lab_floors:
+        n['manders_m1_labfloor'] = [.2,.3,.4,.45]
+        n['manders_m2_labfloor'] = [.2,.3,.4,.45]
+        n['lab_floor_rna'], n['lab_floor_partner'] = 100., 200.
+        metrics = ('pearson_r_csp','manders_m1_labfloor','manders_m2_labfloor','li_icq_csp')
+    f,w=simple_rollups(n,metrics)
     c=pd.DataFrame([dict(endpoint=m,test_group='KO',reference_group='WT',p_mixed=.2,
-        p_welch=.3,sensitivity_mixed_status='ok') for m in SIMPLE_METRICS])
-    def inspect(canvas,*args):
-        assert len(canvas.texts) == 1
-        assert canvas.texts[0].get_text().endswith("; run test_run")
-        assert "\n" not in canvas.texts[0].get_text()
+        p_welch=.3,sensitivity_mixed_status='ok') for m in metrics])
+    seen = []
+    def inspect(canvas,out_dir,stem,manifest,*args):
+        assert len(canvas.texts) == 2  # title + footer; no redundant header
+        assert canvas.texts[0].get_text() in ('Pearson r','Manders M1','Manders M2','Li ICQ')
+        assert canvas.texts[1].get_text().endswith("; run test_run")
+        assert "\n" not in canvas.texts[1].get_text()
+        assert len(canvas.axes) == 1
         for ax in canvas.axes:
             assert not any(t.get_text()=='descriptive, no test' and t.get_visible() for t in ax.texts)
-        for ax in canvas.axes[1:3]:
+        for ax in canvas.axes:
             assert '%' not in ax.get_ylabel()
             ax._replicate_simple_axis('full')
-            assert ax.get_ylim()==(0,1)
+            lo, hi = ax.get_ylim()
+            if 'manders' in stem:
+                assert (lo, hi) == (0, 1)
+            else:
+                assert lo == ((-.5 if 'li_icq' in stem else -1) if negative else 0)
+                assert hi >= (.5 if 'li_icq' in stem else 1)  # include inferential artists
             for collection in ax.collections:
                 if (collection.get_gid() or '').startswith('well:'):
                     assert np.max(collection.get_offsets()[:,1])<=1
         figures.plt.close(canvas)
+        seen.append(stem)
+        rec = dict(figure=stem)
+        manifest.append(rec)
+        return rec
     monkeypatch.setattr(figures,'save',inspect)
     render_simple_coloc(n,f,w,c,tmp_path,'MIAT','QKI','WT',run_name='test_run')
+    assert seen == ['FIG_SIMPLE_COLOC_' + m for m in metrics]
 
 
 def test_cytofluorogram_exact_pixels_shared_axes_and_failed_costes(tmp_path,monkeypatch):
@@ -75,14 +99,27 @@ def test_cytofluorogram_exact_pixels_shared_axes_and_failed_costes(tmp_path,monk
         nucleus_id=[1,2],n_pix=[20,20],pearson_r_csp=[np.corrcoef(x,y)[0,1]]*2,
         costes_converged=[True,False],costes_thr_rna1=[10,np.nan],costes_thr_partner=[12,np.nan]))
     pixels={('w','a',1):(x,y),('k','b',2):(2*x,2*y)}
-    def inspect(canvas,*args):
-        a,b=canvas.axes
-        assert a.get_xlim()==b.get_xlim() and a.get_ylim()==b.get_ylim()
-        assert len(a.lines)==2 and len(b.lines)==0
-        assert any('Costes failed' in t.get_text() for t in b.texts)
+    axes = []
+    def inspect(canvas,out_dir,stem,manifest,*args):
+        assert len(canvas.axes) == 1  # one standalone figure per arm
+        ax = canvas.axes[0]
+        axes.append(ax)
+        if stem.endswith('_WT'):
+            assert len(ax.lines) == 2
+            assert ax.lines[0].get_xdata()[0] == 10
+            assert ax.lines[1].get_ydata()[0] == 12
+        else:
+            assert len(ax.lines) == 0
+            assert any('Costes failed' in t.get_text() for t in ax.texts)
         figures.plt.close(canvas)
+        rec = dict(figure=stem)
+        manifest.append(rec)
+        return rec
     monkeypatch.setattr(figures,'save',inspect)
     render_cytofluorogram(selected,pixels,tmp_path,'MIAT','QKI')
+    assert len(axes) == 2
+    assert axes[0].get_xlim() == axes[1].get_xlim()
+    assert axes[0].get_ylim() == axes[1].get_ylim()
     selected.loc[0,'pearson_r_csp']=0
     with pytest.raises(RuntimeError,match='Pearson differs'):
         render_cytofluorogram(selected,pixels,tmp_path,'MIAT','QKI')
@@ -160,6 +197,13 @@ def test_report_integration_no_nulls_raw_parity(tmp_path, monkeypatch):
     for name in old.index:
         amended = {'p_welch_holm_within_family','significant_holm_0p05','holm_family_size',
                    'mde_hedges_g_at_family_alpha','observed_g_reaches_mde'} if old.loc[name,'family'] in {'detection','partner'} else set()
+        if old.loc[name, 'absolute_intensity']:
+            from fishsuite.report.endpoints import INTENSITY_CAVEAT
+            amended |= {'descriptive_only', 'excluded_from_holm', 'endpoint_note',
+                        'in_holm_family', 'holm_exclusion_reason', 'mde_hedges_g_alpha_0p05'}
+            assert not new.loc[name, 'descriptive_only']
+            assert new.loc[name, 'endpoint_note'] == INTENSITY_CAVEAT
+            assert new.loc[name, 'in_holm_family'] == (not new.loc[name, 'endpoint_absent_in_run'])
         for col in old.columns:
             if col in amended:
                 continue
@@ -176,8 +220,9 @@ def test_report_integration_no_nulls_raw_parity(tmp_path, monkeypatch):
         after=table.set_index(indices).sort_index().loc[before.index,before.columns]
         pd.testing.assert_frame_equal(before,after,check_dtype=False,atol=1e-12,rtol=1e-10)
     assert set(A3_PARTNER_ADDITIONS) <= set(new.index)
-    assert set(new.loc[new.family=='partner'].holm_family_size.dropna()) == {27}
-    assert not new.loc['cell_total_intensity_protein','in_holm_family']
+    assert set(new.loc[new.family=='partner'].holm_family_size.dropna()) == {29}
+    assert new.loc['cell_total_intensity_protein','in_holm_family']
+    assert np.isfinite(new.loc['cell_total_intensity_protein','p_welch'])
     assert pd.isna(new.loc['paired_frac_rna1_at_partner_shuffle','p_welch'])
     assert 'reporter commit:' in (tmp_path/'report/versions.txt').read_text()
     assert 'producing engine commit: missing from run' in (tmp_path/'report/versions.txt').read_text()
@@ -193,6 +238,9 @@ def test_hand_worked_reverse_calls_total_if_and_unequal_fovs():
                           well_id=['WT_1']*3,secondary_only=[False]*3,
                           cell_total_intensity_protein=[10.,30.,80.],
                           nuclear_total_intensity_protein=[4.,8.,20.],
+                          nuclear_above_floor_intensity_protein=[2.,4.,10.],
+                          cell_total_intensity_rna1=[6.,18.,48.],
+                          nuclear_total_intensity_rna1=[2.,6.,12.],
                           rna1_local_mean_at_protein_spots=[3.,9.,30.],
                           frac_called_coloc_partner_runthr=[2/4,0/2,1/1],
                           paired_frac_rna1_at_partner=[1/2,np.nan,1/1],
@@ -206,6 +254,9 @@ def test_hand_worked_reverse_calls_total_if_and_unequal_fovs():
     wells=per_well_long(fields).set_index('endpoint')
     assert wells.loc['cell_total_intensity_protein','well_mean_of_field_values']==50
     assert wells.loc['nuclear_total_intensity_protein','well_mean_of_field_values']==13
+    assert wells.loc['nuclear_above_floor_intensity_protein','well_mean_of_field_values']==6.5
+    assert wells.loc['cell_total_intensity_rna1','well_mean_of_field_values']==30
+    assert wells.loc['nuclear_total_intensity_rna1','well_mean_of_field_values']==8
     assert wells.loc['rna1_local_mean_at_partner_puncta','well_mean_of_field_values']==18
     assert wells.loc['frac_called_coloc_partner_runthr','well_mean_of_field_values']==.625
     assert wells.loc['paired_frac_rna1_at_partner','well_mean_of_field_values']==.75
@@ -248,7 +299,5 @@ def test_default_rendering_omitted_localization_aliases(tmp_path):
     audit = pd.read_excel(result['xlsx'], sheet_name='Localization counts', header=1)
     assert audit.source_nuclear_fraction.isna().sum() == 1
     for variant in ('focus', 'full'):  # locked style: every figure is a _focus/_full pair
-        assert (tmp_path/f'report/localization/FIG_LOCALIZATION_{variant}.svg').is_file()
-        assert (tmp_path/f'report/localization/FIG_LOCALIZATION_{variant}.png').is_file()
-
-
+        assert (tmp_path/f'report/localization/composites/FIG_LOCALIZATION_{variant}.svg').is_file()
+        assert (tmp_path/f'report/localization/composites/FIG_LOCALIZATION_{variant}.png').is_file()
