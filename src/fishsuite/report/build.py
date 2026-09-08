@@ -596,11 +596,39 @@ def build_report(run_dir: Path, out_dir: Optional[Path] = None,
         gate_record["floors"] = dict(peak_floors)
         gate_record["stale_columns"] = list(stale_after_gate)
 
+    dapi = None
+    if template and template.get('dapi_localization'):
+        from .dapi_mask import build_dapi
+        dapi = build_dapi(run_dir, out_dir/'dapi', data)
+        cols = ['image', 'nucleus_id', 'nuclear_spot_count_dapi',
+                'extranuclear_spot_count_per_cell_territory', 'nuclear_spot_fraction_dapi']
+        data['nuclei'] = data['nuclei'].merge(dapi['nuclei'][cols], on=['image','nucleus_id'],
+                                            how='left', validate='one_to_one')
+        data['dapi'] = dapi
+        if template.get('secondary_corrected_csv'):
+            correction = pd.read_csv(template['secondary_corrected_csv'])
+            correction = correction.loc[correction.level.eq('nucleus'), ['image','nucleus_id','corrected_mean']]
+            correction = correction.rename(columns={'corrected_mean':'protein_nuclear_mean_seconly_corrected'})
+            data['nuclei'] = data['nuclei'].merge(correction, on=['image','nucleus_id'], how='left', validate='one_to_one')
+            data['secondary_correction_source'] = template['secondary_corrected_csv']
     endpoints, absent = _ep.resolve(data["nuclei"], data["per_image"])
     if persisted is not None:
         from .coloc_existing import integrate_panel, validate_pairing
         validate_pairing(persisted.tables['per_nucleus'], pd.read_csv(run_dir/'spot_metrics.csv'))
         endpoints, added_endpoints = integrate_panel(data,persisted,endpoints)
+    if dapi is not None:
+        from dataclasses import replace
+        from .dapi_mask import endpoints as dapi_endpoints
+        legacy = {'rna1_cyto_spots_per_nucleus', 'rna1_nuclear_spot_fraction'}
+        endpoints = [replace(e, descriptive_only=True, excluded_from_holm='legacy_mask_only',
+                            note=e.note+' legacy_mask_only; replaced by DAPI correction')
+                     if e.name in legacy else e for e in endpoints] + dapi_endpoints()
+        if 'protein_nuclear_mean_seconly_corrected' in data['nuclei']:
+            endpoints.append(_ep.Endpoint('protein_nuclear_mean_seconly_corrected',
+                'protein_nuclear_mean_seconly_corrected','detection','AU',
+                '{protein} nuclear mean, matched secondary subtracted', descriptive_only=True,
+                absolute_intensity=True, source=data['secondary_correction_source'],
+                note='Exposure uniform per acquirer; staining batch remains a caveat. Control-baseline uncertainty not propagated.'))
     field = _agg.per_field_long(data["nuclei"], data["per_image"], endpoints,
                                 data["labels"], qc_min_nuclei)
     well = _agg.per_well_long(field)
@@ -609,6 +637,15 @@ def build_report(run_dir: Path, out_dir: Optional[Path] = None,
                                      all_pairs=all_pairs or len(group_order_resolved) > 2)
     if persisted is not None:
         contrasts = _agg.retain_descriptive_panel_policy(contrasts,added_endpoints)
+    if dapi is not None:
+        from .dapi_mask import endpoints as dapi_endpoints
+        sensitivity_ep = dapi_endpoints()
+        sf = _agg.per_field_long(dapi['sensitivity'], data['per_image'], sensitivity_ep, data['labels'], qc_min_nuclei)
+        sw = _agg.per_well_long(sf)
+        sc = _agg.build_contrasts(sw, sf, sensitivity_ep, [], group_order_resolved, reference, labels, alpha)
+        dapi.update(sensitivity_field=sf, sensitivity_well=sw, sensitivity_contrasts=sc)
+        for key in ['sensitivity_field','sensitivity_well','sensitivity_contrasts']:
+            dapi[key].to_csv(out_dir/'dapi'/f'dapi_{key}.csv', index=False)
     sec = _agg.secondary_only_table(data["nuclei"], data["per_image"], data["labels"],
                                     exclude_fields, sec_min_nuclei, sec_outlier_k)
 
@@ -677,6 +714,15 @@ def build_report(run_dir: Path, out_dir: Optional[Path] = None,
                                                  contrasts, out_dir/'localization')
             sheets['Localization crops'] = pd.DataFrame(rendered['crops'])
     resolved_deck = None
+    if dapi is not None:
+        classified = dapi['spots'].loc[~dapi['spots'].secondary_only]
+        class_summary = classified.groupby(['group','class']).size().rename('spots').reset_index()
+        class_summary['fraction'] = class_summary.spots/class_summary.groupby('group').spots.transform('sum')
+        sheets['DAPI class summary'] = class_summary
+        for key, name in [('census','DAPI census'),('arms','DAPI census by arm'),('objects','DAPI objects'),
+                          ('spots','DAPI spot classes'),('sensitivity_well','DAPI sensitivity wells'),
+                          ('sensitivity_contrasts','DAPI sensitivity tests')]:
+            sheets[name] = dapi[key]
     panel_figures = []
     if persisted is not None:
         from dataclasses import asdict
@@ -754,6 +800,9 @@ def build_report(run_dir: Path, out_dir: Optional[Path] = None,
         from .slides import build_deck
         build_deck(xlsx,resolved_deck,out_dir/'Sam_RNASEH2B_BIN1.pptx')
 
+    if dapi is not None:
+        from .dapi_mask import write_documents
+        write_documents(out_dir, dapi, contrasts)
     return dict(out_dir=out_dir, xlsx=xlsx, contrasts=contrasts, well=well, field=field,
                 sec=sec, absent=absent, group_order=group_order_resolved, reference=reference,
                 figures=figs, coloc_panel=panel, endpoints=endpoints, labels=labels,

@@ -53,6 +53,7 @@ SHEET_DESCRIPTION: Dict[str, str] = {
         "replicates behind every test are visible. Absolute-intensity rows are "
         "descriptive only and carry no multiplicity adjustment."),
     "Nuclear fraction by group": (
+        "When DAPI correction is enabled, mask-only nuclear_spot_fraction is legacy_mask_only; use nuclear_spot_fraction_dapi. "
         "Where the signal sits rather than how much of it there is, compared between "
         "condition groups: the nuclear fraction of each nucleus's puncta, the "
         "area-normalised density, and nuclear-to-cytoplasmic intensity ratios. These "
@@ -75,6 +76,7 @@ SHEET_DESCRIPTION: Dict[str, str] = {
         "the well means on the Per well sheet. The nucleus count per field and the "
         "quality-control floor it was checked against are both recorded."),
     "Per nucleus": (
+        "cyto_spot_count and nuclear_spot_fraction are legacy_mask_only when DAPI-corrected columns are present. "
         "The measurement level: one row per segmented nucleus, with its image, well, "
         "condition group and every per-nucleus endpoint column. Nuclei are "
         "pseudoreplicates and are never tested directly; they are here so any well "

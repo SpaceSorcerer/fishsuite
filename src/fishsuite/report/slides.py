@@ -299,8 +299,12 @@ def prepare_deck(template: dict, sheets: dict, out_dir: Path, data: dict,
     for key, name in [('per_nucleus','Localization counts'), ('unassigned','Localization unassigned'),
                       ('checks','Localization checks'), ('territory','Localization territory')]:
         sheets[name] = audit[key]
-    localization = fig.render_localization(ctx, well, field, data['nuclei'], spots, contrasts,
-                                            out_dir/'localization', pub_dir=micro_root)
+    if 'dapi' in data:
+        from .dapi_mask import render_dapi
+        localization = render_dapi(ctx, data['dapi'], data['nuclei'], well, field, contrasts, out_dir/'localization')
+    else:
+        localization = fig.render_localization(ctx, well, field, data['nuclei'], spots, contrasts,
+                                                out_dir/'localization', pub_dir=micro_root)
     sheets['Localization crops'] = pd.DataFrame(localization['crops'])
     sheets['Endpoint coverage'] = (field.groupby(['endpoint','group'],as_index=False)
         .agg(defined_nuclei=('n_nuclei_nonmissing','sum'),
@@ -383,7 +387,7 @@ def prepare_deck(template: dict, sheets: dict, out_dir: Path, data: dict,
             f.subplots_adjust(left=.08,right=.98,top=.83,bottom=.17,hspace=.7,wspace=.65)
             for ax,name in zip(axes.flat,names):
                 e = by_endpoint[name]
-                scale = fig.fraction_scale(name)
+                scale = 100. if name == 'nuclear_spot_fraction_dapi' else fig.fraction_scale(name)
                 unit=e.unit
                 if 'observed divided' in unit or 'enrichment' in name:
                     unit='enrichment ratio'
@@ -465,8 +469,18 @@ def prepare_deck(template: dict, sheets: dict, out_dir: Path, data: dict,
             f.text(.06,.88,item['title'],fontsize=18)
             f.text(.06,.72,'\n'.join(textwrap.wrap(item.get('body',''),95)),fontsize=13,va='top',linespacing=1.6)
             if item.get('kind') == 'selection':
-                rows = sheets['Nucleus selection']
-                f.text(.06,.32,'\n'.join(f'{r.stage}: {r.value}' for r in rows.itertuples()),fontsize=12,va='top')
+                if 'dapi' in data:
+                    rows = data['dapi']['arms']
+                    lines = [f'{r.group}: {r.retained_nuclei} retained nuclei; {r.unretained_dapi_objects} unretained DAPI objects; '
+                             f'{r.below_min_area_px} below 16,000 px' for r in rows.itertuples()]
+                    lines += ['DAPI area median [IQR], px: ' + '; '.join(
+                        f'{r.group} {r.unretained_area_median_px:g} [{r.unretained_area_q25_px:g}, {r.unretained_area_q75_px:g}]'
+                        for r in rows.itertuples()),
+                        'Connected components may merge touching nuclei; no claim of recovered segmentation exclusions.']
+                    f.text(.06,.42,'\n\n'.join(lines),fontsize=11,va='top')
+                else:
+                    rows = sheets['Nucleus selection']
+                    f.text(.06,.32,'\n'.join(f'{r.stage}: {r.value}' for r in rows.itertuples()),fontsize=12,va='top')
             fig.save(f,figure_dir,stem,[],item['title'],'; '.join(extra_sheets))
             path=figure_dir/f'{stem}.png'
             assets=[dict(path=str(path.resolve()),sha256=sha256(path),cohort=template['cohort'])]

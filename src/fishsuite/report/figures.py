@@ -588,6 +588,8 @@ def draw_superplot(ax, ctx: FigureContext, endpoint: str, well: pd.DataFrame,
 
 
 def fraction_scale(endpoint):
+    if endpoint == 'nuclear_spot_fraction_dapi':
+        return 100.
     from .endpoints import ENDPOINTS, a3_endpoints
     return 100. if any(e.name == endpoint and 'fraction' in e.unit
                        for e in (*ENDPOINTS, *a3_endpoints([endpoint]))) else 1.
