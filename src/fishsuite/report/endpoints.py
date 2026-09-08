@@ -81,6 +81,22 @@ class Endpoint:
         return out
 
 
+# Ratio-module scalar estimands: paired pools share a display scale by unit.
+RATIO_ENDPOINTS = tuple(
+    Endpoint('ratio_' + kind + '_' + pool, pool, 'detection', unit,
+             title, axis_group='ratio_' + kind + '_' + group,
+             absolute_intensity=kind != 'miat_count')
+    for kind, unit, group, titles in (
+        ('protein', 'Intensity (AU)', 'intensity',
+         ('Total nuclear RNASEH2B', 'RNASEH2B at BIN1 introns')),
+        ('miat_count', 'puncta per nucleus', 'count',
+         ('Total nuclear MIAT', 'QKI-associated MIAT')),
+        ('miat_intensity', 'MIAT footprint intensity per nucleus (a.u.)', 'intensity',
+         ('Total nuclear MIAT intensity', 'QKI-associated MIAT intensity')))
+    for pool, title in zip(('total', 'associated'), titles)
+)
+
+
 ENDPOINTS: Tuple[Endpoint, ...] = (
     # ------------------------------------------------------------- detection
     Endpoint("rna1_spots_per_nucleus", "n_spots_rna1", "detection",
