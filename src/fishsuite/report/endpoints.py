@@ -27,9 +27,8 @@ FAMILY_ORDER: Tuple[str, ...] = ("detection", "localization", "partner")
 FAMILY_DESCRIPTION: Dict[str, str] = {
     "detection": (
         "How much signal each nucleus carries: puncta counted per nucleus, punctum "
-        "size, and absolute intensity. Absolute-intensity rows are descriptive only "
-        "because laser power is retuned per section, so a level is not comparable "
-        "across sections."),
+        "size, and absolute intensity. Acquisition uniform per acquirer 2026-09-07; "
+        "staining batch caveat. Absolute intensities enter the detection Holm family."),
     "localization": (
         "Where the signal sits rather than how much of it there is: the nuclear "
         "fraction of each nucleus's puncta, area-normalised density, and the "
@@ -73,6 +72,7 @@ class Endpoint:
     # mode but leaves them ``rna2_*`` in rna_rna, so one endpoint covers both.
     alt_columns: Tuple[str, ...] = ()
     note: str = ""
+    axis_group: str = ""
 
     def pretty(self, labels: Dict[str, str]) -> str:
         out = self.label
@@ -436,6 +436,35 @@ ENDPOINTS: Tuple[Endpoint, ...] = (
 )
 
 
+INTENSITY_CAVEAT = 'same acquisition settings (acquirer); staining batch not controlled'
+AXIS_GROUPS = {
+    'protein_nuclear_mean': 'protein_nuclear_mean',
+    'protein_nuclear_mean_seconly_corrected': 'protein_nuclear_mean',
+    'paired_frac_rna1_at_partner': 'pairing_fraction',
+    'paired_fraction_rna1_at_0p3um': 'pairing_fraction',
+    'paired_fraction_partner_at_0p3um': 'pairing_fraction',
+    'paired_frac_partner_at_rna1': 'pairing_fraction',
+    'paired_frac_rna1_at_partner_minus_shuffle': 'pairing_excess',
+    'paired_frac_partner_at_rna1_minus_shuffle': 'pairing_excess',
+    'fraction_rna1_puncta_partner_positive_exact_footprint': 'called_fraction',
+    'frac_called_coloc_partner_runthr': 'called_fraction',
+    'frac_called_coloc_partner_minus_shuffle_runthr': 'called_excess',
+    'frac_called_coloc_minus_shuffle_runthr': 'called_excess',
+}
+
+
+def amend_endpoint(endpoint):
+    """A20 membership and display groups, declared independently of observed p."""
+    group = AXIS_GROUPS.get(endpoint.name, endpoint.axis_group)
+    if endpoint.absolute_intensity:
+        group = group or endpoint.name.removesuffix('_seconly_corrected')
+        return replace(endpoint, descriptive_only=False, excluded_from_holm='',
+                       note=INTENSITY_CAVEAT, axis_group=group)
+    return replace(endpoint, axis_group=group)
+
+
+ENDPOINTS = tuple(amend_endpoint(e) for e in ENDPOINTS)
+
 # Opt-in A3 registry. The default registry remains the A0 + A2 proposal.
 # Freeze membership before computing any p value; never select by observed p.
 A3_PARTNER_ADDITIONS = (
@@ -459,7 +488,10 @@ def a3_endpoints(panel_columns: Sequence[str]) -> List[Endpoint]:
                          'Assigned cell territory is Voronoi, not anatomical cell.')
            for c, label in (
                ('cell_total_intensity_protein', '{protein} total IF in assigned cell territory'),
-               ('nuclear_total_intensity_protein', '{protein} total nuclear IF'))]
+               ('nuclear_total_intensity_protein', '{protein} total nuclear IF'),
+               ('nuclear_above_floor_intensity_protein', '{protein} nuclear intensity above the display floor'),
+               ('cell_total_intensity_rna1', '{rna1} total intensity in assigned cell territory'),
+               ('nuclear_total_intensity_rna1', '{rna1} total nuclear intensity'))]
     out.append(Endpoint('rna1_local_mean_at_partner_puncta', 'rna1_local_mean_at_protein_spots',
                         'partner', 'arbitrary units', '{rna1} signal at nuclear {protein} puncta',
                         descriptive_only=True, absolute_intensity=True,
@@ -498,7 +530,7 @@ def a3_endpoints(panel_columns: Sequence[str]) -> List[Endpoint]:
                             note=f'Anchor denominator: {anchor}; {threshold}. '
                                  'Observed, shuffled and excess values are separate measurements. '
                                  'Persisted nulls only. A3 partner family amendment; no pruning on p.'))
-    return out
+    return [amend_endpoint(e) for e in out]
 
 
 def channel_labels(cfg: dict) -> Dict[str, str]:
@@ -617,6 +649,21 @@ SHORT_TITLES.update({
 
 # Dynamic A3 shuffle endpoints: explicit short titles at the same 11 pt size.
 SHORT_TITLES.update({
+    'cell_total_intensity_protein': '{protein} assigned-cell total IF',
+    'cell_total_intensity_protein_seconly_corrected': '{protein} cell IF, corrected',
+    'nuclear_total_intensity_protein': '{protein} total nuclear IF',
+    'nuclear_total_intensity_protein_seconly_corrected': '{protein} nuclear IF, corrected',
+    'nuclear_above_floor_intensity_protein': '{protein} above-floor intensity',
+    'nuclear_above_floor_intensity_protein_seconly_corrected': '{protein} above-floor IF, corrected',
+    'rna1_nuclear_above_floor_intensity_seconly_corrected': '{rna1} above-floor IF, corrected',
+    'cell_total_intensity_rna1': '{rna1} assigned-cell intensity',
+    'cell_total_intensity_rna1_seconly_corrected': '{rna1} cell intensity, corrected',
+    'nuclear_total_intensity_rna1': '{rna1} total nuclear intensity',
+    'nuclear_total_intensity_rna1_seconly_corrected': '{rna1} nuclear intensity, corrected',
+    'protein_nuclear_mean_seconly_corrected': '{protein} nuclear mean, corrected',
+    'partner_mean_in_exact_rna1_footprint_seconly_corrected': '{protein} footprint IF, corrected',
+    'rna1_local_mean_at_partner_puncta_seconly_corrected': '{rna1} at {protein}, corrected',
+    'rna1_local_mean_at_partner_puncta': '{rna1} signal at {protein} puncta',
     'frac_called_coloc_shuffle_runthr': '{protein} calls: shuffled',
     'frac_called_coloc_minus_shuffle_runthr': '{protein} calls: excess over shuffle',
     'frac_called_coloc_partner_minus_shuffle_runthr': '{rna1} calls: excess over shuffle',

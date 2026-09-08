@@ -630,8 +630,9 @@ def build_report(run_dir: Path, out_dir: Optional[Path] = None,
         if 'protein_nuclear_mean_seconly_corrected' in data['nuclei']:
             endpoints.append(_ep.Endpoint('protein_nuclear_mean_seconly_corrected',
                 'protein_nuclear_mean_seconly_corrected','detection','AU',
-                '{protein} nuclear mean, matched secondary subtracted', descriptive_only=True,
+                '{protein} nuclear mean, matched secondary subtracted', descriptive_only=False,
                 absolute_intensity=True, source=data['secondary_correction_source'],
+                axis_group='protein_nuclear_mean',
                 note='Exposure uniform per acquirer; staining batch remains a caveat. Control-baseline uncertainty not propagated.'))
     field = _agg.per_field_long(data["nuclei"], data["per_image"], endpoints,
                                 data["labels"], qc_min_nuclei)
@@ -873,6 +874,7 @@ def render_figures(fig_dir: Path, run_dir: Path, data: dict,
         if len(well) else set()
     drawn = [ep for ep in drawn if ep.name in have]
 
+    _fig.prepare_axis_groups(ctx, drawn, well, field)
     for i, ep in enumerate(drawn, start=1):
         hline = 1.0 if "enrichment" in ep.name and "null" in (ep.unit + ep.name) else None
         # The historical source may count assigned (nuclear + cytoplasmic) spots.

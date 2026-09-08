@@ -196,6 +196,10 @@ def stamp_head(fig, title: str, subtitle: str, filt: str, wrap: int = 132) -> fl
     return max(used - 0.075, 0.0)
 
 
+FIGURE_DATA = {}
+FIGURE_AXES = {}
+
+
 def save(fig, out_dir: Path, stem: str, manifest: List[dict], description: str,
          source: str) -> Dict[str, str]:
     from .provenance import guard_output
@@ -232,10 +236,14 @@ def save(fig, out_dir: Path, stem: str, manifest: List[dict], description: str,
                                    + ("window" if variant == "focus" else "scale"), original)
                             if variant else original)
         png, svg = paths[variant]
+        if len(fig.axes)==1:
+            FIGURE_AXES[str(png.resolve())]=dict(variant=variant,ylim=list(fig.axes[0].get_ylim()),xlim=list(fig.axes[0].get_xlim()),axis_group=getattr(fig.axes[0],'_axis_group',''))
         fig.savefig(png, dpi=DPI)
         fig.savefig(svg)
     plt.close(fig)
     png, svg = paths[variants[-1]]
+    if len(fig.axes) == 1 and hasattr(fig.axes[0], '_figure_data'):
+        FIGURE_DATA[str(png.resolve())] = fig.axes[0]._figure_data
     rec = {"figure": stem, "png": png.name, "svg": svg.name,
            "description": description, "source": source}
     if setters:
@@ -605,6 +613,33 @@ def fraction_scale(endpoint):
                        for e in (*ENDPOINTS, *a3_endpoints([endpoint]))) else 1.
 
 
+def prepare_axis_groups(ctx, definitions, well, field=None):
+    """Freeze union data windows before rendering; ungrouped endpoints stay local.
+
+    Include well points, mean +/- SD, and visible technical points. Each group
+    uses the same annotation reserve even when individual fits are unavailable.
+    """
+    ctx.axis_groups = {e.name: e.axis_group for e in definitions if e.axis_group}
+    windows = {}
+    for endpoint, group in ctx.axis_groups.items():
+        sub = well.loc[well.endpoint.eq(endpoint)]
+        values = []
+        scale = fraction_scale(endpoint)
+        for _, rows in sub.groupby(['group','axis_series'] if 'axis_series' in sub else 'group'):
+            v = pd.to_numeric(rows.well_mean_of_field_values, errors='coerce').dropna().to_numpy()*scale
+            v = v[np.isfinite(v)]
+            values.extend(v)
+            if len(v)>1: values.extend([v.mean()-v.std(ddof=1), v.mean()+v.std(ddof=1)])
+        if getattr(ctx, 'technical_layer', 'none') == 'fov' and field is not None and len(field):
+            values.extend(pd.to_numeric(field.loc[field.endpoint.eq(endpoint), 'field_value'], errors='coerce').dropna()*scale)
+        if values:
+            lo, hi = min(values), max(values)
+            old = windows.get(group, (lo, hi))
+            windows[group] = (min(lo, old[0]), max(hi, old[1]))
+    ctx.axis_windows = windows
+    return windows
+
+
 def draw_replicate_simple(ax, ctx: FigureContext, endpoint: str, well: pd.DataFrame,
                           field: pd.DataFrame, per_nucleus: pd.DataFrame,
                           contrasts: pd.DataFrame, ylabel: str, nuc_column: Optional[str],
@@ -624,6 +659,22 @@ def draw_replicate_simple(ax, ctx: FigureContext, endpoint: str, well: pd.DataFr
     pw = well[well["endpoint"] == endpoint] if len(well) else well
     pf = field[field["endpoint"] == endpoint] if len(field) else field
     rows = contrasts[contrasts["endpoint"] == endpoint] if len(contrasts) else contrasts
+    exported_nuclei=pd.DataFrame()
+    if nuc_column and nuc_column in per_nucleus:
+        exported_nuclei=per_nucleus.copy()
+        if len(pw):
+            roster=pw.loc[pw.well_mean_of_field_values.notna(),['group','well_id']].drop_duplicates()
+            exported_nuclei=exported_nuclei.merge(roster,on=['group','well_id'],how='inner',validate='many_to_one')
+        from .endpoints import ENDPOINTS
+        definition=next((e for e in ENDPOINTS if e.name==endpoint),None)
+        if definition and definition.usability_flag:
+            flag=definition.usability_flag
+            exported_nuclei=exported_nuclei.loc[exported_nuclei[flag].eq(True)] if flag in exported_nuclei else exported_nuclei.iloc[:0]
+        exported_nuclei=exported_nuclei.loc[pd.to_numeric(exported_nuclei[nuc_column],errors='coerce').notna()]
+    ax._figure_data = dict(endpoint=endpoint, well=pw.copy(), field=pf.copy(),
+                          nuclei=exported_nuclei,
+                          nuc_column=nuc_column, scale=scale, ylabel=ylabel,
+                          contrasts=rows.copy())
     seen, counts, well_values, mean_bars = [], [], [], []
     for xi, group in enumerate(ctx.group_order):
         col = ctx.colors[group]
@@ -689,11 +740,16 @@ def draw_replicate_simple(ax, ctx: FigureContext, endpoint: str, well: pd.DataFr
             ax.text(.98, hline_at, hline_label, transform=ax.get_yaxis_transform(),
                     ha="right", va="bottom", fontsize=5.6 if compact else 6.4)
     low, high = min(seen), max(seen)
+    axis_group = getattr(ctx, 'axis_groups', {}).get(endpoint)
+    grouped = axis_group in getattr(ctx, 'axis_windows', {})
+    ax._axis_group=axis_group or ''
+    if grouped:
+        low, high = ctx.axis_windows[axis_group]
     from .endpoints import ENDPOINTS, a3_endpoints
     unit = next((e.unit for e in (*ENDPOINTS, *a3_endpoints([endpoint]))
                  if e.name == endpoint), "")
     percent = (fraction_scale(endpoint) == 100 or '%' in unit) and 'minus_shuffle' not in endpoint
-    zoom = percent and bool(well_values) and min(well_values) > 50
+    zoom = percent and bool(well_values) and (low if grouped else min(well_values)) > 50
     brackets = []
 
     def set_axis(variant):
@@ -710,8 +766,9 @@ def draw_replicate_simple(ax, ctx: FigureContext, endpoint: str, well: pd.DataFr
             if low >= 0:
                 bottom = max(0., bottom)
             base_top = (np.floor(high / step) + 1) * step
-        reserve = .42 + .14 * max(len(brackets) - 1, 0)
-        span = max(base_top - bottom, (high - bottom) / max(.1, 1. - reserve)) if brackets else base_top - bottom
+        count = max(1, len(ctx.group_order)-1) if grouped else len(brackets)
+        reserve = .42 + .14 * max(count - 1, 0)
+        span = max(base_top - bottom, (high - bottom) / max(.1, 1. - reserve)) if count else base_top - bottom
         top = bottom + span
         if not percent:
             top = np.ceil(top / step) * step
@@ -747,7 +804,11 @@ def draw_replicate_simple(ax, ctx: FigureContext, endpoint: str, well: pd.DataFr
         from .endpoints import ENDPOINTS, a3_endpoints
         definition = next((e for e in (*ENDPOINTS, *a3_endpoints([endpoint]))
                            if e.name == endpoint), None)
-        descriptive = bool(r.get('descriptive_only', False) or r.get('absolute_intensity', False) or (definition and (definition.descriptive_only or definition.absolute_intensity)))
+        absolute = bool(r.get('absolute_intensity', False) or (definition and definition.absolute_intensity))
+        descriptive = not absolute and bool(r.get('descriptive_only', False) or (definition and definition.descriptive_only))
+        if absolute:
+            from .endpoints import INTENSITY_CAVEAT
+            details.append(INTENSITY_CAVEAT)
         if descriptive:
             label = 'descriptive, no test'
             annotation = ax.text(.5, .97, label, transform=ax.transAxes,

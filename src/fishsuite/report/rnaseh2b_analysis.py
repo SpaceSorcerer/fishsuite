@@ -59,6 +59,8 @@ def _export(fig, ax, key, out, run, caption, *, nonnegative=False):
             ax.set_ylim(0, max(focus[1], .01))
         else:
             ax.set_ylim(focus)
+        from .figures import FIGURE_AXES
+        FIGURE_AXES[str((out/'figures'/f'{key}_{variant}.png').resolve())]=dict(variant=variant,ylim=list(ax.get_ylim()),xlim=list(ax.get_xlim()),axis_group='rnaseh2b_level_enrichment' if 'LEVEL_ENRICHMENT' in key else '')
         for ext in ('png', 'svg'):
             path = out/'figures'/f'{key}_{variant}.{ext}'
             fig.savefig(path, dpi=180)
@@ -182,6 +184,11 @@ def build_analysis(run_dir, output_dir, correction_csv, acquisition_method=None)
             rho = spearman.loc[spearman.group.eq(arm)].iloc[0]
             ax.scatter(g.protein_nuclear_mean, g[rotation], s=9, alpha=.45, color=COLORS[arm], label=f'{arm}: rho={rho.rho:.3f}, n={rho.n}')
         ax.set_xlabel('Nuclear RNASEH2B mean (AU)', fontsize=9); ax.set_ylabel('Rotation-null enrichment', fontsize=9)
+        # Both per-arm panels and their overlay use the union data window.
+        for column,setter in [('protein_nuclear_mean',ax.set_xlim),(rotation,ax.set_ylim)]:
+            lo,hi=scatter[column].min(),scatter[column].max()
+            pad=max((hi-lo)*.05,abs(hi)*.01,1e-6)
+            setter(max(0,lo-pad),hi+pad)
         ax.legend(fontsize=7, frameon=False)
         save(fig, ax, 'FIG_RNASEH2B_LEVEL_ENRICHMENT_'+suffix, 'Descriptive per-nucleus Spearman; usable persisted rotation nulls.', nonnegative=True)
     fig, ax = _figure()
@@ -234,7 +241,7 @@ def build_analysis(run_dir, output_dir, correction_csv, acquisition_method=None)
     (out/'A17_ANALYSIS_MISSING.md').write_text('\n'.join(missing)+'\n', encoding='utf-8')
     (out/'A17_ANALYSIS_TITLE_MAP.json').write_text(json.dumps(TITLE_MAP, indent=2), encoding='utf-8')
     (out/'A17_ANALYSIS_METHODS.md').write_text(
-        'Human imaging; no genome reference used. T subtracts the matching-arm arithmetic mean of all secondary-control FOV means from each retained primary nucleus, without clipping. Four WT and three KO secondary FOVs contribute; the baseline matches the supplied frozen correction CSV. Baseline uncertainty is not propagated. Absolute IF remains descriptive; staining batch is a caveat.\n'
+        'Human imaging; no genome reference used. T subtracts the matching-arm arithmetic mean of all secondary-control FOV means from each retained primary nucleus, without clipping. Four WT and three KO secondary FOVs contribute; the baseline matches the supplied frozen correction CSV. Baseline uncertainty is not propagated. Same acquisition settings (acquirer); staining batch not controlled.\n'
         'A averages the stored RNASEH2B mean inside each exact half-maximum nuclear BIN1 punctum footprint, equally across puncta within a nucleus; A is not secondary-subtracted. Nuclei without a defined nuclear footprint have missing A, never zero. T uses all retained nuclei. Both endpoints average nucleus to FOV to well, with equal FOV weights. Therefore A and T share wells but have different defined nucleus denominators, explicitly exported.\n'
         'R=(mean(A_KO)/mean(A_WT))/(mean(T_KO)/mean(T_WT)); three wells per arm. The log-delta normal 95% CI includes within-arm A,T covariance across wells. The two-sided exact test enumerates every balanced assignment of the six whole-well paired A,T values (20 assignments), using abs(log(R)); one-sided R>1 p is separately reported. Numeric well suffixes do not establish paired randomization, so permutations are unblocked. With 20 assignments the smallest two-sided p is 0.10. The normal CI is not an inversion of this exact test; normal-model 80% R-MDE at two-sided alpha .05 is not attainable power of the discrete exact test.\n'
         'Spearman uses finite nucleus-level raw nuclear intensity and rotation-enrichment pairs with a usable persisted rotation null. Nucleus-level p values are descriptive and do not substitute nuclei for biological replicates. Radial curves use the persisted per-FOV radial enrichment values and equal FOV-to-well means; bands are t-based 95% CI across three wells. The source colloquial radial filename _ci is a PNG rather than a numeric CI table; numeric bands are derived transparently from the radial CSV, without null generation.\n'

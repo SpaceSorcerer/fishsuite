@@ -63,7 +63,9 @@ def test_recorded_deck_semantic_assets_and_localization(tmp_path, monkeypatch):
     assert crops.territory_boundary.eq('missing').all()
     svg = (result['out_dir']/'localization/rna1_cyto_spots_per_nucleus_localization_focus.svg').read_text()
     import re
-    svg_text=' '.join(re.findall(r'<!--\s*(.*?)\s*-->',svg,re.S))
+    import xml.etree.ElementTree as ET
+    svg_text=' '.join(''.join(node.itertext()) for node in ET.fromstring(svg).iter()
+                      if node.tag.endswith('}text'))
     assert 'per nucleus and assigned cell territory' in svg_text.lower()
     assert 'Assigned-cytoplasmic puncta count' in svg_text or 'cytoplasmic puncta' in svg_text
     ppt = Presentation(result['out_dir']/'Sam_RNASEH2B_BIN1.pptx')

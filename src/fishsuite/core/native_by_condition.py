@@ -122,6 +122,7 @@ def _render(run: Path, out: Path, groups: ConditionsCfg):
     fig.set_style()
     ctx = fig.FigureContext(run,cfg,None,order,order[0],.05,{},labels,
         color_overrides=groups.group_colors,plot_style='replicate-simple',technical_layer='none')
+    fig.prepare_axis_groups(ctx,endpoints,wells,fields)
     manifest = []
     for e in endpoints:
         print(f'Native condition figure: {e.name}', flush=True)

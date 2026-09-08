@@ -43,8 +43,9 @@ def add(spec,sheets,title,paths=(),source=(),identity='',body=''):
 
 def chart(ctx,out,stem,title,w,c,endpoint,unit='',scale=1):
     records=[]
-    record=figures.superplot_standalone(ctx,endpoint,title,unit,w,getattr(ctx,'report_fields',pd.DataFrame()),pd.DataFrame(),
-        c,None,out/'figures',stem,records,scale=scale)
+    column=getattr(ctx,'endpoint_columns',{}).get(endpoint)
+    record=figures.superplot_standalone(ctx,endpoint,title,unit,w,getattr(ctx,'report_fields',pd.DataFrame()),getattr(ctx,'report_nuclei',pd.DataFrame()),
+        c,column,out/'figures',stem,records,scale=scale)
     return out/'figures'/record['png']
 
 
@@ -65,6 +66,12 @@ def finish(out,sheets,spec,book_name,deck_name,missing):
             if not a.get('caption') and svg.is_file():
                 texts=[t for t in ET.parse(svg).iter() if t.tag.endswith('}text') and 'font-size: 11px' in t.attrib.get('style','')]
                 if texts:a['caption']=''.join(texts[0].itertext())
+    a20_index = None
+    if spec.get('a20'):
+        from .a20_delivery import organize, export_figure_workbook, remap_local_assets
+        captured,a20_index = organize(out,spec,'MIAT' in book_name)
+        remap_local_assets(out,sheets,spec)
+        export_figure_workbook(out,sheets,spec,captured)
     index=[]
     for i,item in enumerate(spec['slides'],1):
         for a in item['figures']:
@@ -88,12 +95,13 @@ def finish(out,sheets,spec,book_name,deck_name,missing):
     (out/'slides_full.txt').write_text((out/'slides_focus.txt').read_text(encoding='utf-8'),encoding='utf-8')
     (out/'MISSING.md').write_text('\n'.join(missing)+'\n',encoding='utf-8')
     (out/'TITLE_MAP.json').write_text(json.dumps({'endpoint_registry':endpoints.SHORT_TITLES,'figure_titles':{Path(a['path']).stem:a.get('caption','') for item in spec['slides'] for a in item['figures']}},indent=2),encoding='utf-8')
-    (out/'FIGURE_INDEX.md').write_text('\n'.join(f"- Slide {r['slide']}: {r['path']}" for r in index)+'\n',encoding='utf-8')
+    if a20_index is None:
+        (out/'FIGURE_INDEX.md').write_text('\n'.join(f"- Slide {r['slide']}: {r['path']}" for r in index)+'\n',encoding='utf-8')
     print(f'BUILT {out}: {len(spec["slides"])} slides, {len(index)} independently embedded images.',flush=True)
     return spec
 
 
-def rnase(run,prior,out):
+def rnase(run,prior,out,a20=False):
     from . import aggregate, dapi_mask
     from .coloc_existing import render_simple_coloc, render_cytofluorogram
     from .micrograph_slides import prepare_per_well_micrographs
@@ -101,22 +109,38 @@ def rnase(run,prior,out):
     out.mkdir(parents=True,exist_ok=True)
     (out/'figures').mkdir(exist_ok=True)
     sheets=pd.read_excel(prior/'REPORT.xlsx',sheet_name=None,header=1)
+    if a20:
+        from .a20_delivery import amend_rnase
+        definitions = amend_rnase(sheets,run,out)
     cfg=json.loads((run/'run_config.json').read_text(encoding='utf-8'))
     labels=endpoints.channel_labels(cfg)
     ctx=figures.FigureContext(run,cfg,None,['WT','QKI-KO'],'WT',.05,{},labels,plot_style='replicate-simple')
     w,c,n=sheets['Per well'],sheets['Contrasts'],sheets['Per nucleus']
     ctx.report_fields=sheets['Per field']
+    ctx.report_nuclei=n
+    ctx.endpoint_columns=dict(zip(sheets['Endpoint definitions'].name,sheets['Endpoint definitions'].column))
+    if a20:
+        figures.prepare_axis_groups(ctx,definitions,w,ctx.report_fields)
     epdefs=sheets['Endpoint definitions'].set_index('name')
     template=yaml.safe_load((prior/'data/deck_spec.yaml').read_text(encoding='utf-8'))
-    spec=dict(cohort=run.name,slides=[])
+    spec=dict(cohort=run.name,slides=[],a20=a20)
     titles=dict(q1_count_size='Q1 · BIN1 intron puncta',q1_localization='Q1 · BIN1 intron localization',
         q1_total_if='Q1b · RNASEH2B level',q2='Q2 · RNASEH2B signal at nuclear BIN1 puncta',
         q3='Q3 · RNASEH2B puncta at nuclear BIN1 puncta',q4_reverse_anchor='Q4 · BIN1 at RNASEH2B puncta')
     figures.set_style()
     for item in template['slides']:
         if item['identity']=='micrographs': continue
+        if a20 and item['identity']=='standard_coloc': continue
         paths=[]
-        for name in item.get('endpoints',[]):
+        names=list(item.get('endpoints',[]))
+        if a20:
+            if item['identity']=='q1_total_if':
+                names=['protein_nuclear_mean','nuclear_total_intensity_protein','cell_total_intensity_protein','nuclear_above_floor_intensity_protein','protein_nc_ratio','protein_spots_per_nucleus','cell_total_intensity_rna1','nuclear_total_intensity_rna1','rna1_nuclear_above_floor_intensity']
+            for name in list(names):
+                corrected=name+'_seconly_corrected'
+                if corrected in epdefs.index and corrected not in names:
+                    names.insert(names.index(name)+1,corrected)
+        for name in names:
             e=epdefs.loc[name]
             row=c.loc[c.endpoint.eq(name)].iloc[0]
             title=endpoints.short_title(name,str(row.get('endpoint_plain',name)),labels)
@@ -135,6 +159,8 @@ def rnase(run,prior,out):
     simple=render_simple_coloc(sheets['Simple coloc nuclei'],sheets['Simple coloc FOVs'],sheets['Simple coloc wells'],
         sheets['Simple coloc metrics'],out/'figures','BIN1 intron','RNASEH2B','WT',run.name)
     add(spec,sheets,'Pixel colocalization',[out/'figures'/r['png'] for r in simple],['Simple coloc metrics'],'simple_coloc')
+    if a20:
+        spec['slides'][-1]['body']='Pearson r and ICQ are threshold-free and unchanged by KO; Manders M1/M2 track the RNASEH2B intensity threshold (lower RNASEH2B in KO), so they are not used as colocalization readouts here. Manders now uses the fixed lab display floors; Costes and MAD versions are sensitivity only.'
     selected=sheets['Simple coloc representatives']
     stored=np.load(prior/'data/representative_pixels.npz')
     sources=pd.read_csv(prior/'data/representative_pixel_sources.csv')
@@ -153,7 +179,10 @@ def rnase(run,prior,out):
         for arm,col in [('WT','mean_ref'),('QKI-KO','mean_test')]:
             ax.plot(rows.floor_px,rows[col]*scale,'o-',label=arm,color=ctx.colors[arm])
         ax.set_xlabel('Minimum nucleus area (pixels)');ax.set_ylabel('Percent nuclear' if scale==100 else 'Puncta / nucleus')
-        ax.legend(frameon=False,fontsize=8);ax._replicate_simple_axis=lambda variant:None
+        ax.legend(frameon=False,fontsize=8)
+        floor_window=ax.get_ylim()
+        ax._axis_group='nucleus_floor_'+name
+        ax._replicate_simple_axis=lambda variant,ax=ax,window=floor_window: ax.set_ylim(0 if variant=='full' else window[0],window[1])
         figures.layout_replicate_simple(f,ax,ctx,'Nucleus floor: '+('localization' if scale==100 else 'BIN1 count'),'Descriptive floor comparison; each floor has its own cohort')
         rec=figures.save(f,out/'figures','FIG_FLOOR_'+name,[],'Nucleus area floor comparison','A17 Floor comparison')
         paths.append(out/'figures'/rec['png'])
@@ -178,11 +207,30 @@ def rnase(run,prior,out):
             item['readout_template']='Three-times-median spot audit: BIN1 {BIN1_flagged}/{control_fields} control FOVs flagged; RNASEH2B {RNASEH2B_flagged}/{control_fields}. Nuclear secondary intensity shown by arm. Named acquisition-method document missing.'
     micro=prepare_per_well_micrographs(run,out/'micrographs_per_well')
     slides.append_per_well_micrographs(spec,sheets,micro)
+    if a20:
+        from .coloc_existing import lab_floor_config
+        ranges,partner_role=lab_floor_config(run)
+        text='Display ranges (AU): '+ '; '.join(f'{label} {ranges[role][0]:g}–{ranges[role][1]:g}' for role,label in [('dapi','DAPI'),('rna','BIN1 intron'),(partner_role,'RNASEH2B')])
+        for item in spec['slides']:
+            if item.get('layout')=='micrographs': item['display_ranges']=text
     qc=[r['path'] for r in micro.get('qc',[]) if r.get('path')]
     if qc: add(spec,sheets,'QC walkthrough: segmentation and detections',qc,['Per-well micrograph selection'],'qc_walkthrough')
+    if a20:
+        names=['rna1_local_mean_at_partner_puncta','rna1_local_mean_at_partner_puncta_seconly_corrected']
+        paths=[chart(ctx,out,'FIG_'+name.upper(),endpoints.short_title(name,name,labels),w,c,name,'Intensity (AU)') for name in names]
+        add(spec,sheets,'BIN1 signal at RNASEH2B puncta',paths,['Contrasts','Per well'],'reverse_absolute_intensity')
     missing=analysis['missing']+micro.get('missing',[])
     (out/'METHODS.md').write_text((prior/'METHODS.md').read_text(encoding='utf-8')+'\n\n'+(out/'A17_ANALYSIS_METHODS.md').read_text(encoding='utf-8')+'\nPer-well micrographs use native publication images with recorded windows, wavelength LUTs and scale bars.\nFootprint qualification: A uses stored punctum-footprint means with equal punctum weighting within each nucleus. The engine can fall back to fitted-radius footprints; per-spot fallback flags are not persisted. No footprints were reconstructed during reporting.\n',encoding='utf-8')
     (out/'READOUT.md').write_text(rn_readout(c,analysis['summary']),encoding='utf-8')
+    if a20:
+        methods=(out/'METHODS.md').read_text(encoding='utf-8')
+        methods=methods.replace('Absolute intensity and declared descriptive endpoints remain descriptive.',
+            'Absolute intensity is tested in its declared Holm family; genuinely test-free endpoints remain descriptive.')
+        methods=methods.replace('Absolute IF remains descriptive; N:C is shown beside corrected nuclear mean and raw total is\nsecondary.',
+            'Absolute IF uses the mixed-model headline and Welch footer; raw and matched-secondary variants appear together.')
+        methods+='\nA20: '+(out/'FAMILY_AMENDMENTS.md').read_text(encoding='utf-8')
+        methods+='\nManders of record uses per-channel intensity-weighted signal at or above the fixed manual display floors. The numerator requires both channels to meet their floors; each denominator contains its own above-floor signal. A coefficient with no qualifying denominator remains missing. Costes and median+2.5 MAD coefficients are sensitivity only.\n'
+        (out/'METHODS.md').write_text(methods,encoding='utf-8')
     return finish(out,sheets,spec,'REPORT.xlsx','Sam_RNASEH2B_BIN1.pptx',missing)
 
 
@@ -197,7 +245,7 @@ def rn_readout(contrasts,summary):
     r=summary['ratio']
     lines=[
         '1: BIN1 intron puncta/nucleus '+values('rna1_spots_per_nucleus')+' (p='+p('rna1_spots_per_nucleus')+'); footprint area (square micrometres) '+values('rna1_punctum_footprint_area_um2')+' (p='+p('rna1_punctum_footprint_area_um2')+').',
-        '1b RNASEH2B level: corrected nuclear mean (AU) '+values('protein_nuclear_mean_seconly_corrected')+'; puncta/nucleus '+values('protein_spots_per_nucleus')+' (headline p='+p('protein_spots_per_nucleus')+').',
+        '1b RNASEH2B level: corrected nuclear mean (AU) '+values('protein_nuclear_mean_seconly_corrected')+' (headline p='+p('protein_nuclear_mean_seconly_corrected')+'); assigned-cell total IF '+values('cell_total_intensity_protein')+' (headline p='+p('cell_total_intensity_protein')+').',
         '2: RNASEH2B mean in BIN1 footprints (AU) '+values('partner_mean_in_exact_rna1_footprint')+' (headline p='+p('partner_mean_in_exact_rna1_footprint')+'); rotation enrichment '+values('partner_rotation_enrichment_at_rna1')+' (p='+p('partner_rotation_enrichment_at_rna1')+').',
         '3: BIN1-anchored pairing excess (percentage points) '+values('paired_frac_rna1_at_partner_minus_shuffle',100)+'; headline p='+p('paired_frac_rna1_at_partner_minus_shuffle')+'.',
         '4: RNASEH2B-anchored pairing excess (percentage points) '+values('paired_frac_partner_at_rna1_minus_shuffle',100)+'; headline p='+p('paired_frac_partner_at_rna1_minus_shuffle')+'.',
@@ -206,12 +254,12 @@ def rn_readout(contrasts,summary):
     return '\n'.join(lines)+'\n'
 
 
-def miat(prior,out):
+def miat(prior,out,a20=False):
     from . import miat_qki
     from .coloc_existing import render_simple_coloc
     out.mkdir(parents=True,exist_ok=True);(out/'figures').mkdir(exist_ok=True)
     sheets=pd.read_excel(prior/'MIAT_QKI_RESULTS_v2.xlsx',sheet_name=None,header=1)
-    spec=dict(cohort='mixed, explicitly labelled per slide',slides=[])
+    spec=dict(cohort='mixed, explicitly labelled per slide',slides=[],a20=a20)
     ctx=miat_qki._context(prior/'data',miat_qki.COLORS)
     ctx.plot_style='replicate-simple'
     ctx.run_name='MIAT fixed-10 persisted report'
@@ -220,6 +268,9 @@ def miat(prior,out):
     for measurement in miat_qki.MEASUREMENTS:
         paths_total=[];paths_associated=[];paths_ratio=[]
         for pool,policies in [('T',[miat_qki.POLICIES[0]]),('A',miat_qki.POLICIES)]:
+            if a20:
+                union=sheets['Ratio well values'].loc[lambda x:x.measurement.eq(measurement)].rename(columns={'arm':'group','biological_set':'well_id',pool:'well_mean_of_field_values'}).assign(endpoint='miat_scalar',axis_series=lambda x:x.null_policy)
+                figures.prepare_axis_groups(ctx,[endpoints.Endpoint('miat_scalar','miat_scalar','detection','AU','MIAT',axis_group=f'miat_{pool}_{measurement}')],union)
             for policy in policies:
                 w=sheets['Ratio well values'].loc[lambda x:x.measurement.eq(measurement)&x.null_policy.eq(policy)].copy()
                 w=w.rename(columns={'arm':'group','biological_set':'well_id',pool:'well_mean_of_field_values'}).assign(endpoint='miat_scalar')
@@ -229,6 +280,11 @@ def miat(prior,out):
                 if len(revised):c=revised.assign(endpoint='miat_scalar')
                 label=miat_qki.LABELS[miat_qki.POLICIES.index(policy)]
                 title=('Total MIAT' if pool=='T' else label)+(' puncta' if measurement=='spot_count' else ' intensity')
+                ctx.report_nuclei=pd.DataFrame();ctx.endpoint_columns={}
+                if a20 and (pool=='A' or measurement=='spot_count'):
+                    column=('observed_spot_count' if pool=='T' else 'q95_positive_spot_count' if measurement=='spot_count' else 'q95_associated_miat_intensity')
+                    ctx.report_nuclei=sheets['Nucleus roster'].loc[lambda x:x.null_policy.eq(policy)].rename(columns={'arm':'group','biological_set':'well_id','image_key':'image','nucleus_uid':'nucleus_id',column:'value'})
+                    ctx.endpoint_columns={'miat_scalar':'value'}
                 path=chart(ctx,out,f'FIG_MIAT_{pool}_{measurement}_{policy}',title,w,c,'miat_scalar',
                            'Puncta / nucleus' if measurement=='spot_count' else 'MIAT footprint intensity / nucleus (AU)')
                 (paths_total if pool=='T' else paths_associated).append(path)
@@ -238,7 +294,12 @@ def miat(prior,out):
             ax.errorbar([0],[row.R],yerr=[[row.R-row.ci_low],[row.ci_high-row.R]],fmt='o',capsize=5,color=ctx.colors['KD'])
             ax.axhline(1,color='#555555',ls=':');ax.set_xticks([0],['KD / NT relative retention'])
             ax.set_ylabel('R = rA / rT');ax.set_ylim(min(.9,row.ci_low*.9),max(1.1,row.ci_high*1.15))
-            ax._replicate_simple_axis=lambda variant:None
+            if a20:
+                union=sheets['Ratio intervals'].loc[lambda x:x.measurement.eq(measurement)]
+                lo,hi=min(.9,union.ci_low.min()*.9),max(1.1,union.ci_high.max()*1.15)
+                ax._replicate_simple_axis=lambda variant,ax=ax,lo=lo,hi=hi: ax.set_ylim(0 if variant=='full' else lo,hi)
+                ax._axis_group='miat_retention_'+measurement
+            else: ax._replicate_simple_axis=lambda variant:None
             figures.layout_replicate_simple(f,ax,ctx,label,f'R={row.R:.4g}; 95% CI [{row.ci_low:.4g}, {row.ci_high:.4g}]; exact p={row.p_exact:.4g}; R-MDE={row.R_MDE_05:.4g}')
             rec=figures.save(f,out/'figures',f'FIG_MIAT_R_{measurement}_{policy}',[],label,'Ratio intervals')
             paths_ratio.append(out/'figures'/rec['png'])
@@ -246,6 +307,7 @@ def miat(prior,out):
         add(spec,sheets,'Total MIAT '+label,paths_total,['Ratio well values','Scalar contrasts','A15 MIAT contrasts'])
         add(spec,sheets,'Associated MIAT '+label,paths_associated,['Ratio well values','Scalar contrasts','A15 MIAT contrasts'])
         add(spec,sheets,'Preferential retention: MIAT '+label,paths_ratio,['Ratio intervals'],body='The tested prediction is preferential spatial retention. Exact-test results and model-based intervals are shown per policy.')
+    ctx.report_nuclei=pd.DataFrame();ctx.endpoint_columns={}
     qpaths=[]
     for name,title,source,col in [('protein_nuclear_mean','QKI nuclear pixel mean','QKI pixel mean','value'),
             ('mean_nc_ratio_total_intensity_protein','QKI nuclear:cytoplasmic signal','QKI per well','mean_nc_ratio_total_intensity_protein'),
@@ -264,6 +326,9 @@ def miat(prior,out):
     add(spec,sheets,'Pixel colocalization',[out/'figures'/r['png'] for r in simple],['Simple coloc metrics'],'simple_coloc')
     for endpoint in ['candidate/observed','usable/candidate','usable/observed']:
         paths=[]
+        if a20:
+            union=sheets['Coverage'].loc[lambda x:x.endpoint.eq(endpoint)&x.tier.eq('well')].rename(columns={'arm':'group','biological_set':'well_id','value':'well_mean_of_field_values'}).assign(endpoint='coverage',axis_series=lambda x:x.null_policy)
+            figures.prepare_axis_groups(ctx,[endpoints.Endpoint('coverage','coverage','partner','fraction','Coverage',axis_group='coverage_'+endpoint)],union)
         for policy,label in zip(miat_qki.POLICIES,miat_qki.LABELS):
             w=sheets['Coverage'].loc[lambda x:x.endpoint.eq(endpoint)&x.null_policy.eq(policy)&x.tier.eq('well')].rename(columns={'arm':'group','biological_set':'well_id','value':'well_mean_of_field_values'}).assign(endpoint='coverage')
             paths.append(chart(ctx,out,'FIG_MIAT_COVERAGE_'+endpoint.replace('/','_')+'_'+policy,label,w,pd.DataFrame(),'coverage',endpoint))

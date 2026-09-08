@@ -204,7 +204,7 @@ def build_deck(workbook: Path, spec: dict, destination: Path) -> Path:
             box.top,box.height=Inches(.03),Inches(.45)
             for p in box.text_frame.paragraphs:p.font.size=Pt(18)
             for i,label in enumerate(definition.get('row_labels',[])):
-                rowbox=slide.shapes.add_textbox(Inches(.25),Inches(.48+3.45*i),Inches(12.8),Inches(.2))
+                rowbox=slide.shapes.add_textbox(Inches(.25),Inches(.48+(3.15 if definition.get('display_ranges') else 3.45)*i),Inches(12.8),Inches(.2))
                 rowbox.text_frame.margin_top=rowbox.text_frame.margin_bottom=0
                 rowbox.text_frame.text=label
                 for p in rowbox.text_frame.paragraphs:p.font.size=Pt(10)
@@ -216,8 +216,8 @@ def build_deck(workbook: Path, spec: dict, destination: Path) -> Path:
             columns = 4 if micrograph else 1 if len(assets)==1 else 2 if len(assets) in (2,4) else 3
             rows = (len(assets)+columns-1)//columns
             cell_width = 12.73/columns
-            cell_height = 3.45 if micrograph else 4.95/rows
-            max_width, max_height = cell_width-.04, (3.12 if micrograph else cell_height-.27)
+            cell_height = (3.15 if definition.get('display_ranges') else 3.45) if micrograph else 4.95/rows
+            max_width, max_height = cell_width-.04, ((2.80 if definition.get('display_ranges') else 3.12) if micrograph else cell_height-.27)
             width = min(max_width, max_height*ratio)
             height = width/ratio
             left = .30+(asset_no%columns)*cell_width+(cell_width-width)/2
@@ -246,12 +246,18 @@ def build_deck(workbook: Path, spec: dict, destination: Path) -> Path:
             readouts = [definition['readout_template'].format(**{v['label']:v['value'] for v in definition['values']})]
         if assets and definition.get('body') and not readouts:
             readouts=[definition['body']]
+        if definition.get('display_ranges'):
+            box = slide.shapes.add_textbox(Inches(.4), Inches(7.12), Inches(12.5), Inches(.28))
+            box.text_frame.margin_top=box.text_frame.margin_bottom=0
+            box.text_frame.text=definition['display_ranges']
+            for paragraph in box.text_frame.paragraphs:
+                paragraph.font.name,paragraph.font.size='Arial',Pt(10)
         if readouts and assets and definition.get('layout')!='micrographs':
             box = slide.shapes.add_textbox(Inches(.5), Inches(6.25), Inches(12.3), Inches(1.0))
             box.text_frame.word_wrap = True
             box.text_frame.text = str(readouts[0])
             for paragraph in box.text_frame.paragraphs:
-                paragraph.font.name, paragraph.font.size = 'Arial', Pt(18)
+                paragraph.font.name, paragraph.font.size = 'Arial', Pt(14 if len(str(readouts[0]))>270 else 18)
         slide.notes_slide.notes_text_frame.text = notes
     destination.parent.mkdir(parents=True, exist_ok=True)
     ppt.save(destination)

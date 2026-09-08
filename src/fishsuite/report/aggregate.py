@@ -615,14 +615,11 @@ def build_contrasts(well: pd.DataFrame, field: pd.DataFrame,
         return out
 
     out["in_holm_family"] = ~(out["descriptive_only"] | out["endpoint_absent_in_run"]
-                              | out["absolute_intensity"]
                               | out["excluded_from_holm"].astype(bool))
     out["holm_exclusion_reason"] = np.where(
         out["endpoint_absent_in_run"], "column absent from this run",
-        np.where(out["absolute_intensity"],
-                 "absolute intensity, not comparable as a level claim across sections",
-                 np.where(out["excluded_from_holm"].astype(bool), out["excluded_from_holm"],
-                          np.where(out["descriptive_only"], "descriptive only by design", ""))))
+        np.where(out["excluded_from_holm"].astype(bool), out["excluded_from_holm"],
+                 np.where(out["descriptive_only"], "descriptive only by design", "")))
     out['p_mixed'] = out['sensitivity_mixed_p'].where(out['sensitivity_mixed_status'].eq('ok'))
     out['p_headline'] = out.p_mixed.fillna(out.p_welch)
     out['headline_test'] = np.where(out.p_mixed.notna(), 'mixed model', 'Welch (well means)')

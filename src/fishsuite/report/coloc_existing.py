@@ -19,6 +19,73 @@ SIMPLE_METRICS = ('pearson_r_csp', 'manders_m1_costes_only',
                   'manders_m2_costes_only', 'li_icq_csp')
 
 
+def fixed_floor_manders(rna, partner, rna_floor, partner_floor):
+    """Intensity-weighted overlap of signals meeting fixed inclusive floors.
+
+    Each denominator contains only its channel's above-floor signal. A nucleus
+    with no qualifying signal has an undefined coefficient, never an invented 0.
+    """
+    x, y = np.asarray(rna, float).ravel(), np.asarray(partner, float).ravel()
+    if x.shape != y.shape or not np.isfinite([x, y]).all():
+        raise ReportInputError('invalid paired nuclear pixels')
+    xp, yp = x >= rna_floor, y >= partner_floor
+    both = xp & yp
+    sx, sy = x[xp].sum(), y[yp].sum()
+    return (float(x[both].sum()/sx) if sx > 0 else np.nan,
+            float(y[both].sum()/sy) if sy > 0 else np.nan)
+
+
+def lab_floor_config(run_dir):
+    cfg = json.loads((Path(run_dir)/'run_config.json').read_text(encoding='utf-8'))['config_resolved']
+    output = cfg['output']
+    partner = 'antibody' if cfg['channels']['analysis_mode'] == 'rna_protein' else 'rna2'
+    ranges = {role: (float(output[f'manual_{role}_min']), float(output[f'manual_{role}_max']))
+              for role in ('dapi', 'rna', partner)}
+    if any(not np.isfinite(v).all() or v[0] < 0 or v[1] <= v[0] for v in ranges.values()):
+        raise ReportInputError('missing or invalid manual display windows')
+    return ranges, partner
+
+
+def recompute_lab_manders(nuclei, run_dir, image_paths, cache_dir=None):
+    """Use the standard panel loader, one stored nuclear mask and plane per FOV."""
+    ranges, partner_role = lab_floor_config(run_dir)
+    rx, ry = ranges['rna'][0], ranges[partner_role][0]
+    out = nuclei.copy()
+    from .a20_delivery import cache_matches,seal_cache
+    import hashlib
+    for _, rows in out.groupby(['image', 'z_plane'], sort=False):
+        first=rows.iloc[0]
+        source=Path(image_paths[first.image])
+        mask=Path(run_dir)/'masks'/f'{first.stem}__nuclei_label_mask.tif'
+        if not source.is_file() or not mask.is_file():
+            raise ReportInputError(f'missing nuclear image/mask: {source}; {mask}')
+        # VSI stores its pixel payload in this explicitly named sibling stack.
+        payloads=sorted((source.parent/('_'+source.stem+'_')/'stack1').glob('*.ets'))
+        signature=dict(version='A20-fixed-floor-1',floors=[rx,ry],z_plane=float(first.z_plane),
+                       roster=rows.nucleus_id.tolist(),n_pix=rows.n_pix.tolist(),
+                       files={str(p):sha256(p) for p in [source,mask,*payloads]})
+        cache=Path(cache_dir)/(hashlib.sha256(str(first.image).encode()).hexdigest()[:16]+'.csv') if cache_dir else None
+        if cache is not None:
+            cache.parent.mkdir(parents=True,exist_ok=True)
+            if cache_matches(cache,signature):
+                saved=pd.read_csv(cache,float_precision='round_trip').set_index('nucleus_id')
+                for column in ('manders_m1_labfloor','manders_m2_labfloor'):
+                    out.loc[rows.index,column]=rows.nucleus_id.map(saved[column]).to_numpy()
+                print(f'Manders cache verified: {first.image}',flush=True)
+                continue
+        print(f'Manders planes: {first.image}; {len(rows)} nuclei',flush=True)
+        pixels, _ = load_representative_pixels(rows, run_dir, image_paths)
+        for index, row in rows.iterrows():
+            m1, m2 = fixed_floor_manders(*pixels[(row.well_id, row.image, row.nucleus_id)], rx, ry)
+            out.loc[index, 'manders_m1_labfloor'] = m1
+            out.loc[index, 'manders_m2_labfloor'] = m2
+        if cache is not None:
+            out.loc[rows.index,['nucleus_id','manders_m1_labfloor','manders_m2_labfloor']].to_csv(cache,index=False)
+            seal_cache(cache,signature)
+    out['lab_floor_rna'], out['lab_floor_partner'] = rx, ry
+    return out
+
+
 def read_simple_metrics(path: Path) -> pd.DataFrame:
     """Read named persisted nucleus rows, retaining source identity and missingness.
 
@@ -55,14 +122,14 @@ def read_simple_metrics(path: Path) -> pd.DataFrame:
     return df
 
 
-def simple_rollups(nuclei):
+def simple_rollups(nuclei, metrics=SIMPLE_METRICS):
     """Equal nucleus weight inside FOV, equal defined FOV weight inside well."""
     bio = nuclei.loc[~nuclei.secondary_only.eq(True)]
     keys = ['group','well_id','image']
-    fields = bio.groupby(keys,sort=True)[list(SIMPLE_METRICS)].mean().reset_index()
-    counts = bio.groupby(keys,sort=True)[list(SIMPLE_METRICS)].count().reset_index()
-    fields = fields.merge(counts.rename(columns={m:m+'_n_nuclei' for m in SIMPLE_METRICS}),on=keys,validate='one_to_one')
-    wells = fields.groupby(keys[:2],sort=True)[list(SIMPLE_METRICS)].mean().reset_index()
+    fields = bio.groupby(keys,sort=True)[list(metrics)].mean().reset_index()
+    counts = bio.groupby(keys,sort=True)[list(metrics)].count().reset_index()
+    fields = fields.merge(counts.rename(columns={m:m+'_n_nuclei' for m in metrics}),on=keys,validate='one_to_one')
+    wells = fields.groupby(keys[:2],sort=True)[list(metrics)].mean().reset_index()
     return fields,wells
 
 
@@ -81,20 +148,20 @@ def representative_nuclei(nuclei):
     return pd.DataFrame(rows).reset_index(drop=True)
 
 
-def simple_statistics(nuclei, reference):
+def simple_statistics(nuclei, reference, metrics=SIMPLE_METRICS):
     from .sensitivities import mixed_model
     from .stats import welch
-    fields,wells=simple_rollups(nuclei)
+    fields,wells=simple_rollups(nuclei, metrics)
     groups=sorted(wells.group.unique())
     if len(groups)!=2 or reference not in groups:
         raise ReportInputError('simple coloc requires two arms and an explicit reference')
     test=next(g for g in groups if g!=reference)
     rows=[]
     bio=nuclei.loc[~nuclei.secondary_only.eq(True)]
-    for metric in SIMPLE_METRICS:
+    for metric in metrics:
         a,b=[wells.loc[wells.group.eq(g),metric].dropna().to_numpy() for g in (test,reference)]
         row=dict(endpoint=metric,test_group=test,reference_group=reference,
-                 threshold='Costes-converged nuclei only' if 'manders' in metric else 'threshold-free',
+                 threshold=('fixed config manual floors' if 'labfloor' in metric else 'Costes-converged nuclei only') if 'manders' in metric else 'threshold-free',
                  **welch(a,b),**mixed_model(bio[['group','well_id','image',metric]].rename(columns={metric:'value'}),test,reference))
         row['p_mixed']=row['sensitivity_mixed_p']
         rows.append(row)
@@ -115,8 +182,15 @@ def render_simple_coloc(nuclei, fields, wells, contrasts, out_dir, rna, partner,
             f'Fraction of {rna} signal in {partner}-positive pixels (Costes)',
             f'Fraction of {partner} signal in {rna}-positive pixels (Costes)',
             f'Li ICQ, {rna} × {partner}']
+    metrics = SIMPLE_METRICS
+    lab = 'manders_m1_labfloor' in nuclei
+    if lab:
+        metrics = ('pearson_r_csp','manders_m1_labfloor','manders_m2_labfloor','li_icq_csp')
+        rx, ry = nuclei.lab_floor_rna.iloc[0], nuclei.lab_floor_partner.iloc[0]
+        labels[1] = f'Manders M1 ({rna} above {rx:g} in {partner} ≥ {ry:g} pixels)'
+        labels[2] = f'Manders M2 ({partner} above {ry:g} in {rna} ≥ {rx:g} pixels)'
     fig.set_style(); records=[]
-    for metric,name,label in zip(SIMPLE_METRICS,names,labels):
+    for metric,name,label in zip(metrics,names,labels):
         canvas,ax=fig.plt.subplots(figsize=(4.8,3.6))
         display_endpoint='simple_coloc:'+metric
         w=wells[['group','well_id',metric]].rename(columns={metric:'well_mean_of_field_values'}).assign(endpoint=display_endpoint)
@@ -132,7 +206,7 @@ def render_simple_coloc(nuclei, fields, wells, contrasts, out_dir, rna, partner,
                 ax.set_ylim(min(lo,old_lo),max(hi,old_hi))
         ax._replicate_simple_axis=setter
         fig.no_box(canvas,ax)
-        fig.layout_replicate_simple(canvas,ax,ctx,name,foot+'; Manders: Costes-converged only')
+        fig.layout_replicate_simple(canvas,ax,ctx,name,foot+('; Manders: fixed lab floors' if lab else '; Manders: Costes-converged only'))
         rec=fig.save(canvas,Path(out_dir),'FIG_SIMPLE_COLOC_'+metric,records,f'{rna} × {partner}: {name}','Simple coloc metrics / Simple coloc wells')
         rec.update(endpoint=metric,caption=name,is_composite=False)
     return records
@@ -198,22 +272,30 @@ def load_representative_pixels(selected, run_dir, image_paths):
     # Plane and mask loading remain the panel script's own implementation.
     loader.image_path = lambda name: Path(image_paths[name])
     pixels, sources = {}, []
+    cached_planes, cached_masks, hashes = {}, {}, {}
     for row in selected.itertuples():
         key = (row.well_id, row.image, row.nucleus_id)
         path = loader.image_path(row.image)
         mask_path = run_dir/'masks'/f'{row.stem}__nuclei_label_mask.tif'
         if not path.is_file() or not mask_path.is_file():
             raise ReportInputError(f'missing representative image or mask: {path}; {mask_path}')
-        mask = loader.label_mask(row.stem) == row.nucleus_id
+        if row.stem not in cached_masks:
+            cached_masks[row.stem] = loader.label_mask(row.stem)
+        mask = cached_masks[row.stem] == row.nucleus_id
         if int(mask.sum()) != int(row.n_pix):
             raise ReportInputError('representative mask pixel count mismatch')
-        _, rna, partner, _ = loader.planes(row.image, row.z_plane)
+        plane_key = (row.image, row.z_plane)
+        if plane_key not in cached_planes:
+            cached_planes[plane_key] = loader.planes(row.image, row.z_plane)
+        _, rna, partner, _ = cached_planes[plane_key]
         if rna.shape != mask.shape or partner.shape != mask.shape:
             raise ReportInputError('representative plane/mask shape mismatch')
         pixels[key] = (np.asarray(rna[mask],float), np.asarray(partner[mask],float))
+        for source in (path, mask_path):
+            if source not in hashes: hashes[source] = sha256(source)
         sources.append(dict(image=row.image,nucleus_id=row.nucleus_id,well_id=row.well_id,
-            raw_image=str(path.resolve()),raw_image_sha256=sha256(path),mask=str(mask_path.resolve()),
-            mask_sha256=sha256(mask_path),z_plane=row.z_plane,n_pix=int(mask.sum())))
+            raw_image=str(path.resolve()),raw_image_sha256=hashes[path],mask=str(mask_path.resolve()),
+            mask_sha256=hashes[mask_path],z_plane=row.z_plane,n_pix=int(mask.sum())))
     return pixels,pd.DataFrame(sources)
 
 
@@ -347,7 +429,12 @@ def integrate_panel(data: dict, panel: ExistingPanel, endpoints: list) -> tuple:
         if old is None:
             raise ReportInputError(f'frozen registry member missing: {record["name"]}')
         for attr in ('family', 'descriptive_only', 'absolute_intensity', 'excluded_from_holm', 'usability_flag'):
-            if getattr(old, attr) != record[attr]:
+            expected = record[attr]
+            # A20 explicitly amends intensity test eligibility. Every other
+            # frozen registry property and every nucleus/alias check still binds.
+            if record['absolute_intensity'] and attr in ('descriptive_only','excluded_from_holm'):
+                expected = False if attr=='descriptive_only' else ''
+            if getattr(old, attr) != expected:
                 raise ReportInputError(f'frozen registry membership changed: {old.name}/{attr}')
     added = ep.a3_endpoints(panel.tables['per_well'].columns)
     columns = [e.column for e in added if e.column in pn and e.column not in nuc]

@@ -50,6 +50,16 @@ def run(config, input_dir, output_dir, parallel, resume, dry_run, verbose):
     click.echo(f"Summary: {summary}")
 
 
+@cli.command('figure')
+@click.option('--from-xlsx',required=True,type=click.Path(exists=True,dir_okay=False))
+@click.option('--sheet',required=True)
+@click.option('--out',required=True,type=click.Path(file_okay=False))
+def figure_from_xlsx(from_xlsx,sheet,out):
+    """Render editable values with fishsuite's figure style; no image analysis."""
+    from .report.figure_workbook import render
+    render(Path(from_xlsx),sheet,Path(out))
+
+
 @cli.command('native-figures')
 @click.option('--run', 'run_dir', required=True, type=click.Path(exists=True, file_okay=False))
 @click.option('--groups', 'groups_file', required=True, type=click.Path(exists=True, dir_okay=False))

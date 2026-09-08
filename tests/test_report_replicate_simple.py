@@ -5,6 +5,109 @@ import pandas as pd
 import pytest
 
 
+def test_a20_absolute_intensity_is_tested():
+    from fishsuite.report.endpoints import ENDPOINTS, a3_endpoints
+    for endpoint in (*ENDPOINTS, *a3_endpoints([])):
+        if endpoint.absolute_intensity:
+            assert not endpoint.descriptive_only
+            assert not endpoint.excluded_from_holm
+
+
+def test_a20_axis_groups_union_and_isolation(tmp_path):
+    from fishsuite.report.endpoints import Endpoint
+    definitions = [Endpoint('a', 'a', 'detection', 'AU', 'A', axis_group='shared'),
+                   Endpoint('b', 'b', 'detection', 'AU', 'B', axis_group='shared'),
+                   Endpoint('c', 'c', 'detection', 'AU', 'C')]
+    wells = pd.DataFrame([dict(endpoint=e, group=g, well_id=str(i),
+                              well_mean_of_field_values=v)
+                         for e, offset in [('a', 10), ('b', 100), ('c', 1000)]
+                         for g in ['WT', 'QKI-KO'] for i, v in enumerate([offset, offset+2])])
+    ctx = context(tmp_path, plot_style='replicate-simple')
+    fig.prepare_axis_groups(ctx, definitions, wells)
+    axes = []
+    for name in ['a', 'b', 'c']:
+        canvas, ax = plt.subplots()
+        fig.draw_replicate_simple(ax, ctx, name, wells, pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), 'AU', None)
+        axes.append(ax)
+    for variant in ['focus', 'full']:
+        for ax in axes: ax._replicate_simple_axis(variant)
+        assert axes[0].get_ylim() == axes[1].get_ylim()
+        assert axes[2].get_ylim() != axes[0].get_ylim()
+    plain = context(tmp_path, plot_style='replicate-simple')
+    canvas, ax = plt.subplots()
+    fig.draw_replicate_simple(ax, plain, 'c', wells, pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), 'AU', None)
+    ax._replicate_simple_axis('full')
+    assert ax.get_ylim() == axes[2].get_ylim()
+    plt.close('all')
+
+
+def test_a20_fixed_floor_manders_uses_both_signal_floors():
+    from fishsuite.report.coloc_existing import fixed_floor_manders
+    result = fixed_floor_manders([1, 4, 8], [8, 2, 9], 4, 8)
+    assert result == pytest.approx((8/12, 9/17))
+    assert all(np.isnan(x) for x in fixed_floor_manders([0], [0], 4, 8))
+
+
+def test_a20_workbook_cli_renders_edited_well_values(tmp_path):
+    source=tmp_path/'values.xlsx'
+    df=pd.DataFrame({'condition':['WT']*3+['KO']*3,'well':['w1','w2','w3','k1','k2','k3'],
+                     'value':[1,2,4,7,8,11],'SD':[999]*6,'n':[999]*6})
+    df.to_excel(source,sheet_name='Editable',index=False)
+    result=CliRunner().invoke(cli,['figure','--from-xlsx',str(source),'--sheet','Editable','--out',str(tmp_path/'render')])
+    assert result.exit_code==0,result.output
+    svg=(tmp_path/'render/Editable_focus.svg').read_text(encoding='utf-8')
+    assert 'Welch' in svg and 'Editable' in svg
+    import xml.etree.ElementTree as ET
+    labels=[''.join(n.itertext()) for n in ET.fromstring(svg).iter() if n.tag.endswith('}text')]
+    assert not any('999' in text for text in labels)
+
+
+def test_a20_panel_reads_only_recorded_plane():
+    import importlib.util
+    from pathlib import Path
+    from types import SimpleNamespace
+    path=Path(__file__).resolve().parents[1]/'scripts/coloc_standard_panel.py'
+    spec=importlib.util.spec_from_file_location('a20_panel_test',path)
+    module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
+    data=np.arange(2*3*4*4).reshape(2,3,4,4)
+    calls=[]
+    class Bio:
+        def get_image_dask_data(self,dims,**selection):
+            calls.append((dims,selection))
+            return SimpleNamespace(compute=lambda:data[selection['C'],selection['Z']])
+        def get_image_data(self,*args,**kwargs):
+            raise AssertionError('whole stack read')
+    img=SimpleNamespace(bio=Bio(),n_channels=2,n_z=3)
+    np.testing.assert_array_equal(module.read_recorded_plane(img,1,2),data[1,1])
+    assert calls==[('YX',{'T':0,'C':1,'Z':1})]
+
+
+def test_a20_exported_nuclei_match_plot_cohort_and_usability(tmp_path):
+    endpoint='partner_rotation_enrichment_at_rna1'
+    column='protein_rotation_enrichment_at_rna1_spots'
+    wells=pd.DataFrame({'group':['WT','QKI-KO'],'well_id':['w','k'],'endpoint':[endpoint]*2,
+                        'well_mean_of_field_values':[1.,2.]})
+    nuclei=pd.DataFrame({'group':['WT','QKI-KO','QKI-KO','Secondary-only'],
+                         'well_id':['w','k','k','s'],'nucleus_id':[1,2,3,4],
+                         column:[1.,2.,1000.,2000.],'rotation_null_usable':[True,True,False,True]})
+    canvas,ax=plt.subplots()
+    fig.draw_replicate_simple(ax,context(tmp_path,plot_style='replicate-simple'),endpoint,wells,pd.DataFrame(),nuclei,pd.DataFrame(),'Enrichment',column)
+    assert ax._figure_data['nuclei'].nucleus_id.tolist()==[1,2]
+    plt.close(canvas)
+
+
+def test_a20_cache_rejects_changed_inputs_and_output(tmp_path):
+    from fishsuite.report.a20_delivery import cache_matches,seal_cache
+    path=tmp_path/'cache.csv';path.write_text('value\n1\n')
+    signature={'floors':[4,8],'source_hash':'fixture'}
+    assert not cache_matches(path,signature)
+    seal_cache(path,signature)
+    assert cache_matches(path,signature)
+    assert not cache_matches(path,dict(signature,floors=[5,8]))
+    path.write_text('value\n2\n')
+    assert not cache_matches(path,signature)
+
+
 def test_missing_field_table_does_not_invent_zero_fovs():
     from types import SimpleNamespace
     import pandas as pd
@@ -365,18 +468,20 @@ def test_mixed_headline_and_explicit_failed_fit_fallback(tmp_path):
         plt.close(canvas)
 
 
-def test_custom_descriptive_endpoint_uses_contrast_flags(tmp_path):
+@pytest.mark.parametrize('absolute', [False, True])
+def test_custom_descriptive_endpoint_uses_contrast_flags(tmp_path, absolute):
     endpoint='custom_corrected_intensity'
     wells=pd.DataFrame(dict(endpoint=[endpoint]*6,group=['WT']*3+['QKI-KO']*3,
         well_id=['w1','w2','w3','k1','k2','k3'],well_mean_of_field_values=[1,2,3,4,5,6]))
     rows=pd.DataFrame([dict(endpoint=endpoint,test_group='QKI-KO',reference_group='WT',
-        p_mixed=.001,p_welch=.2,sensitivity_mixed_status='ok',descriptive_only=True,absolute_intensity=True)])
+        p_mixed=.001,p_welch=.2,sensitivity_mixed_status='ok',descriptive_only=True,absolute_intensity=absolute)])
     canvas,ax=plt.subplots()
     foot=fig.draw_replicate_simple(ax,context(tmp_path,plot_style='replicate-simple'),endpoint,
         wells,pd.DataFrame(),pd.DataFrame(),rows,'Intensity',None)
-    assert any(t.get_text()=='descriptive, no test' for t in ax.texts)
-    assert not any('p =' in t.get_text() for t in ax.texts)
-    assert 'mixed model p' in foot and 'descriptive' in foot
+    assert any(t.get_text()=='descriptive, no test' for t in ax.texts) == (not absolute)
+    assert any('p =' in t.get_text() for t in ax.texts) == absolute
+    assert 'mixed model p' in foot
+    assert ('same acquisition settings (acquirer); staining batch not controlled' if absolute else 'descriptive') in foot
     plt.close(canvas)
 
 def test_axis_note_keeps_run_at_footer_end(tmp_path):

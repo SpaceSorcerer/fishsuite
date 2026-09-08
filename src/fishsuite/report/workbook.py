@@ -52,8 +52,8 @@ SHEET_DESCRIPTION: Dict[str, str] = {
         "How much signal each nucleus carries, compared between condition groups: "
         "puncta counted per nucleus, punctum size, and absolute intensity. One row per "
         "endpoint and comparison, with each well's own mean in its own column so the "
-        "replicates behind every test are visible. Absolute-intensity rows are "
-        "descriptive only and carry no multiplicity adjustment."),
+        "replicates behind every test are visible. Absolute-intensity rows enter "
+        "their Holm family: same acquisition settings (acquirer); staining batch not controlled."),
     "Nuclear fraction by group": (
         "When DAPI correction is enabled, mask-only nuclear_spot_fraction is legacy_mask_only; use nuclear_spot_fraction_dapi. "
         "Where the signal sits rather than how much of it there is, compared between "

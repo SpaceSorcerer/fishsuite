@@ -132,6 +132,12 @@ def prepare_per_well_micrographs(run_dir, out_dir, nuclei=None, group_order=None
         for row in rows:
             stem = _native_stem(pub_dir,row['image'],row['well_id'])
             panels = publication_panel_paths(pub_dir,stem,cfg)
+            for panel in panels:
+                panel['display_mode']=cfg['output'].get('pub_contrast_mode')
+                for role in ('dapi','rna','rna2','antibody'):
+                    for bound in ('min','max'):
+                        key=f'manual_{role}_{bound}'
+                        if key in cfg['output']: panel[key]=cfg['output'][key]
             voxel = float(row['voxel_xy_nm'])/1000 if 'voxel_xy_nm' in row else float('nan')
             if not np.isfinite(voxel) and nuclei is not None:
                 values = nuclei.loc[nuclei.image==row['image'],'voxel_xy_um'].dropna().unique()
