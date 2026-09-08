@@ -608,9 +608,9 @@ def draw_superplot(ax, ctx: FigureContext, endpoint: str, well: pd.DataFrame,
 def fraction_scale(endpoint):
     if endpoint == 'nuclear_spot_fraction_dapi':
         return 100.
-    from .endpoints import ENDPOINTS, a3_endpoints
+    from .endpoints import ENDPOINTS, RATIO_ENDPOINTS, a3_endpoints
     return 100. if any(e.name == endpoint and 'fraction' in e.unit
-                       for e in (*ENDPOINTS, *a3_endpoints([endpoint]))) else 1.
+                       for e in (*ENDPOINTS, *RATIO_ENDPOINTS, *a3_endpoints([endpoint]))) else 1.
 
 
 def prepare_axis_groups(ctx, definitions, well, field=None):
@@ -745,8 +745,8 @@ def draw_replicate_simple(ax, ctx: FigureContext, endpoint: str, well: pd.DataFr
     ax._axis_group=axis_group or ''
     if grouped:
         low, high = ctx.axis_windows[axis_group]
-    from .endpoints import ENDPOINTS, a3_endpoints
-    unit = next((e.unit for e in (*ENDPOINTS, *a3_endpoints([endpoint]))
+    from .endpoints import ENDPOINTS, RATIO_ENDPOINTS, a3_endpoints
+    unit = next((e.unit for e in (*ENDPOINTS, *RATIO_ENDPOINTS, *a3_endpoints([endpoint]))
                  if e.name == endpoint), "")
     percent = (fraction_scale(endpoint) == 100 or '%' in unit) and 'minus_shuffle' not in endpoint
     zoom = percent and bool(well_values) and (low if grouped else min(well_values)) > 50
@@ -801,8 +801,8 @@ def draw_replicate_simple(ax, ctx: FigureContext, endpoint: str, well: pd.DataFr
         if not mixed_ok:
             p = r.get('p_welch', np.nan)
         suffix = '' if mixed_ok else '\nWelch (well means)'
-        from .endpoints import ENDPOINTS, a3_endpoints
-        definition = next((e for e in (*ENDPOINTS, *a3_endpoints([endpoint]))
+        from .endpoints import ENDPOINTS, RATIO_ENDPOINTS, a3_endpoints
+        definition = next((e for e in (*ENDPOINTS, *RATIO_ENDPOINTS, *a3_endpoints([endpoint]))
                            if e.name == endpoint), None)
         absolute = bool(r.get('absolute_intensity', False) or (definition and definition.absolute_intensity))
         descriptive = not absolute and bool(r.get('descriptive_only', False) or (definition and definition.descriptive_only))

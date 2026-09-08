@@ -104,10 +104,11 @@ def test_zero_well_preserved():
     assert np.isfinite(mq.ratio_interval(pairs)['R'])
 
 
+@pytest.mark.parametrize('measurement', mq.MEASUREMENTS)
 @pytest.mark.parametrize('variant', ['full', 'focus'])
-def test_actual_figure_wells_and_extents(analysis, variant):
+def test_actual_figure_wells_and_extents(analysis, variant, tmp_path, measurement):
     import matplotlib.pyplot as plt
-    fig = mq.make_figure(analysis, DATA, variant=variant)
+    fig = mq.make_figure(analysis, DATA, measurement=measurement, variant=variant)
     for ax in fig.axes[:5]:
         wells = [c for c in ax.collections if (c.get_gid() or '').startswith('well:')]
         assert len(wells) == 2
@@ -117,7 +118,20 @@ def test_actual_figure_wells_and_extents(analysis, variant):
             assert np.all((c.get_offsets()[:, 1] >= low) & (c.get_offsets()[:, 1] <= high))
         if variant == 'full':
             assert low == 0
-    r = analysis['Ratio intervals'].query("measurement == 'spot_count'")
+    assert len({ax.get_ylim() for ax in fig.axes[:5]}) == 1
+    kind = 'miat_count' if measurement == 'spot_count' else 'miat_intensity'
+    for ax in fig.axes[:5]:
+        assert ax._figure_data['endpoint'] in {'ratio_'+kind+'_total', 'ratio_'+kind+'_associated'}
+        assert ax._axis_group == 'ratio_'+kind+('_count' if measurement == 'spot_count' else '_intensity')
+        assert any('p =' in t.get_text() for t in ax.texts)
+        assert len(ax.patches) == 2
+    assert any('mixed model p' in t.get_text() and '; run ' in t.get_text() for t in fig.texts)
+    for ext in ('png', 'svg'):
+        path = tmp_path / ('ratio_' + variant + '.' + ext)
+        fig.savefig(path, dpi=72)
+        assert path.is_file()
+    assert 'mixed model p' in (tmp_path / ('ratio_' + variant + '.svg')).read_text(encoding='utf-8')
+    r = analysis['Ratio intervals'].loc[lambda x:x.measurement.eq(measurement)]
     low, high = fig.axes[5].get_xlim()
     assert low < min(1, r.ci_low.min())
     assert high > max(r.ci_high.max(), r.R_MDE_05_8.max())
@@ -151,3 +165,34 @@ def test_usable_count_and_separate_families(analysis):
     assert usable[usable.measurement == 'miat_intensity'].R.isna().all()
     families = analysis['Multiplicity plan'].groupby('family').size().to_dict()
     assert families == {'exploratory_R_8':8, 'exploratory_scalar_10':10, 'frozen_historical_9':9, 'original_primary_gate':1}
+
+
+def test_ratio_scalars_use_registered_locked_drawer(tmp_path, monkeypatch):
+    from fishsuite.report import figures, rnaseh2b_analysis as rn
+    calls = []
+    original = figures.draw_replicate_simple
+    def spy(*args, **kwargs):
+        foot = original(*args, **kwargs)
+        calls.append((args[2], args[0], foot))
+        return foot
+    monkeypatch.setattr(figures, 'draw_replicate_simple', spy)
+    wells = fixture_pairs().iloc[:6].rename(columns={'biological_set': 'condition'})
+    wells['arm'] = wells.arm.map({'NT': 'WT', 'KD': 'KO'})
+    result = mq.ratio_interval(fixture_pairs())
+    result['p_exact'] = .5
+    records = rn.render_ratio(wells, pd.DataFrame(), result, tmp_path, tmp_path)
+    assert len(calls) == 2
+    assert {c[0] for c in calls} == {'ratio_protein_total', 'ratio_protein_associated'}
+    for endpoint, ax, foot in calls:
+        assert ax._axis_group == 'ratio_protein_intensity'
+        assert any('p =' in t.get_text() for t in ax.texts)
+        assert 'Welch (wells) p' in foot
+        assert len(ax.patches) == 2
+        assert ax._figure_data['nuclei'].empty
+    assert calls[0][1].get_ylim() == calls[1][1].get_ylim()
+    for record in records[:2]:
+        for variant in ('full', 'focus'):
+            assert Path(record[variant+'_png']).is_file()
+            svg = Path(record[variant+'_svg']).read_text(encoding='utf-8')
+            assert 'mixed model p' in svg and '; run ' in svg
+            assert '#d67ae5' in svg.lower()

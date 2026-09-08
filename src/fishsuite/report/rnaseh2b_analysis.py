@@ -16,7 +16,7 @@ from scipy import stats
 
 from .miat_qki import ratio_interval, unblocked_exact_ratio
 
-COLORS = {'WT': '#595959', 'KO': '#CC79A7'}
+COLORS = {'WT': '#595959', 'KO': '#D67AE5'}
 TITLE_MAP = {
     'FIG_RNASEH2B_PREFERENTIAL_COLOC_TOTAL': 'Total nuclear RNASEH2B',
     'FIG_RNASEH2B_PREFERENTIAL_COLOC_AT_FOOTPRINT': 'RNASEH2B at BIN1 introns',
@@ -67,6 +67,45 @@ def _export(fig, ax, key, out, run, caption, *, nonnegative=False):
             paths[f'{variant}_{ext}'] = str(path)
     plt.close(fig)
     return dict(key=key, title=TITLE_MAP[key], caption=caption, **paths)
+
+
+def render_ratio(wells, nuclei, result, out_dir, run, colors=None):
+    """Render only T, A and R from already aggregated ratio inputs."""
+    from . import figures
+    from .ratio_figures import context, scalar_inputs
+    out_dir = Path(out_dir)
+    colors = colors or COLORS
+    ctx = context(run, colors)
+    figures.set_style()
+    w = wells.rename(columns={'condition':'well_id', 'arm':'group'})
+    n = nuclei.rename(columns={'condition':'well_id', 'arm':'group'})
+    definitions, well, contrasts = scalar_inputs(w, n, 'protein', colors)
+    figures.prepare_axis_groups(ctx, definitions, well)
+    records, manifest = [], []
+    for definition, key, column in zip(definitions, ('TOTAL', 'AT_FOOTPRINT'), ('T', 'A')):
+        stem = 'FIG_RNASEH2B_PREFERENTIAL_COLOC_' + key
+        rec = figures.superplot_standalone(ctx, definition.name, definition.label,
+            definition.unit, well, pd.DataFrame(), n, contrasts, column,
+            out_dir, stem, manifest)
+        records.append(dict(key=stem, title=definition.label,
+            caption='Well means ± SD; mixed-model headline when available; Welch on wells in footer.',
+            **{k:str(out_dir/rec[k]) for k in ('full_png','full_svg','focus_png','focus_svg')}))
+    fig, ax = _figure()
+    ax.errorbar([0], [result['R']], yerr=[[result['R']-result['ci_low']],
+        [result['ci_high']-result['R']]], fmt='o', color=colors[ctx.group_order[1]], capsize=5)
+    ax.axhline(1, color=colors[ctx.reference], linestyle='--', lw=1)
+    ax.set_xticks([0], ['R = rA / rT']); ax.set_xlim(-.5, .5)
+    ax.set_ylabel('Ratio with 95% CI')
+    stem = 'FIG_RNASEH2B_PREFERENTIAL_COLOC_R'
+    caption = f"Normal log-delta CI; exact two-sided p={result['p_exact']:.3g}; 20 well-label assignments."
+    figures.layout_replicate_simple(fig, ax, ctx, TITLE_MAP[stem], caption)
+    figures.no_box(fig, ax)
+    low, high = ax.get_ylim()
+    ax._replicate_simple_axis = lambda variant: ax.set_ylim(0 if variant == 'full' else low, high)
+    rec = figures.save(fig, out_dir, stem, manifest, caption, 'Ratio wells')
+    records.append(dict(key=stem, title=TITLE_MAP[stem], caption=caption,
+        **{k:str(out_dir/rec[k]) for k in ('full_png','full_svg','focus_png','focus_svg')}))
+    return records
 
 
 def build_analysis(run_dir, output_dir, correction_csv, acquisition_method=None):
@@ -163,20 +202,7 @@ def build_analysis(run_dir, output_dir, correction_csv, acquisition_method=None)
     figures = []
     def save(fig, ax, key, caption, **kw):
         figures.append(_export(fig, ax, key, out, run, caption, **kw))
-    for column, key, ylabel in [('T', 'TOTAL', 'Secondary-corrected nuclear mean (AU)'),
-                                ('A', 'AT_FOOTPRINT', 'Mean at exact BIN1 footprints (AU)')]:
-        fig, ax = _figure()
-        for index, arm in enumerate(('WT', 'KO')):
-            v = wells.loc[wells.arm.eq(arm), column].to_numpy()
-            ax.scatter(index+np.linspace(-.07, .07, len(v)), v, c=COLORS[arm], s=35)
-            ax.plot([index-.18, index+.18], [v.mean()]*2, color='black', lw=1.5)
-        ax.set_xticks([0, 1], ['WT', 'KO']); ax.set_xlim(-.5, 1.5); ax.set_ylabel(ylabel, fontsize=9)
-        save(fig, ax, 'FIG_RNASEH2B_PREFERENTIAL_COLOC_'+key, 'One point per well; equal FOV weight; three wells per arm.', nonnegative=True)
-    fig, ax = _figure()
-    ax.errorbar([0], [result['R']], yerr=[[result['R']-result['ci_low']], [result['ci_high']-result['R']]], fmt='o', color=COLORS['KO'], capsize=5)
-    ax.axhline(1, color='gray', linestyle='--', lw=1)
-    ax.set_xticks([0], ['R = rA / rT']); ax.set_xlim(-.5, .5); ax.set_ylabel('Ratio with 95% CI', fontsize=9)
-    save(fig, ax, 'FIG_RNASEH2B_PREFERENTIAL_COLOC_R', f"Normal log-delta CI; exact two-sided p={result['p_exact']:.3g}; 20 well-label assignments.", nonnegative=True)
+    figures.extend(render_ratio(wells, bio, result, out/'figures', run))
     for arms, suffix in [(('WT',), 'WT'), (('KO',), 'KO'), (('WT', 'KO'), 'OVERLAY')]:
         fig, ax = _figure()
         for arm in arms:

@@ -9,7 +9,6 @@ from itertools import combinations, product
 from pathlib import Path
 import hashlib
 import re
-from types import SimpleNamespace
 
 import numpy as np
 import pandas as pd
@@ -430,8 +429,8 @@ def policy_caption(r, label):
 
 
 def _context(data_dir, colors):
-    return SimpleNamespace(group_order=['NT', 'KD'], reference='NT', colors=colors,
-                           technical_layer='none', run_path=str(data_dir), footer=lambda x:x)
+    from .ratio_figures import context
+    return context(data_dir, colors)
 
 
 def make_figure(sheets, data_dir, measurement='spot_count', variant='full', colors=None):
@@ -442,54 +441,51 @@ def make_figure(sheets, data_dir, measurement='spot_count', variant='full', colo
     figures.set_style()
     colors = colors or COLORS
     fig = plt.figure(figsize=(15, 10))
-    grid = fig.add_gridspec(2, 5, top=.90, bottom=.27, left=.065, right=.97,
+    grid = fig.add_gridspec(2, 5, top=.90, bottom=.35, left=.065, right=.97,
                            height_ratios=[1, 1.12], hspace=.65, wspace=.85)
     ctx = _context(data_dir, colors)
     w = sheets['Ratio well values']
     w = w[w.measurement == measurement]
     scalar = sheets['Scalar contrasts']
     scalar = scalar[scalar.measurement == measurement]
-    unit = 'puncta per nucleus' if measurement == 'spot_count' else 'MIAT footprint intensity\nper nucleus (a.u.)'
+    from .ratio_figures import scalar_inputs
+    from .endpoints import RATIO_ENDPOINTS
+    kind = 'miat_count' if measurement == 'spot_count' else 'miat_intensity'
+    definitions = [e for e in RATIO_ENDPOINTS if e.name.startswith('ratio_'+kind+'_')]
+    prepared = {}
+    for policy in POLICIES:
+        ww = w[w.null_policy == policy].rename(columns={'arm':'group', 'biological_set':'well_id'})
+        nn = sheets['Nucleus roster'].loc[lambda x: x.null_policy.eq(policy)].rename(
+            columns={'arm':'group', 'biological_set':'well_id', 'image_key':'image',
+                     'observed_spot_count':'T',
+                     ('q95_positive_spot_count' if measurement == 'spot_count' else 'q95_associated_miat_intensity'):'A'}).copy()
+        if measurement != 'spot_count':
+            nn = nn.drop(columns=['T'])  # Total intensity nucleus values are absent from the delivered roster.
+        _, pw, pc = scalar_inputs(ww, nn, kind, colors)
+        pw['axis_series'] = policy
+        prepared[policy] = (pw, pc, nn)
+    figures.prepare_axis_groups(ctx, definitions, pd.concat([x[0] for x in prepared.values()]))
+    feet = []
     axes = []
     for i, policy in enumerate((None,)+POLICIES):
         col, p = ('T', POLICIES[0]) if policy is None else ('A', policy)
-        pw = w[w.null_policy == p].rename(columns={'arm':'group', 'biological_set':'well_id', col:'well_mean_of_field_values'}).copy()
-        pw['endpoint'] = 'miat_scalar'
+        definition = definitions[0 if col == 'T' else 1]
+        pw, pc, nn = prepared[p]
         c = scalar[(scalar.pool == col) & ((scalar.null_policy == p) if col == 'A' else True)].copy()
-        c['endpoint'], c['test_group'], c['reference_group'] = 'miat_scalar', 'KD', 'NT'
-        c['p_welch_holm_within_family'] = c.p_welch_holm10
         ax = fig.add_subplot(grid[0, i]); axes.append(ax)
-        figures.draw_replicate_simple(ax, ctx, 'miat_scalar', pw, pd.DataFrame(), pd.DataFrame(), c,
-                                      (unit if i == 0 else 'q95-positive '+unit if i == 1 else ''), None, compact=False)
+        foot = figures.draw_replicate_simple(ax, ctx, definition.name, pw, pd.DataFrame(), nn, pc,
+            definition.unit if i in (0, 1) else '', col if col in nn else None, compact=False)
+        feet.append(('Total' if policy is None else LABELS[i-1]) + ': ' + foot)
+        figures.no_box(fig, ax)
         ax._replicate_simple_axis(variant)
-        if variant == 'focus':
-            lows = []
-            for _, group in pw.groupby('group'):
-                v = group.well_mean_of_field_values.to_numpy(float)
-                lows.extend([v.min(), v.mean()-v.std(ddof=1)])
-            floor = max(0., .8*min(lows))
-            ax.set_ylim(floor, ax.get_ylim()[1])
-            for bar in ax.patches:
-                if (bar.get_gid() or '').startswith('group-mean:'):
-                    mean = bar.get_y()+bar.get_height()
-                    bar.set_y(floor); bar.set_height(mean-floor)
-        ax.set_title('A  Total nuclear MIAT' if policy is None else f'B{i}  {LABELS[i-1]}', fontsize=9, pad=15)
+        ax.set_title('A  ' + definition.label if policy is None else f'B{i}  {LABELS[i-1]}', fontsize=9, pad=15)
         r = sheets['Ratio intervals']
         r = r[(r.measurement == measurement) & (r.null_policy == p)].iloc[0]
         ax.text(.5, -.24, f"{'rT' if col == 'T' else 'rA'} = {r['rT' if col == 'T' else 'rA']:.3f}; 6 wells/arm\n"
                 f"Holm10 p={c.iloc[0].p_welch_holm10:.3g}; g={c.iloc[0].hedges_g:.2f}",
                 transform=ax.transAxes, ha='center', fontsize=7.5, linespacing=1.6)
-    # Identical associated-pool axis scale across all four facets, including SD/brackets.
-    lower = min(ax.get_ylim()[0] for ax in axes[1:]); upper = max(ax.get_ylim()[1] for ax in axes[1:])
-    for ax in axes[1:]:
-        ax.set_ylim(lower, upper)
-        for bar in ax.patches:
-            if (bar.get_gid() or '').startswith('group-mean:'):
-                mean = bar.get_y()+bar.get_height()
-                bar.set_y(lower)
-                bar.set_height(mean-lower)
     forest = fig.add_subplot(grid[1, :3])
-    forest.set_position([.17, .30, .40, .26])
+    forest.set_position([.17, .38, .40, .22])
     selected = sheets['Ratio intervals'].set_index(['measurement', 'null_policy'])
     all_limits = [1.]
     for i, policy in enumerate(POLICIES):
@@ -503,7 +499,8 @@ def make_figure(sheets, data_dir, measurement='spot_count', variant='full', colo
         forest.text(r.R, 3-i-.24, f"exact p={r.p_exact:.3g}; Holm8={r.p_exact_holm8:.3g}",
                     ha='center', va='top', fontsize=7)
         all_limits.extend([r.ci_low, r.ci_high, r.R_MDE_05, r.R_MDE_05_8])
-    forest.axvline(1, color='#595959', linestyle=':', linewidth=1)
+    figures.no_box(fig, forest)
+    forest.axvline(1, color=colors['NT'], linestyle=':', linewidth=1)
     forest.set_xscale('log'); forest.set_ylim(-.5, 3.6)
     forest.set_xlim(min(all_limits)*.9, max(all_limits)*1.14)
     ticks = [.4, .5, .6, .8, 1., 1.2, 1.5, 2., 2.5, 3., 4.]
@@ -523,26 +520,26 @@ def make_figure(sheets, data_dir, measurement='spot_count', variant='full', colo
     lines += ['', 'A is an operational spatial category, not bound molecules.',
               'Null-unusable calls are unknown, never biological negatives.',
               'Matched usable-pool sensitivity is reported separately.',
-              'Raw Welch brackets; scalar Holm family = 10.',
+              'Mixed-model headline when available; Welch in footer.',
               'R family = 8 exploratory exact tests (count + intensity).',
               'Original primary gate failed; historical Holm-nine is separate.']
     note.text(0, 1, '\n'.join(lines), va='top', fontsize=8, linespacing=1.7)
     fig.suptitle('MIAT level to QKI spatial association' + (' | intensity sensitivity' if measurement != 'spot_count' else ''), fontsize=15, y=.975)
-    fig.text(.5, .935, ('Full view: zero-baseline scalar columns; all wells, SD, CIs and MDEs' if variant == 'full' else
-                      'Focus view: expanded scalar axes; identical wells and inference; no points, CIs or MDEs clipped'), ha='center', fontsize=9)
+    fig.text(.5, .935, 'axis: focus window; identical wells and inference; shared scalar axes retain all wells and SD', ha='center', fontsize=9)
     # Compact policy wording on the figure; complete wording is in READOUT.md.
-    y = .205
+    y = .285
     for policy, label in zip(POLICIES, LABELS):
         r = selected.loc[(measurement, policy)]
         fig.text(.04, y, f"{label}: preferential spatial retention not detected; R={r.R:.3f}, 95% CI [{r.ci_low:.3f}, {r.ci_high:.3f}]. "
                  f"Retention above {100*(r.ci_high-1):.1f}% is outside this interval; smaller protection remains compatible.\n"
                  f"Minimum detectable retention at 80% power: {100*(r.R_MDE_05-1):.1f}% (alpha=.05), {100*(r.R_MDE_05_8-1):.1f}% (alpha=.05/8).", fontsize=7.4, linespacing=1.3)
         y -= .036
-    fig.text(.04, .050, 'The tested protection prediction is R > 1. MDE markers are plug-in normal 80% power thresholds, not exclusion bounds or exact-test power.\n'
+    fig.text(.04, .130, 'The tested protection prediction is R > 1. MDE markers are plug-in normal 80% power thresholds, not exclusion bounds or exact-test power.\n'
              'Fixed-10 coloc: 370 nuclei / 37 FOVs (NT 180, KD 190); four restored zero nuclei; six wells per arm; equal-weight nucleus → FOV → well means.\n'
              'Shared single-plane nuclear detection; columns ± SD, R ± marginal log-delta CI (not exact-test inversion). COUNT has a separate cohort and denominator.\n'
              'Independent plate provenance, orthogonal KD, laser constancy and specificity/registration/PSF validation remain unverified. Spatial association is not molecular protection.',
              fontsize=6.8, va='top', linespacing=1.3)
+    figures.stamp_foot(fig, '\n'.join(feet) + '; run ' + ctx.run_name, size=5, y=.005)
     return fig
 
 
@@ -552,18 +549,19 @@ def render(sheets, data_dir, out_dir, colors):
     out_dir = guard_output(Path(out_dir))
     out_dir.mkdir(parents=True, exist_ok=True)
     records = []
+    from . import figures
     for measurement in MEASUREMENTS:
+        fig = make_figure(sheets, data_dir, measurement, 'focus', colors)
+        stem = 'FIG_MIAT_LEVEL_TO_QKI_ASSOCIATION'+('_intensity' if measurement == 'miat_intensity' else '')
+        manifest = []
+        rec = figures.save(fig, out_dir, stem, manifest, 'Ratio scalar panels and R forest',
+                           'Ratio intervals; Ratio well values; Nucleus roster; Scalar contrasts')
         for variant in ('full', 'focus'):
-            fig = make_figure(sheets, data_dir, measurement, variant, colors)
-            stem = 'FIG_MIAT_LEVEL_TO_QKI_ASSOCIATION'+('_intensity' if measurement == 'miat_intensity' else '')+'_'+variant
             for ext in ('png', 'svg'):
-                path = guard_output(out_dir/(stem+'.'+ext))
-                fig.savefig(path, dpi=600, facecolor='white')
+                path = out_dir/rec[variant+'_'+ext]
                 records.append(dict(path=str(path), sha256=hashlib.sha256(path.read_bytes()).hexdigest(),
-                                    measurement=measurement, variant=variant, figure='ratio',
-                                    source_sheet='Ratio intervals; Ratio well values; Coverage; Scalar contrasts',
-                                    cohort=COHORT, NT=colors['NT'], KD=colors['KD']))
-            plt.close(fig)
+                    measurement=measurement, variant=variant, figure='ratio', cohort=COHORT,
+                    NT=colors['NT'], KD=colors['KD']))
     # Coverage has its own well dots and finite-n uncertainty; no ratio pseudo-replicates.
     from . import figures
     for variant in ('full', 'focus'):
