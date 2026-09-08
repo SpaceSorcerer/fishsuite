@@ -125,7 +125,7 @@ def set_style() -> None:
         "axes.edgecolor": "black", "axes.linewidth": 0.8,
         "xtick.color": "black", "ytick.color": "black",
         "axes.spines.top": False, "axes.spines.right": False,
-        "font.size": 8, "axes.titlesize": 9, "axes.labelsize": 8.5,
+        "font.size": 8, "axes.titlesize": 11, "axes.labelsize": 8.5,
         "xtick.labelsize": 8, "ytick.labelsize": 8, "legend.fontsize": 7,
         "svg.fonttype": "none", "pdf.fonttype": 42, "ps.fonttype": 42,
         "figure.facecolor": "white", "savefig.facecolor": "white",
@@ -239,7 +239,8 @@ def save(fig, out_dir: Path, stem: str, manifest: List[dict], description: str,
     rec = {"figure": stem, "png": png.name, "svg": svg.name,
            "description": description, "source": source}
     if setters:
-        rec.update(full_png=paths["full"][0].name, full_svg=paths["full"][1].name)
+        rec.update(full_png=paths["full"][0].name, full_svg=paths["full"][1].name,
+                   focus_png=paths["focus"][0].name, focus_svg=paths["focus"][1].name)
     manifest.append(rec)
     return rec
 
@@ -661,7 +662,8 @@ def draw_replicate_simple(ax, ctx: FigureContext, endpoint: str, well: pd.DataFr
         nn = (int(pd.to_numeric(fields["n_nuclei_nonmissing"], errors="coerce").sum())
               if len(fields) and "n_nuclei_nonmissing" in fields else None)
         level = str(fields.iloc[0].get("level", "nucleus")) if len(fields) else ""
-        counts.append(f"{group}: {len(wm)} wells, {len(fm)} FOVs"
+        counts.append(f"{group}: {len(wm)} wells"
+                      + (f", {len(fm)} FOVs" if len(field) else "")
                       + (f", {nn} defined nuclei" if nn is not None and level == "nucleus" else ""))
     ax.set_xticks(range(len(ctx.group_order)), ctx.group_order)
     for tick, group in zip(ax.get_xticklabels(), ctx.group_order):
@@ -775,13 +777,15 @@ def draw_plot(ax, ctx: FigureContext, *args, **kwargs) -> str:
 
 
 def layout_replicate_simple(fig, ax, ctx, title, foot):
-    """One fitted title and one footer ending with the source run name."""
+    """One fixed 11-point title; shortening is declared in the endpoint registry."""
+    from .endpoints import SHORT_TITLE_TEXT
+    title = SHORT_TITLE_TEXT.get(title, title)
     heading = fig.text(.5, .98, ' '.join(title.split()),
                        ha='center', va='top', fontsize=11, fontweight='bold')
     footer = fig.text(.02, .018, ' '.join(foot.split()) + '; run ' + ctx.run_name,
                       fontsize=6, va='bottom')
     fig.canvas.draw()
-    for artist in (heading, footer):
+    for artist in (footer,):
         width = artist.get_window_extent().width
         if width > fig.bbox.width * .96:
             artist.set_fontsize(artist.get_fontsize() * fig.bbox.width * .95 / width)
@@ -802,11 +806,14 @@ def superplot_standalone(ctx: FigureContext, endpoint: str, title: str, ylabel: 
                          clip_pct: Optional[float] = None,
                          hline_at: Optional[float] = None, hline_label: str = "",
                          w: float = 7.6, h: float = 6.6) -> Dict[str, str]:
-    if endpoint == "rna1_nuclear_spot_fraction":
-        title = "BIN1 intron puncta, % nuclear"
+    from .endpoints import SHORT_TITLES
+    if endpoint in SHORT_TITLES:
+        labels = getattr(ctx, "channel_labels", {})
+        title = SHORT_TITLES[endpoint].format(rna1=labels.get("rna1", "RNA1"),
+                    rna2=labels.get("rna2", "RNA2"), protein=labels.get("protein", "Protein"))
     simple = ctx.plot_style == "replicate-simple"
     if simple:
-        w, h = 2.8 + .9 * max(0, len(ctx.group_order) - 2), 3.2
+        w, h = 4.8 + .9 * max(0, len(ctx.group_order) - 2), 3.6
     fig = plt.figure(figsize=(w, h))
     ax = fig.add_axes([0.115, 0.300, 0.790, 0.560])
     foot = draw_plot(ax, ctx, endpoint, well, field, per_nucleus, contrasts,
@@ -1010,9 +1017,13 @@ def render_localization(ctx: FigureContext, well: pd.DataFrame, field: pd.DataFr
     footer = ('Two-sided Welch on well means; replicate unit: well.\n'
               + '\n'.join(foots) + f'\nRun: {ctx.run_path}')
     stamp_foot(canvas, footer, size=5.4, y=.025)
-    save(canvas, out_dir, 'FIG_LOCALIZATION', manifests,
+    save(canvas, out_dir / "composites", 'FIG_LOCALIZATION', manifests,
          'Localization proposal: percent nuclear and nuclear/cytoplasmic counts, equal-weight FOV to well; recorded crops, missing territory boundaries explicit.',
          'Source nuclei_metrics.csv / spot_metrics.csv; report Per field / Per well / Contrasts; localization_crops.json')
+    manifests[-1]['is_composite'] = True
+    for key in ('png', 'svg', 'full_png', 'full_svg', 'focus_png', 'focus_svg'):
+        if key in manifests[-1]:
+            manifests[-1][key] = 'composites/' + manifests[-1][key]
     (out_dir / 'localization_manifest.json').write_text(json.dumps(dict(
         figures=manifests, source_run=str(ctx.run_dir), channel_key_source=lut_source,
         duplicate_rows=audit['duplicate_rows'],

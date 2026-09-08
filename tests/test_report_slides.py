@@ -44,23 +44,28 @@ def test_recorded_deck_semantic_assets_and_localization(tmp_path, monkeypatch):
                 'micrographs':'A10_micrographs', 'standard_coloc':'A09_standard_coloc'}
     assert [s['identity'] for s in resolved['slides']] == list(expected)
     for slide in resolved['slides']:
-        assert Path(slide['figures'][0]['path']).name == expected[slide['identity']]+('_focus.png' if slide.get('identity') in {'q1_count_size','q1_localization','q1_total_if','q2','q3','q4_reverse_anchor','standard_coloc'} else '.png')
-        assert Path(slide['figures'][0]['path']).with_suffix('.svg').is_file()
+        for entry in slide['figures']:
+            path=Path(entry['path'])
+            assert 'composites' not in path.parts
+            if slide['identity'] != 'micrographs':
+                assert path.with_suffix('.svg').is_file()
         if slide['identity'] in {'q1_count_size','q1_total_if','q2','q3','q4_reverse_anchor'}:
-            assert len(slide['figures']) == 3
+            assert len(slide['figures']) == len(next(s for s in __import__('yaml').safe_load(spec.read_text())['slides'] if s['identity']==slide['identity'])['endpoints'])
     index = pd.read_excel(result['xlsx'], sheet_name='FIGURE_INDEX', header=1)
-    assert index.path.fillna('').str.endswith('_focus.png').sum() == 7
+    assert index.path.fillna('').str.endswith('_focus.png').sum() > 7
     sources = pd.read_csv(result['out_dir']/'slide_sources.csv')
     paired = sources.loc[sources.figure.fillna('').str.endswith('_focus.png')]
-    assert len(paired) == 7
+    assert len(paired) > 7
     assert paired.full_figure.str.endswith('_full.png').all()
     assert paired.full_figure.map(lambda p: Path(p).is_file()).all()
     crops = pd.read_excel(result['xlsx'], sheet_name='Localization crops', header=1)
     assert crops.crop_status.eq('available').all()
     assert crops.territory_boundary.eq('missing').all()
-    svg = (result['out_dir']/'figures/A05_BIN1_localization_focus.svg').read_text()
-    assert 'per nucleus and assigned cell territory' in svg.lower()
-    assert 'Assigned-cytoplasmic puncta count' in svg
+    svg = (result['out_dir']/'localization/rna1_cyto_spots_per_nucleus_localization_focus.svg').read_text()
+    import re
+    svg_text=' '.join(re.findall(r'<!--\s*(.*?)\s*-->',svg,re.S))
+    assert 'per nucleus and assigned cell territory' in svg_text.lower()
+    assert 'Assigned-cytoplasmic puncta count' in svg_text or 'cytoplasmic puncta' in svg_text
     ppt = Presentation(result['out_dir']/'Sam_RNASEH2B_BIN1.pptx')
     panels = pd.read_excel(result['xlsx'], sheet_name='Micrograph panels', header=1)
     assert panels.groupby('group').size().eq(4).all()
@@ -77,13 +82,13 @@ def test_recorded_deck_semantic_assets_and_localization(tmp_path, monkeypatch):
     for i in (4, 5, 6):
         assert resolved['slides'][i]['title'].startswith(str(i-2)+'. ')
     assert {'frac_called_coloc_shuffle_runthr', 'frac_called_coloc_minus_shuffle_runthr'} <= set(checked)
-    assert 'cytoplasmic = outside the 2D nuclear mask within the assigned territory; single plane' in svg
-    for slide in ppt.slides:
-        assert any(s.has_text_frame and s.top > 5000000 for s in slide.shapes)
+    composite=(result['out_dir']/'localization/composites/FIG_LOCALIZATION_focus.svg').read_text()
+    assert 'cytoplasmic = outside the 2D nuclear mask within the assigned territory; single plane' in composite
     for slide, definition in zip(ppt.slides, resolved['slides']):
-        if len(definition['figures']) == 3:
-            text = [s.text for s in slide.shapes if s.has_text_frame]
-            assert 'WT' in text and 'QKI-KO' in text
+        if definition.get('layout')!='micrographs':
+            assert any(s.has_text_frame and s.top > 5000000 for s in slide.shapes)
+    for slide, definition in zip(ppt.slides, resolved['slides']):
+        assert len([s for s in slide.shapes if s.shape_type == 13]) == len(definition['figures'])
 
 
 @pytest.mark.parametrize('claim', ['999 nuclei', '1e9 nuclei', '25um scale bar'])

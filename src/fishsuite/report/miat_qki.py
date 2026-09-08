@@ -43,11 +43,11 @@ def holm(values):
     return out
 
 
-def ratio_interval(pairs, denominator_source=COHORT):
+def ratio_interval(pairs, denominator_source=COHORT, *, expected_wells=6):
     """Six matched (A,T) wells per arm; pairing is within well, never NT/KD."""
     if 'count' in str(denominator_source).lower():
         raise ValueError('COUNT localization cannot supply a ratio denominator')
-    if denominator_source not in (COHORT, 'biological_fixed10_usable'):
+    if denominator_source not in (COHORT, 'biological_fixed10_usable', 'run_retained'):
         raise ValueError('denominator must be the fixed-10 coloc cohort')
     out = dict.fromkeys(('R', 'rT', 'rA', 'ci_low', 'ci_high', 'se_log_R',
                          'variance_log_R', 'R_MDE_05', 'R_MDE_05_8'), np.nan)
@@ -56,19 +56,20 @@ def ratio_interval(pairs, denominator_source=COHORT):
         return dict(out, reason='missing matched well columns')
     if pairs.biological_set.duplicated().any() or pairs[KEYS].isna().any().any():
         return dict(out, reason='duplicate well or missing well metadata')
-    if len(pairs) != 12 or set(pairs.arm) != {'NT', 'KD'}:
-        return dict(out, reason='incomplete matched cohort: require six wells per arm')
+    if len(pairs) != 2*expected_wells or set(pairs.arm) != {'NT', 'KD'}:
+        return dict(out, reason=f'incomplete matched cohort: require {expected_wells} wells per arm')
     variance = 0.
     for arm in ('NT', 'KD'):
         x = pairs.loc[pairs.arm == arm, ['A', 'T']].to_numpy(float)
         out['n_' + arm] = len(x)
-        if x.shape != (6, 2) or not np.isfinite(x).all() or (x < 0).any():
+        if x.shape != (expected_wells, 2) or not np.isfinite(x).all() or (x < 0).any():
             return dict(out, reason='incomplete/nonfinite/negative matched well values')
         a, t = x.mean(axis=0)
         if not np.isfinite([a, t]).all() or a <= 0 or t <= 0:
             return dict(out, reason='nonpositive/nonfinite arm mean A or denominator T')
         cov = np.cov(x, rowvar=False, ddof=1)
-        terms = [cov[0, 0]/(6*a*a), cov[1, 1]/(6*t*t), -2*cov[0, 1]/(6*a*t)]
+        terms = [cov[0, 0]/(expected_wells*a*a), cov[1, 1]/(expected_wells*t*t),
+                 -2*cov[0, 1]/(expected_wells*a*t)]
         v = sum(terms)
         # Only floating-point cancellation may be clamped; not material failure.
         if not np.isfinite(v) or v < -1e-12 * max(1., sum(abs(z) for z in terms)):
@@ -87,6 +88,33 @@ def ratio_interval(pairs, denominator_source=COHORT):
                R_MDE_05=np.exp((stats.norm.ppf(.975)+stats.norm.ppf(.8))*se),
                R_MDE_05_8=np.exp((stats.norm.ppf(1-.05/16)+stats.norm.ppf(.8))*se))
     return out
+
+
+def unblocked_exact_ratio(pairs, *, expected_wells=3):
+    """Complete balanced well-label enumeration for a single unblocked design.
+
+    Uses the same ratio-of-arm-means estimand and |log R| two-sided statistic
+    as ``exact_ratio``. The one-sided R>1 tail is separately reported.
+    """
+    observed = ratio_interval(pairs, 'run_retained', expected_wells=expected_wells)
+    if observed['reason']:
+        return dict(p_exact=np.nan, n_assignments=0, exact_reason=observed['reason']), pd.DataFrame()
+    x = pairs.sort_values('biological_set').reset_index(drop=True)
+    rows = []
+    for number, selected in enumerate(combinations(range(len(x)), expected_wells)):
+        assigned = x.index.isin(selected)
+        kd = x.loc[assigned, ['A', 'T']].mean()
+        nt = x.loc[~assigned, ['A', 'T']].mean()
+        r = (kd['A']/nt['A'])/(kd['T']/nt['T'])
+        rows.append(dict(assignment=number, assigned_KD=';'.join(x.loc[assigned, 'biological_set']), R=r))
+    registry = pd.DataFrame(rows)
+    if not np.isfinite(registry.R).all() or (registry.R <= 0).any():
+        return dict(p_exact=np.nan, n_assignments=len(rows), exact_reason='invalid permuted ratio; no assignments dropped'), registry
+    extreme = (np.abs(np.log(registry.R)) >= abs(np.log(observed['R']))-1e-12)
+    greater = registry.R >= observed['R']-1e-12
+    return dict(p_exact=float(extreme.mean()), p_exact_greater=float(greater.mean()),
+                n_assignments=len(rows), n_extreme=int(extreme.sum()), exact_reason='',
+                exact_statistic='abs(log(R)); complete balanced well-label enumeration; no plus-one'), registry
 
 
 def assignments(pairs):

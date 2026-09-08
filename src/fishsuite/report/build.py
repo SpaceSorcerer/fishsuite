@@ -490,14 +490,24 @@ def build_report(run_dir: Path, out_dir: Optional[Path] = None,
                  baseline_manifest: Optional[Path] = None,
                  deck_spec: Optional[Path] = None, deck: bool = False, qc_cyto_calls: bool = False,
                  miat_qki: Optional[Path] = None,
-                 miat_qki_count_report: Optional[Path] = None) -> dict:
+                 miat_qki_count_report: Optional[Path] = None,
+                 micrograph_slides: Optional[str] = None) -> dict:
     if miat_qki is not None:
         from .miat_qki import build as build_miat_qki
         if out_dir is None:
             raise _agg.ReportInputError('MIAT/QKI requires an explicit output directory')
         if groups or exclude_fields or peak_floors or nucleus_filter != 'all' or existing_coloc or deck_spec or deck:
             raise _agg.ReportInputError('MIAT/QKI cannot alter the fixed cohort or mix persisted-panel/deck inputs')
-        return build_miat_qki(miat_qki, out_dir, miat_qki_count_report, make_figures)
+        result=build_miat_qki(miat_qki, out_dir, miat_qki_count_report, make_figures)
+        if micrograph_slides == 'per-well':
+            from .micrograph_slides import prepare_per_well_micrographs
+            try:
+                result['micrographs']=prepare_per_well_micrographs(run_dir,Path(out_dir)/'micrographs_per_well',group_order=['NT','KD'])
+            except (FileNotFoundError,ValueError) as exc:
+                reason='Per-well MIAT micrographs unavailable; retain existing micrograph slide: '+str(exc)
+                (Path(out_dir)/'MICROGRAPH_STATUS.md').write_text(reason+'\n',encoding='utf-8')
+                result['micrograph_missing']=reason
+        return result
     _fig.validate_plot_options(plot_style, technical_layer)
     run_dir = Path(run_dir)
     stamp = stamp or datetime.now().strftime("%Y-%m-%d_%H%M")
@@ -751,6 +761,12 @@ def build_report(run_dir: Path, out_dir: Optional[Path] = None,
             field.to_csv(out_dir/'per_field.csv',index=False)
             contrasts.to_csv(out_dir/'contrasts.csv',index=False)
             resolved_deck = prepare_deck(template,sheets,out_dir,data,persisted,ctx,well,field,contrasts,endpoints)
+    if micrograph_slides == 'per-well':
+        from .micrograph_slides import prepare_per_well_micrographs
+        from .slides import append_per_well_micrographs
+        micro = prepare_per_well_micrographs(run_dir, out_dir/'micrographs_per_well', nuclei=data['nuclei'], group_order=group_order_resolved)
+        if resolved_deck is not None:
+            append_per_well_micrographs(resolved_deck, sheets, micro)
     figs: List[dict] = []
     if make_figures:
         figs = render_figures(out_dir / "figures", run_dir, data, endpoints, absent,

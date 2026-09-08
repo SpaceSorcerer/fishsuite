@@ -4,6 +4,7 @@ from __future__ import annotations
 from pathlib import Path
 import json
 import re
+from functools import lru_cache
 
 import numpy as np
 import pandas as pd
@@ -16,6 +17,11 @@ from .provenance import guard_output, sha256
 
 
 def _literal_number(text, identifiers=()):
+    return _literal_number_cached(str(text), tuple(sorted(set(identifiers))))
+
+
+@lru_cache(maxsize=2048)
+def _literal_number_cached(text, identifiers):
     # Gene labels such as BIN1 and RNASEH2B are identities, not numeric claims.
     text = str(text)
     # Sam's question identifiers are ordering labels, not measured quantities.
@@ -181,6 +187,7 @@ def build_deck(workbook: Path, spec: dict, destination: Path) -> Path:
     ppt = Presentation()
     ppt.slide_width, ppt.slide_height = Inches(13.333333), Inches(7.5)
     sources = []
+    workbook_path = str(Path(workbook).resolve())
     for number, definition in enumerate(slides,1):
         slide = ppt.slides.add_slide(ppt.slide_layouts[6])
         box = slide.shapes.add_textbox(Inches(.4), Inches(.15), Inches(12.5), Inches(.95))
@@ -190,25 +197,41 @@ def build_deck(workbook: Path, spec: dict, destination: Path) -> Path:
             paragraph.font.name, paragraph.font.size = 'Arial', Pt(23)
         notes = speaker_notes(workbook, definition)
         for item in definition['values']:
-            sources.append(dict(slide=number, workbook=str(Path(workbook).resolve()),
+            sources.append(dict(slide=number, workbook=workbook_path,
                                 sheet=item['sheet'], cell=item['cell'], value=item['value']))
         assets = definition.get('figures', [])
+        if definition.get('layout')=='micrographs':
+            box.top,box.height=Inches(.03),Inches(.45)
+            for p in box.text_frame.paragraphs:p.font.size=Pt(18)
+            for i,label in enumerate(definition.get('row_labels',[])):
+                rowbox=slide.shapes.add_textbox(Inches(.25),Inches(.48+3.45*i),Inches(12.8),Inches(.2))
+                rowbox.text_frame.margin_top=rowbox.text_frame.margin_bottom=0
+                rowbox.text_frame.text=label
+                for p in rowbox.text_frame.paragraphs:p.font.size=Pt(10)
         for asset_no, asset in enumerate(assets):
             from PIL import Image
             with Image.open(asset['path']) as img:
                 ratio = img.width / img.height
-            max_width, max_height = ((9.3, 4.9) if asset_no == 0 else (2.7, 2.2)) if len(assets)>1 else (12.4, 4.9)
+            micrograph = definition.get('layout') == 'micrographs'
+            columns = 4 if micrograph else 1 if len(assets)==1 else 2 if len(assets) in (2,4) else 3
+            rows = (len(assets)+columns-1)//columns
+            cell_width = 12.73/columns
+            cell_height = 3.45 if micrograph else 4.95/rows
+            max_width, max_height = cell_width-.04, (3.12 if micrograph else cell_height-.27)
             width = min(max_width, max_height*ratio)
-            height = width / ratio
-            left = .3+(9.3-width)/2 if len(assets)>1 and asset_no==0 else 10+(2.7-width)/2 if len(assets)>1 else (13.333333-width)/2
-            top = 1.15+(4.9-height)/2 if asset_no==0 else 1.25+(asset_no-1)*2.5+(2.2-height)/2
+            height = width/ratio
+            left = .30+(asset_no%columns)*cell_width+(cell_width-width)/2
+            top = (.83 if micrograph else 1.32)+(asset_no//columns)*cell_height+(max_height-height)/2
             slide.shapes.add_picture(asset['path'], Inches(left), Inches(top), Inches(width), Inches(height))
-            if asset.get('caption_value'):
-                caption = slide.shapes.add_textbox(Inches(left), Inches(top-.3), Inches(width), Inches(.3))
+            caption_text = asset.get('caption_value') or asset.get('caption','')
+            if caption_text:
+                caption = slide.shapes.add_textbox(Inches(.30+(asset_no%columns)*cell_width+.05), Inches(top-.24), Inches(cell_width-.10), Inches(.23))
                 caption.text_frame.margin_top = caption.text_frame.margin_bottom = 0
-                caption.text_frame.text = asset['caption_value']
+                caption.text_frame.text = caption_text
                 for paragraph in caption.text_frame.paragraphs:
-                    paragraph.font.name, paragraph.font.size = 'Arial', Pt(14)
+                    paragraph.font.name, paragraph.font.size = 'Arial', Pt(9)
+                    from pptx.enum.text import PP_ALIGN
+                    paragraph.alignment=PP_ALIGN.CENTER
             sources.append(dict(slide=number, figure=asset['path'], sha256=asset['sha256'],
                                 full_figure=asset.get('full_path', ''), full_sha256=asset.get('full_sha256', '')))
         if not definition.get('figures'):
@@ -219,7 +242,11 @@ def build_deck(workbook: Path, spec: dict, destination: Path) -> Path:
             for p in content.text_frame.paragraphs:
                 p.font.name, p.font.size = 'Arial', Pt(18)
         readouts = [v['value'] for v in definition['values'] if v.get('label') == 'readout']
-        if readouts and assets:
+        if definition.get('readout_template'):
+            readouts = [definition['readout_template'].format(**{v['label']:v['value'] for v in definition['values']})]
+        if assets and definition.get('body') and not readouts:
+            readouts=[definition['body']]
+        if readouts and assets and definition.get('layout')!='micrographs':
             box = slide.shapes.add_textbox(Inches(.5), Inches(6.25), Inches(12.3), Inches(1.0))
             box.text_frame.word_wrap = True
             box.text_frame.text = str(readouts[0])
@@ -249,12 +276,46 @@ def simple_coloc_slides(sheets, assets, rna, partner, cohort):
             ['simple_coloc','cytofluorogram'],
             [f'Pixel colocalization, {rna} × {partner}',f'Cytofluorogram, {rna} × {partner}'],assets)):
         path=Path(path)
+        candidates=sorted(path.parent.glob(('FIG_SIMPLE_COLOC_' if identity=='simple_coloc' else 'FIG_CYTOFLUOROGRAM_')+'*_focus.png'))
+        candidates=[p for p in candidates if p.name!='FIG_SIMPLE_COLOC_focus.png']
+        if candidates: path=candidates[0]
         asset=dict(path=str(path.resolve()),sha256=sha256(path),cohort=cohort)
         full=path.with_name(path.name.replace('_focus','_full'))
         if full!=path and full.is_file(): asset.update(full_path=str(full.resolve()),full_sha256=sha256(full))
-        result.append(dict(identity=identity,title=title,figures=[asset],values=refs+[
+        single_assets=[]
+        for candidate in candidates:
+            twin=candidate.with_name(candidate.name.replace('_focus','_full'))
+            single_assets.append(dict(path=str(candidate.resolve()),sha256=sha256(candidate),cohort=cohort,
+                full_path=str(twin.resolve()),full_sha256=sha256(twin),single_plot=True))
+        result.append(dict(identity=identity,title=title,figures=single_assets or [asset],values=refs+[
             dict(sheet='Simple coloc readout',cell=f'A{i+3}',label='readout',display=True)]))
     return result
+
+
+def append_per_well_micrographs(spec, sheets, micro):
+    """Replace the overview micrograph with separately movable native panels."""
+    sheets['Per-well micrograph selection'] = pd.DataFrame(micro['selection'])
+    panel_rows = []
+    replacements = []
+    for index, item in enumerate(micro['slides']):
+        assets = []
+        for row in item['rows']:
+            for panel in row['panels']:
+                path = Path(panel['path'])
+                panel_rows.append(dict(group=row['group'], well_id=row['well_id'],
+                                       image=row['image'], **panel))
+                assets.append(dict(path=str(path.resolve()), sha256=sha256(path),
+                    cohort=spec['cohort'], caption=panel['panel']))
+        replacements.append(dict(identity='micrographs_well_'+str(index+1),
+            title='Per-well micrographs: '+item['title'], values=[], figures=assets, layout='micrographs',
+            row_labels=[r['group']+' · '+r['well_id']+' · FOV '+Path(r['image']).stem.rsplit('_',1)[-1] for r in item['rows']]))
+    sheets['Per-well micrograph panels'] = pd.DataFrame(panel_rows)
+    if replacements:
+        positions = [i for i,s in enumerate(spec['slides']) if s.get('identity')=='micrographs']
+        position = positions[0] if positions else len(spec['slides'])
+        spec['slides'] = [s for s in spec['slides'] if s.get('identity')!='micrographs']
+        spec['slides'][position:position] = replacements
+    return spec
 
 
 def draw_micrograph_panel(ax, row, color="black"):
@@ -452,115 +513,30 @@ def prepare_deck(template: dict, sheets: dict, out_dir: Path, data: dict,
         assets = []
         stem = item['asset']
         if item.get('kind') == 'localization':
-            import shutil
-            for variant in ('focus', 'full'):
-                for suffix in ('.png', '.svg'):
-                    shutil.copyfile(out_dir/'localization'/('FIG_LOCALIZATION_'+variant+suffix), guard_output(figure_dir/(stem+'_'+variant+suffix)))
-            path = figure_dir/(stem+'_focus.png')
-            assets = [dict(path=str(path.resolve()), sha256=sha256(path), cohort=template['cohort'])]
+            for record in localization['figures']:
+                if record.get('is_composite'): continue
+                path = out_dir/'localization'/record['png']
+                full = out_dir/'localization'/record.get('full_png', record['png'])
+                assets.append(dict(path=str(path.resolve()), sha256=sha256(path),
+                    full_path=str(full.resolve()), full_sha256=sha256(full),
+                    cohort=template['cohort'], caption=record.get('description',''), single_plot=True))
         elif names:
-            count = len(names)
-            cols = min(count,3)
-            rows = (count+cols-1)//cols
-            if item.get('headline'):
-                f = fig.plt.figure(figsize=(12.4,5.6))
-                secondary_cols = (count - 1 + 1) // 2
-                grid = f.add_gridspec(2, secondary_cols + 1, width_ratios=[1.7] + [1] * secondary_cols)
-                axes = np.array([f.add_subplot(grid[:, 0])] +
-                                [f.add_subplot(grid[i // secondary_cols, 1 + i % secondary_cols])
-                                 for i in range(count - 1)])
-            else:
-                f, axes = fig.plt.subplots(rows,cols,figsize=(12.4,5.6),squeeze=False)
-            f.subplots_adjust(left=.08,right=.98,top=.83,bottom=.17,hspace=.7,wspace=.65)
-            for ax,name in zip(axes.flat,names):
+            for name in names:
                 e = by_endpoint[name]
                 scale = 100. if name == 'nuclear_spot_fraction_dapi' else fig.fraction_scale(name)
-                unit=e.unit
-                if 'observed divided' in unit or 'enrichment' in name:
-                    unit='enrichment ratio'
-                elif 'fraction' in unit:
-                    unit='fraction'
-                elif 'assigned cell territory' in unit:
-                    unit='puncta per nucleus and assigned cell territory'
-                elif 'puncta per nucleus' in unit:
-                    unit='puncta / nucleus'
-                elif 'square micrometre of nuclear area' in unit:
-                    unit='puncta / square micrometre'
-                if scale==100:
-                    unit='percent (%)'
-                if 'minus_shuffle' in name:
-                    unit='excess over shuffle (percentage points)'
-                fig.draw_replicate_simple(ax,ctx,name,well,field,data['nuclei'],contrasts,
-                                          unit,e.column,scale=scale,compact=True)
-                title = e.pretty(ctx.channel_labels)
-                if item.get('headline'):
-                    title = {
-                        'rna1_enrichment_at_partner_puncta': 'BIN1 signal: relative enrichment',
-                        'rna1_rotation_enrichment_at_partner_puncta': 'BIN1 signal: rotation enrichment',
-                        'frac_called_coloc_partner_runthr': 'BIN1 threshold calls',
-                        'frac_called_coloc_partner_minus_shuffle_runthr': 'BIN1 calls: excess over shuffle',
-                        'paired_fraction_partner_at_0p3um': 'RNASEH2B puncta paired with BIN1',
-                        'paired_frac_partner_at_rna1_shuffle': 'RNASEH2B pairing: shuffle baseline',
-                        'paired_frac_rna1_at_partner': 'BIN1 puncta paired with RNASEH2B',
-                        'paired_frac_rna1_at_partner_shuffle': 'BIN1 pairing: shuffle baseline',
-                    }.get(name, title)
-                if name == 'paired_frac_rna1_at_partner_minus_shuffle':
-                    title = 'BIN1 puncta paired with an RNASEH2B punctum: excess over shuffle'
-                elif name == 'paired_frac_partner_at_rna1_minus_shuffle':
-                    title = 'RNASEH2B puncta paired with a BIN1 punctum: excess over shuffle'
-                if name == 'rna1_nuclear_spot_fraction':
-                    ax.set_ylabel('BIN1 intron puncta: % nuclear (per nucleus)')
-                    title = 'BIN1 intron puncta, % nuclear'
-                import textwrap
-                heading = ax.set_title(' '.join(title.split()),fontsize=11,pad=22)
-                f.canvas.draw()
-                width = heading.get_window_extent().width
-                if width > ax.bbox.width*.96:
-                    heading.set_fontsize(11*ax.bbox.width*.95/width)
-                fig.no_box(f,ax)
-            spare_axes = list(axes.flat)[count:]
-            if item.get('kind') == 'standard':
-                profiles = sheets['Coloc line profiles']
-                channel_colors = dict(fig.read_luts(ctx.run_dir, micro_root)[0])
-                for ax, group in zip(spare_axes, ctx.group_order):
-                    samples = profiles.loc[profiles.group.eq(group)]
-                    first = samples[['image','nucleus_id']].drop_duplicates().iloc[0]
-                    samples = samples.loc[samples.image.eq(first.image) & samples.nucleus_id.eq(first.nucleus_id)].sort_values('sample_index')
-                    for channel, label in [('rna1_norm',ctx.channel_labels['rna1']),
-                                            ('partner_norm',ctx.channel_labels['protein'])]:
-                        color = channel_colors[label]
-                        ax.plot(samples.distance_um,samples[channel],label=label,color=color)
-                    ax.set(xlabel='Distance (micrometres)', ylabel='Normalized intensity', title=group+' recorded profile')
-                    ax.legend(fontsize=6)
-                    fig.no_box(f,ax)
-            else:
-                for ax in spare_axes:
-                    ax.set_visible(False)
-            summaries = []
-            for name in names:
-                row = contrasts.loc[contrasts.endpoint.eq(name)].iloc[0]
-                counts = '/'.join(str(row.get('sensitivity_n_'+level+'_reference', 'NA')) + ':' + str(row.get('sensitivity_n_'+level+'_test', 'NA')) for level in ['wells','fovs','nuclei'])
-                status = str(row.get('sensitivity_mixed_status', ''))
-                fallback = '; mixed model did not converge' if 'converg' in status and status != 'ok' else ''
-                summaries.append(f"mixed model p {fig.fmt_p(row.get('p_mixed',np.nan))}; Welch (wells) p {fig.fmt_p(row.p_welch)}; n {counts}{fallback}")
-            footer = f.text(.01,.02,' | '.join(summaries) + '; run ' + ctx.run_name,fontsize=6,va='bottom')
-            f.canvas.draw()
-            width = footer.get_window_extent().width
-            if width > f.bbox.width*.98:
-                footer.set_fontsize(6*f.bbox.width*.98/width)
-            records=[]
-            record = fig.save(f,figure_dir,stem,records,item['title'],'Per well / Contrasts')
-            path=figure_dir/record['png']
-            assets=[dict(path=str(path.resolve()),sha256=sha256(path),cohort=template['cohort'])]
+                records = []
+                record = fig.superplot_standalone(ctx, name, e.pretty(ctx.channel_labels),
+                    'percent (%)' if scale == 100 else e.unit, well, field, data['nuclei'],
+                    contrasts, e.column, figure_dir, stem+'__'+name, records, scale=scale)
+                path = figure_dir/record['png']
+                full = figure_dir/record.get('full_png', record['png'])
+                assets.append(dict(path=str(path.resolve()), sha256=sha256(path),
+                    full_path=str(full.resolve()), full_sha256=sha256(full),
+                    cohort=template['cohort'], caption=e.pretty(ctx.channel_labels), single_plot=True))
         elif item.get('kind')=='micrographs':
-            f,axes=fig.plt.subplots(len(micro),4,figsize=(12.4,5.6),squeeze=False)
-            for row_axes,row in zip(axes,micro):
-                fig.draw_publication_panels(row_axes, row['panels'], row['group'])
-            f.subplots_adjust(left=.02,right=.98,top=.92,bottom=.04)
-            records=[]
-            fig.save(f,figure_dir,stem,records,item['title'],'Micrographs')
-            path=figure_dir/f'{stem}.png'
-            assets=[dict(path=str(path.resolve()),sha256=sha256(path),cohort=template['cohort'])]
+            assets = [dict(path=entry['path'], sha256=sha256(Path(entry['path'])),
+                cohort=template['cohort'], caption=row['group']+' · '+entry['panel'])
+                for row in micro for entry in row['panels']]
         else:
             import textwrap
             f = fig.plt.figure(figsize=(12.4,5.6))
@@ -582,20 +558,6 @@ def prepare_deck(template: dict, sheets: dict, out_dir: Path, data: dict,
             fig.save(f,figure_dir,stem,[],item['title'],'; '.join(extra_sheets))
             path=figure_dir/f'{stem}.png'
             assets=[dict(path=str(path.resolve()),sha256=sha256(path),cohort=template['cohort'])]
-        if assets and Path(assets[0]['path']).stem.endswith('_focus'):
-            full_path = Path(assets[0]['path']).with_name(stem+'_full.png')
-            assets[0].update(full_path=str(full_path.resolve()), full_sha256=sha256(full_path))
-        if item.get('micrographs'):
-            for row in micro:
-                strip = figure_dir / (Path(row['path']).stem + '_four_panels.png')
-                if 'strip_path' not in row:
-                    f, axes = fig.plt.subplots(1,4,figsize=(12,3))
-                    fig.draw_publication_panels(axes, row['panels'], row['group'])
-                    f.subplots_adjust(left=.01,right=.99,bottom=.01,top=.87,wspace=.03)
-                    fig.save(f,figure_dir,strip.stem,[],row['group'],'Micrograph panels')
-                row['strip_path'] = str(strip.resolve())
-            assets.extend(dict(path=row['strip_path'],sha256=sha256(Path(row['strip_path'])),cohort=template['cohort'],
-                               caption_ref=dict(sheet='Micrographs',cell=f'A{i+3}')) for i,row in enumerate(micro))
         for asset in assets:
             figure_rows.append(dict(slide=slide_no,**asset,source_sheet='Contrasts' if names else 'Micrographs',
                                     source_cells=';'.join(f'{r["sheet"]}!{r["cell"]}' for r in refs),
@@ -606,7 +568,7 @@ def prepare_deck(template: dict, sheets: dict, out_dir: Path, data: dict,
             values.append(dict(slide=slide_no,endpoint='',label='readout',value=item['body'],
                                source_sheet='Deck specification',source_cell=f'B{slide_no+2}'))
             refs.append(dict(sheet='Slide values',cell=f'D{len(values)+2}',label='readout',display=True))
-        resolved.append(dict(identity=item['identity'],title=item['title'],question=item.get('question', ''),title_cell=title_ref,values=refs,figures=assets))
+        resolved.append(dict(identity=item['identity'],title=item['title'],question=item.get('question', ''),title_cell=title_ref,values=refs,figures=assets, layout='micrographs' if item.get('kind')=='micrographs' else 'grid'))
     sheets['Slide values']=pd.DataFrame(values)
     sheets['Figure sources']=pd.DataFrame(figure_rows)
     if template.get('simple_coloc_csv'):

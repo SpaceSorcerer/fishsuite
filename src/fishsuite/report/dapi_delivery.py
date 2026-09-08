@@ -64,14 +64,14 @@ def validate_report(out):
     print('VALIDATED: unique spot identities; class accounting; retained-cell counts/fractions; object census; nucleus -> FOV -> well hierarchy; Welch 3 vs 3; localization Holm; legacy exclusions.')
 
 
-def preview_deck(out):
+def preview_deck(out, filename='Sam_RNASEH2B_BIN1.pptx'):
     """Approximate Arial previews; never claim these are native Office renders."""
     from pptx import Presentation
     from PIL import Image, ImageDraw, ImageFont
     out = Path(out)
     target = guard_output(out/'validation')
     target.mkdir(parents=True,exist_ok=True)
-    ppt = Presentation(out/'Sam_RNASEH2B_BIN1.pptx')
+    ppt = Presentation(out/filename)
     contact = Image.new('RGB',(1600,math.ceil(len(ppt.slides)/2)*470),'#dddddd')
     for i,slide in enumerate(ppt.slides):
         im = Image.new('RGB',(1280,720),'white')

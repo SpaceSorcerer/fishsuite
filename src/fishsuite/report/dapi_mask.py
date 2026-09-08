@@ -280,30 +280,29 @@ def draw_qc(axes, data, ctx):
 
 
 def render_dapi(ctx, data, nuclei, well, field, contrasts, out_dir):
+    """Independent localization plots and independent descriptive QC figures."""
     from . import figures as fig
     out_dir = guard_output(Path(out_dir))
-    fig.set_style()
-    canvas, axes = fig.plt.subplots(2, 2, figsize=(12.4, 7.2))
-    canvas.subplots_adjust(left=.09, right=.97, top=.90, bottom=.25, hspace=.45, wspace=.4)
-    foots=[]
-    for ax, name, ylabel, scale in zip(axes[0], [FRACTION, COUNT],
-          ['BIN1 nuclear fraction, DAPI corrected (%)', 'Extranuclear BIN1 spots / cell territory'], [100., 1.]):
-        foots.append(fig.draw_replicate_simple(ax, ctx, name, well, field, nuclei, contrasts, ylabel, name,
-                                  scale=scale, compact=True))
-        fig.no_box(canvas, ax)
-    draw_qc(axes[1], data, ctx)
-    canvas.text(.5,.98,'BIN1 intron localization',fontsize=12,ha='center',va='top')
-    foot = canvas.text(.02,.025,' | '.join(foots) + '; run ' + ctx.run_name,fontsize=6,va='bottom')
-    canvas.canvas.draw()
-    width = foot.get_window_extent().width
-    if width > canvas.bbox.width*.96: foot.set_fontsize(6*canvas.bbox.width*.96/width)
-    fig.save(canvas, out_dir, 'FIG_LOCALIZATION', [], 'DAPI-corrected localization and QC', 'DAPI tables / Per well / Contrasts')
-    q, qa = fig.plt.subplots(1,2,figsize=(12.4,4.4))
-    q.subplots_adjust(left=.08,right=.97,top=.87,bottom=.32,wspace=.35)
-    draw_qc(qa, data, ctx)
-    q.text(.08,.025,'Filter: recorded DAPI plane; sigma 1 px; Otsu; fill holes; connected objects ≥200 px. Dashed line: 16,000 px.',fontsize=8)
-    fig.save(q, out_dir, 'DAPI_QC', [], 'DAPI spot classes and unretained object areas', 'DAPI tables')
-    return dict(crops=[])
+    fig.set_style(); records=[]
+    specs=[(FRACTION,'BIN1 puncta, % nuclear','BIN1 nuclear fraction, DAPI corrected (%)',100.,'fraction'),
+           (COUNT,'Extranuclear BIN1 puncta','Extranuclear BIN1 spots / cell territory',1.,'extranuclear')]
+    for name,title,ylabel,scale,suffix in specs:
+        canvas,ax=fig.plt.subplots(figsize=(4.8,3.6))
+        foot=fig.draw_replicate_simple(ax,ctx,name,well,field,nuclei,contrasts,ylabel,name,scale=scale)
+        fig.no_box(canvas,ax)
+        fig.layout_replicate_simple(canvas,ax,ctx,title,foot)
+        rec=fig.save(canvas,out_dir,'FIG_LOCALIZATION_'+suffix,records,title,'DAPI tables / Per well / Contrasts')
+        rec.update(endpoint=name,caption=title,is_composite=False)
+    for index,suffix,title in [(0,'spot_classes','BIN1 spot classification'),(1,'object_area','Unretained DAPI object area')]:
+        canvas,axes=fig.plt.subplots(1,2,figsize=(4.8,3.6))
+        draw_qc(axes,data,ctx)
+        canvas.delaxes(axes[1-index]); ax=axes[index]
+        ax.set_position([.19,.34,.77,.50]); ax.set_title(title,fontsize=11)
+        ax._replicate_simple_axis=lambda variant: None
+        canvas.text(.02,.02,'Descriptive QC, no test; run '+ctx.run_name,fontsize=6)
+        rec=fig.save(canvas,out_dir,'FIG_LOCALIZATION_'+suffix,records,title,'DAPI tables')
+        rec.update(caption=title,is_composite=False)
+    return dict(crops=[],figures=records)
 
 
 def write_documents(out_dir, data, contrasts):

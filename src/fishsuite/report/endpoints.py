@@ -545,3 +545,89 @@ def usable_endpoints(endpoints: Sequence[Endpoint], absent: Sequence[str]
                      ) -> List[Endpoint]:
     absent = set(absent)
     return [ep for ep in endpoints if ep.name not in absent]
+
+
+# A17 explicit display titles; data labels and endpoint meanings remain unchanged.
+SHORT_TITLES = {
+    "rna1_spots_per_nucleus": "{rna1} puncta per nucleus",
+    "rna1_nuclear_spots_per_nucleus": "{rna1} nuclear puncta",
+    "rna1_cyto_spots_per_nucleus": "{rna1} cytoplasmic puncta",
+    "rna1_nuclear_spot_fraction": "{rna1} puncta, % nuclear",
+    "rna2_nuclear_spot_fraction": "{rna2} puncta, % nuclear",
+    "protein_spots_per_nucleus": "{protein} puncta per nucleus",
+    "rna1_punctum_footprint_area_um2": "{rna1} footprint area",
+    "rna1_punctum_equivalent_diameter_um": "{rna1} footprint diameter",
+    "rna1_spot_fwhm_px": "{rna1} moment width",
+    "rna1_spot_diameter_um": "{rna1} moment diameter",
+    "rna1_nuclear_above_floor_intensity": "{rna1} above-floor intensity",
+    "rna2_nuclear_above_floor_intensity": "{rna2} above-floor intensity",
+    "protein_nuclear_mean": "{protein} nuclear intensity",
+    "rna1_spots_per_um2": "{rna1} puncta / nuclear area",
+    "rna2_spots_per_um2": "{rna2} puncta / nuclear area",
+    "rna1_nuclear_spots_per_um2": "{rna1} nuclear puncta density",
+    "protein_spots_per_um2": "{protein} nuclear puncta density",
+    "protein_nc_ratio": "{protein} N:C intensity",
+    "rna1_nc_ratio": "{rna1} N:C intensity",
+    "partner_rotation_enrichment_at_rna1": "{protein} rotation enrichment",
+    "partner_local_enrichment_at_rna1": "{protein} local enrichment",
+}
+SHORT_TITLE_TEXT = {
+    "Fraction of BIN1 introns puncta with RNASEH2B above threshold in the exact footprint": "BIN1 puncta with RNASEH2B",
+    "BIN1 intron puncta, % nuclear": "BIN1 puncta, % nuclear",
+    "Spot classification: descriptive, no test": "BIN1 spot classification",
+    "Area census: descriptive, no test": "Unretained DAPI object area",
+}
+
+SHORT_TITLES.update({
+    "rna2_spots_per_nucleus": "{rna2} puncta per nucleus",
+    "rna2_nuclear_spots_per_nucleus": "{rna2} nuclear puncta",
+    "rna2_punctum_footprint_area_um2": "{rna2} footprint area",
+    "nucleus_area_um2": "Nuclear area",
+    "partner_rotation_enrichment_at_rna1_allnuclei": "{protein} rotation enrichment, all nuclei",
+    "partner_rotation_null_z_at_rna1": "{protein} rotation-null z",
+    "partner_rotation_null_p_at_rna1": "{protein} rotation-null p",
+    "partner_random_null_enrichment_at_rna1": "{protein} random-null enrichment",
+    "partner_random_null_z_at_rna1": "{protein} random-null z",
+    "fraction_rna1_puncta_above_rotation_null_p95": "{rna1} puncta above null p95",
+    "partner_mean_in_exact_rna1_footprint": "{protein} footprint intensity",
+    "partner_enrichment_in_exact_rna1_footprint": "{protein} footprint enrichment",
+    "fraction_rna1_puncta_partner_positive_exact_footprint": "{rna1} puncta with {protein}",
+    "partner_radial_enrichment_at_0p25um": "{protein} radial enrichment, 0.25 µm",
+    "partner_radial_enrichment_at_0p5um": "{protein} radial enrichment, 0.5 µm",
+    "partner_radial_enrichment_at_0p75um": "{protein} radial enrichment, 0.75 µm",
+    "partner_radial_enrichment_at_1um": "{protein} radial enrichment, 1 µm",
+    "partner_pooled_rotation_enrichment_at_rna1": "{protein} pooled rotation enrichment",
+    "partner_pooled_random_null_enrichment_at_rna1": "{protein} pooled random enrichment",
+    "fraction_rna1_puncta_above_rotation_null_p95_pooled": "{rna1} puncta above null p95, pooled",
+    "partner_pooled_rotation_null_p_empirical": "{protein} pooled rotation-null p",
+    "partner_pooled_random_null_p_empirical": "{protein} pooled random-null p",
+    "paired_fraction_rna1_at_0p3um": "{rna1} pairing within 0.3 µm",
+    "paired_fraction_partner_at_0p3um": "{protein} pairing within 0.3 µm",
+    "median_nn_distance_rna1_um": "{rna1} nearest-partner distance",
+    "median_nn_distance_partner_um": "{protein} nearest-RNA distance",
+    "rna1_enrichment_at_partner_puncta": "{rna1} local enrichment",
+    "rna1_rotation_enrichment_at_partner_puncta": "{rna1} rotation enrichment",
+    "rna1_rotation_enrichment_at_partner_puncta_allnuclei": "{rna1} rotation enrichment, all nuclei",
+    "rna1_rotation_null_z_at_partner_puncta": "{rna1} rotation-null z",
+    "rna1_rotation_null_p_at_partner_puncta": "{rna1} rotation-null p",
+    "manders_rna1_in_partner": "{rna1} Manders fraction",
+    "rna1_pooled_rotation_enrichment_at_partner_puncta": "{rna1} pooled rotation enrichment",
+    "rna1_pooled_rotation_null_p_empirical": "{rna1} pooled rotation-null p",
+})
+
+# Dynamic A3 shuffle endpoints: explicit short titles at the same 11 pt size.
+SHORT_TITLES.update({
+    'frac_called_coloc_shuffle_runthr': '{protein} calls: shuffled',
+    'frac_called_coloc_minus_shuffle_runthr': '{protein} calls: excess over shuffle',
+    'frac_called_coloc_partner_minus_shuffle_runthr': '{rna1} calls: excess over shuffle',
+    'paired_frac_rna1_at_partner_minus_shuffle': '{rna1} pairing: excess over shuffle',
+    'paired_frac_partner_at_rna1_minus_shuffle': '{protein} pairing: excess over shuffle',
+})
+
+
+def short_title(endpoint, title, channel_labels=None):
+    """Apply an explicit title map without wrapping or changing font size."""
+    labels = channel_labels or {}
+    return SHORT_TITLES.get(endpoint, SHORT_TITLE_TEXT.get(title, title)).format(
+        rna1=labels.get('rna1','RNA1'), rna2=labels.get('rna2','RNA2'),
+        protein=labels.get('protein','Protein'))

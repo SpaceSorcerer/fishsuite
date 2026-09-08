@@ -4,6 +4,22 @@ import numpy as np
 import pandas as pd
 import pytest
 
+
+def test_three_well_ratio_covariance_and_complete_exact_assignments():
+    from fishsuite.report.miat_qki import ratio_interval, unblocked_exact_ratio
+    pairs = pd.DataFrame(dict(biological_set=['WT1', 'WT2', 'WT3', 'KO1', 'KO2', 'KO3'],
+                              slide=['one']*6, arm=['NT']*3+['KD']*3,
+                              A=[2., 4., 6., 3., 6., 9.], T=[2., 4., 6., 2., 4., 6.]))
+    result = ratio_interval(pairs, 'run_retained', expected_wells=3)
+    assert result['R'] == pytest.approx(1.5)
+    # A and T are perfectly proportional within each arm: covariance cancels.
+    assert result['variance_log_R'] == pytest.approx(0, abs=1e-15)
+    exact, assignments = unblocked_exact_ratio(pairs)
+    assert exact['n_assignments'] == 20
+    assert assignments.assigned_KD.nunique() == 20
+    assert exact['p_exact'] == pytest.approx(.1)
+    assert exact['p_exact_greater'] == pytest.approx(.05)
+
 from fishsuite.report import miat_qki as mq
 
 DATA = Path('F:/Image Analysis Work/MIAT_QKI_Coloc_2026_08_25/DELIVERIES/DELIVERY_MIAT_QKI_REVISED_2026-09-03/data')

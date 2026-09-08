@@ -102,70 +102,39 @@ def simple_statistics(nuclei, reference):
 
 
 def render_simple_coloc(nuclei, fields, wells, contrasts, out_dir, rna, partner, reference, run_name=None):
-    """Four persisted metrics with biological replicate dots and mixed-model bracket."""
+    """Each persisted metric is a separate editable figure with full/focus twins."""
     from types import SimpleNamespace
     from . import figures as fig
     order=[reference]+[g for g in wells.group.unique() if g!=reference]
+    if run_name is None and 'source_file' in nuclei:
+        run_name = Path(nuclei.source_file.iloc[0]).parent.parent.name
     ctx=SimpleNamespace(group_order=order, colors=dict(zip(order,['#595959','#D67AE5' if partner=='RNASEH2B' else '#CC79A7'])),
-                        technical_layer='none',reference=reference,footer=lambda x:x)
-    fig.set_style()
-    canvas,axes=fig.plt.subplots(1,4,figsize=(14,5.2))
+                        technical_layer='none',reference=reference,footer=lambda x:x,run_name=run_name or 'missing')
     names=['Pearson r','Manders M1','Manders M2','Li ICQ']
-    labels=[f'Pearson r, {rna} × {partner}\n(per nucleus)',
-            f'Fraction of {rna} signal in\n{partner}-positive pixels (Costes)',
-            f'Fraction of {partner} signal in\n{rna}-positive pixels (Costes)',
-            f'Li ICQ, {rna} × {partner}\n(per nucleus)']
-    footer=[]
-    for ax,metric,name,label,letter in zip(axes,SIMPLE_METRICS,names,labels,'ABCD'):
-        # A15 explicitly changes inference and keeps coefficients as fractions;
-        # do not inherit the historical registry's descriptive/percent policies.
+    labels=[f'Pearson r, {rna} × {partner}',
+            f'Fraction of {rna} signal in {partner}-positive pixels (Costes)',
+            f'Fraction of {partner} signal in {rna}-positive pixels (Costes)',
+            f'Li ICQ, {rna} × {partner}']
+    fig.set_style(); records=[]
+    for metric,name,label in zip(SIMPLE_METRICS,names,labels):
+        canvas,ax=fig.plt.subplots(figsize=(4.8,3.6))
         display_endpoint='simple_coloc:'+metric
         w=wells[['group','well_id',metric]].rename(columns={metric:'well_mean_of_field_values'}).assign(endpoint=display_endpoint)
         f=fields[['group','well_id','image',metric,metric+'_n_nuclei']].rename(columns={metric:'field_value',metric+'_n_nuclei':'n_nuclei_nonmissing'}).assign(endpoint=display_endpoint,level='nucleus')
         display_contrasts=contrasts.loc[contrasts.endpoint.eq(metric)].assign(endpoint=display_endpoint)
-        fig.draw_replicate_simple(ax,ctx,display_endpoint,w,f,nuclei,display_contrasts,label,metric)
-        # Keep coefficient units (0..1), with inference outside the data axes.
-        for line in ax.lines:
-            if len(line.get_xdata())==2 and np.array_equal(line.get_xdata(),[0,1]):
-                line.set_visible(False)
-        for text in ax.texts:
-            if 'p =' in text.get_text(): text.set_visible(False)
-        row=contrasts.loc[contrasts.endpoint.eq(metric)].iloc[0]
-        p=row.p_mixed
-        headline=f'mixed p = {fig.fmt_p(p)}' if row.sensitivity_mixed_status=='ok' else 'mixed p unavailable'
-        ax.plot([0,0,1,1],[1.02,1.05,1.05,1.02],transform=ax.get_xaxis_transform(),clip_on=False,color='black',lw=.8)
-        ax.text(.5,1.06,headline,transform=ax.transAxes,ha='center',fontsize=10)
-        vals=w.well_mean_of_field_values.dropna().to_numpy()
-        extrema=list(vals)
-        for _,sub in w.groupby('group'):
-            v=sub.well_mean_of_field_values.dropna()
-            if len(v)>1: extrema.extend([v.mean()-v.std(),v.mean()+v.std()])
-        def setter(variant, ax=ax,metric=metric,extrema=extrema):
-            bound=1 if metric.startswith('pearson') else .5 if metric.startswith('li_') else 1
-            lo,hi=(-bound,bound) if 'manders' not in metric else (0,1)
-            if variant=='focus' and extrema:
-                pad=max((max(extrema)-min(extrema))*.15,.02)
-                lo,hi=max(lo,min(extrema)-pad),min(hi,max(extrema)+pad)
-                if lo<0 and 'manders' not in metric: lo,hi=-max(abs(lo),abs(hi)),max(abs(lo),abs(hi))
-            ax.set_ylim(lo,hi)
-            for patch in ax.patches:
-                if patch.get_gid() and patch.get_gid().startswith('group-mean:'):
-                    value=patch.get_y()+patch.get_height(); patch.set_y(0); patch.set_height(value)
+        foot=fig.draw_replicate_simple(ax,ctx,display_endpoint,w,f,nuclei,display_contrasts,label,metric)
+        base_setter=ax._replicate_simple_axis
+        def setter(variant,base_setter=base_setter,ax=ax,metric=metric):
+            base_setter(variant)
+            if variant=='full':
+                lo,hi=(-1.,1.) if metric.startswith('pearson') else (-.5,.5) if metric.startswith('li_') else (0.,1.)
+                old_lo,old_hi=ax.get_ylim()
+                ax.set_ylim(min(lo,old_lo),max(hi,old_hi))
         ax._replicate_simple_axis=setter
-        ax.set_title(f'{letter}  {name}',loc='left',pad=48,fontsize=13,fontweight='bold')
         fig.no_box(canvas,ax)
-        footer.append(f'{letter}: Welch (wells) p {fig.fmt_p(row.p_welch)}')
-    canvas.subplots_adjust(left=.065,right=.985,bottom=.22,top=.73,wspace=.63)
-    if run_name is None and 'source_file' in nuclei:
-        run_name = Path(nuclei.source_file.iloc[0]).parent.parent.name
-    foot = ' | '.join(footer) + '; bars = well mean +/- SD; dots = wells; Manders: Costes-converged only; axis: focus window'
-    if run_name: foot += '; run ' + run_name
-    artist = canvas.text(.02,.015,foot,fontsize=9)
-    canvas.canvas.draw()
-    width = artist.get_window_extent().width
-    if width > canvas.bbox.width*.96: artist.set_fontsize(9*canvas.bbox.width*.95/width)
-    records=[]
-    fig.save(canvas,Path(out_dir),'FIG_SIMPLE_COLOC',records,f'{rna} × {partner}','Simple coloc metrics / Simple coloc wells')
+        fig.layout_replicate_simple(canvas,ax,ctx,name,foot+'; Manders: Costes-converged only')
+        rec=fig.save(canvas,Path(out_dir),'FIG_SIMPLE_COLOC_'+metric,records,f'{rna} × {partner}: {name}','Simple coloc metrics / Simple coloc wells')
+        rec.update(endpoint=metric,caption=name,is_composite=False)
     return records
 
 
@@ -191,8 +160,9 @@ def render_cytofluorogram(selected, pixels, out_dir, rna, partner):
         vectors.append((x,y))
     xmax=max(x.max() for x,y in vectors)*1.03
     ymax=max(y.max() for x,y in vectors)*1.03
-    fig.set_style(); canvas,axes=fig.plt.subplots(1,2,figsize=(12.4,5.6),sharex=True,sharey=True)
-    for ax,row,(x,y) in zip(axes,selected.itertuples(),vectors):
+    fig.set_style(); records=[]
+    for row,(x,y) in zip(selected.itertuples(),vectors):
+        canvas,ax=fig.plt.subplots(figsize=(4.8,3.6))
         ax.hexbin(x,y,gridsize=90,mincnt=1,bins='log',cmap='cividis',extent=(0,xmax,0,ymax),rasterized=True)
         if row.costes_converged:
             ax.axvline(row.costes_thr_rna1,ls='--',color='#D55E00',lw=1)
@@ -201,12 +171,17 @@ def render_cytofluorogram(selected, pixels, out_dir, rna, partner):
         else:
             threshold='Costes failed: thresholds unavailable'
         ax.set(xlim=(0,xmax),ylim=(0,ymax),xlabel=f'{rna} intensity (raw units)',ylabel=f'{partner} intensity (raw units)')
-        ax.set_title(f'{row.group} · Pearson r = {row.pearson_r_csp:.3f}',fontsize=15)
+        ax.set_title(f'{row.group} · Pearson r = {row.pearson_r_csp:.3f}',fontsize=11)
         ax.text(.02,.98,threshold,transform=ax.transAxes,va='top',fontsize=9)
         fig.no_box(canvas,ax)
-    canvas.subplots_adjust(left=.08,right=.98,bottom=.19,top=.87,wspace=.24)
-    canvas.text(.5,.035,'Representative nucleus nearest arm median Pearson r · identical axes · colour shows log pixel count',ha='center',fontsize=11)
-    records=[]; fig.save(canvas,Path(out_dir),'FIG_CYTOFLUOROGRAM',records,f'{rna} × {partner}','Simple coloc representatives')
+        canvas.subplots_adjust(left=.18,right=.96,bottom=.24,top=.87)
+        canvas.text(.05,.02,'Nearest arm-median nucleus; shared axes; log pixel count',fontsize=6)
+        ax._replicate_simple_axis=lambda variant: None
+        import re
+        stem='FIG_CYTOFLUOROGRAM_'+re.sub(r'[^A-Za-z0-9]+','_',str(row.group)).strip('_')
+        rec=fig.save(canvas,Path(out_dir),stem,records,f'{rna} × {partner}, {row.group}','Simple coloc representatives')
+        rec.update(group=row.group,caption=str(row.group),is_composite=False)
+
     return records
 
 

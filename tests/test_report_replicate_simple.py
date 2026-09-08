@@ -3,6 +3,21 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import pytest
+
+
+def test_missing_field_table_does_not_invent_zero_fovs():
+    from types import SimpleNamespace
+    import pandas as pd
+    from fishsuite.report import figures
+    context=SimpleNamespace(group_order=['WT','KO'],reference='WT',colors={'WT':'#595959','KO':'#CC79A7'},
+                            technical_layer='none',footer=lambda x:x)
+    wells=pd.DataFrame({'group':['WT','WT','KO','KO'],'well_id':['a','b','c','d'],
+                        'endpoint':['value']*4,'well_mean_of_field_values':[1,2,3,4]})
+    fig,ax=figures.plt.subplots()
+    foot=figures.draw_replicate_simple(ax,context,'value',wells,pd.DataFrame(),pd.DataFrame(),pd.DataFrame(),'AU',None)
+    assert '0 FOVs' not in foot
+    assert '2 wells' in foot
+    figures.plt.close(fig)
 from click.testing import CliRunner
 from matplotlib.colors import to_rgba
 from PIL import Image
@@ -202,7 +217,7 @@ def test_bracket_clears_all_drawn_points(report_data, endpoint, well_value, fiel
     wells, fields = r["well"].copy(), r["field"].copy()
     wells.loc[wells.endpoint == endpoint, "well_mean_of_field_values"] = well_value
     fields.loc[fields.endpoint == endpoint, "field_value"] = field_value
-    canvas, ax = plt.subplots(figsize=(2.8, 3.2))
+    canvas, ax = plt.subplots(figsize=(4.8, 3.6))
     fig.draw_plot(ax, context(run, plot_style="replicate-simple", technical_layer="fov"),
         endpoint, wells, fields, pd.DataFrame(), r["contrasts"], "Value", None)
     ax._replicate_simple_axis(axis_mode)
@@ -219,8 +234,8 @@ def test_bracket_clears_all_drawn_points(report_data, endpoint, well_value, fiel
     plt.close(canvas)
 
 
-@pytest.mark.parametrize("groups,width", [(["WT", "QKI-KO"], 2.8),
-                                           (["WT", "QKI-KO", "extra"], 3.7)])
+@pytest.mark.parametrize("groups,width", [(["WT", "QKI-KO"], 4.8),
+                                           (["WT", "QKI-KO", "extra"], 5.7)])
 def test_compact_standalone_size(report_data, tmp_path, monkeypatch, groups, width):
     run, r = report_data
     ctx = context(run, plot_style="replicate-simple")
@@ -228,7 +243,7 @@ def test_compact_standalone_size(report_data, tmp_path, monkeypatch, groups, wid
     ctx.colors = fig.group_colors(groups)
     def capture(canvas, *args, **kwargs):
         assert canvas.get_figwidth() == pytest.approx(width)
-        assert canvas.get_figheight() == pytest.approx(3.2)
+        assert canvas.get_figheight() == pytest.approx(3.6)
         assert canvas.axes[0].get_xlim() == pytest.approx((-.6, len(groups)-.4))
         plt.close(canvas)
         return {}
@@ -239,12 +254,12 @@ def test_compact_standalone_size(report_data, tmp_path, monkeypatch, groups, wid
 
 @pytest.mark.parametrize("title", ["Puncta", "BIN1 intron puncta, % nuclear", "Fraction of BIN1 introns puncta with RNASEH2B above threshold in the exact footprint"])
 def test_title_stays_single_line_and_footer_is_six_pt(tmp_path, title):
-    canvas, ax = plt.subplots(figsize=(2.8, 3.2))
+    canvas, ax = plt.subplots(figsize=(4.8, 3.6))
     fig.layout_replicate_simple(canvas, ax, context(tmp_path), title, "Two-sided Welch; well replicates.")
     canvas.canvas.draw()
     heading = canvas.texts[0]
     assert heading.get_text()
-    assert heading.get_fontsize() > 0
+    assert heading.get_fontsize() == 11
     assert "\n" not in heading.get_text()
     assert heading.get_window_extent().y0 > canvas.texts[1].get_window_extent().y1
     assert heading.get_window_extent().y0 > ax.get_window_extent().y1
@@ -377,3 +392,19 @@ def test_axis_note_keeps_run_at_footer_end(tmp_path):
         footer=[t for t in texts if 'axis:' in t]
         assert len(footer)==1
         assert footer[0].endswith('; run test_run')
+
+
+def test_a17_title_registry_and_bracket_padding(tmp_path):
+    from fishsuite.report.endpoints import SHORT_TITLES
+    assert SHORT_TITLES['protein_spots_per_nucleus'] == '{protein} puncta per nucleus'
+    endpoint='protein_spots_per_nucleus'
+    wells=pd.DataFrame(dict(endpoint=[endpoint]*6,group=['WT']*3+['QKI-KO']*3,well_id=['W1','W2','W3','K1','K2','K3'],well_mean_of_field_values=[10,11,12,3,4,5]))
+    contrasts=pd.DataFrame([dict(endpoint=endpoint,test_group='QKI-KO',reference_group='WT',p_welch=.02)])
+    canvas,ax=plt.subplots(figsize=(4.8,3.6))
+    fig.draw_plot(ax,context(tmp_path,plot_style='replicate-simple'),endpoint,wells,pd.DataFrame(),pd.DataFrame(),contrasts,'Count',None)
+    for variant in ['full','focus']:
+        ax._replicate_simple_axis(variant)
+        lo,hi=ax.get_ylim()
+        bracket=[line for line in ax.lines if np.array_equal(line.get_xdata(),[0,1])][-1]
+        assert hi-max(bracket.get_ydata()) >= .15*(hi-lo)
+    plt.close(canvas)
