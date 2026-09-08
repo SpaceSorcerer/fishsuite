@@ -518,6 +518,14 @@ def shuffled_footprint_means(partner_2d, nuc_mask, nuc_ys, nuc_xs, dy, dx, n_dra
 
 
 # ------------------------------------------------------------------- run i/o
+def read_recorded_plane(img,channel,z_1indexed):
+    """Select the recorded C/Z on the lazy array before materializing pixels."""
+    if not 0 <= channel < img.n_channels:
+        raise IndexError(f'Channel {channel} out of range')
+    z=max(0,min(img.n_z-1,int(z_1indexed)-1))
+    return np.asarray(img.bio.get_image_dask_data('YX',T=0,C=channel,Z=z).compute())
+
+
 class Run:
     """Read-only view of one completed fishsuite run directory."""
 
@@ -585,17 +593,16 @@ class Run:
         """(dapi, rna1, partner) 2-D planes at the run's own z, exactly as the run
         extracted them: raw channel, no preprocessing, single plane.
 
-        ``extract_channel_at_z`` pulls the whole ZYX stack for a channel before
-        slicing one plane, so peak memory is one full stack per call. Each plane
-        is copied out and the stack dropped immediately, and the reader is
-        closed before returning, so only three 2-D planes survive the call.
+        Select C/Z on BioIO's lazy array before computing, so unrelated planes
+        are never materialized. Channel routing and the recorded one-based Z
+        selection are identical to extract_channel_at_z.
         """
         img = _io.read_image(self.image_path(image_name))
         z = int(z_plane)
         try:
             out = []
             for slot in ("dapi", "rna", self.partner_slot):
-                plane = _io.extract_channel_at_z(img, self.channel_index(slot), z_1indexed=z)
+                plane = read_recorded_plane(img, self.channel_index(slot), z)
                 out.append(np.array(plane, copy=True))
                 del plane
                 gc.collect()
