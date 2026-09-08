@@ -1,0 +1,155 @@
+# W5 TEMPLATE 2026-09-08; placeholder wells are examples, not observed sample counts.
+# Source: F:\Image Analysis Work\RNASEH2B_BIN1introns_2026_08_25\13c_FULL_HARMONIZED_T36_MINAREA4000_2026-09-07\presets\rnaseh2b_bin1_HARMONIZED_T36_MINAREA4000_2026-09-07.yaml
+# Semantic copy of the RNASEH2B run-of-record preset with annotated new-dataset changes.
+# Every emitted data line is annotated; CARRIED/structure means unchanged data, not a new measurement.
+# Required runtime: fishproc_dml, Cellpose 4.2.1.1, cpsam_v2 weights; validate environment separately.
+# Recheck carried thresholds/floors against new-slide sec-only (3x rule) before production.
+# Exact statistic for the lab 3x rule is missing from supplied sources; confirm it before production.
+# Pilot: 2 FOVs per well + all matched sec-only; lowest threshold with signal/control >=2 and sec-only <10% of biological.
+# Same floors for analysis and micrographs; LoG response thresholds are distinct from raw-intensity floors.
+# Shared sec-only DESIGN is not automatic permission to reuse an unmatched old acquisition/control.
+
+experiment:  # W5 CARRIED structure
+  name: QKI_BIN1intron_TEMPLATE  # W5 CHANGE: new dataset identity; not a production preset
+  description: Human d8 CM WT vs QKI-KO; 640 QKI protein, 561 BIN1 intron, 405 DAPI; shared secondary-only design with RNASEH2B; verify matched acquisition metadata.  # W5 CHANGE: replace historical run claims with new dataset design
+  cell_line: human d8 cardiomyocyte  # W5 CARRIED source value
+  date: ''  # W5 CHANGE: new acquisition date missing; fill before production
+conditions:  # W5 CARRIED structure
+  mode: subfolders  # W5 CARRIED source value
+  subfolder_conditions:  # W5 CHANGE: placeholder immediate folder names = well labels; replace/extend for actual wells; one well per folder, FOVs inside
+    NEW_WT_WELL_A: NEW_WT_WELL_A  # W5 CHANGE: placeholder immediate folder names = well labels; replace/extend for actual wells; one well per folder, FOVs inside
+    NEW_KO_WELL_A: NEW_KO_WELL_A  # W5 CHANGE: placeholder immediate folder names = well labels; replace/extend for actual wells; one well per folder, FOVs inside
+  sec_only_folders: [Shared_SecOnly_WT, Shared_SecOnly_KO]  # W5 CHANGE: placeholder shared RNASEH2B-design controls; use only acquisition-matched controls
+  sec_only_files: []  # W5 CHANGE: use explicit secondary-only folders, not historical filename tokens
+  filename_conditions: []  # W5 CHANGE: one condition per well folder
+  condition_order: [NEW_WT_WELL_A, NEW_KO_WELL_A, Sec-Only]  # W5 CHANGE: placeholder roster; extend with actual wells
+  min_nuclei_for_stats: 5  # W5 CARRIED source value
+  groups:  # W5 CHANGE: placeholder well membership, not sample counts; exclude sec-only; extend before running
+    WT: [NEW_WT_WELL_A]  # W5 CHANGE: placeholder well membership, not sample counts; exclude sec-only; extend before running
+    QKI-KO: [NEW_KO_WELL_A]  # W5 CHANGE: placeholder well membership, not sample counts; exclude sec-only; extend before running
+  group_order: [WT, QKI-KO]  # W5 CHANGE: reference first; preserve independent well labels
+channels:  # W5 CARRIED structure
+  analysis_mode: rna_protein  # W5 CARRIED source value
+  dapi: 2  # W5 CARRIED index: confirm 405 in new acquisition metadata before production
+  rna: 1  # W5 CARRIED index: confirm 561 BIN1 intron in metadata
+  antibody: 0  # W5 CARRIED index: confirm 640 QKI in metadata
+  rna2: -1  # W5 CARRIED source value
+  one_indexed: false  # W5 CARRIED source value
+  dapi_label: DAPI  # W5 CARRIED source value
+  rna_label: BIN1 intron-561  # W5 CHANGE: new acquisition RNA identity; 561 intron
+  antibody_label: QKI-640  # W5 CHANGE: replace RNASEH2B identity; 640 protein
+  dapi_lut: blue  # W5 CARRIED source value
+  rna_lut: magenta  # W5 CHANGE: 561 wavelength convention
+  antibody_lut: yellow  # W5 CHANGE: 640 wavelength convention
+z_stack:  # W5 CARRIED structure
+  mode: autofocus  # W5 CARRIED source value
+  autofocus_channel: joint  # W5 CARRIED source value
+  autofocus_joint_reduce: product  # W5 CARRIED source value
+  autofocus_joint_nuclear_mask: true  # W5 CARRIED source value
+  autofocus_intensity_weighted: true  # W5 CARRIED source value
+  focus_central_fraction: 0.8  # W5 CARRIED source value
+  focus_min_intensity_frac_of_peak: 0.3  # W5 CARRIED source value
+  start_slice: 1  # W5 CHANGE: remove old stack-depth assumption; review new stack metadata before production
+  end_slice: null  # W5 CHANGE: new stack depths missing; central-fraction guard remains active
+  file_overrides: {}  # W5 CHANGE: remove old acquisition filenames and reviewed z planes; review new slide focus in pilot
+nuclei:  # W5 CARRIED structure
+  backend: cellpose  # W5 CARRIED source value
+  cellpose_model_type: cpsam_v2  # W5 CHANGE: REQUIRED environment Cellpose 4.2.1.1; no schema version pin; verify installed version and weights, no silent cpsam fallback
+  cellpose_preclip_dapi_otsu: true  # W5 CARRIED source value
+  cellpose_diameter_px: 200.0  # W5 CARRIED source value
+  cellpose_flow_threshold: 0.4  # W5 CARRIED source value
+  cellpose_cellprob_threshold: 0.0  # W5 CARRIED source value
+  cellpose_downsample_factor: 4.0  # W5 CARRIED source value
+  cellpose_device: directml  # W5 CARRIED source value
+  min_area_px: 4000  # W5 CHANGE: 2026-09-07: 16000 -> 4000; source DAPI census dropped KO 159 vs WT 69 nuclei (median ~9400 px); test inclusion bias; recheck at new pixel size
+  max_area_px: 1000000000000.0  # W5 CARRIED source value
+  exclude_border: true  # W5 CARRIED source value
+  border_margin_px: 20  # W5 CARRIED source value
+  reject_ghost_nuclei: false  # W5 CARRIED source value
+sampling:  # W5 CARRIED structure
+  enabled: false  # W5 CARRIED source value
+pixel_coloc:  # W5 CARRIED structure
+  threshold_mode: mad  # W5 CARRIED source value
+  threshold_scope: batch  # W5 CARRIED source value
+  k_mad: 2.5  # W5 CARRIED source value
+spot_coloc:  # W5 CARRIED structure
+  pair_distance_um: 0.3  # W5 CARRIED source value
+  report_nn_distance: true  # W5 CARRIED source value
+foci:  # W5 CARRIED structure
+  enabled: true  # W5 CARRIED source value
+  backend: bigfish  # W5 CARRIED source value
+  bigfish_voxel_size_nm: 65.0  # W5 CARRIED source value
+  bigfish_voxel_z_nm: 210.0  # W5 CARRIED source value
+  bigfish_spot_radius_nm: 150.0  # W5 CARRIED source value
+  bigfish_spot_radius_z_nm: 300.0  # W5 CARRIED source value
+  threshold_multiplier: 1.0  # W5 CARRIED source value
+  threshold_override: 36  # W5 CARRIED: RNA LoG 36; recheck on new slide against its sec-only (3x rule) before production
+  only_nuclear_spots: false  # W5 CARRIED source value
+  min_sep_px: 1  # W5 CARRIED source value
+  detect_in_sec_only: true  # W5 CARRIED source value
+  detect_antibody_spots: true  # W5 CARRIED: diagnostic source spot path; QKI may be diffuse; verify puncta callability in pilot before reporting antibody spots
+  antibody_overrides:  # W5 CARRIED structure
+    bigfish_spot_radius_nm: 180.0  # W5 CARRIED source value
+    bigfish_spot_radius_z_nm: 300.0  # W5 CARRIED source value
+    threshold_multiplier: 1.0  # W5 CARRIED source value
+    only_nuclear_spots: true  # W5 CARRIED source value
+    min_sep_px: 2  # W5 CARRIED source value
+    min_spot_peak_intensity: 1500.0  # W5 CARRIED source value
+    threshold_override: 15  # W5 CARRIED: antibody LoG 15 is RNASEH2B-derived, not QKI-validated; recheck new slide sec-only (3x rule) before production
+  compute_partner_intensity: true  # W5 CARRIED source value
+  compute_partner_null_enrichment: true  # W5 CARRIED source value
+  partner_null_n: 1000  # W5 CARRIED source value
+  partner_null_disk_px: 6.0  # W5 CARRIED source value
+  partner_null_seed: 0  # W5 CARRIED source value
+  exclude_nucleolus_from_partner_null: false  # W5 CARRIED source value
+  save_partner_null_draws: true  # W5 CARRIED source value
+  compute_partner_rotation_null: true  # W5 CARRIED source value
+  partner_rotation_n: 1000  # W5 CARRIED source value
+  partner_rotation_seed: 0  # W5 CARRIED source value
+  partner_rotation_min_retention: 0.5  # W5 CARRIED source value
+  partner_rotation_assoc_percentile: 95.0  # W5 CARRIED source value
+  save_partner_rotation_null_draws: true  # W5 CARRIED source value
+  compute_partner_anchored_rotation_null: true  # W5 CARRIED source value
+  compute_partner_radial_profile: true  # W5 CARRIED source value
+  partner_radial_bins_um: [0.25, 0.5, 0.75, 1.0]  # W5 CARRIED source value
+  compute_footprint_enrichment: true  # W5 CARRIED source value
+  assoc_qki_floor: 1500.0  # W5 CARRIED source value
+cytoplasm:  # W5 CARRIED structure
+  enabled: true  # W5 CARRIED source value
+  voronoi_max_expansion_px: 80  # W5 CARRIED source value
+  measure_nc_ratio: true  # W5 CARRIED source value
+nucleolus:  # W5 CARRIED structure
+  enabled: true  # W5 CARRIED source value
+  intra_nuclear_percentile: 25.0  # W5 CARRIED source value
+  min_area_um2: 1.0  # W5 CARRIED source value
+  max_area_frac_of_nucleus: 0.6  # W5 CARRIED source value
+  closing_radius_px: 4  # W5 CARRIED source value
+output:  # W5 CARRIED structure
+  save_qc_overlays: true  # W5 CARRIED source value
+  save_per_image_csv: true  # W5 CARRIED source value
+  save_masks: true  # W5 CARRIED source value
+  save_publication_images: true  # W5 CARRIED source value
+  save_publication_tifs: false  # W5 CARRIED source value
+  pub_contrast_mode: manual  # W5 CARRIED source value
+  manual_dapi_min: 334.0  # W5 CARRIED source value
+  manual_dapi_max: 8000.0  # W5 CARRIED source value
+  manual_rna_min: 400.0  # W5 CARRIED source value
+  manual_rna_max: 2750.0  # W5 CARRIED source value
+  manual_antibody_min: 1500.0  # W5 CARRIED source value
+  manual_antibody_max: 14141.0  # W5 CARRIED source value
+  manual_rna2_min: 1500.0  # W5 CARRIED source value
+  manual_rna2_max: 14141.0  # W5 CARRIED source value
+  apply_pub_contrast_floor_to_analysis: true  # W5 CHANGE: same floors for intensity analysis and micrographs
+  apply_pub_contrast_floor_to_spots: true  # W5 CHANGE: same floors for spot analysis and micrographs; intentional change from source display-only floor gate
+  prefix: ''  # W5 CARRIED source value
+  scalebar_um: 25.0  # W5 CARRIED source value
+  scalebar_font_px: 52  # W5 CARRIED source value
+parallel:  # W5 CARRIED structure
+  workers: 1  # W5 CARRIED source value
+  seg_workers: 1  # W5 CARRIED source value
+  main_workers: 1  # W5 CARRIED source value
+  threads_per_worker: 4  # W5 CARRIED source value
+qc:  # W5 CARRIED structure
+  qc_min_nuclei: 5  # W5 CARRIED source value
+  qc_saturated_frac: 0.001  # W5 CARRIED source value
+seed: 0  # W5 CARRIED source value
