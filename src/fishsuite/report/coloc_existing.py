@@ -201,9 +201,14 @@ def render_simple_coloc(nuclei, fields, wells, contrasts, out_dir, rna, partner,
         def setter(variant,base_setter=base_setter,ax=ax,metric=metric):
             base_setter(variant)
             if variant=='full':
-                lo,hi=(-1.,1.) if metric.startswith('pearson') else (-.5,.5) if metric.startswith('li_') else (0.,1.)
+                # Full axis: ceiling at the metric's maximum; the floor is 0 unless the data
+                # themselves go below 0 (Brian 2026-09-08: never draw a theoretical -1 for
+                # all-positive r / ICQ).
+                theo_lo,hi=(-1.,1.) if metric.startswith('pearson') else (-.5,.5) if metric.startswith('li_') else (0.,1.)
                 old_lo,old_hi=ax.get_ylim()
-                ax.set_ylim(min(lo,old_lo),max(hi,old_hi))
+                data_lo=float(np.nanmin(df.loc[df[metric].notna(),metric])) if metric in df else old_lo
+                lo=0. if data_lo>=0 else theo_lo
+                ax.set_ylim(min(lo,old_lo if old_lo<0 else lo),max(hi,old_hi))
         ax._replicate_simple_axis=setter
         fig.no_box(canvas,ax)
         fig.layout_replicate_simple(canvas,ax,ctx,name,foot+('; Manders: fixed lab floors' if lab else '; Manders: Costes-converged only'))
