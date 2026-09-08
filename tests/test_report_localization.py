@@ -148,8 +148,10 @@ def test_missing_geometry_stays_missing():
     assert t.area_partition_matches.isna().all()
 
 
-def test_renderer_missing_geometry_and_percent_artists(tmp_path, monkeypatch):
+@pytest.mark.parametrize('raw_roster', [False, True])
+def test_renderer_missing_geometry_and_percent_artists(tmp_path, monkeypatch, raw_roster):
     import matplotlib.pyplot as plt
+    monkeypatch.setitem(plt.rcParams, 'svg.fonttype', 'path')
     n, s = fixture_frames()
     n = n.assign(group='WT', well_id='WT_1', secondary_only=False,
                  cyto_estimation_method='voronoi', cyto_area_px=np.nan,
@@ -159,6 +161,9 @@ def test_renderer_missing_geometry_and_percent_artists(tmp_path, monkeypatch):
            'rna1_nuclear_spots_per_nucleus', 'rna1_cyto_spots_per_nucleus']]
     f = agg.per_field_long(n, labels.assign(condition='WT_1'), eps, labels, 5)
     w = agg.per_well_long(f)
+    if raw_roster:
+        n = n.drop(columns=['group', 'well_id'])
+    original_nuclei = n.copy(deep=True)
     c = pd.DataFrame([dict(endpoint=e.name, test_group='QKI-KO', reference_group='WT', p_welch=.2)
                       for e in eps])
     ctx = fig.FigureContext(tmp_path, {}, None, ['WT'], 'WT', .05, {}, {'rna1': 'RNA1'})
@@ -170,7 +175,13 @@ def test_renderer_missing_geometry_and_percent_artists(tmp_path, monkeypatch):
     monkeypatch.setattr(fig, 'crop_for', fake_crop)
     seen = []
     def check_save(canvas, out_dir, stem, manifest, *args):
+        assert plt.rcParams['svg.fonttype'] == 'none'
         for ax in canvas.axes:
+            if hasattr(ax, '_figure_data'):
+                exported = ax._figure_data['nuclei']
+                label_map = labels.set_index('image')
+                assert exported.group.equals(exported.image.map(label_map.group))
+                assert exported.well_id.equals(exported.image.map(label_map.well_id))
             artists = [a for a in ax.collections if a.get_gid() == 'well:WT']
             if artists:
                 is_percent = '%' in ax.get_ylabel()
@@ -181,6 +192,9 @@ def test_renderer_missing_geometry_and_percent_artists(tmp_path, monkeypatch):
                 else:
                     assert value in (.875, .75)
         plt.close(canvas)
+        rec = dict(figure=stem, png=stem+'.png', svg=stem+'.svg')
+        manifest.append(rec)
+        return rec
     monkeypatch.setattr(fig, 'save', check_save)
     before = w.copy(deep=True)
     result = fig.render_localization(ctx, w, f, n, s, c, tmp_path / 'render', pub_dir=tmp_path)
@@ -189,6 +203,7 @@ def test_renderer_missing_geometry_and_percent_artists(tmp_path, monkeypatch):
     assert result['crops'][0]['cell_area_px'] is None
     assert result['crops'][0]['territory_boundary'] == 'missing'
     pd.testing.assert_frame_equal(before, w)
+    pd.testing.assert_frame_equal(original_nuclei, n)
     f.loc[0, 'field_value'] += .2
     with pytest.raises(agg.ReportInputError, match='full-roster source means'):
         fig.render_localization(ctx, w, f, n, s, c, tmp_path / 'blocked')
@@ -220,7 +235,8 @@ def test_recorded_reconciliation_baseline_parity_and_proposal(tmp_path, monkeypa
     from fishsuite.report.build import build_report
     from PIL import Image
     m = json.loads((A0 / 'baseline_manifest.json').read_text())
-    # Freeze membership BEFORE rebuilding the proposed 4 -> 5 detection family.
+    # Frozen A0 membership stays pinned; A2 cytoplasmic count and A20 absolute
+    # intensity eligibility are explicit amendments, not raw-statistic parity.
     assert {f: len(v) for f, v in m['families'].items()} == dict(detection=4, localization=5, partner=22)
     pins = [p for p in m['named_files'] if p.get('exists') and p['path'].startswith('F:')]
     def verify_hashes():
@@ -248,19 +264,34 @@ def test_recorded_reconciliation_baseline_parity_and_proposal(tmp_path, monkeypa
     changed = 'rna1_cyto_spots_per_nucleus'
     family_sizes = (r['contrasts'].assign(_finite_test=lambda c: c.in_holm_family & c.p_welch.notna())
                     .groupby('family')._finite_test.sum().astype(int))
-    assert family_sizes.to_dict() == dict(detection=5, localization=5, partner=22)
+    assert family_sizes.to_dict() == dict(detection=7, localization=5, partner=23)
+    additions = {
+        'detection': {changed, 'protein_nuclear_mean', 'rna1_nuclear_above_floor_intensity'},
+        'localization': set(),
+        'partner': {'partner_mean_in_exact_rna1_footprint'},
+    }
     for family, frozen in m['families'].items():
         c = r['contrasts']
         actual = set(c.loc[(c.family == family) & c.in_holm_family & c.p_welch.notna(), 'endpoint'])
-        assert actual == set(frozen) | ({changed} if family == 'detection' else set())
+        assert actual == set(frozen) | additions[family]
     compare(pd.DataFrame(m['baseline_per_well']), r['well'], ['endpoint', 'group', 'well_id'])
     compare(pd.DataFrame(m['baseline_per_field']), r['field'], ['endpoint', 'group', 'well_id', 'image'])
-    # Only multiplicity-dependent quantities may change in the old detection rows.
+    # Keep every raw statistic and measurement comparison intact. Only declared
+    # multiplicity changes and A20 absolute-intensity eligibility may differ.
     amended = {'p_welch_holm_within_family', 'significant_holm_0p05',
         'holm_family_size', 'mde_hedges_g_at_family_alpha', 'observed_g_reaches_mde'}
     old = pd.DataFrame(m['baseline_contrasts'])
-    compare(old[old.family != 'detection'], r['contrasts'].loc[r['contrasts'].family != 'detection'], ['endpoint', 'reference_group', 'test_group'])
-    compare(old[old.family == 'detection'], r['contrasts'].loc[r['contrasts'].family == 'detection'], ['endpoint', 'reference_group', 'test_group'], amended)
+    for row in old.itertuples():
+        exclusions = set(amended) if row.family in ('detection', 'partner') else set()
+        current = r['contrasts'].loc[r['contrasts'].endpoint == row.endpoint]
+        if row.absolute_intensity:
+            exclusions |= {'descriptive_only', 'excluded_from_holm', 'endpoint_note',
+                'in_holm_family', 'holm_exclusion_reason', 'mde_hedges_g_alpha_0p05'}
+            assert not current.descriptive_only.any()
+            assert current.endpoint_note.eq(ep.INTENSITY_CAVEAT).all()
+            assert current.in_holm_family.equals(~current.endpoint_absent_in_run)
+        compare(old.loc[old.endpoint == row.endpoint], current,
+                ['endpoint', 'reference_group', 'test_group'], exclusions)
     # Source columns remain unchanged including count zeros and fraction NA mask.
     new_n = pd.read_excel(r['xlsx'], sheet_name='Per nucleus', header=1)
     for col in ['nuclear_spot_count', 'cyto_spot_count', 'nuclear_spot_fraction', 'n_spots_rna1']:
@@ -290,8 +321,16 @@ def test_recorded_reconciliation_baseline_parity_and_proposal(tmp_path, monkeypa
         with Image.open(out / 'figures' / rec['png']) as im:
             assert im.info['dpi'] == pytest.approx((600, 600), abs=.02)
         svg = (out / 'figures' / rec['svg']).read_text(encoding='utf-8')
-        for text in ['<text', '#595959', '#d67ae5', 'Welch', 'p=', 'Holm', 'Hedges g', 'MDE']:
+        # Locked compact footer carries mixed-model and well-Welch p values;
+        # Holm, Hedges g and MDE remain verified in the report contrasts above.
+        for text in ['<text', '#595959', '#d67ae5', 'Welch', 'mixed model p']:
             assert text in svg, text
+        assert 'descriptive, no test' not in svg
+        if not rec.get('is_composite'):
+            from fishsuite.report.stats import fmt_p
+            endpoint = rec['figure'].removesuffix('_localization')
+            contrast = r['contrasts'].loc[r['contrasts'].endpoint == endpoint].iloc[0]
+            assert f"Welch (wells) p {fmt_p(contrast.p_welch)}" in svg
     verify_hashes()
     (out / 'acceptance.json').write_text(json.dumps(dict(
         source_nuclei=len(n), source_nuclear_spots=2701, source_cyto_spots=445,

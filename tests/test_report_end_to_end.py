@@ -108,7 +108,7 @@ def test_sheet_names_are_plain_language_and_in_the_expected_order(built):
     r, _, _, _ = built
     import openpyxl
     book = openpyxl.load_workbook(r["xlsx"], read_only=False)
-    assert book.sheetnames == wb.SHEET_ORDER
+    assert book.sheetnames == wb.SHEET_ORDER + ['FOV outlier sensitivity']
 
 
 def test_no_sheet_name_or_column_carries_a_q_code(built):

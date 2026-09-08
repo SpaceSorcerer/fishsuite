@@ -602,7 +602,7 @@ def build(data_dir, out_dir, count_dir=None, make_figures=True):
     colors = COLORS.copy()
     index = Path(data_dir).parent/'coloc_standard_panel_2026-09-04_2300/FIGURE_INDEX.md'
     if index.is_file():
-        match = re.search(r'KD:\s*`(#[0-9A-Fa-f]{6})`', index.read_text(encoding='utf-8'))
+        match = re.search(r'KD[:]\s*`(#[0-9A-Fa-f]{6})`', index.read_text(encoding='utf-8'))
         if match:
             colors['KD'] = match.group(1)
     figures = render(sheets, data_dir, out_dir/'figures', colors) if make_figures else pd.DataFrame([dict(reason='figures disabled')])
