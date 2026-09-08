@@ -1,11 +1,11 @@
-"""Sensitivity analyses only: the pre-specified gate remains well-mean Welch."""
+"""Mixed-model headline and supplementary analyses; decision 2026-09-07."""
 from __future__ import annotations
 import warnings
 import numpy as np
 import pandas as pd
 from .stats import welch
 
-DESCRIPTION = "added after inspection of the data; the pre-specified gate is Welch on well means"
+DESCRIPTION = "decision 2026-09-07 after data inspection; Welch on well means remains reported"
 
 
 def mixed_model(data, test, reference):

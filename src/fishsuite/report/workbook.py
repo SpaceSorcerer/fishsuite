@@ -47,7 +47,7 @@ SHEET_DESCRIPTION: Dict[str, str] = {
         "What this workbook is, which fishsuite run produced it, how the replicate "
         "structure works and what each other sheet holds. Read the replicate-unit row "
         "before reading any p-value: the well is the biological replicate and every "
-        "headline gate runs on well means; additional tests are labeled sensitivity."),
+        "headline uses the nucleus-level mixed model; Welch on well means remains reported."),
     "Spots per nucleus by group": (
         "How much signal each nucleus carries, compared between condition groups: "
         "puncta counted per nucleus, punctum size, and absolute intensity. One row per "
@@ -69,7 +69,7 @@ SHEET_DESCRIPTION: Dict[str, str] = {
         "molecular association."),
     "Per well": (
         "One row per endpoint and well. The well mean of that well's field values is "
-        "the point the headline Welch gate is run on, so this sheet is the input to the Contrasts "
+        "the point the supplementary Welch comparison is run on, so this sheet is the input to the Contrasts "
         "sheet. Nucleus counts before and after any usability filter are carried "
         "alongside, so a filtered endpoint cannot hide how much it dropped."),
     "Per field": (
@@ -102,6 +102,9 @@ SHEET_DESCRIPTION: Dict[str, str] = {
         "the source tables are recorded so a later report can be checked against the "
         "same bytes."),
 }
+
+
+SHEET_DESCRIPTION['Contrasts'] = ('Mixed-model headline decision 2026-09-07 after data inspection; Welch on well means remains reported. p_mixed / p_mixed_holm are nucleus-level mixed p and headline-family adjustment. p_headline / p_headline_holm also include explicitly labeled Welch fallbacks. p_welch retains the well-mean comparison. Endpoint thresholds, usability filters, Hedges g, Holm and well-based MDE are recorded in this workbook; MDE is not mixed-model power.')
 
 
 def _description(name: str) -> str:

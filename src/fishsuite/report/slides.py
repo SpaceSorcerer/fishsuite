@@ -127,18 +127,20 @@ def speaker_notes(workbook, definition):
         value = pd.to_numeric(value, errors='coerce')
         return f'{value:.4g}' if np.isfinite(value) else 'missing'
     notes = [f'Workbook: {Path(workbook).resolve()}']
+    if definition.get('question'):
+        notes.append(definition['question'])
     levels, means, tests, adjusted = [], [], [], []
     for endpoint, row in endpoints.items():
         name = row.get('endpoint_plain', endpoint)
         test, ref = row.get('test_group', 'test'), row.get('reference_group', 'reference')
         n = lambda key: number(row.get(key))
         means.append(f"{name}: {test} well mean {n('mean_test')}, {ref} well mean {n('mean_ref')}, difference {n('diff')} ({test} minus {ref})")
-        tests.append(f"{name}: raw Welch p {n('p_welch')}, Hedges g {n('hedges_g')}")
-        adjusted.append(f"{name}: Holm p {n('p_welch_holm_within_family')}, MDE g {n('mde_hedges_g_at_family_alpha')} at family alpha and 80% power")
+        tests.append(f"{name}: mixed model p {n('p_mixed')}; Welch (wells) p {n('p_welch')}, Hedges g {n('hedges_g')}")
+        adjusted.append(f"{name}: Holm p {n('p_headline_holm')}, MDE g {n('mde_hedges_g_at_family_alpha')} at family alpha and 80% power")
         levels.extend([str(name),
             f"Per-nucleus median: {test} {n('sensitivity_nucleus_median_test')} (n={n('sensitivity_n_nuclei_test')} nuclei), {ref} {n('sensitivity_nucleus_median_reference')} (n={n('sensitivity_n_nuclei_reference')} nuclei); descriptive median, no pooled nucleus t test.",
             f"Per-FOV mean: {test} n={n('sensitivity_n_fovs_test')} FOVs, {ref} n={n('sensitivity_n_fovs_reference')} FOVs; technical-level Welch p {n('sensitivity_welch_fov_p')}.",
-            f"Per-well mean: {test} n={n('n_wells_test')} wells, {ref} n={n('n_wells_reference')} wells; two-sided Welch gate; pooled-variance Student sensitivity p {n('sensitivity_student_well_p')}.",
+            f"Per-well mean: {test} n={n('n_wells_test')} wells, {ref} n={n('n_wells_reference')} wells; two-sided Welch comparison; pooled-variance Student sensitivity p {n('sensitivity_student_well_p')}.",
             f"Nucleus-level mixed model: fixed arm, random well and FOV within well; Wald p {n('sensitivity_mixed_p')}; {row.get('sensitivity_mixed_status', 'missing')}."])
     if endpoints:
         notes.extend(['; '.join(means)+'.', '; '.join(tests)+'.', '; '.join(adjusted)+'. MDE is not an exclusion bound.'])
@@ -146,8 +148,8 @@ def speaker_notes(workbook, definition):
         readouts = [str(v['value']) for v in definition.get('values',[]) if v.get('label') == 'readout']
         notes.extend(readouts or ['This slide describes the recorded measurements and study design.'])
         notes.append('No endpoint contrast is displayed on this slide.')
-        levels.append('Nuclei are measurement units, FOVs are technical replicates, and well means are biological replicates; the gate is two-sided Welch on well means.')
-    return '\n'.join(notes + ['', 'Levels of comparison'] + levels + ['Mixed-model, Student and FOV Welch sensitivities were added after inspection of the data; the pre-specified gate is Welch on well means.'])
+        levels.append('Nuclei are measurement units, FOVs are technical replicates, and well means are biological replicates; the headline is the nucleus-level mixed model.')
+    return '\n'.join(notes + ['', 'Levels of comparison'] + levels + ['Mixed-model headline decision 2026-09-07 after data inspection; Welch on well means remains reported. Student and FOV Welch are sensitivities.'])
 
 
 def build_deck(workbook: Path, spec: dict, destination: Path) -> Path:
@@ -468,7 +470,7 @@ def prepare_deck(template: dict, sheets: dict, out_dir: Path, data: dict,
                     ax.set_ylabel('BIN1 intron puncta: % nuclear (per nucleus)')
                     title = 'BIN1 intron puncta, % nuclear'
                 import textwrap
-                ax.set_title('\n'.join(textwrap.wrap(title,28 if item.get('headline') else 38)),fontsize=9,pad=22)
+                ax.set_title('\n'.join(textwrap.wrap(title,28 if item.get('headline') else 38)),fontsize=11,pad=22)
                 fig.no_box(f,ax)
             spare_axes = list(axes.flat)[count:]
             if item.get('kind') == 'standard':
@@ -488,15 +490,19 @@ def prepare_deck(template: dict, sheets: dict, out_dir: Path, data: dict,
             else:
                 for ax in spare_axes:
                     ax.set_visible(False)
-            mixed_values = '; '.join(fig.fmt_p(contrasts.loc[contrasts.endpoint.eq(name), 'sensitivity_mixed_p'].iloc[0]) for name in names)
-            panel_order = 'headline, then other panels by row' if item.get('headline') else 'panels left to right, top to bottom'
-            mixed_text = f'Sensitivity: mixed model p = {mixed_values} ({panel_order}).'
-            f.text(.5,.10,mixed_text,ha='center',fontsize=7,color='#595959')
-            f.text(.5,.04,'Persisted measurements; defined-value/usability masks; well means; raw Welch p.\n'
-                   'Holm, Hedges g, MDE and endpoint n are traced in speaker notes. MDE is not an exclusion bound.',
-                   ha='center',fontsize=8,color='#595959')
-            if item.get('qualification'):
-                f.text(.5,.95,item['qualification'],ha='center',fontsize=9,color='#595959')
+            f.text(.5,.98,ctx.run_name,ha='center',va='top',fontsize=9)
+            summaries = []
+            for name in names:
+                row = contrasts.loc[contrasts.endpoint.eq(name)].iloc[0]
+                counts = '/'.join(str(row.get('sensitivity_n_'+level+'_reference', 'NA')) + ':' + str(row.get('sensitivity_n_'+level+'_test', 'NA')) for level in ['wells','fovs','nuclei'])
+                status = str(row.get('sensitivity_mixed_status', ''))
+                fallback = '; mixed model did not converge' if 'converg' in status and status != 'ok' else ''
+                summaries.append(f"mixed model p {fig.fmt_p(row.get('p_mixed',np.nan))}; Welch (wells) p {fig.fmt_p(row.p_welch)}; n {counts}{fallback}")
+            footer = f.text(.01,.02,' | '.join(summaries),fontsize=6,va='bottom')
+            f.canvas.draw()
+            width = footer.get_window_extent().width
+            if width > f.bbox.width*.98:
+                footer.set_fontsize(6*f.bbox.width*.98/width)
             records=[]
             record = fig.save(f,figure_dir,stem,records,item['title'],'Per well / Contrasts')
             path=figure_dir/record['png']
@@ -519,7 +525,7 @@ def prepare_deck(template: dict, sheets: dict, out_dir: Path, data: dict,
                 if 'dapi' in data:
                     rows = data['dapi']['arms']
                     lines = [f'{r.group}: {r.retained_nuclei} retained nuclei; {r.unretained_dapi_objects} unretained DAPI objects; '
-                             f'{r.below_min_area_px} below 16,000 px' for r in rows.itertuples()]
+                             f'{r.below_min_area_px} below {r.nucleus_min_area_px:g} px' for r in rows.itertuples()]
                     lines += ['DAPI area median [IQR], px: ' + '; '.join(
                         f'{r.group} {r.unretained_area_median_px:g} [{r.unretained_area_q25_px:g}, {r.unretained_area_q75_px:g}]'
                         for r in rows.itertuples()),
@@ -555,7 +561,7 @@ def prepare_deck(template: dict, sheets: dict, out_dir: Path, data: dict,
             values.append(dict(slide=slide_no,endpoint='',label='readout',value=item['body'],
                                source_sheet='Deck specification',source_cell=f'B{slide_no+2}'))
             refs.append(dict(sheet='Slide values',cell=f'D{len(values)+2}',label='readout',display=True))
-        resolved.append(dict(identity=item['identity'],title=item['title'],title_cell=title_ref,values=refs,figures=assets))
+        resolved.append(dict(identity=item['identity'],title=item['title'],question=item.get('question', ''),title_cell=title_ref,values=refs,figures=assets))
     sheets['Slide values']=pd.DataFrame(values)
     sheets['Figure sources']=pd.DataFrame(figure_rows)
     return dict(schema='resolved-deck-1',cohort=template['cohort'],slides=resolved)

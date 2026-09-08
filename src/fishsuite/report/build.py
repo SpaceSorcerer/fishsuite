@@ -167,14 +167,8 @@ def readme_sheet(run_dir: Path, group_order: Sequence[str], reference: str,
     add("Design", "Comparisons",
         "; ".join(f"{g} minus {reference}" for g in group_order if g != reference)
         or "no comparison is possible with one group")
-    add("Statistics", "Gate",
-        f"Welch t on well means at alpha {alpha:g}, with Hedges g and a 95 percent "
-        "confidence interval on the difference.")
-    add("Statistics", "Stars on figures",
-        "The star on every figure is the RAW Welch p. The Holm-adjusted p within the "
-        "endpoint family is printed in that figure's footnote and in the Contrasts "
-        "sheet, so the unadjusted result is never hidden and the adjusted one is never "
-        "omitted.")
+    add('Statistics', 'Headline', 'Nucleus-level mixed model: fixed arm; random well and FOV within well. Decision 2026-09-07 after data inspection; Welch on well means remains reported.')
+    add('Statistics', 'Stars on figures', 'Raw mixed-model p; field-only and failed fits explicitly use Welch on well means. Holm, filters, thresholds, Hedges g and well-based MDE are in the workbook and slide notes.')
     add("Statistics", "Multiplicity",
         "Holm-Bonferroni step-down within an endpoint family, where a family is one "
         "by-group sheet. Descriptive-only endpoints, absolute-intensity endpoints and "
@@ -747,7 +741,15 @@ def build_report(run_dir: Path, out_dir: Optional[Path] = None,
             panel_figures = render_existing(persisted,ctx,contrasts,out_dir/'coloc_existing')
             sheets['Coloc figure sources']=pd.DataFrame(panel_figures)
         if template:
+            if template.get('current_cohort_narrative'):
+                from .final_delivery import narrative
+                narrative(template, contrasts)
             from .slides import prepare_deck
+            # Persist fitted results before optional rendering; presentation retries need no refit.
+            _wb.write(out_dir / 'REPORT.xlsx', sheets, strike, order=list(sheets))
+            well.to_csv(out_dir/'per_well.csv',index=False)
+            field.to_csv(out_dir/'per_field.csv',index=False)
+            contrasts.to_csv(out_dir/'contrasts.csv',index=False)
             resolved_deck = prepare_deck(template,sheets,out_dir,data,persisted,ctx,well,field,contrasts,endpoints)
     figs: List[dict] = []
     if make_figures:
@@ -866,7 +868,7 @@ def render_figures(fig_dir: Path, run_dir: Path, data: dict,
         if ep.name in {'rna1_nuclear_spot_fraction', 'rna1_nuclear_spots_per_nucleus', 'rna1_cyto_spots_per_nucleus'}:
             unit += '\nper nucleus and assigned cell territory'
         _fig.superplot_standalone(
-            ctx, ep.name, title, f"{title}\n({unit})",
+            ctx, ep.name, title, f"{unit}" if plot_style == "replicate-simple" else f"{title}\n({unit})",
             well, field, per_nucleus, contrasts, _nuc_column(ep), fig_dir,
             f"fig{i:02d}_{ep.name}", manifest,
             hline_at=hline, hline_label="no enrichment" if hline else "")

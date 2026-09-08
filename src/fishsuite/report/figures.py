@@ -211,7 +211,7 @@ def save(fig, out_dir: Path, stem: str, manifest: List[dict], description: str,
     out_dir.mkdir(parents=True, exist_ok=True)
     import re
     texts = [(t, t.get_text()) for t in fig.texts]
-    if setters and not any("axis:" in text for _, text in texts):
+    if setters and not any("axis:" in text for _, text in texts) and not any("mixed model p" in text for _, text in texts):
         label = fig.text(.016, .008, "axis: focus window", fontsize=6, color="#333333")
         texts.append((label, label.get_text()))
     for variant in variants:
@@ -658,8 +658,9 @@ def draw_replicate_simple(ax, ctx: FigureContext, endpoint: str, well: pd.DataFr
     for tick, group in zip(ax.get_xticklabels(), ctx.group_order):
         tick.set_color(ctx.colors[group])
     ax.set_xlim(-.6, len(ctx.group_order) - .4)
-    ax.set_ylabel(ylabel, fontsize=6.6 if compact else 8.5)
-    ax.tick_params(labelsize=6.2 if compact else 8)
+    ax.set_ylabel(ylabel, fontsize=9)
+    ax.tick_params(labelsize=9)
+    ax.tick_params(axis="x", labelsize=10)
     marker = ("Points are WELL means, the tested replicates; "
               "bar = mean of well means, error bar = ± SD. "
               + ("Muted small points are technical FOV means." if ctx.technical_layer == "fov"
@@ -697,7 +698,7 @@ def draw_replicate_simple(ax, ctx: FigureContext, endpoint: str, well: pd.DataFr
             if low >= 0:
                 bottom = max(0., bottom)
             base_top = (np.floor(high / step) + 1) * step
-        reserve = .25 + .14 * max(len(brackets) - 1, 0)
+        reserve = .42 + .14 * max(len(brackets) - 1, 0)
         span = max(base_top - bottom, (high - bottom) / max(.1, 1. - reserve)) if brackets else base_top - bottom
         top = bottom + span
         if not percent:
@@ -726,37 +727,36 @@ def draw_replicate_simple(ax, ctx: FigureContext, endpoint: str, well: pd.DataFr
         if not len(match):
             continue
         r = match.iloc[0]
-        p = r.get("p_welch", np.nan)
+        p = r.get('p_mixed', r.get('sensitivity_mixed_p', np.nan))
+        mixed_ok = r.get('sensitivity_mixed_status', '') == 'ok' and np.isfinite(p)
+        if not mixed_ok:
+            p = r.get('p_welch', np.nan)
+        suffix = '' if mixed_ok else '\nWelch (well means)'
         from .endpoints import ENDPOINTS, a3_endpoints
         definition = next((e for e in (*ENDPOINTS, *a3_endpoints([endpoint]))
                            if e.name == endpoint), None)
-        descriptive = definition and (definition.descriptive_only or definition.absolute_intensity)
+        descriptive = bool(r.get('descriptive_only', False) or r.get('absolute_intensity', False) or (definition and (definition.descriptive_only or definition.absolute_intensity)))
         if descriptive:
             label = 'descriptive, no test'
             annotation = ax.text(.5, .97, label, transform=ax.transAxes,
-                                 ha='center', va='top', fontsize=6.2 if compact else 7)
+                                 ha='center', va='top', fontsize=9)
             annotation.set_gid('test-status:' + endpoint)
+            details.append(f"mixed model p {fmt_p(r.get('p_mixed', r.get('sensitivity_mixed_p', np.nan)))}; Welch (wells) p {fmt_p(r.get('p_welch', np.nan))} (descriptive)")
             continue
         line, = ax.plot([ref_x, xi], [high, high], color="black", linewidth=.8)
-        text = ax.text((ref_x + xi) / 2, high, f"{stars(p)}  p={fmt_p(p)}",
-                       ha="center", va="bottom", fontsize=6.2 if compact else 7)
+        text = ax.text((ref_x + xi) / 2, high, f"{stars(p)}  p = {fmt_p(p)}{suffix}",
+                       ha="center", va="bottom", fontsize=9)
         brackets.append((line, text))
         def number(key):
             value = pd.to_numeric(r.get(key, np.nan), errors="coerce")
             return f"{value:.3g}" if np.isfinite(value) else "NA"
-        details.append(f"{group} vs {ctx.reference}: raw Welch p {fmt_p(p)}; "
-                       f"Holm p {fmt_p(r.get('p_welch_holm_within_family', np.nan))}; "
-                       f"Hedges g {number('hedges_g')}; MDE g (80% power, alpha .05) "
-                       f"{number('mde_hedges_g_alpha_0p05')}, family alpha "
-                       f"{number('mde_hedges_g_at_family_alpha')}; "
-                       f"mixed model p = {fmt_p(r.get('sensitivity_mixed_p', np.nan))}; "
-                       f"usability filter: {r.get('usability_filter', 'none')}.")
+        status = str(r.get('sensitivity_mixed_status', 'missing nucleus-level values'))
+        fallback = '; mixed model did not converge' if 'converg' in status and status != 'ok' else ''
+        details.append(f"mixed model p {fmt_p(r.get('p_mixed', r.get('sensitivity_mixed_p', np.nan)))}; "
+                       f"Welch (wells) p {fmt_p(r.get('p_welch', np.nan))}{fallback}")
         level += 1
     set_axis("focus")
-    return ("Two-sided Welch on well means; replicate unit: well; raw-p stars. "
-            "bar = mean of well means, error bar = ± SD.\n"
-            + " ".join(details) + " n: " + "; ".join(counts) + ".\n"
-            + f"Run: {ctx.run_path}; axis: focus window")
+    return '; '.join(details) + '; n ' + '; '.join(counts)
 
 
 def draw_plot(ax, ctx: FigureContext, *args, **kwargs) -> str:
@@ -766,72 +766,25 @@ def draw_plot(ax, ctx: FigureContext, *args, **kwargs) -> str:
 
 
 def layout_replicate_simple(fig, ax, ctx, title, foot):
-    """Fit the compact standalone bands using rendered text dimensions."""
-    import re
-    renderer = fig.canvas.get_renderer()
-    heading = fig.text(.5, .98, " ".join(title.split()), ha="center", va="top",
-                       fontsize=10.5, fontweight="bold")
-    while heading.get_window_extent(renderer).width > fig.bbox.width * .96 and heading.get_fontsize() > 9:
-        heading.set_fontsize(max(9, heading.get_fontsize() - .25))
-    # Wrap only after the single line has exhausted the permitted font range.
-    if heading.get_window_extent(renderer).width > fig.bbox.width * .96:
-        words, lines, line = title.split(), [], ""
-        for word in words:
-            candidate = (line + " " + word).strip()
-            heading.set_text(candidate)
-            if line and heading.get_window_extent(renderer).width > fig.bbox.width * .96:
-                lines.append(line)
-                line = word
-            else:
-                line = candidate
-        heading.set_text("\n".join([*lines, line]))
-    thresholds = ctx.thresholds.replace(" detection threshold", "").replace(" (harmonized)", "")
-    thresholds = thresholds.replace("detection thresholds: not recorded by this run", "thresholds NA")
-    run = ctx.run_name if len(ctx.run_name) <= 23 else "…" + ctx.run_name[-22:]
-    # Full run provenance remains in the report; the printed header is two lines.
-    header = (f"Run {run} | {thresholds}\n"
-              f"Filter: {ctx.nucleus_filter}; {len(ctx.excluded_fields)} fields excluded")
-    head = fig.text(.5, .875, header, ha="center", va="top", fontsize=7, linespacing=1.05)
-    compact_foot = foot.split("\nRun:")[0]
-    compact_foot = compact_foot.replace("Two-sided Welch on well means; replicate unit: well; raw-p stars.",
-        "Two-sided Welch; well replicates; raw-p stars.")
-    compact_foot = compact_foot.replace("MDE g (80% power, alpha .05)", "MDE g (80%, α .05)")
-    compact_foot = compact_foot.replace("family alpha", "family α")
-    compact_foot = compact_foot.replace("defined nuclei", "nuclei")
-    if "axis: focus window" in foot:
-        compact_foot += " axis: focus window"
-    renderer = fig.canvas.get_renderer()
-    # Wrap by measured glyph width, rather than a minimum character count that
-    # was intended for the much wider superplot canvas.
-    probe = fig.text(0, 0, "", fontsize=6)
-    def wrap(text, max_pixels):
-        lines = []
-        for paragraph in text.splitlines():
-            line = ""
-            for word in paragraph.split():
-                candidate = (line + " " + word).strip()
-                probe.set_text(candidate)
-                if line and probe.get_window_extent(renderer).width > max_pixels:
-                    lines.append(line)
-                    line = word
-                else:
-                    line = candidate
-            lines.append(line)
-        return "\n".join(lines)
-    footer = fig.text(.035, .018, wrap(compact_foot, fig.bbox.width * .93),
-                      fontsize=6, va="bottom", linespacing=1.05, color="#333333")
-    probe.remove()
-    # Keep exactly two header lines at 7 pt, compressing horizontally only for
-    # unusually long run/threshold metadata.
-    head.set_text(header)
+    """A14: one run line and one inference/count line; metadata stays in workbook."""
+    heading = fig.text(.5, .98, '\n'.join(textwrap.wrap(' '.join(title.split()), 30)),
+                       ha='center', va='top', fontsize=11, fontweight='bold')
     fig.canvas.draw()
-    if head.get_window_extent().width > fig.bbox.width * .96:
-        head.set_text(header.replace(f"Run {run} | ", ""))
+    header_y = min(.82, heading.get_window_extent().y0 / fig.bbox.height - .02)
+    head = fig.text(.5, header_y, ctx.run_name, ha='center', va='top', fontsize=6)
+    footer = fig.text(.02, .018, ' '.join(foot.split()), fontsize=6, va='bottom')
     fig.canvas.draw()
-    bottom = footer.get_window_extent().y1 / fig.bbox.height + .125  # clear gap above the footer for the x tick labels
+    for artist in (head, footer):
+        width = artist.get_window_extent().width
+        if width > fig.bbox.width * .96:
+            artist.set_fontsize(artist.get_fontsize() * fig.bbox.width * .96 / width)
+    fig.canvas.draw()
     top = head.get_window_extent().y0 / fig.bbox.height - .035
-    ax.set_position([.22, bottom, .74, top - bottom])
-    ax.yaxis.label.set_size(7)
+    ax.set_position([.25, .17, .70, top - .17])
+    ax.yaxis.label.set_text('\n'.join(textwrap.wrap(ax.yaxis.label.get_text(), 25)))
+    ax.yaxis.label.set_size(9)
+    ax.tick_params(labelsize=9)
+    ax.tick_params(axis='x', labelsize=10)
 
 
 def superplot_standalone(ctx: FigureContext, endpoint: str, title: str, ylabel: str,
@@ -1015,7 +968,7 @@ def render_localization(ctx: FigureContext, well: pd.DataFrame, field: pd.DataFr
         ax = canvas.add_axes([.08 + k * .32, .61, .235, .23])
         foot = draw_plot(ax, view, spec['endpoint'], well, field, nuclei, contrasts,
                          spec['label'], spec['column'], scale=spec['scale'], compact=True)
-        foots.append(foot.splitlines()[1])
+        foots.append(foot)
         if spec['endpoint'] == 'rna1_nuclear_spot_fraction':
             ax.set_title('BIN1 intron puncta, % nuclear', fontsize=7)
         canvas.text(.04 + k * .32, .855, chr(65 + k), fontsize=11, fontweight='bold')
@@ -1355,7 +1308,7 @@ def composite_main(ctx: FigureContext, specs: Sequence[dict], panels: List[dict]
         fig.text(max(pos.x0 - 0.055, 0.004), min(pos.y1 + 0.012, 0.995),
                  chr(ord("A") + k), fontsize=10, fontweight="bold", va="bottom",
                  ha="left")
-        foots.append(f.splitlines()[1]
+        foots.append(f if ctx.plot_style == "replicate-simple" else f.splitlines()[1]
                      if ctx.plot_style == "replicate-simple" and len(f.splitlines()) > 1
                      else (f.splitlines()[2] if len(f.splitlines()) > 2 else ""))
     if has_img:
@@ -1386,13 +1339,19 @@ def composite_main(ctx: FigureContext, specs: Sequence[dict], panels: List[dict]
           "otherwise. The Holm-adjusted p and the minimum detectable effect for every "
           "panel are on that panel's standalone figure and in the Contrasts sheet.\n"
         + "\n".join(x for x in foots if x))
-    if ctx.plot_style == "replicate-simple":
-        foot = ctx.footer(f"Panels: {lettered}.\n"
-                          "Points are well means; bar = mean of well means, error bar = ± SD. "
-                          + ("Muted small points are FOV means. " if ctx.technical_layer == "fov" else "")
-                          + "Two-sided Welch on wells; raw p above each comparison.\n"
-                          + "\n".join(foots))
-    stamp_foot(fig, foot)
+    if ctx.plot_style == 'replicate-simple':
+        # Remove the generic provenance bands; A14 reserves one run line.
+        for artist in list(fig.texts):
+            if artist.get_fontsize() < 10:
+                artist.remove()
+        fig.text(.5,.98,ctx.run_name,ha='center',va='top',fontsize=9)
+        footer=fig.text(.02,.015,' | '.join(foots),fontsize=6,va='bottom')
+        fig.canvas.draw()
+        width=footer.get_window_extent().width
+        if width>fig.bbox.width*.96:
+            footer.set_fontsize(6*fig.bbox.width*.96/width)
+    else:
+        stamp_foot(fig, foot)
     return save(fig, out_dir, stem, manifest,
                 f"Composite ({ctx.plot_style}): primary endpoints by condition group plus representative "
                 "micrographs.",

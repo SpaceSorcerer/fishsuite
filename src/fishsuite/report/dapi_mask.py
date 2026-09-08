@@ -266,13 +266,17 @@ def draw_qc(axes, data, ctx):
     for group in ctx.group_order:
         right.hist(objs.loc[objs.group.eq(group), 'area_px'], bins=bins, histtype='step',
                    linewidth=1.5, color=ctx.colors[group], label=group)
-    right.axvline(16000, color='black', linestyle='--', linewidth=1)
+    right.axvline(float(data['census'].nucleus_min_area_px.iloc[0]), color='black', linestyle='--', linewidth=1)
     right.set(xlabel='Unretained DAPI object area (px)', ylabel='Objects',
               title='Area census: descriptive, no test')
     right.legend(loc='upper left', bbox_to_anchor=(0, -.2), fontsize=7, frameon=False)
     from .figures import no_box
     for ax in axes:
         no_box(ax.figure, ax)
+        ax.tick_params(labelsize=9)
+        ax.xaxis.label.set_size(9)
+        ax.yaxis.label.set_size(9)
+        ax.title.set_size(11)
 
 
 def render_dapi(ctx, data, nuclei, well, field, contrasts, out_dir):
@@ -281,16 +285,15 @@ def render_dapi(ctx, data, nuclei, well, field, contrasts, out_dir):
     fig.set_style()
     canvas, axes = fig.plt.subplots(2, 2, figsize=(12.4, 7.2))
     canvas.subplots_adjust(left=.09, right=.97, top=.90, bottom=.25, hspace=.45, wspace=.4)
+    foots=[]
     for ax, name, ylabel, scale in zip(axes[0], [FRACTION, COUNT],
           ['BIN1 nuclear fraction, DAPI corrected (%)', 'Extranuclear BIN1 spots / cell territory'], [100., 1.]):
-        fig.draw_replicate_simple(ax, ctx, name, well, field, nuclei, contrasts, ylabel, name,
-                                  scale=scale, compact=True)
+        foots.append(fig.draw_replicate_simple(ax, ctx, name, well, field, nuclei, contrasts, ylabel, name,
+                                  scale=scale, compact=True))
         fig.no_box(canvas, ax)
     draw_qc(axes[1], data, ctx)
-    canvas.text(.07,.97,'BIN1 localization and DAPI-object census', fontsize=15, va='top')
-    canvas.text(.08,.045,'Filter: all retained nuclei; DAPI Gaussian sigma 1 px + Otsu + fill holes + area ≥200 px; single recorded plane.\n'
-        'Retained cells: nuclear / (nuclear + assigned extranuclear); DAPI-positive calls outside retained masks omitted.\n'
-        'Dashed area line: 16,000 px. Unretained objects are not proven area-filter exclusions. QC bars pool spots; tests use wells.', fontsize=7)
+    canvas.text(.5,.98,ctx.run_name,fontsize=9,ha='center',va='top')
+    canvas.text(.02,.025,' | '.join(foots),fontsize=6,va='bottom')
     fig.save(canvas, out_dir, 'FIG_LOCALIZATION', [], 'DAPI-corrected localization and QC', 'DAPI tables / Per well / Contrasts')
     q, qa = fig.plt.subplots(1,2,figsize=(12.4,4.4))
     q.subplots_adjust(left=.08,right=.97,top=.87,bottom=.32,wspace=.35)

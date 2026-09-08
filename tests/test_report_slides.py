@@ -14,7 +14,7 @@ def test_recorded_deck_semantic_assets_and_localization(tmp_path, monkeypatch):
     def check_panel(ax, ctx, endpoint, *args, **kwargs):
         result = original(ax, ctx, endpoint, *args, **kwargs)
         texts = [t.get_text() for t in ax.texts]
-        assert any('p=' in t or 'descriptive, no test' in t for t in texts), (endpoint, texts)
+        assert any('p =' in t or 'descriptive, no test' in t for t in texts), (endpoint, texts)
         checked.append(endpoint)
         return result
     monkeypatch.setattr(figures, 'draw_replicate_simple', check_panel)

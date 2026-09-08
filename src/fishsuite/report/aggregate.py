@@ -623,6 +623,11 @@ def build_contrasts(well: pd.DataFrame, field: pd.DataFrame,
                  "absolute intensity, not comparable as a level claim across sections",
                  np.where(out["excluded_from_holm"].astype(bool), out["excluded_from_holm"],
                           np.where(out["descriptive_only"], "descriptive only by design", ""))))
+    out['p_mixed'] = out['sensitivity_mixed_p'].where(out['sensitivity_mixed_status'].eq('ok'))
+    out['p_headline'] = out.p_mixed.fillna(out.p_welch)
+    out['headline_test'] = np.where(out.p_mixed.notna(), 'mixed model', 'Welch (well means)')
+    out['p_mixed_holm'] = np.nan
+    out['p_headline_holm'] = np.nan
     out["p_welch_holm_within_family"] = np.nan
     out["holm_family_size"] = np.nan
     for _, idx in out.groupby(["family", "test_group"]).groups.items():
@@ -631,12 +636,16 @@ def build_contrasts(well: pd.DataFrame, field: pd.DataFrame,
         adj = holm([out.at[i, "p_welch"] for i in member])
         for i, a in zip(member, adj):
             out.at[i, "p_welch_holm_within_family"] = a
-        size = int(np.isfinite([out.at[i, "p_welch"] for i in member]).sum()) if member else 0
+        for column, source in [('p_mixed_holm', 'p_headline'), ('p_headline_holm', 'p_headline')]:
+            for i, value in zip(member, holm([out.at[j, source] for j in member])):
+                out.at[i, column] = value
+        size = int(np.isfinite([out.at[i, 'p_headline'] for i in member]).sum()) if member else 0
         for i in member:
             out.at[i, "holm_family_size"] = size
+    out.loc[out.p_mixed.isna(), 'p_mixed_holm'] = np.nan
     out["significant_raw_0p05"] = (out["p_welch"] < alpha).astype(object)
     out.loc[~np.isfinite(out["p_welch"]), "significant_raw_0p05"] = pd.NA
-    out["significant_holm_0p05"] = (out["p_welch_holm_within_family"] < alpha).astype(object)
+    out["significant_holm_0p05"] = (out["p_headline_holm"] < alpha).astype(object)
     out.loc[~out["in_holm_family"], "significant_holm_0p05"] = pd.NA
 
     out["mde_hedges_g_alpha_0p05"] = np.nan

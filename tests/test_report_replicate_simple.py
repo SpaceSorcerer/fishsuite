@@ -44,9 +44,9 @@ def test_only_wells_are_primary_and_fovs_are_optional(report_data, layer, collec
         assert len(artist.get_offsets()) == 3
         np.testing.assert_allclose(artist.get_offsets()[:, 1], expected["well_mean_of_field_values"])
         np.testing.assert_allclose(artist.get_edgecolors()[0], to_rgba(ctx.colors[group]))
-    assert "raw Welch p" in foot and "Holm" in foot and "Hedges g" in foot
-    assert "MDE" in foot and "nuclei" in foot and "no effect" not in foot
-    assert any("p=" in t.get_text() for t in ax.texts)
+    assert "mixed model p" in foot and "Welch (wells) p" in foot
+    assert "MDE" not in foot and "nuclei" in foot and "no effect" not in foot
+    assert any("p =" in t.get_text() for t in ax.texts)
     plt.close(canvas)
 
 
@@ -88,7 +88,7 @@ def test_png_svg_and_standalone_dispatch(report_data, tmp_path):
     with Image.open(tmp_path / "simple_focus.png") as image:
         assert image.info["dpi"] == pytest.approx((600, 600), abs=.02)
     svg = (tmp_path / "simple_focus.svg").read_text(encoding="utf-8")
-    for label in ("<text", "Arial", "Filter:", "Welch", "p=", "#595959", "#d67ae5"):
+    for label in ("<text", "Arial", "Welch", "p =", "#595959", "#d67ae5"):
         assert label in svg
     assert "replicate-simple" in manifest[0]["description"]
     assert manifest[0]["png"] == "simple_focus.png"
@@ -96,7 +96,7 @@ def test_png_svg_and_standalone_dispatch(report_data, tmp_path):
     for variant in ("focus", "full"):
         assert (tmp_path / f"simple_{variant}.png").is_file()
         assert (tmp_path / f"simple_{variant}.svg").is_file()
-        assert f"axis: {variant} " in (tmp_path / f"simple_{variant}.svg").read_text(encoding="utf-8")
+        assert "mixed model p" in (tmp_path / f"simple_{variant}.svg").read_text(encoding="utf-8")
 
 
 def test_statistics_identical_across_style_options(report_data, tmp_path):
@@ -135,8 +135,8 @@ def test_composite_uses_same_dispatch_and_palette(report_data, tmp_path, monkeyp
             assert [len(a.get_offsets()) for a in primary] == [3, 3]
             np.testing.assert_allclose(primary[0].get_edgecolors()[0], to_rgba("#0072B2"))
         labels = "\n".join(t.get_text() for t in canvas.texts)
-        assert "A" in labels and "B" in labels and "Filter:" in labels
-        assert "MDE" in labels and "3 wells" in labels
+        assert "A" in labels and "B" in labels and ctx.run_name in labels
+        assert "3 wells" in labels
         assert "Dots are nuclei" not in labels
         captured.append(True)
         plt.close(canvas)
@@ -169,8 +169,8 @@ def test_fraction_percent_display_and_footer(report_data):
     for artist in ax.collections:
         if str(artist.get_gid()).startswith('well:'):
             np.testing.assert_allclose(artist.get_offsets()[:,1], 90)
-    assert len(foot.splitlines()) == 3
-    assert 'Non-detection' not in foot and str(run) in foot
+    assert len(foot.splitlines()) == 1
+    assert 'Non-detection' not in foot and 'n ' in foot
     plt.close(canvas)
 
 
@@ -190,7 +190,7 @@ def test_percentage_window_uses_every_well(tmp_path, endpoint, values, lower):
     foot = fig.draw_plot(ax, context(tmp_path, plot_style="replicate-simple"), endpoint,
         wells, pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), "fraction", None)
     assert ax.get_ylim() == (lower, 100)
-    assert "axis: focus window" in foot
+    assert "n " in foot
     plt.close(canvas)
 
 
@@ -237,16 +237,18 @@ def test_compact_standalone_size(report_data, tmp_path, monkeypatch, groups, wid
         r["well"], r["field"], pd.DataFrame(), r["contrasts"], None, tmp_path, "size", [])
 
 
-@pytest.mark.parametrize("title", ["Puncta", "BIN1 intron puncta, % nuclear"])
+@pytest.mark.parametrize("title", ["Puncta", "BIN1 intron puncta, % nuclear", "Fraction of BIN1 introns puncta with RNASEH2B above threshold in the exact footprint"])
 def test_title_stays_single_line_and_footer_is_six_pt(tmp_path, title):
     canvas, ax = plt.subplots(figsize=(2.8, 3.2))
     fig.layout_replicate_simple(canvas, ax, context(tmp_path), title, "Two-sided Welch; well replicates.")
     canvas.canvas.draw()
     heading = canvas.texts[0]
-    assert "\n" not in heading.get_text()
-    assert 9 <= heading.get_fontsize() <= 10.5
+    assert heading.get_text()
+    assert heading.get_fontsize() >= 11
+    assert heading.get_window_extent().y0 > canvas.texts[1].get_window_extent().y1
+    assert canvas.texts[1].get_window_extent().y0 > ax.get_window_extent().y1
     assert heading.get_window_extent().width <= canvas.bbox.width * .96
-    assert canvas.texts[-1].get_fontsize() == 6
+    assert "\n" not in canvas.texts[-1].get_text()
     plt.close(canvas)
 
 
@@ -323,5 +325,38 @@ def test_mean_column_sample_sd_and_bracket_clearance(tmp_path, variant, floor, v
     assert not any(c.get_label() == "group-sd:QKI-KO" for c in ax.containers)
     lo, hi = ax.get_ylim()
     assert ax.lines[-1].get_ydata()[0] >= max(mean+sd, max(values*100)) + .13*(hi-lo)
-    assert "bar = mean of well means, error bar = ± SD" in foot
+    assert "Welch (wells) p" in foot
+    plt.close(canvas)
+
+
+def test_mixed_headline_and_explicit_failed_fit_fallback(tmp_path):
+    endpoint='rna1_spots_per_nucleus'
+    wells=pd.DataFrame(dict(endpoint=[endpoint]*6,group=['WT']*3+['QKI-KO']*3,
+        well_id=['w1','w2','w3','k1','k2','k3'],well_mean_of_field_values=[1,2,3,4,5,6]))
+    for status,p,expected in [('ok',.001,'0.001'),('nonconverged',np.nan,'0.2')]:
+        rows=pd.DataFrame([dict(endpoint=endpoint,test_group='QKI-KO',reference_group='WT',
+            p_mixed=p,p_welch=.2,sensitivity_mixed_status=status)])
+        canvas,ax=plt.subplots()
+        foot=fig.draw_replicate_simple(ax,context(tmp_path,plot_style='replicate-simple'),endpoint,
+            wells,pd.DataFrame(),pd.DataFrame(),rows,'Puncta',None)
+        assert expected in ax.texts[-1].get_text()
+        assert ('Welch (well means)' in ax.texts[-1].get_text()) == (status!='ok')
+        assert ('mixed model did not converge' in foot) == (status!='ok')
+        assert ax.yaxis.label.get_fontsize() >= 9
+        assert all(t.get_fontsize() >= 10 for t in ax.get_xticklabels())
+        plt.close(canvas)
+
+
+def test_custom_descriptive_endpoint_uses_contrast_flags(tmp_path):
+    endpoint='custom_corrected_intensity'
+    wells=pd.DataFrame(dict(endpoint=[endpoint]*6,group=['WT']*3+['QKI-KO']*3,
+        well_id=['w1','w2','w3','k1','k2','k3'],well_mean_of_field_values=[1,2,3,4,5,6]))
+    rows=pd.DataFrame([dict(endpoint=endpoint,test_group='QKI-KO',reference_group='WT',
+        p_mixed=.001,p_welch=.2,sensitivity_mixed_status='ok',descriptive_only=True,absolute_intensity=True)])
+    canvas,ax=plt.subplots()
+    foot=fig.draw_replicate_simple(ax,context(tmp_path,plot_style='replicate-simple'),endpoint,
+        wells,pd.DataFrame(),pd.DataFrame(),rows,'Intensity',None)
+    assert any(t.get_text()=='descriptive, no test' for t in ax.texts)
+    assert not any('p =' in t.get_text() for t in ax.texts)
+    assert 'mixed model p' in foot and 'descriptive' in foot
     plt.close(canvas)
