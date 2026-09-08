@@ -115,6 +115,41 @@ def validate_deck(workbook: Path, spec: dict) -> list:
     return resolved
 
 
+def speaker_notes(workbook, definition):
+    """Short spoken summary from already validated workbook cells, never cell refs."""
+    endpoints = {}
+    for item in definition.get('values', []):
+        label = item.get('label', '')
+        if item.get('sheet') == 'Contrasts' and ': ' in label:
+            endpoint, column = label.split(': ', 1)
+            endpoints.setdefault(endpoint, {})[column] = item['value']
+    def number(value):
+        value = pd.to_numeric(value, errors='coerce')
+        return f'{value:.4g}' if np.isfinite(value) else 'missing'
+    notes = [f'Workbook: {Path(workbook).resolve()}']
+    levels, means, tests, adjusted = [], [], [], []
+    for endpoint, row in endpoints.items():
+        name = row.get('endpoint_plain', endpoint)
+        test, ref = row.get('test_group', 'test'), row.get('reference_group', 'reference')
+        n = lambda key: number(row.get(key))
+        means.append(f"{name}: {test} well mean {n('mean_test')}, {ref} well mean {n('mean_ref')}, difference {n('diff')} ({test} minus {ref})")
+        tests.append(f"{name}: raw Welch p {n('p_welch')}, Hedges g {n('hedges_g')}")
+        adjusted.append(f"{name}: Holm p {n('p_welch_holm_within_family')}, MDE g {n('mde_hedges_g_at_family_alpha')} at family alpha and 80% power")
+        levels.extend([str(name),
+            f"Per-nucleus median: {test} {n('sensitivity_nucleus_median_test')} (n={n('sensitivity_n_nuclei_test')} nuclei), {ref} {n('sensitivity_nucleus_median_reference')} (n={n('sensitivity_n_nuclei_reference')} nuclei); descriptive median, no pooled nucleus t test.",
+            f"Per-FOV mean: {test} n={n('sensitivity_n_fovs_test')} FOVs, {ref} n={n('sensitivity_n_fovs_reference')} FOVs; technical-level Welch p {n('sensitivity_welch_fov_p')}.",
+            f"Per-well mean: {test} n={n('n_wells_test')} wells, {ref} n={n('n_wells_reference')} wells; two-sided Welch gate; pooled-variance Student sensitivity p {n('sensitivity_student_well_p')}.",
+            f"Nucleus-level mixed model: fixed arm, random well and FOV within well; Wald p {n('sensitivity_mixed_p')}; {row.get('sensitivity_mixed_status', 'missing')}."])
+    if endpoints:
+        notes.extend(['; '.join(means)+'.', '; '.join(tests)+'.', '; '.join(adjusted)+'. MDE is not an exclusion bound.'])
+    else:
+        readouts = [str(v['value']) for v in definition.get('values',[]) if v.get('label') == 'readout']
+        notes.extend(readouts or ['This slide describes the recorded measurements and study design.'])
+        notes.append('No endpoint contrast is displayed on this slide.')
+        levels.append('Nuclei are measurement units, FOVs are technical replicates, and well means are biological replicates; the gate is two-sided Welch on well means.')
+    return '\n'.join(notes + ['', 'Levels of comparison'] + levels + ['Mixed-model, Student and FOV Welch sensitivities were added after inspection of the data; the pre-specified gate is Welch on well means.'])
+
+
 def build_deck(workbook: Path, spec: dict, destination: Path) -> Path:
     destination = guard_output(destination)
     sources_path = guard_output(destination.with_name('slide_sources.csv'))
@@ -134,10 +169,8 @@ def build_deck(workbook: Path, spec: dict, destination: Path) -> Path:
         box.text_frame.word_wrap = True
         for paragraph in box.text_frame.paragraphs:
             paragraph.font.name, paragraph.font.size = 'Arial', Pt(23)
-        notes = [str(Path(workbook).resolve()), 'workbook SHA256: '+spec['workbook_sha256']]
+        notes = speaker_notes(workbook, definition)
         for item in definition['values']:
-            location = f'{item["sheet"]}!{item["cell"]}'
-            notes.append(f'{item.get("label", "value")}: {item["value"]} | {location}')
             sources.append(dict(slide=number, workbook=str(Path(workbook).resolve()),
                                 sheet=item['sheet'], cell=item['cell'], value=item['value']))
         assets = definition.get('figures', [])
@@ -157,7 +190,6 @@ def build_deck(workbook: Path, spec: dict, destination: Path) -> Path:
                 caption.text_frame.text = asset['caption_value']
                 for paragraph in caption.text_frame.paragraphs:
                     paragraph.font.name, paragraph.font.size = 'Arial', Pt(14)
-            notes.append(f'Figure: {asset["path"]} | SHA256 {asset["sha256"]}')
             sources.append(dict(slide=number, figure=asset['path'], sha256=asset['sha256'],
                                 full_figure=asset.get('full_path', ''), full_sha256=asset.get('full_sha256', '')))
         if not definition.get('figures'):
@@ -174,7 +206,7 @@ def build_deck(workbook: Path, spec: dict, destination: Path) -> Path:
             box.text_frame.text = str(readouts[0])
             for paragraph in box.text_frame.paragraphs:
                 paragraph.font.name, paragraph.font.size = 'Arial', Pt(18)
-        slide.notes_slide.notes_text_frame.text = '\n'.join(notes)
+        slide.notes_slide.notes_text_frame.text = notes
     destination.parent.mkdir(parents=True, exist_ok=True)
     ppt.save(destination)
     pd.DataFrame(sources).to_csv(sources_path, index=False)
@@ -215,8 +247,8 @@ def prepare_deck(template: dict, sheets: dict, out_dir: Path, data: dict,
                  contrasts: pd.DataFrame, endpoints: list) -> dict:
     """Resolve semantic endpoint requests only after report rows are available.
 
-    Values copied to Slide values retain their exact origin cell. All contrast
-    cells, including missing statistics, enter speaker notes, not just the p.
+    Values copied to Slide values retain their exact origin cell. Speaker notes
+    summarize contrasts; slide_sources.csv retains all cell-level provenance.
     """
     from . import figures as fig
     out_dir = guard_output(out_dir)
@@ -290,7 +322,16 @@ def prepare_deck(template: dict, sheets: dict, out_dir: Path, data: dict,
                           width_px=width,height_px=height,calibration_source='nuclei_metrics.csv:voxel_xy_um',
                           plane_source='coloc_standard_panel.xlsx:overlays_index/z_plane',
                           selection='first persisted representative well in group; presentation only'))
-    sheets['Micrographs'] = pd.DataFrame(micro)
+    # Exact native publication PNGs use the run's recorded manual windows/LUTs.
+    panel_rows = []
+    for row in micro:
+        native = fig.publication_panel_paths(ctx.run_dir/'publication_images',
+                    Path(row['path']).name.removesuffix('__merge_all.png'),
+                    data['cfg']['config_resolved'])
+        row['panels'] = [dict(row, **entry) for entry in native]
+        panel_rows.extend(dict(group=row['group'],image=row['image'],**entry) for entry in native)
+    sheets['Micrograph panels'] = pd.DataFrame(panel_rows)
+    sheets['Micrographs'] = pd.DataFrame([{k:v for k,v in row.items() if k != 'panels'} for row in micro])
     from .aggregate import reconcile_localization
     spots = pd.read_csv(ctx.run_dir/'spot_metrics.csv')
     audit = reconcile_localization(data['nuclei'], spots)
@@ -348,7 +389,9 @@ def prepare_deck(template: dict, sheets: dict, out_dir: Path, data: dict,
                                value=fig.fraction_scale(name),
                                source_sheet='Endpoint definitions',source_cell=f'A{list(by_endpoint).index(name)+3}'))
             refs.append(dict(sheet='Slide values',cell=f'D{len(values)+2}',label=f'{name}: display multiplier',display=False))
-        extra_sheets = item.get('sheets',[])
+        extra_sheets = list(item.get('sheets',[]))
+        if item.get('micrographs') or item.get('kind') == 'micrographs':
+            extra_sheets.append('Micrograph panels')
         if names:
             coverage = sheets['Endpoint coverage']
             for ci,row in coverage.loc[coverage.endpoint.isin(names)].iterrows():
@@ -445,6 +488,10 @@ def prepare_deck(template: dict, sheets: dict, out_dir: Path, data: dict,
             else:
                 for ax in spare_axes:
                     ax.set_visible(False)
+            mixed_values = '; '.join(fig.fmt_p(contrasts.loc[contrasts.endpoint.eq(name), 'sensitivity_mixed_p'].iloc[0]) for name in names)
+            panel_order = 'headline, then other panels by row' if item.get('headline') else 'panels left to right, top to bottom'
+            mixed_text = f'Sensitivity: mixed model p = {mixed_values} ({panel_order}).'
+            f.text(.5,.10,mixed_text,ha='center',fontsize=7,color='#595959')
             f.text(.5,.04,'Persisted measurements; defined-value/usability masks; well means; raw Welch p.\n'
                    'Holm, Hedges g, MDE and endpoint n are traced in speaker notes. MDE is not an exclusion bound.',
                    ha='center',fontsize=8,color='#595959')
@@ -455,9 +502,9 @@ def prepare_deck(template: dict, sheets: dict, out_dir: Path, data: dict,
             path=figure_dir/record['png']
             assets=[dict(path=str(path.resolve()),sha256=sha256(path),cohort=template['cohort'])]
         elif item.get('kind')=='micrographs':
-            f,axes=fig.plt.subplots(1,len(micro),figsize=(12.4,5.6),squeeze=False)
-            for ax,row in zip(axes.flat,micro):
-                draw_micrograph_panel(ax, row, ctx.colors[row['group']])
+            f,axes=fig.plt.subplots(len(micro),4,figsize=(12.4,5.6),squeeze=False)
+            for row_axes,row in zip(axes,micro):
+                fig.draw_publication_panels(row_axes, row['panels'], row['group'])
             f.subplots_adjust(left=.02,right=.98,top=.92,bottom=.04)
             records=[]
             fig.save(f,figure_dir,stem,records,item['title'],'Micrographs')
@@ -488,7 +535,15 @@ def prepare_deck(template: dict, sheets: dict, out_dir: Path, data: dict,
             full_path = Path(assets[0]['path']).with_name(stem+'_full.png')
             assets[0].update(full_path=str(full_path.resolve()), full_sha256=sha256(full_path))
         if item.get('micrographs'):
-            assets.extend(dict(path=row['path'],sha256=row['sha256'],cohort=template['cohort'],
+            for row in micro:
+                strip = figure_dir / (Path(row['path']).stem + '_four_panels.png')
+                if 'strip_path' not in row:
+                    f, axes = fig.plt.subplots(1,4,figsize=(12,3))
+                    fig.draw_publication_panels(axes, row['panels'], row['group'])
+                    f.subplots_adjust(left=.01,right=.99,bottom=.01,top=.87,wspace=.03)
+                    fig.save(f,figure_dir,strip.stem,[],row['group'],'Micrograph panels')
+                row['strip_path'] = str(strip.resolve())
+            assets.extend(dict(path=row['strip_path'],sha256=sha256(Path(row['strip_path'])),cohort=template['cohort'],
                                caption_ref=dict(sheet='Micrographs',cell=f'A{i+3}')) for i,row in enumerate(micro))
         for asset in assets:
             figure_rows.append(dict(slide=slide_no,**asset,source_sheet='Contrasts' if names else 'Micrographs',

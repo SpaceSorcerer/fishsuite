@@ -49,6 +49,15 @@ def test_recorded_deck_semantic_assets_and_localization(tmp_path, monkeypatch):
     assert 'per nucleus and assigned cell territory' in svg.lower()
     assert 'Assigned-cytoplasmic puncta count' in svg
     ppt = Presentation(result['out_dir']/'Sam_RNASEH2B_BIN1.pptx')
+    panels = pd.read_excel(result['xlsx'], sheet_name='Micrograph panels', header=1)
+    assert panels.groupby('group').size().eq(4).all()
+    assert not panels.panel.str.contains('DAPI-only',case=False).any()
+    assert 'FOV outlier sensitivity' in pd.ExcelFile(result['xlsx']).sheet_names
+    for slide in ppt.slides:
+        notes = slide.notes_slide.notes_text_frame.text
+        assert notes.startswith('Workbook: '+str(result['xlsx'].resolve()))
+        assert '!' not in notes
+        assert 'Levels of comparison' in notes
     assert [s.shapes[0].text for s in ppt.slides] == [s['title'] for s in resolved['slides']]
     assert resolved['slides'][1]['title'] == '1. Are BIN1 intron puncta larger, more numerous and more nuclear in KO than WT? (sanity check)'
     assert resolved['slides'][3]['title'] == '1b. RNASEH2B total signal and puncta, WT vs KO'
@@ -199,7 +208,8 @@ def test_pptx_notes_media_and_count(tmp_path):
     path = build_deck(book, spec, tmp_path/'deck.pptx')
     ppt = Presentation(path)
     assert len(ppt.slides) == 1
-    assert 'Slide values!A3' in ppt.slides[0].notes_slide.notes_text_frame.text
+    assert 'Workbook: '+str(book.resolve()) in ppt.slides[0].notes_slide.notes_text_frame.text
+    assert '!' not in ppt.slides[0].notes_slide.notes_text_frame.text
 
 
 def test_export_allows_explicit_source_identifiers(tmp_path):

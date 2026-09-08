@@ -634,7 +634,7 @@ def build_report(run_dir: Path, out_dir: Optional[Path] = None,
     well = _agg.per_well_long(field)
     contrasts = _agg.build_contrasts(well, field, endpoints, absent, group_order_resolved,
                                      reference, labels, alpha,
-                                     all_pairs=all_pairs or len(group_order_resolved) > 2)
+                                     all_pairs=all_pairs or len(group_order_resolved) > 2, nuclei=data["nuclei"])
     if persisted is not None:
         contrasts = _agg.retain_descriptive_panel_policy(contrasts,added_endpoints)
     if dapi is not None:
@@ -691,6 +691,8 @@ def build_report(run_dir: Path, out_dir: Optional[Path] = None,
                                            engine_repo, preset, alpha, group_colors,
                                            sec_outlier_k),
     }
+    from .sensitivities import outlier_sensitivity
+    sheets['FOV outlier sensitivity'] = outlier_sensitivity(field, contrasts, alpha)
     strike = {"Secondary-only": list(sec.index[sec["excluded"]])
               if "excluded" in sec.columns else []}
     localization = None

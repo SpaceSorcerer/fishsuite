@@ -25,6 +25,8 @@ SHEET_ORDER: List[str] = [
 ]
 
 SHEET_DESCRIPTION: Dict[str, str] = {
+    'Micrograph panels': 'Four native publication PNGs per representative arm: all channels, partner plus RNA, partner alone, RNA alone. Absolute paths, SHA256, recorded manual display windows and configured wavelength LUTs are retained. No DAPI-only panel.',
+    'FOV outlier sensitivity': 'Pre-specified sensitivity only; never applied to headline. Within each well and endpoint, flag leave-one-out |z| > 2.5 with at least 3 finite FOVs; sample SD of other FOVs; exclude at most one maximum per well. Zero SD yields signed infinity for a differing value, zero otherwise; ties use image name. Flag rows and well-mean Welch contrasts with and without exclusions.', 
     'Ratio intervals': 'Fixed-10 MIAT/QKI: R = (A_KD/A_NT)/(T_KD/T_NT), using six matched well means per arm and within-arm A,T covariance. Marginal normal log-delta 95% intervals are not exact-test inversions or simultaneous intervals. All q95 ratio tests remain exploratory.',
     'Retention sensitivity': 'Policy-specific plug-in normal R-MDE at 80% power, alpha .05 and .05/8, with SE and covariance. Detection thresholds around R=1 are not observed-CI limits, equivalence margins, or exact-permutation power.',
     'Coverage': 'Fixed-10 policy-specific observed, candidate, usable and positive counts, with separate noncandidate, candidate-unusable, usable-negative and usable-positive states. Well coverage ratios have finite n, SD and arm t intervals; unknown calls are never negative biology.',
@@ -45,7 +47,7 @@ SHEET_DESCRIPTION: Dict[str, str] = {
         "What this workbook is, which fishsuite run produced it, how the replicate "
         "structure works and what each other sheet holds. Read the replicate-unit row "
         "before reading any p-value: the well is the biological replicate and every "
-        "test runs on well means."),
+        "headline gate runs on well means; additional tests are labeled sensitivity."),
     "Spots per nucleus by group": (
         "How much signal each nucleus carries, compared between condition groups: "
         "puncta counted per nucleus, punctum size, and absolute intensity. One row per "
@@ -67,22 +69,22 @@ SHEET_DESCRIPTION: Dict[str, str] = {
         "molecular association."),
     "Per well": (
         "One row per endpoint and well. The well mean of that well's field values is "
-        "the point every test is run on, so this sheet is the input to the Contrasts "
+        "the point the headline Welch gate is run on, so this sheet is the input to the Contrasts "
         "sheet. Nucleus counts before and after any usability filter are carried "
         "alongside, so a filtered endpoint cannot hide how much it dropped."),
     "Per field": (
         "One row per endpoint and field of view. A field is a technical replicate "
-        "within a well and is never tested directly; field values are averaged into "
+        "within a well; direct FOV Welch is a technical-level sensitivity only. Field values are averaged into "
         "the well means on the Per well sheet. The nucleus count per field and the "
         "quality-control floor it was checked against are both recorded."),
     "Per nucleus": (
         "cyto_spot_count and nuclear_spot_fraction are legacy_mask_only when DAPI-corrected columns are present. "
         "The measurement level: one row per segmented nucleus, with its image, well, "
         "condition group and every per-nucleus endpoint column. Nuclei are "
-        "pseudoreplicates and are never tested directly; they are here so any well "
+        "measurement units; the mixed-model sensitivity accounts for well and nested FOV clustering. Any well "
         "mean can be traced back to the nuclei that produced it."),
     "Contrasts": (
-        "Every endpoint tested between condition groups, in full. Welch t on well "
+        "Sensitivity analyses: added after inspection of the data; the pre-specified gate is Welch on well means. Mixed model uses REML with arm fixed, well and FOV-within-well random intercepts; two-sided asymptotic Wald p. Student uses pooled variance on well means; FOV Welch is technical-level only. Every endpoint tested between condition groups, in full. Welch t on well "
         "means with Hedges g and a 95 percent interval, the raw p, the "
         "Holm-adjusted p within its endpoint family, and the minimum detectable "
         "effect at this number of wells. Exact permutation of well labels and Tukey on "

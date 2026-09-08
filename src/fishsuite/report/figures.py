@@ -534,7 +534,7 @@ def draw_superplot(ax, ctx: FigureContext, endpoint: str, well: pd.DataFrame,
         g_num = pd.to_numeric(g, errors="coerce")
         g_txt = (f", Hedges g {float(g_num):.3g}" if np.isfinite(g_num) else "")
         p_lines.append(f"{group} vs {ctx.reference}: raw Welch p {fmt_p(p_raw)} "
-                       f"(the star), {holm_txt}{g_txt}, {mde_txt}.")
+                       f"(the star), {holm_txt}{g_txt}, {mde_txt}; mixed model p = {fmt_p(r0.get('sensitivity_mixed_p', np.nan))}.")
         ax.set_ylim(bot - 0.08 * span, row_star + 0.17 * span)
         level += 1
 
@@ -749,6 +749,7 @@ def draw_replicate_simple(ax, ctx: FigureContext, endpoint: str, well: pd.DataFr
                        f"Hedges g {number('hedges_g')}; MDE g (80% power, alpha .05) "
                        f"{number('mde_hedges_g_alpha_0p05')}, family alpha "
                        f"{number('mde_hedges_g_at_family_alpha')}; "
+                       f"mixed model p = {fmt_p(r.get('sensitivity_mixed_p', np.nan))}; "
                        f"usability filter: {r.get('usability_filter', 'none')}.")
         level += 1
     set_axis("focus")
@@ -1397,3 +1398,42 @@ def composite_main(ctx: FigureContext, specs: Sequence[dict], panels: List[dict]
                 "micrographs.",
                 "Per nucleus / Per field / Per well / Contrasts sheets and the run's "
                 "publication images")
+
+
+def publication_panel_paths(pub_dir, stem, cfg):
+    """Four exact native PNGs; channel roles and manual windows come from config."""
+    from fishsuite.core.output import sanitize_label_for_filename
+    from .provenance import sha256
+    ch, output = cfg['channels'], cfg['output']
+    partner = 'antibody' if ch['analysis_mode'] == 'rna_protein' else 'rna2'
+    def token(label):
+        return sanitize_label_for_filename(label)
+    rna, second = ch['rna_label'], ch[partner+'_label']
+    windows = {}
+    for role in ['dapi','rna',partner]:
+        lo, hi = output.get('manual_'+role+'_min'), output.get('manual_'+role+'_max')
+        if lo is None or hi is None or not np.isfinite([lo,hi]).all() or hi <= lo:
+            raise ValueError('missing or invalid recorded manual display window: '+role)
+        windows[role] = [lo,hi]
+    specs = [('All channels','merge_all'), (second+' + '+rna, 'merge_'+token(rna)+'_'+token(second)),
+             (second,token(second)+'_'+ch[partner+'_lut']), (rna,token(rna)+'_'+ch['rna_lut'])]
+    rows = []
+    for title, suffix in specs:
+        path = Path(pub_dir)/(stem+'__'+suffix+'.png')
+        if not path.is_file():
+            raise FileNotFoundError('missing exact publication panel: '+str(path))
+        rows.append(dict(panel=title,path=str(path.resolve()),sha256=sha256(path),
+                         display_windows=str(windows),luts=str({k:ch.get(k+'_lut') for k in ['dapi','rna',partner]})))
+    return rows
+
+
+def draw_publication_panels(axes, panels, group):
+    """One arm row, four channels; retain native calibrated bar on composite."""
+    if len(panels) != 4 or len(axes) != 4:
+        raise ValueError('micrographs require exactly four panels per row')
+    for i, (ax, panel) in enumerate(zip(axes,panels)):
+        pixels = plt.imread(panel['path'])
+        # Native bundle panels already include calibrated bars and configured LUTs.
+        ax.imshow(pixels)
+        ax.set_title((group+' | ' if i == 0 else '')+panel['panel'],fontsize=9)
+        ax.axis('off')

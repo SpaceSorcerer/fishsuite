@@ -538,7 +538,7 @@ def build_contrasts(well: pd.DataFrame, field: pd.DataFrame,
                     endpoints: Sequence[_ep.Endpoint], absent: Sequence[str],
                     group_order: Sequence[str], reference: str,
                     labels: Dict[str, str], alpha: float = ALPHA,
-                    all_pairs: bool = False) -> pd.DataFrame:
+                    all_pairs: bool = False, nuclei: Optional[pd.DataFrame] = None) -> pd.DataFrame:
     """Every non-reference group against the reference, on well means.
 
     The star on a figure comes from ``p_welch``. ``p_welch_holm_within_family`` is
@@ -580,6 +580,8 @@ def build_contrasts(well: pd.DataFrame, field: pd.DataFrame,
                       if k not in ("n_test", "n_ref")})
             r.update(exact_permutation(test_v, ref_v))
             fsub = field[field["endpoint"] == ep.name] if len(field) else field
+            from .sensitivities import scalar_sensitivities
+            r.update(scalar_sensitivities(ep, nuclei, fsub, test_v, ref_v, test, ref_group))
             # Tukey is fitted over EVERY group in the design, not just this pair;
             # its adjustment is a studentized range over k groups, so a two-group
             # fit inside a five-group design would understate the p-value.
