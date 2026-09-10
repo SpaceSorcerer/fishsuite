@@ -529,6 +529,20 @@ def resolve_rna_pedestal(
     return reference, factors, len(bio), fell_back
 
 
+def _validate_output_stems(images):
+    """Refuse ambiguous image artifact paths before reading any image pixels."""
+    prefix = _compute_common_filename_prefix([im.path.stem for im in images])
+    seen, stems = {}, {}
+    for im in images:
+        stem = _stem_with_condition(_simplify_stem(im.path.stem, prefix), im.condition)
+        key = stem.casefold()
+        if key in seen:
+            raise ValueError(f'Per-image output filename collision: {seen[key]} and {im.path}; use distinct source/well labels or basenames')
+        seen[key] = str(im.path)
+        stems[str(im.path)] = stem
+    return stems
+
+
 def run_batch(
     config_path: Path,
     input_dir: Path,
@@ -641,29 +655,8 @@ def run_batch(
     subset = list(getattr(cfg, "input_file_subset", None) or [])
     if subset:
         total = len(images)
-        # Normalise the subset entries for matching: stripped, forward-slash.
-        norm = set()
-        names_only = set()
-        for s in subset:
-            s2 = str(s).replace("\\", "/").strip()
-            if not s2:
-                continue
-            norm.add(s2)
-            names_only.add(Path(s2).name)
-        kept: list = []
-        for im in images:
-            ip = Path(im.path)
-            full_norm = ip.as_posix()
-            try:
-                rel_norm = ip.relative_to(input_dir).as_posix()
-            except Exception:
-                rel_norm = ""
-            if (
-                im.path.name in names_only
-                or full_norm in norm
-                or (rel_norm and rel_norm in norm)
-            ):
-                kept.append(im)
+        from .config.hierarchy import select_inputs
+        kept = select_inputs(images, input_dir, subset)
         _console.print(
             f"[bold]fishsuite v{__version__}[/bold] — found {total} images, "
             f"input_file_subset filter -> kept [bold]{len(kept)}[/bold] of {total}"
@@ -678,6 +671,23 @@ def run_batch(
         _console.print(f"[bold]fishsuite v{__version__}[/bold] — found [bold]{len(images)}[/bold] images")
     for im in images:
         _console.print(f"  {im.path.name:40s}  condition={im.condition!r:18s}  sec_only={im.sec_only}")
+
+    from .config.hierarchy import discovery_roster, annotate_frame, set_result_identity
+    hierarchy = discovery_roster(images, input_dir, cfg.conditions)
+    if cfg.output.pub_contrast_mode == 'reference_image':
+        names = [im.path.name for im in images]
+        for reference in (cfg.output.manual_rna_reference_image, cfg.output.manual_rna2_reference_image):
+            if reference and names.count(reference) > 1:
+                raise ValueError(f'Ambiguous reference-image basename {reference!r}; use distinct image basenames for reference_image contrast mode')
+    _output_stems = _validate_output_stems(images)
+    hierarchy['output_stem'] = hierarchy.source_path.map(lambda path: prefix + _output_stems[path])
+    hierarchy.to_csv(output_dir / 'resolved_experiment_hierarchy.csv', index=False)
+    _identity_by_path = dict(zip(hierarchy.source_path, hierarchy.image))
+    if cfg.conditions.groups:
+        for _group, _rows in hierarchy.loc[~hierarchy.secondary_only].groupby('group', sort=False):
+            _console.print(f"Condition {_group}: {_rows.well_id.nunique()} biological wells; {len(_rows)} technical FOVs")
+    else:
+        _console.print('[yellow]Biological condition grouping unspecified: legacy output; configure conditions.groups for well-based condition inference.[/yellow]')
 
     if dry_run:
         _console.print("[yellow]--dry-run set, exiting before processing.[/yellow]")
@@ -1803,6 +1813,10 @@ def run_batch(
                     **_mode_kwargs,
                 )
 
+                _image_identity = _identity_by_path[str(dimg.path)]
+                if _image_identity != dimg.path.name:
+                    set_result_identity(res, _image_identity)
+
                 # 2026-06-10: ADDITIVE per-image QC flags. Computed in the
                 # runner (one place) so every mode gets a consistent qc_*
                 # column set without touching any mode's per_image keys. Merged
@@ -2489,28 +2503,12 @@ def run_batch(
     spots_df = pd.concat(spots_dfs, ignore_index=True) if spots_dfs else pd.DataFrame()
     morph_df = pd.concat(morph_dfs, ignore_index=True) if morph_dfs else pd.DataFrame()
 
-    # 2026-09-04 Brian: CONDITION GROUPS. A condition is one WELL; a group is the
-    # condition several wells belong to. When conditions.groups is set, every
-    # master CSV that carries a `condition` column gains a `group` column right
-    # beside it, so downstream figures can treat the WELL as the replicate inside
-    # its group instead of pooling wells. Sec-only rows are never placed in a
-    # biological group. With no groups configured the column is not written at
-    # all, so legacy runs are byte-identical.
-    _groups_cfg = getattr(cfg.conditions, "groups", None) or {}
-    if _groups_cfg:
-        for _df in (per_image_df, nuclei_df, spots_df, morph_df):
-            if not len(_df) or "condition" not in _df.columns:
-                continue
-            _sec = (_df["secondary_only"].astype(bool)
-                    if "secondary_only" in _df.columns
-                    else pd.Series(False, index=_df.index))
-            _grp = _df["condition"].astype(str).map(cfg.conditions.group_of)
-            _df["group"] = _grp.where(~_sec, _REPORT_SEC_ONLY_GROUP)
-        _console.print(
-            "[green]Condition groups applied: "
-            + "; ".join(f"{g} = {', '.join(map(str, w))}"
-                        for g, w in _groups_cfg.items())
-            + "[/green]")
+    _groups_cfg = cfg.conditions.groups
+    if cfg.conditions.groups or cfg.conditions.well_from_image:
+        per_image_df = annotate_frame(per_image_df, hierarchy)
+        nuclei_df = annotate_frame(nuclei_df, hierarchy)
+        spots_df = annotate_frame(spots_df, hierarchy)
+        morph_df = annotate_frame(morph_df, hierarchy)
 
     per_image_df.to_csv(output_dir / f"{prefix}per_image_summary.csv", index=False)
     nuclei_df.to_csv(output_dir / f"{prefix}nuclei_metrics.csv", index=False)
@@ -2759,6 +2757,10 @@ def run_batch(
     # effort: stdout/stderr stream to a log file inside output_dir; runner
     # success is independent of this step's exit code (a downstream-only
     # failure should not bubble up as a batch failure).
+    import uuid
+    _condition_attempt = uuid.uuid4().hex
+    (output_dir / 'condition_output_status.json').write_text(json.dumps(dict(
+        status='running' if _groups_cfg else 'not_configured', attempt_id=_condition_attempt)), encoding='utf-8')
     try:
         import os as _os
         import subprocess as _sp
@@ -2798,7 +2800,7 @@ def run_batch(
             from .core.native_by_condition import finalize_native
             finalize_native(output_dir)
 
-        # Runner success stays independent of this step, but a silent failure
+        # Measurement output stays independent of this step, but a silent failure
         # here used to leave the run with no figures/ and no visible complaint.
         _figs = output_dir / "figures"
         _n_figs = len(list(_figs.rglob("*.png"))) if _figs.is_dir() else 0
@@ -2813,6 +2815,15 @@ def run_batch(
     except Exception as _exc:
         _console.print(f"[yellow]downstream failed[/yellow]: {_exc!r}")
 
+    from .core.native_by_condition import completed_attempt
+    _condition_complete = completed_attempt(output_dir, _condition_attempt)
+    _condition_status = dict(attempt_id=_condition_attempt, status=('complete' if _condition_complete else 'failed') if _groups_cfg else 'not_configured',
+                             hierarchy='condition -> biological well -> technical FOV',
+                             note='Measurement completion and grouped figure completion are separate.')
+    (output_dir / 'condition_output_status.json').write_text(json.dumps(_condition_status, indent=2), encoding='utf-8')
+    if _groups_cfg and not _condition_complete:
+        raise RuntimeError(f'Measurements saved in {output_dir}, but CONDITION FIGURES INCOMPLETE. See _downstream_plots.log and condition_output_status.json; retry native-figures into a new output directory.')
+
     # Grouped native output is finalized by the downstream module using the
     # report renderer; no additional, competing by_group plots are emitted.
 
@@ -2822,5 +2833,6 @@ def run_batch(
         n_spots=int(len(spots_df)),
         failures=failures,
         runtime_s=run_config["runtime_s"],
+        condition_output_status=_condition_status["status"],
         output_dir=str(output_dir),
     )

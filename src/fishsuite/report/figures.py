@@ -1195,6 +1195,21 @@ def read_luts(run_dir: Path, pub_dir: Optional[Path]):
 
 def merge_png_for(pub_dir: Path, image: str):
     """The all-channel merge PNG for one image, plus the per-image output stem."""
+    # New runs record the exact persisted stem, including any output prefix.
+    # This avoids picking another well's similarly named FOV by suffix.
+    for filename in ('resolved_experiment_hierarchy.csv', 'per_image_summary.csv'):
+        roster_path = Path(pub_dir).parent / filename
+        if roster_path.is_file():
+            roster = pd.read_csv(roster_path)
+            if {'image', 'output_stem'} <= set(roster):
+                rows = roster.loc[roster.image.astype(str).eq(str(image)), 'output_stem'].dropna().unique()
+                if len(rows) > 1:
+                    raise ValueError(f'Ambiguous recorded publication stem for {image}')
+                if len(rows) == 1:
+                    path = Path(pub_dir) / (str(rows[0]) + '__merge_all.png')
+                    if not path.is_file():
+                        raise FileNotFoundError(f'Missing recorded publication image: {path}')
+                    return str(path), str(rows[0]) + '__'
     core = str(image)
     if "." in os.path.basename(core):
         core = os.path.splitext(core)[0]
@@ -1208,6 +1223,8 @@ def merge_png_for(pub_dir: Path, image: str):
                           -merge.count("_"), f, "__".join(parts[:2]) + "__"))
     if not cands:
         return None
+    if len({candidate[4] for candidate in cands}) > 1:
+        raise ValueError(f'Ambiguous publication image for {image}; a recorded output_stem is required')
     cands.sort()
     return cands[0][3], cands[0][4]
 

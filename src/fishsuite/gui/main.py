@@ -382,7 +382,7 @@ if _QT_OK:
             v.addWidget(self.file_tree_summary)
 
             self.file_tree = QTreeWidget()
-            self.file_tree.setHeaderLabels(["File", "Condition", "Sec-only"])
+            self.file_tree.setHeaderLabels(["File", "Original source label", "Sec-only"])
             self.file_tree.setRootIsDecorated(True)
             self.file_tree.setAlternatingRowColors(True)
             self.file_tree.setMinimumHeight(220)
@@ -416,7 +416,7 @@ if _QT_OK:
 
             v.addWidget(SectionHeader(
                 "Conditions & dataset layout",
-                "Map subfolders (or filename patterns) to human-readable condition labels."
+                "Source labels are preserved; assign biological wells to WT/KO below."
             ))
             form = QFormLayout()
             self.cond_mode = QComboBox()
@@ -438,7 +438,7 @@ if _QT_OK:
             form.addRow("min_nuclei_for_stats", self.min_nuc)
             v.addLayout(form)
 
-            self.subf_box = QGroupBox("Subfolder → condition")
+            self.subf_box = QGroupBox("Subfolder → well / original source label")
             self.subf_box.setToolTip("Each row maps a folder name to a human-readable condition label.")
             sbv = QVBoxLayout(self.subf_box)
             self.subf_table = FolderConditionTable()
@@ -505,8 +505,116 @@ if _QT_OK:
             obv.addLayout(order_btns)
             v.addWidget(self.order_box)
 
+            v.addWidget(SectionHeader("Conditions / biological wells / technical FOVs",
+                "Assign biological wells to conditions such as WT and KO. FOVs are technical replicates."))
+            self.well_regex = QLineEdit()
+            self.well_regex.setPlaceholderText(r"Optional filename regex, one capture: _((?:WT|KO)-\d+)_")
+            self.well_regex.textChanged.connect(self._on_field_changed)
+            v.addWidget(QLabel("Recover biological well from filename (optional; blank uses source label)"))
+            v.addWidget(self.well_regex)
+            self.well_assignments = FolderConditionTable()
+            self.well_assignments._tbl.setHorizontalHeaderLabels(["Biological well ID", "Condition (WT, KO, …)"])
+            v.addWidget(self.well_assignments)
+            buttons = QHBoxLayout()
+            discover = QPushButton("Load discovered wells into assignment table")
+            discover.clicked.connect(self._load_discovered_wells)
+            apply = QPushButton("Apply well assignments")
+            apply.clicked.connect(self._apply_well_assignments)
+            preview = QPushButton("Preview condition / well / FOV hierarchy")
+            preview.clicked.connect(self._preview_hierarchy)
+            for button in (discover, apply, preview):
+                buttons.addWidget(button)
+            v.addLayout(buttons)
+            v.addWidget(QLabel("conditions.groups — YAML mapping: condition: [well1, well2]"))
+            self.run_groups = QPlainTextEdit("{}")
+            self.run_groups.setMaximumHeight(85)
+            self.run_groups.textChanged.connect(self._on_field_changed)
+            v.addWidget(self.run_groups)
+            self.hierarchy_status = QLabel("No grouping: legacy output. Configure biological wells for condition inference.")
+            self.hierarchy_status.setWordWrap(True)
+            v.addWidget(self.hierarchy_status)
+            self.hierarchy_tree = QTreeWidget()
+            self.hierarchy_tree.setHeaderLabels(["Condition → biological well → technical FOV", "Source label / file"])
+            self.hierarchy_tree.setMinimumHeight(190)
+            v.addWidget(self.hierarchy_tree)
             v.addStretch(1)
             self._register_tab("conditions", scroll, "Conditions")
+
+        def _hierarchy_roster(self, *, unassigned=False):
+            from fishsuite.config.schema import ConditionsCfg
+            from fishsuite.config.hierarchy import discovery_roster
+            from fishsuite.core.io import discover_inputs
+            cfg = self._read_widgets_into_cfg()
+            block = dict(cfg['conditions'])
+            if unassigned:
+                block['groups'] = {}
+            conditions = ConditionsCfg.model_validate(block)
+            root = Path(self.input_edit.text())
+            if not self.input_edit.text().strip() or not root.is_dir():
+                raise ValueError('Select the input directory first')
+            images = discover_inputs(root, subfolder_conditions=conditions.subfolder_conditions,
+                sec_only_folders=conditions.sec_only_folders, sec_only_files=conditions.sec_only_files,
+                filename_conditions=conditions.filename_conditions)
+            subset = cfg.get('input_file_subset') or []
+            if subset:
+                from fishsuite.config.hierarchy import select_inputs
+                images = select_inputs(images, root, subset)
+            if not images:
+                raise ValueError('No selected input FOVs found')
+            return discovery_roster(images, root, conditions)
+
+        def _load_discovered_wells(self):
+            try:
+                roster = self._hierarchy_roster(unassigned=True)
+                from .report_tab import parse_groups
+                owners = {w:g for g, wells in parse_groups(self.run_groups.toPlainText()).items() for w in wells}
+                self.well_assignments.load_dict({w:owners.get(w, '') for w in
+                    roster.loc[~roster.secondary_only, 'well_id'].unique()})
+                self.hierarchy_status.setText('Enter the condition for every biological well, then Apply well assignments.')
+            except (ValueError, OSError) as exc:
+                self.hierarchy_status.setText(str(exc))
+
+        def _apply_well_assignments(self):
+            try:
+                groups, seen = {}, set()
+                table = self.well_assignments._tbl
+                for r in range(table.rowCount()):
+                    well = table.item(r, 0).text().strip() if table.item(r, 0) else ''
+                    group = table.item(r, 1).text().strip() if table.item(r, 1) else ''
+                    if not well or not group or well in seen:
+                        raise ValueError('Every row needs a unique well ID and a condition; blank/duplicate assignments are invalid.')
+                    seen.add(well)
+                    groups.setdefault(group, []).append(well)
+                self.run_groups.setPlainText(yaml.safe_dump(groups, sort_keys=False))
+                self._preview_hierarchy()
+            except ValueError as exc:
+                self.hierarchy_status.setText(str(exc))
+
+        def _preview_hierarchy(self):
+            self.hierarchy_tree.clear()
+            try:
+                roster = self._hierarchy_roster()
+                declared = self._read_widgets_into_cfg()['conditions'].get('group_order') or []
+                order = [g for g in declared if g in set(roster.group)] + [g for g in roster.group.unique() if g not in declared]
+                for group in order:
+                    fields = roster.loc[roster.group.eq(group)]
+                    parent = QTreeWidgetItem([str(group), f'{fields.well_id.nunique()} wells; {len(fields)} technical FOVs'])
+                    self.hierarchy_tree.addTopLevelItem(parent)
+                    for well, images in fields.groupby('well_id', sort=False):
+                        child = QTreeWidgetItem([str(well), f'{len(images)} technical FOVs'])
+                        parent.addChild(child)
+                        for row in images.itertuples():
+                            child.addChild(QTreeWidgetItem([str(row.image), str(row.source_condition)]))
+                self.hierarchy_tree.expandToDepth(1)
+                bio = roster.loc[~roster.secondary_only]
+                status = f'{bio.group.nunique()} conditions; {bio.well_id.nunique()} biological wells; {len(bio)} technical FOVs; {roster.secondary_only.sum()} control FOVs.'
+                if not self._read_widgets_into_cfg()['conditions']['groups']:
+                    status = 'Biological grouping unspecified: legacy output. ' + status
+                self.hierarchy_status.setText(status)
+                return True
+            except (ValueError, OSError) as exc:
+                self.hierarchy_status.setText('Hierarchy invalid: ' + str(exc))
+                return False
 
         def _refresh_conditions_visibility(self) -> None:
             mode = self.cond_mode.currentText()
@@ -2065,11 +2173,7 @@ if _QT_OK:
             header.addWidget(self.run_output_label)
             v.addLayout(header)
 
-            v.addWidget(QLabel("conditions.groups — YAML mapping: condition: [well1, well2]"))
-            self.run_groups = QPlainTextEdit("{}")
-            self.run_groups.setMaximumHeight(85)
-            self.run_groups.textChanged.connect(self._on_field_changed)
-            v.addWidget(self.run_groups)
+            v.addWidget(QLabel("Set conditions → biological wells → technical FOVs on the Conditions tab."))
             # Run buttons
             btn_row = QHBoxLayout()
             self.run_btn = QPushButton("▶  Start")
@@ -2405,6 +2509,8 @@ if _QT_OK:
                 w_.blockSignals(False)
             # ---- conditions ----
             co = c.get("conditions", {})
+            self.well_regex.setText(co.get("well_from_image") or "")
+            self.well_assignments.load_dict({w:g for g, wells in (co.get("groups") or {}).items() for w in wells})
             self.run_groups.setPlainText(yaml.safe_dump(co.get("groups") or {}, sort_keys=False))
             self.cond_mode.blockSignals(True)
             self.cond_mode.setCurrentText(str(co.get("mode", "subfolders")))
@@ -2758,6 +2864,8 @@ if _QT_OK:
             }
             from .report_tab import parse_groups
             base["conditions"] = {
+                **self._cfg.get("conditions", {}),
+                "well_from_image": self.well_regex.text().strip() or None,
                 "groups": parse_groups(self.run_groups.toPlainText()),
                 "mode": self.cond_mode.currentText(),
                 "subfolder_conditions": self.subf_table.to_dict(),
@@ -3544,6 +3652,9 @@ if _QT_OK:
                 self._cfg = self._read_widgets_into_cfg()
             except (ValueError, yaml.YAMLError) as exc:
                 QMessageBox.warning(self, "Invalid conditions.groups", str(exc))
+                return
+            if not self._preview_hierarchy():
+                QMessageBox.warning(self, "Invalid experiment hierarchy", self.hierarchy_status.text())
                 return
             # Sanity recheck just before launching.
             statuses = _ready.evaluate_all(

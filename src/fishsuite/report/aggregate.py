@@ -69,11 +69,12 @@ def groups_from_run_config(cfg: dict) -> Tuple[Dict[str, str], List[str]]:
     except Exception:                                          # noqa: BLE001
         block = {}
     raw = (block or {}).get("groups") or {}
-    for name, wells in raw.items():
-        if name not in order:
-            order.append(name)
-        for w in wells or ():
-            well_to_group[str(w)] = str(name)
+    from fishsuite.config.hierarchy import group_mapping
+    try:
+        well_to_group = group_mapping(raw)
+    except ValueError as exc:
+        raise ReportInputError(str(exc)) from exc
+    order = list(raw)
     declared = (block or {}).get("group_order") or []
     if declared:
         order = [g for g in declared if g in order] + [g for g in order if g not in declared]
@@ -194,26 +195,11 @@ def label_frame(per_image: pd.DataFrame, well_to_group: Dict[str, str],
     if need:
         raise ReportInputError(
             f"per_image_summary.csv is missing {need}; this run cannot be grouped")
-    lab = per_image[["image", "condition", "secondary_only"]].copy()
-    lab["secondary_only"] = lab["secondary_only"].astype(bool)
-    if well_from_image:
-        rx = re.compile(well_from_image)
-        if rx.groups != 1:
-            raise ReportInputError(
-                f"--well-from-image must have exactly one capture group; "
-                f"{well_from_image!r} has {rx.groups}")
-        found = lab["image"].astype(str).str.extract(rx, expand=False)
-        missed = lab.loc[(~lab["secondary_only"]) & found.isna(), "image"].tolist()
-        if missed:
-            raise ReportInputError(
-                f"--well-from-image {well_from_image!r} matched no well in "
-                f"{len(missed)} biological image(s), first: {missed[:3]}")
-        lab["well_id"] = np.where(lab["secondary_only"], pd.NA, found)
-    else:
-        lab["well_id"] = np.where(lab["secondary_only"], pd.NA, lab["condition"])
-    lab["group"] = np.where(
-        lab["secondary_only"], SEC_ONLY_GROUP,
-        lab["condition"].map(lambda c: well_to_group.get(str(c), str(c))))
+    from fishsuite.config.hierarchy import resolve_hierarchy
+    try:
+        lab = resolve_hierarchy(per_image, well_to_group, well_from_image)
+    except ValueError as exc:
+        raise ReportInputError(str(exc)) from exc
     lab["field"] = lab["image"].astype(str).str.extract(FIELD_RE, expand=False)
     lab["sec_field"] = np.where(lab["secondary_only"], lab["image"].astype(str), pd.NA)
     lab["excluded_field"] = lab["image"].astype(str).isin(exclude_fields)
@@ -347,13 +333,15 @@ def load_run(run_dir: Path, well_to_group: Dict[str, str],
 
     if not well_to_group:
         well_to_group, _ = groups_from_run_config(cfg)
+    if well_from_image is None:
+        well_from_image = cfg.get('config_resolved', cfg).get('conditions', {}).get('well_from_image')
     labels = label_frame(per_image, well_to_group, exclude_fields, well_from_image)
     _vox = pd.to_numeric(nuclei.get("voxel_xy_um"), errors="coerce")
     voxel_xy_um = (float(_vox.dropna().median())
                    if _vox is not None and _vox.notna().any() else None)
     derived = spot_derived_per_nucleus(run_dir, thresholds, voxel_xy_um)
 
-    nuc = nuclei.drop(columns=[c for c in ("condition", "secondary_only", "group")
+    nuc = nuclei.drop(columns=[c for c in ("condition", "secondary_only", "group", "well_id", "source_condition", "field_id", "source_path", "output_stem")
                                if c in nuclei.columns], errors="ignore")
     nuc = nuc.merge(labels, on="image", how="left", validate="many_to_one")
     if len(derived):
@@ -452,7 +440,7 @@ def per_field_long(nuc: pd.DataFrame, per_image: pd.DataFrame,
     engine's own per-image row."""
     bio = nuc[~nuc["secondary_only"]].copy()
     lab = labels[["image", "group", "well_id", "secondary_only"]]
-    img = (per_image.drop(columns=["condition", "secondary_only", "group"], errors="ignore")
+    img = (per_image.drop(columns=["condition", "secondary_only", "group", "well_id", "source_condition", "field_id", "source_path", "output_stem"], errors="ignore")
            .merge(lab, on="image", how="left", validate="one_to_one"))
     img = img[~img["secondary_only"].astype(bool)]
     rows = []
