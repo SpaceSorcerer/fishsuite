@@ -201,8 +201,8 @@ else:
                                         if r.get('secondary_only', '').lower() not in ('true', '1', '1.0')})
                     groups = {well: [well] for well in wells}
                 self.groups_path.clear()
-                self.groups_editor.setPlainText(yaml.safe_dump({'groups': groups}, sort_keys=False))
-                self.log.appendPlainText('Run files found. Review condition groups before building.')
+                self.groups_editor.setPlainText(yaml.safe_dump({**conditions, 'groups': groups}, sort_keys=False))
+                self.log.appendPlainText('Run files found. Review conditions / biological wells / technical FOVs. Without saved groups the suggested identity map has one well per condition; assign wells before condition inference.')
             except (OSError, ValueError, KeyError) as exc:
                 self.log.appendPlainText(str(exc))
 

@@ -156,11 +156,28 @@ def classify_plane(dapi, retained, spots, nucleus_ids, voxel_um, min_area_px=160
                 mask=objects, threshold=threshold)
 
 
+def source_acquisition(staging, row):
+    """Follow recorded paths, or a source-relative field ID, before legacy folders."""
+    recorded = getattr(row, 'source_path', None)
+    if recorded and pd.notna(recorded):
+        source = Path(recorded)
+    elif Path(str(row.image)).parent != Path('.'):
+        source = Path(staging) / str(row.image)
+    else:
+        name = str(row.image)
+        folder = row.condition if not row.secondary_only else ('SecOnly_WT' if 'WT' in name else 'SecOnly_KO')
+        source = Path(staging) / folder / name
+        if not source.is_file() and (Path(staging)/name).is_file():
+            source = Path(staging)/name
+    if not source.is_file():
+        raise FileNotFoundError(f'missing explicitly rostered acquisition: {source}')
+    return source
+
+
 def build_dapi(run_dir, out_dir, data):
     """Read only named staged acquisitions and persisted masks from the roster."""
     import tifffile
     from fishsuite.core.io import read_image, extract_channel_at_z
-    from .figures import merge_png_for
     run_dir, out_dir = Path(run_dir), guard_output(Path(out_dir))
     out_dir.mkdir(parents=True, exist_ok=True)
     cache = out_dir/'dapi_cache_manifest.json'
@@ -185,14 +202,12 @@ def build_dapi(run_dir, out_dir, data):
     sources, fields = [], []
     for row in data['per_image'].itertuples():
         name = row.image
-        folder = row.condition if not row.secondary_only else ('SecOnly_WT' if 'WT' in name else 'SecOnly_KO')
-        source = staging/folder/name
-        if not source.is_file():
-            raise FileNotFoundError(f'missing explicitly rostered acquisition: {source}')
-        hit = merge_png_for(run_dir/'publication_images', name)
-        if hit is None:
-            raise FileNotFoundError(f'missing persisted publication-image stem for {name}')
-        mask_path = run_dir/'masks'/(hit[1]+'nuclei_label_mask.tif')
+        source = source_acquisition(staging, row)
+        stem = getattr(row, 'output_stem', None)
+        if not stem or pd.isna(stem):
+            from .micrograph_slides import _native_stem
+            stem = _native_stem(run_dir/'publication_images', name, getattr(row, 'source_condition', row.condition))
+        mask_path = run_dir/'masks'/(stem+'__nuclei_label_mask.tif')
         retained = tifffile.imread(mask_path)
         image = read_image(source)
         plane = extract_channel_at_z(image, channel, z_1indexed=int(row.z_plane))

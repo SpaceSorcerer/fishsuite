@@ -78,7 +78,7 @@ def test_label_frame_keeps_sec_only_out_of_every_biological_group():
     })
     lab = agg.label_frame(per_image, {"WT_1": "WT", "KO_1": "QKI-KO"}, {})
     assert list(lab["group"]) == ["WT", "QKI-KO", agg.SEC_ONLY_GROUP]
-    assert lab.loc[2, "well_id"] is pd.NA or pd.isna(lab.loc[2, "well_id"])
+    assert lab.loc[2, "well_id"] == "Sec-Only"  # control identity retained outside biological groups
     assert list(lab["field"]) == ["01", "02", "03"]
 
 

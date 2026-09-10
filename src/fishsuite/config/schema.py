@@ -40,6 +40,7 @@ class ConditionsCfg(BaseModel):
     #     - ["-NT_", "NT ASO"]
     #     - ["-MIAT-KD_", "KD ASO"]
     filename_conditions: List[List[str]] = Field(default_factory=list)
+    well_from_image: Optional[str] = None
     condition_order: List[str] = Field(default_factory=list)
     min_nuclei_for_stats: int = 6
     # 2026-09-04 Brian: CONDITION GROUPS. A condition (above) is one WELL. A
@@ -64,6 +65,8 @@ class ConditionsCfg(BaseModel):
 
     @model_validator(mode='after')
     def validate_groups(self):
+        from .hierarchy import well_pattern
+        well_pattern(self.well_from_image)
         owners = {}
         for group, wells in self.groups.items():
             if not group.strip() or not wells or any(not w.strip() for w in wells):

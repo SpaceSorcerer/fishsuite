@@ -92,6 +92,26 @@ def experiment_status(cfg: Dict[str, Any], *, input_dir: str, output_base: str, 
 
 
 def conditions_status(cfg: Dict[str, Any], *, input_dir: str) -> Status:
+    from fishsuite.config.schema import ConditionsCfg
+    from fishsuite.config.hierarchy import discovery_roster
+    try:
+        conditions = ConditionsCfg.model_validate(cfg.get('conditions', {}))
+        if conditions.groups and input_dir and Path(input_dir).is_dir():
+            from fishsuite.core.io import discover_inputs
+            root = Path(input_dir)
+            images = discover_inputs(root, subfolder_conditions=conditions.subfolder_conditions,
+                sec_only_folders=conditions.sec_only_folders, sec_only_files=conditions.sec_only_files,
+                filename_conditions=conditions.filename_conditions)
+            subset = cfg.get('input_file_subset') or []
+            if subset:
+                from fishsuite.config.hierarchy import select_inputs
+                images = select_inputs(images, root, subset)
+            if not images:
+                return 'red'
+            discovery_roster(images, root, conditions)
+            return 'green'
+    except (ValueError, OSError):
+        return 'red'
     mode = _g(cfg, "conditions", "mode", default="subfolders")
     if mode == "subfolders":
         sub = _g(cfg, "conditions", "subfolder_conditions", default={}) or {}

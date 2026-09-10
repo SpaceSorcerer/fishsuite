@@ -54,15 +54,11 @@ def _load(run: Path, groups: ConditionsCfg):
     if image.image.duplicated().any():
         raise ValueError('duplicate image identities in per_image_summary.csv')
     image['secondary_only'] = image.secondary_only.astype(str).str.lower().isin(['true','1','1.0'])
-    mapping = {w:g for g, wells in groups.groups.items() for w in wells}
-    missing = set(mapping) - set(image.condition.astype(str))
-    if missing:
-        raise ValueError(f'declared wells missing from run: {sorted(missing)}')
-    labels = agg.label_frame(image, mapping, {})
-    # Controls stay visible as their source well, but never enter contrasts.
-    labels['well_id'] = image.condition.astype(str)
+    from fishsuite.config.hierarchy import resolve_hierarchy, group_mapping
+    labels = resolve_hierarchy(image, group_mapping(groups.groups), groups.well_from_image, strict=True)
+    labels = agg.label_frame(labels, group_mapping(groups.groups), {}, groups.well_from_image)
     nuclei = nuclei.drop(columns=['condition','secondary_only','group','well_id','field',
-                                   'excluded_field','exclusion_reason','sec_field'], errors='ignore')
+                                   'excluded_field','exclusion_reason','sec_field','source_condition','field_id','source_path','output_stem'], errors='ignore')
     nuclei = nuclei.merge(labels, on='image', how='left', validate='many_to_one')
     if nuclei.group.isna().any():
         raise ValueError('nucleus image absent from per_image_summary.csv')
@@ -146,13 +142,19 @@ def _render(run: Path, out: Path, groups: ConditionsCfg):
     opts = dict(engine='openpyxl', mode='a', if_sheet_exists='replace') if workbook.exists() else dict(engine='openpyxl')
     with pd.ExcelWriter(workbook, **opts) as writer:
         conditions.to_excel(writer,sheet_name='Per condition',index=False)
-        if 'Per well' not in writer.sheets:
-            wells.to_excel(writer,sheet_name='Per well',index=False)
-        if 'Per image' not in writer.sheets:
-            fields.to_excel(writer,sheet_name='Per image',index=False)
+        wells.to_excel(writer,sheet_name='Per well',index=False)
+        fields.to_excel(writer,sheet_name='Per image',index=False)
         contrasts.to_excel(writer,sheet_name='Condition contrasts',index=False)
     conditions.to_csv(out/'per_condition_summary.csv',index=False)
-    provenance = dict(run=str(run), groups=groups.model_dump(),
+    fields.to_csv(out/'per_field_condition_summary.csv', index=False)
+    wells.to_csv(out/'per_well_condition_summary.csv', index=False)
+    from fishsuite.config.hierarchy import resolve_hierarchy, group_mapping
+    full_roster = resolve_hierarchy(pd.read_csv(run/'per_image_summary.csv'),
+        group_mapping(groups.groups), groups.well_from_image, strict=True)
+    full_roster.to_csv(out/'condition_report_hierarchy.csv', index=False)
+    attempt_path = run/'condition_output_status.json'
+    attempt = json.loads(attempt_path.read_text(encoding='utf-8')).get('attempt_id') if attempt_path.is_file() else None
+    provenance = dict(run=str(run), groups=groups.model_dump(), attempt_id=attempt,
         policy='Grouping only: source CSV values retained; YAML peak floors and nucleus filters are not applied.',
         hierarchy='nucleus -> FOV mean -> well mean -> condition mean; SD across well means',
         sources={name:hashlib.sha256((run/name).read_bytes()).hexdigest()
@@ -160,6 +162,20 @@ def _render(run: Path, out: Path, groups: ConditionsCfg):
         figures=manifest)
     (out/'native_by_condition.json').write_text(json.dumps(provenance,indent=2),encoding='utf-8')
     return dict(out=out,conditions=conditions,contrasts=contrasts)
+
+
+def completed_attempt(run, attempt_id):
+    """An old manifest from a resumed run cannot satisfy this attempt."""
+    path = Path(run)/'native_by_condition.json'
+    if not path.is_file():
+        return False
+    try:
+        record = json.loads(path.read_text(encoding='utf-8'))
+        return record.get('attempt_id') == attempt_id and all(
+            hashlib.sha256((Path(run)/name).read_bytes()).hexdigest() == digest
+            for name, digest in record['sources'].items())
+    except (OSError, ValueError, KeyError):
+        return False
 
 
 def _frozen(run: Path) -> bool:
