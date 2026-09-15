@@ -180,8 +180,18 @@ def completed_attempt(run, attempt_id):
 
 def _frozen(run: Path) -> bool:
     # Only inspect the run and its ancestors, never recursively search data drives.
-    markers = ('*manifest*','*ledger*','REPORT_LOCK.json','*frozen*')
-    return any(p.is_file() for root in [run,*run.parents] for pattern in markers for p in root.glob(pattern))
+    def marker(name: str) -> bool:
+        folded = name.casefold()
+        return ('manifest' in folded or 'ledger' in folded or
+                folded == 'report_lock.json' or 'frozen' in folded)
+
+    for root in [run, *run.parents]:
+        try:
+            if any(p.is_file() and marker(p.name) for p in root.iterdir()):
+                return True
+        except OSError:
+            continue
+    return False
 
 
 def regenerate(run: Path, groups: ConditionsCfg, out: Path | None = None):
