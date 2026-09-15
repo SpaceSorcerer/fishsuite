@@ -121,8 +121,32 @@ def validate_deck(workbook: Path, spec: dict) -> list:
     return resolved
 
 
-def speaker_notes(workbook, definition):
+NOTES_TRAILER_DEFAULTS = {
+    'replicate_unit': 'Nuclei are measurement units, FOVs are technical replicates, and well means are biological replicates',
+    'headline_statistic': 'the headline is the nucleus-level mixed model',
+    'decision_line': 'Mixed-model headline decision 2026-09-07 after data inspection; Welch on well means remains reported. Student and FOV Welch are sensitivities.',
+    'no_contrast_line': 'No endpoint contrast is displayed on this slide.',
+}
+
+
+def _resolve_notes_trailer(overrides):
+    """Resolve declared speaker-note text while rejecting unknown fields."""
+    resolved = dict(NOTES_TRAILER_DEFAULTS)
+    for key, value in dict(overrides or {}).items():
+        if key not in resolved:
+            raise ReportInputError(f'unknown notes_trailer key: {key}')
+        if value is not None:
+            resolved[key] = str(value)
+    return resolved
+
+
+def _sentence(text):
+    return text if text.endswith(('.', '!', '?')) else text + '.'
+
+
+def speaker_notes(workbook, definition, notes_trailer=None):
     """Short spoken summary from already validated workbook cells, never cell refs."""
+    trailer = _resolve_notes_trailer(notes_trailer)
     if definition.get('identity') in ('simple_coloc','cytofluorogram'):
         groups={}
         for item in definition.get('values',[]):
@@ -170,13 +194,19 @@ def speaker_notes(workbook, definition):
     else:
         readouts = [str(v['value']) for v in definition.get('values',[]) if v.get('label') == 'readout']
         notes.extend(readouts or ['This slide describes the recorded measurements and study design.'])
-        notes.append('No endpoint contrast is displayed on this slide.')
-        levels.append('Nuclei are measurement units, FOVs are technical replicates, and well means are biological replicates; the headline is the nucleus-level mixed model.')
-    return '\n'.join(notes + ['', 'Levels of comparison'] + levels + ['Mixed-model headline decision 2026-09-07 after data inspection; Welch on well means remains reported. Student and FOV Welch are sensitivities.'])
+        if trailer['no_contrast_line']:
+            notes.append(trailer['no_contrast_line'])
+        clauses = [c for c in (trailer['replicate_unit'], trailer['headline_statistic']) if c]
+        if clauses:
+            levels.append(_sentence('; '.join(clauses)))
+    decision = [trailer['decision_line']] if trailer['decision_line'] else []
+    return '\n'.join(notes + ['', 'Levels of comparison'] + levels + decision)
 
 
-def build_deck(workbook: Path, spec: dict, destination: Path) -> Path:
+def build_deck(workbook: Path, spec: dict, destination: Path,
+               notes_trailer: dict | None = None) -> Path:
     destination = guard_output(destination)
+    trailer = notes_trailer if notes_trailer is not None else spec.get('notes_trailer')
     sources_path = guard_output(destination.with_name('slide_sources.csv'))
     slides = validate_deck(workbook, spec)
     try:
@@ -195,7 +225,7 @@ def build_deck(workbook: Path, spec: dict, destination: Path) -> Path:
         box.text_frame.word_wrap = True
         for paragraph in box.text_frame.paragraphs:
             paragraph.font.name, paragraph.font.size = 'Arial', Pt(23)
-        notes = speaker_notes(workbook, definition)
+        notes = speaker_notes(workbook, definition, trailer)
         for item in definition['values']:
             sources.append(dict(slide=number, workbook=workbook_path,
                                 sheet=item['sheet'], cell=item['cell'], value=item['value']))

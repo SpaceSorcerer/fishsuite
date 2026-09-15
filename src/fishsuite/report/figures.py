@@ -645,7 +645,8 @@ def draw_replicate_simple(ax, ctx: FigureContext, endpoint: str, well: pd.DataFr
                           contrasts: pd.DataFrame, ylabel: str, nuc_column: Optional[str],
                           scale: float = 1.0, clip_pct: Optional[float] = None,
                           compact: bool = False, hline_at: Optional[float] = None,
-                          hline_label: str = "") -> str:
+                          hline_label: str = "",
+                          bracket: Optional[dict] = None) -> str:
     """Draw persisted well means without recomputing statistics or using nuclei.
 
     ``clip_pct`` is deliberately unused: a nucleus percentile must never hide a
@@ -690,6 +691,7 @@ def draw_replicate_simple(ax, ctx: FigureContext, endpoint: str, well: pd.DataFr
                           nuc_column=nuc_column, scale=scale, ylabel=ylabel,
                           contrasts=rows.copy())
     seen, counts, well_values, mean_bars = [], [], [], []
+    column_tops: Dict[int, float] = {}
     for xi, group in enumerate(ctx.group_order):
         col = ctx.colors[group]
         wells = pw[pw["group"] == group].sort_values("well_id") if len(pw) else pw
@@ -722,8 +724,10 @@ def draw_replicate_simple(ax, ctx: FigureContext, endpoint: str, well: pd.DataFr
                             elinewidth=1, capsize=3, capthick=1, zorder=3,
                             label=f"group-sd:{group}")
                 seen.extend([mean - sd, mean + sd])
+                column_tops[xi] = max(column_tops.get(xi, -np.inf), mean + sd)
             seen.extend(wm)
             well_values.extend(wm)
+            column_tops[xi] = max(column_tops.get(xi, -np.inf), float(wm.max()))
         nn = (int(pd.to_numeric(fields["n_nuclei_nonmissing"], errors="coerce").sum())
               if len(fields) and "n_nuclei_nonmissing" in fields else None)
         level = str(fields.iloc[0].get("level", "nucleus")) if len(fields) else ""
@@ -765,6 +769,7 @@ def draw_replicate_simple(ax, ctx: FigureContext, endpoint: str, well: pd.DataFr
     percent = (fraction_scale(endpoint) == 100 or '%' in unit) and 'minus_shuffle' not in endpoint
     zoom = percent and bool(well_values) and (low if grouped else min(well_values)) > 50
     brackets = []
+    explicit_brackets = []
 
     def set_axis(variant):
         focused = variant == "focus"
@@ -780,7 +785,8 @@ def draw_replicate_simple(ax, ctx: FigureContext, endpoint: str, well: pd.DataFr
             if low >= 0:
                 bottom = max(0., bottom)
             base_top = (np.floor(high / step) + 1) * step
-        count = max(1, len(ctx.group_order)-1) if grouped else len(brackets)
+        count = (max(1, len(ctx.group_order)-1) if grouped
+                 else len(brackets) + len(explicit_brackets))
         reserve = .42 + .14 * max(count - 1, 0)
         span = max(base_top - bottom, (high - bottom) / max(.1, 1. - reserve)) if count else base_top - bottom
         top = bottom + span
@@ -791,6 +797,12 @@ def draw_replicate_simple(ax, ctx: FigureContext, endpoint: str, well: pd.DataFr
             y = high + (.13 + .14 * level) * span
             line.set_ydata([y, y])
             text.set_y(y + .02 * span)
+        for bar, left, right, label, base, tick in explicit_brackets:
+            y = base + .09 * span
+            bar.set_ydata([y, y])
+            for stem in (left, right):
+                stem.set_ydata([y - tick * span, y])
+            label.set_y(y + .015 * span)
         ax.set_ylim(bottom, top)
         for bar, mean in mean_bars:
             bar.set_y(bottom)
@@ -799,6 +811,20 @@ def draw_replicate_simple(ax, ctx: FigureContext, endpoint: str, well: pd.DataFr
             ax.set_yticks(np.arange(bottom, 101, step))
 
     ax._replicate_simple_axis = set_axis
+    if bracket:
+        x0, x1 = int(bracket["x0"]), int(bracket["x1"])
+        base = max(column_tops.get(x0, high), column_tops.get(x1, high))
+        tick = float(bracket.get("tick", .02))
+        colour = OKABE_ITO["grey"]
+        bar, = ax.plot([x0, x1], [base, base], color=colour, linewidth=1.0, zorder=6)
+        left, = ax.plot([x0, x0], [base, base], color=colour, linewidth=1.0, zorder=6)
+        right, = ax.plot([x1, x1], [base, base], color=colour, linewidth=1.0, zorder=6)
+        label = ax.text((x0 + x1) / 2., base, str(bracket.get("label", "")),
+                        ha="center", va="bottom", fontsize=9, color=colour)
+        for artist, gid in ((bar, "bar"), (left, "tick0"), (right, "tick1"),
+                            (label, "label")):
+            artist.set_gid(f"bracket:{gid}")
+        explicit_brackets.append((bar, left, right, label, base, tick))
     ref_x = ctx.group_order.index(ctx.reference)
     details, level = [], 0
     for xi, group in enumerate(ctx.group_order):
@@ -852,22 +878,57 @@ def draw_plot(ax, ctx: FigureContext, *args, **kwargs) -> str:
     return draw(ax, ctx, *args, **kwargs)
 
 
-def layout_replicate_simple(fig, ax, ctx, title, foot):
-    """One fixed 11-point title; shortening is declared in the endpoint registry."""
+FOOTER_MIN_PT = 6.0
+FOOTER_WRAP = 110
+
+
+def footer_wrap_chars(fig, size: float = FOOTER_MIN_PT, family: str = "sans") -> int:
+    """Return a readable line width for the current figure size."""
+    char = .60 if str(family).startswith("mono") else .50
+    return max(40, min(FOOTER_WRAP, int((fig.get_figwidth() - .40) * 72.0 / (size * char))))
+
+
+def layout_replicate_simple(fig, ax, ctx, title, foot, footer_lines=None,
+                            footer_family="monospace", footer_wrap=None):
+    """Lay out a replicate figure with optional readable provenance lines."""
     from .endpoints import SHORT_TITLE_TEXT
     title = SHORT_TITLE_TEXT.get(title, title)
     heading = fig.text(.5, .98, ' '.join(title.split()),
                        ha='center', va='top', fontsize=11, fontweight='bold')
     footer = fig.text(.02, .018, ' '.join(foot.split()) + '; run ' + ctx.run_name,
                       fontsize=6, va='bottom')
+    block = None
+    if footer_lines:
+        wrap = footer_wrap_chars(fig, FOOTER_MIN_PT, footer_family)
+        wrapped = []
+        for line in footer_lines:
+            wrapped.extend(textwrap.wrap(' '.join(str(line).split()), wrap) or [''])
+        block = fig.text(.02, .014, '\n'.join(wrapped), fontsize=FOOTER_MIN_PT,
+                         va='bottom', family=footer_family, color='#333333',
+                         linespacing=1.45)
+        fig.canvas.draw()
+        footer.set_y(.014 + block.get_window_extent().height / fig.bbox.height + .014)
+    wrap_footer = bool(footer_lines) if footer_wrap is None else bool(footer_wrap)
     fig.canvas.draw()
     for artist in (footer,):
         width = artist.get_window_extent().width
         if width > fig.bbox.width * .96:
-            artist.set_fontsize(artist.get_fontsize() * fig.bbox.width * .95 / width)
+            scaled = artist.get_fontsize() * fig.bbox.width * .95 / width
+            if scaled >= FOOTER_MIN_PT or not wrap_footer:
+                artist.set_fontsize(scaled)
+            else:
+                artist.set_text('\n'.join(textwrap.wrap(
+                    artist.get_text(), footer_wrap_chars(fig, artist.get_fontsize()))))
     fig.canvas.draw()
     top = heading.get_window_extent().y0 / fig.bbox.height - .055
-    ax.set_position([.25, .17, .70, top - .17])
+    bottom = .17
+    if block is not None or '\n' in footer.get_text():
+        hanging = [t.get_window_extent().height / fig.bbox.height
+                   for t in ax.get_xticklabels() if t.get_text()]
+        bottom = max(bottom, max(a.get_window_extent().y1 / fig.bbox.height + .030
+                                 + (max(hanging) if hanging else 0.)
+                                 for a in (footer, block) if a is not None))
+    ax.set_position([.25, bottom, .70, top - bottom])
     ax.yaxis.label.set_text('\n'.join(textwrap.wrap(ax.yaxis.label.get_text(), 25)))
     ax.yaxis.label.set_size(9)
     ax.tick_params(labelsize=9)
