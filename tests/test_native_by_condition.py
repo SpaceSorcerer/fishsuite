@@ -72,9 +72,12 @@ def test_refuses_original_destinations(tmp_path, target):
         regenerate(run, ConditionsCfg(groups={'WT':['a','b']}), run/target)
 
 
-def test_frozen_run_requires_external_output(tmp_path):
+@pytest.mark.parametrize('marker', ['MANIFEST_SHA256.tsv', 'Manifest_release.tsv',
+                                    'analysis_LEDGER.json', 'REPORT_LOCK.json',
+                                    'release_FROZEN.txt'])
+def test_frozen_run_requires_external_output(tmp_path, marker):
     run = tiny_run(tmp_path)
-    (run/'MANIFEST_SHA256.tsv').write_text('frozen')
+    (run/marker).write_text('frozen')
     with pytest.raises(ValueError, match='frozen'):
         regenerate(run, ConditionsCfg(groups={'WT':['a','b']}))
 

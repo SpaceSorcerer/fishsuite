@@ -1,5 +1,6 @@
 from pathlib import Path
 import importlib.util
+import os
 import pytest
 import pandas as pd
 
@@ -18,6 +19,14 @@ def test_simple_coloc_slide_identities(tmp_path,rna,partner):
 
 
 def test_recorded_deck_semantic_assets_and_localization(tmp_path, monkeypatch):
+    run_value = os.environ.get('FISHSUITE_TEST_RECORDED_RUN')
+    spec_value = os.environ.get('FISHSUITE_TEST_RECORDED_DECK_SPEC')
+    if not run_value or not spec_value:
+        pytest.skip('recorded deck fixtures require FISHSUITE_TEST_RECORDED_RUN and '
+                    'FISHSUITE_TEST_RECORDED_DECK_SPEC')
+    run, spec = Path(run_value), Path(spec_value)
+    if not run.is_dir() or not spec.is_file():
+        pytest.skip('recorded deck fixture paths are unavailable')
     import yaml
     from fishsuite.report.build import build_report
     from pptx import Presentation
@@ -31,9 +40,6 @@ def test_recorded_deck_semantic_assets_and_localization(tmp_path, monkeypatch):
         checked.append(endpoint)
         return result
     monkeypatch.setattr(figures, 'draw_replicate_simple', check_panel)
-    root = Path(__file__).resolve().parents[1]
-    spec = root/'_closeout_evidence/A/deck_spec.yaml'
-    run = Path('F:/Image Analysis Work/RNASEH2B_BIN1introns_2026_08_25/13b_FULL_HARMONIZED_T36_FIXEDNUCLEAR_2026-09-05/RUN_T36_fixed_2026-09-05_0915')
     result = build_report(run, tmp_path/'report', groups=['WT=WT_1,WT_2,WT_3', 'QKI-KO=KO_1,KO_2,KO_3'],
                           reference='WT', make_figures=False, deck_spec=spec, deck=True)
     resolved = yaml.safe_load((result['out_dir']/'deck_spec.resolved.yaml').read_text())
@@ -116,11 +122,14 @@ def test_frozen_writers_before_side_effect(tmp_path, monkeypatch, writer, via_ju
     (tmp_path/'DELIVERY_frozen').mkdir()
     (tmp_path/'DELIVERY_frozen'/'MANIFEST_SHA256.tsv').write_text('')  # release manifest = frozen
     if via_junction:
-        import subprocess
-        frozen = Path('F:/Image Analysis Work/RNASEH2B_BIN1introns_2026_08_25/DELIVERY_RNASEH2B_BIN1intron_2026-09-05_v3')
+        frozen = tmp_path/'DELIVERY_frozen'
         link = tmp_path/'alias'
-        subprocess.run(['powershell', '-NoProfile', '-Command',
-                        f"New-Item -ItemType Junction -Path '{link}' -Target '{frozen}' | Out-Null"], check=True)
+        if os.name == 'nt':
+            import subprocess
+            subprocess.run(['cmd', '/c', 'mklink', '/J', str(link), str(frozen)],
+                           check=True, capture_output=True)
+        else:
+            link.symlink_to(frozen, target_is_directory=True)
         assert link.resolve() == frozen.resolve()
         target = link/'child'
     mkdir = Mock(side_effect=AssertionError('mkdir side effect'))

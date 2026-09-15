@@ -27,7 +27,7 @@ def select_per_well_fovs(fields, well_groups=None):
                 well_groups[well] = {'WT':'WT','KO':'QKI-KO','NT':'NT','KD':'KD'}[match[1].upper()]
     fields = fields.loc[fields.well_id.isin(well_groups)].copy()
     fields['group'] = fields.well_id.map(well_groups)
-    columns = ['image','condition','well_id','group','nuclei_analyzed',
+    columns = ['image','condition','source_condition','source_path','output_stem','well_id','group','nuclei_analyzed',
                'voxel_xy_nm','z_plane','z_autofocus_mode','z_autofocus_channel_used']
     fields = fields[[c for c in columns if c in fields]]
     fields['nuclei_analyzed'] = pd.to_numeric(fields.nuclei_analyzed, errors='raise')
@@ -73,7 +73,9 @@ def _native_stem(pub_dir, image, well):
     """Resolve one flat named publication directory; never search raw trees."""
     source_stem = Path(image).stem.replace(' ','_')
     candidates = []
-    for path in pub_dir.glob(str(well)+'__*__merge_all.png'):
+    from fishsuite.core.output import sanitize_condition_for_filename
+    prefix = sanitize_condition_for_filename(str(well))
+    for path in pub_dir.glob(prefix+'__*__merge_all.png'):
         stem = path.name.removesuffix('__merge_all.png')
         short = stem.split('__',1)[1]
         if source_stem.endswith(short):
@@ -121,7 +123,7 @@ def prepare_per_well_micrographs(run_dir, out_dir, nuclei=None, group_order=None
             assignments = nuclei[['image','well_id','group']].drop_duplicates()
             if assignments.image.duplicated().any():
                 raise ValueError('ambiguous report well assignment')
-            fields = fields.merge(assignments,on='image',validate='one_to_one')
+            fields = fields.drop(columns=['well_id','group'], errors='ignore').merge(assignments,on='image',validate='one_to_one')
             well_groups = dict(zip(assignments.well_id,assignments.group))
     selection = select_per_well_fovs(fields,well_groups)
     pairs = pair_wells(selection,group_order)
@@ -130,7 +132,7 @@ def prepare_per_well_micrographs(run_dir, out_dir, nuclei=None, group_order=None
     for rows in pairs:
         slide = dict(title=rows[0]['well_id']+' vs '+rows[1]['well_id'],rows=[])
         for row in rows:
-            stem = _native_stem(pub_dir,row['image'],row['well_id'])
+            stem = row.get('output_stem') or _native_stem(pub_dir,row['image'],row.get('source_condition', row['condition']))
             panels = publication_panel_paths(pub_dir,stem,cfg)
             for panel in panels:
                 panel['display_mode']=cfg['output'].get('pub_contrast_mode')

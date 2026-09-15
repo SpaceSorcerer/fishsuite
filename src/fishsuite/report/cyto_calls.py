@@ -2,6 +2,7 @@
 from pathlib import Path
 import json
 import math
+import os
 import numpy as np
 import pandas as pd
 from PIL import Image, ImageDraw, ImageFont
@@ -11,6 +12,17 @@ import tifffile
 from .provenance import guard_output, sha256
 from .figures import merge_png_for
 from .aggregate import ReportInputError
+
+
+def _annotation_font(size=12):
+    """Use native Arial when available, with a portable bundled-font fallback."""
+    windows_dir = os.environ.get('WINDIR')
+    arial = Path(windows_dir)/'Fonts'/'arial.ttf' if windows_dir else None
+    try:
+        return ImageFont.truetype(str(arial) if arial and arial.is_file()
+                                  else 'DejaVuSans.ttf', size)
+    except OSError:
+        return ImageFont.load_default()
 
 
 def mask_edge_distance(mask, x, y, voxel):
@@ -39,7 +51,7 @@ def build_cyto_calls(run_dir, out_dir, nuclei):
         raise ReportInputError('cytoplasmic call lacks group/calibration roster entry')
     out_dir.mkdir(parents=True, exist_ok=True)
     tiles, records, sources = {}, [], []
-    font = ImageFont.truetype('C:/Windows/Fonts/arial.ttf', 12)
+    font = _annotation_font()
     for field, rows in calls.groupby('image', sort=True):
         hit = merge_png_for(run_dir/'publication_images', field)
         if hit is None:
