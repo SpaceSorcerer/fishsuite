@@ -1,4 +1,6 @@
 import json
+from decimal import Decimal
+from fractions import Fraction
 
 import numpy as np
 import pandas as pd
@@ -103,3 +105,32 @@ def test_footprint_union_summary_keeps_zero_as_a_measured_zero():
     assert result["union_px"] == 0
     assert result["union_intensity_sum"] == 0.0
     assert result["n_footprints"] == 0
+
+
+@pytest.mark.parametrize('index', [True, 1.5, float('inf'), float('nan'), Decimal('1.5'), Fraction(3,2)])
+def test_channel_index_never_silently_truncates_or_accepts_boolean(tmp_path, index):
+    with pytest.raises(ValueError, match='cannot resolve'):
+        load_postrun().resolve_channels(tmp_path, role_keys=('rna',), overrides={'rna':index})
+
+
+def test_channel_index_origin_must_be_boolean(tmp_path):
+    config = {'config_resolved':{'channels':{'one_indexed':'false','rna':1}}}
+    (tmp_path/'run_config.json').write_text(json.dumps(config),encoding='utf-8')
+    with pytest.raises(ValueError, match='one_indexed must be a boolean'):
+        load_postrun().resolve_channels(tmp_path, role_keys=('rna',))
+
+
+@pytest.mark.parametrize('mode', ['none','rot90','rot180','flipud'])
+def test_image_transform_rejects_ambiguous_channel_or_z_axes(mode):
+    with pytest.raises(ValueError, match='two-dimensional plane'):
+        load_postrun().transform_image(np.zeros((3,3,4)),mode)
+
+
+def test_repeated_coordinates_do_not_inflate_footprint_signal_or_overlap():
+    result = load_postrun().footprint_union_summary(
+        np.ones((2,2)), np.ones((2,2),dtype=bool),
+        [np.array([[0,0],[0,0],[0,1]])],
+    )
+    assert result['union_px'] == 2
+    assert result['sum_footprint_intensity'] == 2
+    assert result['overlap_px'] == 0

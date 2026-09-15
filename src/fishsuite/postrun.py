@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+from numbers import Integral
 from pathlib import Path
 from typing import Iterable, Mapping, Sequence
 
@@ -36,12 +37,17 @@ def resolve_channels(
 ) -> tuple[dict[str, int], dict[str, str]]:
     """Resolve zero-based channel indices without a silent positional default."""
     roles = tuple(str(role) for role in role_keys)
+    if not roles or len(set(roles)) != len(roles):
+        raise ValueError("channel roles must be nonempty and distinct")
     given = dict(overrides or {})
     unknown = sorted(set(given) - set(roles))
     if unknown:
         raise ValueError(f"channel overrides contain unknown roles: {unknown}")
     metadata = _channel_metadata(Path(run_dir))
-    offset = 1 if bool(metadata.get("one_indexed", False)) else 0
+    one_indexed = metadata.get("one_indexed", False)
+    if not isinstance(one_indexed, bool):
+        raise ValueError("channel one_indexed must be a boolean")
+    offset = int(one_indexed)
     indices: dict[str, int] = {}
     sources: dict[str, str] = {}
     for role in roles:
@@ -51,8 +57,10 @@ def resolve_channels(
             value = metadata.get(role)
             source = CHANNEL_CONFIG_SOURCE
         try:
+            if isinstance(value, (bool, np.bool_)) or not isinstance(value, Integral):
+                raise ValueError("channel index must have integer type")
             index = int(value) - (offset if source == CHANNEL_CONFIG_SOURCE else 0)
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             raise ValueError(f"cannot resolve the {role} channel index") from None
         if index < 0:
             raise ValueError(f"cannot resolve the {role} channel index")
@@ -73,8 +81,10 @@ def normalize_sampling_columns(frame: pd.DataFrame) -> tuple[pd.DataFrame, tuple
 
 
 def transform_image(image, mode: str = "none"):
-    """Apply a declared whole-image geometry transform for null calibration."""
+    """Apply a declared geometry transform to one two-dimensional image plane."""
     array = np.asarray(image)
+    if array.ndim != 2:
+        raise ValueError("calibration image must be a two-dimensional plane")
     if mode == "none":
         return array
     if mode == "rot90" and (array.ndim < 2 or array.shape[0] != array.shape[1]):
@@ -93,7 +103,7 @@ def footprint_union_summary(
     valid_mask,
     footprints_yx: Iterable[np.ndarray],
 ) -> dict[str, int | float]:
-    """Integrate an image over the masked union of supplied exact footprints."""
+    """Integrate exact raster footprints, counting each pixel once per footprint."""
     image = np.asarray(image2d)
     if image.ndim != 2:
         raise ValueError("image2d must be two-dimensional")
@@ -119,6 +129,7 @@ def footprint_union_summary(
             pixels = numeric.astype(np.intp)
         else:
             pixels = pixels.astype(np.intp, copy=False)
+        pixels = np.unique(pixels, axis=0)
         y, x = pixels[:, 0], pixels[:, 1]
         inside = (y >= 0) & (y < height) & (x >= 0) & (x < width)
         y, x = y[inside], x[inside]
