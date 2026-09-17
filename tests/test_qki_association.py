@@ -571,3 +571,94 @@ def test_assoc_adapter_sorts_source_spot_id_not_uid(tmp_path):
     result = pd.read_csv(out / "qki_association_per_spot.csv")
     assert result.spot_id.tolist() == ["a", "b", "a", "b", "a", "b"]
 
+
+
+@pytest.mark.parametrize("column,denominator_reason", [
+    ("frac_miat_spots_qki_pos", "N0"),
+    ("frac_qki_area_on_miat_area", "Q0"),
+    ("frac_qki_area_on_miat_footprints", "Q0"),
+    ("frac_miat_footprint_area_qki_pos", "U0"),
+    ("qki_pos_area_frac", "R0"),
+    ("miat_pos_area_frac", "R0"),
+    ("miat_footprint_area_frac", "R0"),
+    ("sat_frac_miat", "R0"),
+    ("sat_frac_qki", "R0"),
+    ("exp_frac_qki_area_on_miat_area", "R0"),
+    ("exp_frac_qki_area_on_miat_footprints", "R0"),
+    ("obs_minus_exp_frac_qki_area_on_miat_area", "Q0"),
+])
+@pytest.mark.parametrize("undefined", [False, True])
+def test_fraction_denominator_reason_contract(column, denominator_reason, undefined):
+    miat = np.zeros((64, 64), dtype=float)
+    qki = np.zeros((64, 64), dtype=float)
+    labels = np.ones((64, 64), dtype=np.int32)
+    footprints = [_footprint(0, 10, 10)]
+    eligible = np.ones((64, 64), dtype=bool)
+    if denominator_reason == "Q0":
+        qki[:] = 0 if undefined else 20
+        footprints = [] if column == "frac_qki_area_on_miat_footprints" and not undefined else footprints
+    elif denominator_reason in ("N0", "U0"):
+        if undefined:
+            footprints = []
+    else:
+        if column in ("miat_footprint_area_frac", "exp_frac_qki_area_on_miat_footprints"):
+            footprints = []
+        if column == "sat_frac_miat":
+            miat = np.arange(4096, dtype=float).reshape(64, 64)
+        if column == "sat_frac_qki":
+            qki = np.arange(4096, dtype=float).reshape(64, 64)
+        if undefined:
+            eligible[:] = False
+    nuclei, _ = _run((miat, qki, labels, footprints), eligible_mask=eligible, n_null=3)
+    row = nuclei.iloc[0]
+    if undefined:
+        assert np.isnan(row[column])
+        assert row[f"na_reason_{column}"] == denominator_reason
+    else:
+        assert row[column] == 0.0
+        assert row[f"na_reason_{column}"] == ""
+
+
+@pytest.mark.parametrize("metric,reason", [
+    ("frac_miat_spots_qki_pos", "N0"),
+    ("frac_miat_footprint_area_qki_pos", "U0"),
+])
+@pytest.mark.parametrize("prefix", ["null_mean", "null_sd", "obs_minus_null", "null_ge_obs_frac"])
+@pytest.mark.parametrize("undefined", [False, True])
+def test_null_fraction_denominator_reason_contract(metric, reason, prefix, undefined):
+    miat, qki, labels, footprints = _four()
+    qki[:] = 0
+    if undefined:
+        footprints = []
+    nuclei, _ = _run((miat, qki, labels, footprints), n_null=3)
+    row = nuclei.iloc[0]
+    column = f"{prefix}_{metric}"
+    if undefined:
+        assert np.isnan(row[column])
+        assert row[f"na_reason_{column}"] == reason
+    else:
+        # Q=0 is a defined zero for both N- and U-denominator statistics.
+        # All nulls tie the observed zero, so the plus-one tail is 1, not 0.
+        assert row[column] == (1.0 if prefix == "null_ge_obs_frac" else 0.0)
+        assert row[f"na_reason_{column}"] == ""
+
+
+def test_generated_dictionary_explains_coverage_denominators_and_null_scope(tmp_path):
+    from fishsuite.core.qki_association_postrun import run_qki_association
+    root = _assoc_cached_run(tmp_path / "source")
+    out = run_qki_association(root, tmp_path / "out", miat_min=10, qki_min=10, n_null=3)
+    text = (out / "qki_association_columns.md").read_text()
+    header = text.split("- `threshold_multiplier`:", 1)[0]
+    entry = next(line for line in text.splitlines() if line.startswith("- `frac_qki_area_on_miat_footprints`:"))
+    for block in (header, entry):
+        assert "UNCORRECTED for MIAT coverage" in block
+        assert "rises with coverage by chance" in block
+        assert "obs_minus_null_frac_miat_footprint_area_qki_pos" in block
+    assert "## What the placement null does and does not control" in text
+    for phrase in ("uniformly over admissible positions", "eligible nuclear region",
+                   "MIAT abundance/coverage", "global nuclear QKI level",
+                   "same nuclear sub-regions", "nucleolar exclusion zones", "nuclear periphery",
+                   "more QKI at MIAT puncta than at random eligible nuclear positions",
+                   "not molecular binding", "Single-plane measurement",
+                   "undefined denominator", "zero numerator", "empty reason"):
+        assert phrase in text

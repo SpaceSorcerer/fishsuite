@@ -69,7 +69,7 @@ _DEFINITIONS = {
     "sat_frac_qki": "Eligible fraction at dtype maximum or observed maximum when shared by >=0.1% of eligible pixels; fraction",
     "frac_miat_spots_qki_pos": "QKI-positive eligible spot count divided by eligible spot count; fraction",
     "frac_qki_area_on_miat_area": "QKI-positive pixels also MIAT-positive divided by QKI-positive pixels in eligible nucleus; area occupancy fraction",
-    "frac_qki_area_on_miat_footprints": "QKI-positive pixels inside eligible footprint union divided by QKI-positive pixels in eligible nucleus; area occupancy fraction",
+    "frac_qki_area_on_miat_footprints": "QKI-positive pixels inside eligible footprint union divided by QKI-positive pixels in eligible nucleus; area occupancy fraction; UNCORRECTED for MIAT coverage and rises with coverage by chance; the coverage-corrected area statistic is obs_minus_null_frac_miat_footprint_area_qki_pos",
     "frac_miat_footprint_area_qki_pos": "QKI-positive pixels inside eligible footprint union divided by that union's own pixel count; fraction; each null draw uses its own union denominator",
     "null_valid_center_count": "Minimum number of admissible centers across eligible footprints, zero when no footprints; not a shared-center intersection count; count",
     "n_null_effective": "Common completed placement iterations across all eligible footprints, minimum valid_draw_count; zero with no footprints or any invalid null; sparse-domain draws are counted although statistics are withheld; count",

@@ -182,7 +182,14 @@ def run_qki_association(run_dir, out, *, miat_min, qki_min,
     lines = ["# Single-plane QKI association columns", "",
         "- Eligible spots retain source null_candidate eligibility and exact saved pixels; miat_min affects MIAT area only.",
         "- Missing source condition/well values are empty strings; identifiers are never inferred.",
-        "- Areas are native-pixel area occupancy fractions. Every metric is single-plane.", ""]
+        "- Areas are native-pixel area occupancy fractions. Every metric is single-plane.",
+        "- Raw `frac_qki_area_on_miat_footprints` is UNCORRECTED for MIAT coverage and rises with coverage by chance; the coverage-corrected area statistic is `obs_minus_null_frac_miat_footprint_area_qki_pos`.",
+        "- An undefined denominator gives NaN plus its reason (N0, Q0, U0, or R0 for eligible-area denominators); a defined denominator with zero numerator gives 0.0 plus an empty reason. Null summaries additionally require supported placements; the plus-one empirical tail fraction is 1.0 when all null draws tie an observed zero.",
+        "", "## What the placement null does and does not control", "",
+        "It places each unchanged footprint uniformly over admissible positions in the eligible nuclear region. It removes the effect of MIAT abundance/coverage and of global nuclear QKI level under this uniform-position reference.",
+        "It does NOT remove association caused by MIAT puncta and QKI both avoiding or preferring the same nuclear sub-regions within that eligible region (e.g. around nucleolar exclusion zones or the nuclear periphery).",
+        'A positive obs minus null means "more QKI at MIAT puncta than at random eligible nuclear positions", not molecular binding. Single-plane measurement.',
+        "", "## Column definitions", ""]
     for name in columns:
         if name not in COLUMN_DEFINITIONS:
             raise ValueError(f"missing column definition: {name}")
