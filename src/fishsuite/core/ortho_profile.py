@@ -114,17 +114,35 @@ def clipped_default_line(nucleus_mask, center_zyx, half_width_px):
     return (float(y),float(x0)), (float(y),float(x1))
 
 
-def render_ortho_figure(stack_czyx, center_zyx, half_width_px, *, nucleus_mask,
-                        pixel_size_um, z_step_um, display_levels,
-                        line_endpoints=None, qki_threshold=None, run_dir='',
-                        profile_width_px=3, analysed_plane_z=None):
-    """Render additive yellow/magenta sections and raw/normalised line profiles.
+def nucleus_crop(nucleus_mask, pixel_size_um, half_width_um=None):
+    ys, xs = np.nonzero(nucleus_mask)
+    if not len(xs):
+        raise ValueError('Nucleus mask is empty')
+    if not np.isfinite(pixel_size_um) or pixel_size_um <= 0:
+        raise ValueError('Pixel size must be positive')
+    center_yx = tuple(np.rint([(ys.min()+ys.max())/2, (xs.min()+xs.max())/2]).astype(int))
+    requested = (max(ys.max()-ys.min()+1, xs.max()-xs.min()+1)*pixel_size_um/2 + 1.5
+                 if half_width_um is None else float(half_width_um))
+    if not np.isfinite(requested) or requested <= 0:
+        raise ValueError('Half width must be finite and positive')
+    half_px = max(1, int(np.ceil(requested/pixel_size_um)))
+    return center_yx, half_px, requested
 
-    Normalised traces use each trace's own min/max (labelled explicitly);
-    image displays use ONLY the supplied common bounds. A 2-D saved DAPI
-    segmentation outline is drawn on XY only, never extruded into fabricated 3-D.
-    """
+
+def scale_bar_length(panel_width_um):
+    candidates = [v for v in (1, 2, 5, 10, 20) if v <= panel_width_um*.25]
+    return max(candidates) if candidates else None
+
+
+def render_ortho_figure(stack_czyx, center_zyx, half_width_px=None, *, nucleus_mask,
+                        pixel_size_um, z_step_um, display_levels,
+                        line_endpoints=None, qki_min=None, miat_min=None, run_dir='',
+                        profile_width_px=3, analysed_plane_z=None, arm='', arm_color='#595959',
+                        image='', nucleus_id=None, metric='', metric_value=None, arm_median=None):
     import matplotlib.pyplot as plt
+    from matplotlib.collections import LineCollection
+    from matplotlib.offsetbox import AnchoredOffsetbox, HPacker, TextArea
+    from pathlib import PureWindowsPath
     from skimage.measure import find_contours
     levels = np.asarray(display_levels, dtype=float)
     if levels.shape != (2,2) or not np.isfinite(levels).all() or np.any(levels[:,1] <= levels[:,0]):
@@ -133,68 +151,93 @@ def render_ortho_figure(stack_czyx, center_zyx, half_width_px, *, nucleus_mask,
         raise ValueError('Voxel sizes must be positive')
     if stack_czyx.shape[0] < 3 or nucleus_mask.shape != stack_czyx.shape[2:]:
         raise ValueError('Expected MIAT/QKI/DAPI stack and matching 2-D nucleus mask')
-    (z,y,x), ((z0,z1),(y0,y1),(x0,x1)) = _bounds(stack_czyx,center_zyx,half_width_px)
+    for minimum in (qki_min, miat_min):
+        if minimum is not None and not np.isfinite(minimum):
+            raise ValueError('User analysis minima must be finite')
+    crop_yx, auto_half, _ = nucleus_crop(nucleus_mask, pixel_size_um)
+    half = auto_half if half_width_px is None else half_width_px
+    (z,y,x), _ = _bounds(stack_czyx,center_zyx,half)
+    _, ((z0,z1),(y0,y1),(x0,x1)) = _bounds(stack_czyx,(z,*crop_yx),half)
     if analysed_plane_z is not None:
         if (not np.isfinite(analysed_plane_z) or int(analysed_plane_z) != analysed_plane_z
                 or not 0 <= analysed_plane_z < stack_czyx.shape[1]):
             raise ValueError('Analysed plane must be a zero-based full-stack Z index')
-    sections = ortho_sections(stack_czyx,center_zyx,half_width_px)
-    endpoints = line_endpoints or clipped_default_line(nucleus_mask,(z,y,x),half_width_px)
+    sections = dict(xy=stack_czyx[:,z,y0:y1,x0:x1],
+                    xz=stack_czyx[:,z0:z1,y,x0:x1], yz=stack_czyx[:,z0:z1,y0:y1,x])
+    if line_endpoints is None:
+        p0,p1 = default_line(nucleus_mask,(z,y,x))
+        endpoints = ((y,max(x0,p0[1])), (y,min(x1-1,p1[1])))
+    else:
+        endpoints = line_endpoints
     distance,values = line_profile(stack_czyx[:,z],*endpoints,width_px=profile_width_px,
                                    pixel_size_um=pixel_size_um)
-    fig = plt.figure(figsize=(10,8))
-    # Allocate physical panel sizes explicitly so adjacent sections share scale.
+    with plt.rc_context({'font.family':'Arial', 'font.size':8, 'svg.fonttype':'none'}):
+        fig = plt.figure(figsize=(14,6.8))
     nx, ny, nz = x1-x0, y1-y0, (z1-z0)*z_step_um/pixel_size_um
-    gap = 8
-    unit = min(8/(nx+nz+gap), 4.1/(ny+nz+gap))  # inches per XY pixel
-    left, top = 1., 7.3
-    xy = fig.add_axes([left/10,(top-ny*unit)/8,nx*unit/10,ny*unit/8],label='xy')
-    xz = fig.add_axes([left/10,(top-(ny+gap+nz)*unit)/8,nx*unit/10,nz*unit/8],label='xz')
-    yz = fig.add_axes([(left+(nx+gap)*unit)/10,(top-ny*unit)/8,nz*unit/10,ny*unit/8],label='yz')
-    raw = fig.add_axes([.1,.15,.35,.19],label='raw')
-    normal = fig.add_axes([.57,.15,.35,.19],label='normalised')
-    def rgb(plane):
+    unit = min(2.7/nx,2.8/ny,1.35/nz)
+    top = 5.8
+    def image_axes(left, width, height, label, panel_top=top):
+        return fig.add_axes([left/14,(panel_top-height)/6.8,width/14,height/6.8],label=label)
+    # Preserve identical micrometres per inch in XY, XZ and YZ.
+    xy = image_axes(6.9,nx*unit,ny*unit,'xy')
+    miat = image_axes(.7,nx*unit,ny*unit,'xy_miat')
+    qki = image_axes(3.8,nx*unit,ny*unit,'xy_qki')
+    yz = image_axes(10.25,nz*unit,ny*unit,'yz')
+    xz = image_axes(6.9,nx*unit,nz*unit,'xz',panel_top=2.45)
+    raw = fig.add_axes([.055,.17,.395,.205],label='raw')
+    normal = fig.add_axes([.755,.17,.205,.205],label='normalised')
+    def rgb(plane, channel=None):
         a,b = [np.clip((plane[i]-lo)/(hi-lo),0,1) for i,(lo,hi) in enumerate(levels)]
+        if channel == 0:
+            b = np.zeros_like(b)
+        elif channel == 1:
+            a = np.zeros_like(a)
         return np.stack([np.clip(a+b,0,1),a,b],axis=-1)
-    for ax,key,cross,aspect in ((xy,'xy',(x-x0,y-y0),1),
-                                (xz,'xz',(x-x0,z-z0),z_step_um/pixel_size_um),
-                                (yz,'yz',(z-z0,y-y0),pixel_size_um/z_step_um)):
+    for ax,key,cross,aspect,title,channel in (
+            (xy,'xy',(x-x0,y-y0),1,'XY merge',None),
+            (miat,'xy',None,1,'XY MIAT',0), (qki,'xy',None,1,'XY QKI',1),
+            (xz,'xz',(x-x0,z-z0),z_step_um/pixel_size_um,'XZ merge',None),
+            (yz,'yz',(z-z0,y-y0),pixel_size_um/z_step_um,'YZ merge',None)):
         plane = sections[key].transpose(0,2,1) if key == 'yz' else sections[key]
-        ax.imshow(rgb(plane),aspect=aspect,interpolation='nearest')
-        ax.axvline(cross[0],color='white',lw=.5,ls=':')
-        ax.axhline(cross[1],color='white',lw=.5,ls=':')
-        ax.set_title(key.upper())
+        ax.imshow(rgb(plane,channel),aspect=aspect,interpolation='nearest')
+        if cross is not None:
+            ax.axvline(cross[0],color='white',lw=.5,ls=':')
+            ax.axhline(cross[1],color='white',lw=.5,ls=':')
+        ax.set_title(title,fontsize=9,pad=9)
         ax.set_xticks([])
         ax.set_yticks([])
     if analysed_plane_z is not None:
-        label = f'analysed plane (z={int(analysed_plane_z)})'
+        label = f'z = {int(analysed_plane_z)+1}'
         if z0 <= analysed_plane_z < z1:
             local_z = analysed_plane_z-z0
-            xz.plot([.02,.1],[local_z]*2,color='#8ba6c4',lw=1.5,label='analysed plane',
-                    transform=xz.get_yaxis_transform())
-            xz.text(.12,local_z,label,color='#8ba6c4',fontsize=6,va='center',
-                    transform=xz.get_yaxis_transform())
-            yz.plot([local_z-.4,local_z+.4],[.97,.97],color='#8ba6c4',lw=1.5,
-                    label='analysed plane',transform=yz.get_xaxis_transform())
-            yz.text(local_z,.92,label,color='#8ba6c4',fontsize=6,ha='center',va='top',
-                    transform=yz.get_xaxis_transform())
+            xz.plot([1.01,1.06],[local_z]*2,color='#526d88',lw=1.5,label='analysed plane',
+                    transform=xz.get_yaxis_transform(),clip_on=False)
+            xz.text(1.08,local_z,label,color='#526d88',fontsize=7,va='center',
+                    transform=xz.get_yaxis_transform(),clip_on=False)
+            yz.plot([local_z]*2,[-.035,-.10],color='#526d88',lw=1.5,
+                    label='analysed plane',transform=yz.get_xaxis_transform(),clip_on=False)
+            yz.text(local_z,-.13,label,color='#526d88',fontsize=7,ha='center',va='top',
+                    transform=yz.get_xaxis_transform(),clip_on=False)
         else:
             for ax in (xz,yz):
-                ax.text(.02,.98,label+' outside crop',transform=ax.transAxes,
-                        color='#8ba6c4',fontsize=6,va='top')
-    # Collections preserve contours as editable vector paths.
-    from matplotlib.collections import LineCollection
+                ax.text(0,-.13,label+' outside crop',transform=ax.transAxes,
+                        color='#526d88',fontsize=7,va='top')
     contours = find_contours(np.pad(nucleus_mask.astype(float),1),.5)
     xy.add_collection(LineCollection([np.column_stack((c[:,1]-1-x0,c[:,0]-1-y0)) for c in contours],
                                      colors='#8ba6c4',linewidths=.8))
     xy.plot([p[1]-x0 for p in endpoints],[p[0]-y0 for p in endpoints],color='white',lw=.8)
-    xy.set_xlim(-.5,x1-x0-.5)
-    xy.set_ylim(y1-y0-.5,-.5)
-    bar_um = min(5., (x1-x0)*pixel_size_um/4)
-    xy.plot([2,2+bar_um/pixel_size_um],[y1-y0-4]*2,color='white',lw=2)
-    xy.text(2,y1-y0-6,f'{bar_um:g} µm',color='white',fontsize=8)
-    annotation_count = 0
-    for i,(name,color) in enumerate((('MIAT','#ffff00'),('QKI','#ff00ff'))):
+    # Reset bounds after markers so annotations cannot expand the image extent.
+    for ax in (xy,miat,qki):
+        ax.set_xlim(-.5,nx-.5)
+        ax.set_ylim(ny-.5,-.5)
+    xz.set_xlim(-.5,nx-.5); xz.set_ylim(z1-z0-.5,-.5)
+    yz.set_xlim(-.5,z1-z0-.5); yz.set_ylim(ny-.5,-.5)
+    bar_um = scale_bar_length(nx*pixel_size_um)
+    if bar_um is not None:
+        xy.plot([.06*nx,.06*nx+bar_um/pixel_size_um],[.91*ny]*2,color='white',lw=2,label='scale bar')
+        xy.text(.06*nx,.85*ny,f'{bar_um:g} µm',color='white',fontsize=8)
+    outside = []
+    for i,(name,color,user_min) in enumerate((('MIAT','#ffff00',miat_min),('QKI','#ff00ff',qki_min))):
         v = values[i]
         low,high = v.min(),v.max()
         span = high-low
@@ -203,28 +246,42 @@ def render_ortho_figure(stack_czyx, center_zyx, half_width_px, *, nucleus_mask,
         normal.plot(distance,norm(v),color=color,label=name)
         bounds = [(f'{name} display {side}',bound,'--',.7)
                   for side,bound in zip(('min','max'),levels[i])]
-        if i == 1 and qki_threshold is not None and np.isfinite(qki_threshold):
-            bounds.append(('QKI analysis threshold',qki_threshold,'-',1))
+        if user_min is not None:
+            bounds.append((f'{name} analysis min (user)',user_min,'-',1))
         for label,bound,style,width in bounds:
-            raw.axhline(bound,color=color,ls=style,lw=width,
-                        label=label if style == '-' else None)
+            raw.axhline(bound,color=color,ls=style,lw=width,label=label)
             value = float(norm(bound)) if span > 0 else float('nan')
             if np.isfinite(value) and 0 <= value <= 1:
                 normal.axhline(value,color=color,ls=style,lw=width)
             else:
-                normal.text(.02,.97-.1*annotation_count,
-                            f'{label} {bound:g}: outside trace range',
-                            transform=normal.transAxes,color=color,fontsize=5,va='top')
-                annotation_count += 1
-    for ax,title in ((raw,'Raw intensity'),(normal,'Per-trace min–max normalised')):
+                outside.append(f'{label} {bound:g}: outside trace range')
+    for ax,title in ((raw,'Raw intensity'),(normal,'Min–max profile')):
         ax.set_facecolor('#353535')
-        ax.set_title(title,fontsize=10)
-        ax.set_xlabel('Distance (µm)')
-        ax.legend(fontsize=7)
+        ax.set_title(title,fontsize=9,pad=9)
+        ax.set_xlabel('Distance (µm)',fontsize=8)
+        ax.tick_params(labelsize=7)
+    raw.set_ylabel('Intensity (a.u.)',fontsize=8)
+    raw.legend(fontsize=7,ncol=3,loc='upper center',bbox_to_anchor=(.5,-.36),frameon=False)
     normal.set_ylim(-.05,1.05)
-    normal.set_ylabel("normalised to each channel's own min–max along this line (display only)",
-                      fontsize=6,wrap=True)
-    fig.text(.02,.02,str(run_dir),fontsize=6,wrap=True)
+    normal.set_ylabel('normalised (display only)',fontsize=8)
+    normal._outside_trace_bounds = outside
+    plane_text = (f'analysed plane z = {int(analysed_plane_z)+1} (1-based)'
+                  if analysed_plane_z is not None else f'analysed plane unavailable; displayed z = {z+1} (1-based)')
+    comparison = (f'{metric} = {metric_value:g} vs arm median {arm_median:g}'
+                  if metric_value is not None and arm_median is not None else '')
+    details = ' | '.join(str(v) for v in (image, f'nucleus {nucleus_id}',plane_text,comparison) if v)
+    header = HPacker(children=[TextArea(str(arm),textprops=dict(color=arm_color,size=8,weight='bold')),
+                              TextArea(' | '+details,textprops=dict(size=8))],align='center',pad=0,sep=0)
+    fig.add_artist(AnchoredOffsetbox(loc='upper left',child=header,pad=0,frameon=False,
+                                    bbox_to_anchor=(.04,.975),bbox_transform=fig.transFigure,borderpad=0))
+    fig._ortho_header = f'{arm} | {details}'
+    short_run = '/'.join(PureWindowsPath(str(run_dir)).parts[-2:])
+    fig.text(.025,.038,short_run+' | single plane analysed; orthogonal views are raw stack sections, display levels identical across arms',fontsize=7)
+    fig.text(.025,.016,"Profiles normalised to each channel's own min–max along this line (display only).",fontsize=7)
+    fig._ortho_crop_bounds = (y0,y1,x0,x1)
+    from matplotlib.text import Text
+    for artist in fig.findobj(Text):
+        artist.set_fontfamily('Arial')
     return fig
 
 

@@ -296,7 +296,7 @@ def test_report_artifacts(tmp_path):
         '--treated', 'treated', '--control', 'control', '--out', str(out),
         '--config', str(config), '--seed', '4', '--n-boot', '10'])
     assert result.exit_code == 0, result.output + repr(result.exception)
-    for name in ('coupling_summary.xlsx', 'command.log', 'versions.txt'):
+    for name in ('coupling_summary.xlsx', 'command.log', 'versions.txt', 'figure_well_key.csv'):
         assert (out / name).stat().st_size > 0
     book = load_workbook(out / 'coupling_summary.xlsx', read_only=False)
     assert book.sheetnames == ['README', 'per_well', 'contrast', 'ratio_of_ratios',
@@ -314,7 +314,8 @@ def test_report_artifacts(tmp_path):
             assert 'single-plane' in svg
             assert 'Filter:' in svg
             assert 'threshold_multiplier=' in svg
-            assert str(source) in svg
+            assert '/'.join(source.parts[-2:]) in svg
+            assert str(source) in (out / 'command.log').read_text(encoding='utf-8')
             import re
             for color in re.findall(r'#[0-9a-fA-F]{6}\b', svg):
                 color = color.lower()
@@ -327,7 +328,10 @@ def test_report_artifacts(tmp_path):
                ET.fromstring(distribution_svg).iter('{http://www.w3.org/2000/svg}text')
                if node.text in ('treated', 'control')}
     assert label_x['treated'] < label_x['control']
-    assert 'control: C2 (NA)' in distribution_svg
+    assert 'well 2: NA' in distribution_svg
+    assert 'figure well key: control; well 2' in readme_text
+    key = pd.read_csv(out / 'figure_well_key.csv')
+    assert set(key.image) == {'C1.tif', 'C2.tif', 'T1.tif', 'T2.tif'}
     sensitivity_svg = next(p for p in figure_files if p.name == 'sensitivity_n_miat_spots_full.svg').read_text(encoding='utf-8')
     sensitivity_root = ET.fromstring(sensitivity_svg)
     x_axis = next(node for node in sensitivity_root.iter() if node.attrib.get('id') == 'matplotlib.axis_1')
@@ -365,11 +369,12 @@ def test_cli_registration():
     assert '--control' in result.output
 
 
-def test_well_markers_are_unique_across_arms():
+def test_well_markers_are_ordered_within_each_arm():
     from fishsuite.report.coupling import _well_markers
     mapping = _well_markers(toy_table(), ['control', 'treated'])
     assert set(mapping) == {('control', 'C1'), ('control', 'C2'), ('treated', 'T1'), ('treated', 'T2')}
-    assert len(set(mapping.values())) == 4
+    assert mapping == {('control', 'C1'): 'o', ('control', 'C2'): '^',
+                       ('treated', 'T1'): 'o', ('treated', 'T2'): '^'}
     assert mapping == _well_markers(toy_table().sample(frac=1, random_state=3), ['control', 'treated'])
 
 
@@ -383,3 +388,136 @@ def test_red_green_guard_and_resolved_colors(tmp_path):
     assert order == ['control', 'treated', 'other']
     assert {key: colors[key].upper() for key in order} == {
         'control': '#7F7F7F', 'treated': '#56B4E9', 'other': '#7F7F7F'}
+
+
+def test_six_arm_distribution_layout_markers_and_bars():
+    import matplotlib.pyplot as plt
+    from matplotlib.markers import MarkerStyle
+    from fishsuite.report import coupling
+    template = toy_table().iloc[0].to_dict()
+    arms = ['g2 noDox (control)', 'g2 +Dox (MIAT OE)', 'g3 noDox (control)',
+            'g3 +Dox (MIAT OE)', 'WT noDox (control)', 'WT +Dox (control)']
+    rows = [dict(template, condition=arm, well=f'{well}.vsi', image=f'{well}.vsi', nucleus_id=n,
+                 n_miat_spots=well + n) for arm in arms for well in range(1, 6) for n in (1, 2)]
+    df = pd.DataFrame(rows)
+    coupling.figlib.set_style()
+    fig, ax = plt.subplots(figsize=(1.1 * len(arms) + 1.5, 4.8))
+    coupling._distribution(ax, df, df, 'n_miat_spots', arms,
+                           {arm: '#7F7F7F' for arm in arms}, np.random.default_rng(0))
+    fig.subplots_adjust(left=1.1 / fig.get_figwidth(), right=.97, bottom=.32, top=.88)
+    fig.canvas.draw()
+    boxes = [label.get_window_extent(fig.canvas.get_renderer()) for label in ax.get_xticklabels()]
+    assert all(not a.overlaps(b) for i, a in enumerate(boxes) for b in boxes[i+1:])
+    assert len(ax.patches) == len(arms)
+    assert all(p.get_facecolor()[-1] == pytest.approx(.35) for p in ax.patches)
+    assert all(p.get_edgecolor()[-1] == 1 for p in ax.patches)
+    assert all(p.get_height() == pytest.approx(4.5) for p in ax.patches)
+    assert not any(type(c).__name__ == 'ErrorbarContainer' for c in ax.containers)
+    markers = coupling._well_markers(df, arms)
+    assert [markers[arms[0], f'{i}.vsi'] for i in range(1, 6)] == ['o', '^', 's', 'D', 'o']
+    assert all(markers[arm, '1.vsi'] == 'o' for arm in arms)
+    legend = [text.get_text() for text in fig.legends[0].get_texts()]
+    assert legend == ['well 1', 'well 2', 'well 3', 'well 4', 'well 5',
+                      'well mean', 'arm mean of well means']
+    assert not any('.vsi' in text for text in legend)
+    # First two collections are nuclei and well mean; the same circle path is used.
+    circle = MarkerStyle('o')
+    expected = circle.get_path().transformed(circle.get_transform()).vertices
+    assert np.array_equal(ax.collections[0].get_paths()[0].vertices, expected)
+    assert np.array_equal(ax.collections[1].get_paths()[0].vertices, expected)
+    assert ax.collections[0].get_alpha() == .45
+    assert ax.collections[1].get_zorder() > ax.collections[0].get_zorder()
+    plt.close(fig)
+
+
+@pytest.mark.parametrize('metric,expected', [
+    ('n_miat_spots', 'MIAT puncta per nucleus'),
+    ('n_miat_spots_per_100um2', 'MIAT puncta per 100 µm² nuclear area'),
+    ('integrated_nuclear_miat', 'Total nuclear MIAT intensity (a.u.)'),
+    ('frac_miat_spots_qki_pos', 'Fraction of MIAT puncta with QKI ≥ threshold (single plane)'),
+    ('obs_minus_null_frac_miat_spots_qki_pos', 'QKI-positive MIAT puncta: observed − chance (single plane)'),
+    ('frac_miat_footprint_area_qki_pos', 'Fraction of MIAT punctum area that is QKI-positive (single plane)'),
+    ('obs_minus_null_frac_miat_footprint_area_qki_pos', 'QKI-positive MIAT area: observed − chance (single plane)'),
+    ('mean_qki_at_miat_spots', 'Mean QKI intensity at MIAT puncta (a.u.)'),
+    ('qki_at_spots_minus_nuclear', 'QKI at MIAT puncta − nuclear mean QKI (a.u.)'),
+    ('mean_nuclear_qki', 'Mean nuclear QKI intensity (a.u.)'),
+    ('nuclear_area_um2', 'Nuclear area (µm²)'),
+    ('unknown_metric', 'unknown_metric'),
+])
+def test_plain_language_metric_labels(metric, expected):
+    from fishsuite.report.coupling import _label
+    assert _label(metric) == expected
+
+
+@pytest.mark.parametrize('metric', ['obs_minus_null_frac_miat_spots_qki_pos',
+                                    'obs_minus_null_frac_miat_footprint_area_qki_pos'])
+def test_observed_minus_chance_reference_and_shared_threshold_bounds(metric):
+    import matplotlib.pyplot as plt
+    from fishsuite.report import coupling
+    base = toy_table()
+    level = base.copy()
+    level['threshold_multiplier'] = .8
+    level[metric] = 3
+    df = pd.concat([base, level])
+    fig, ax = plt.subplots()
+    coupling._distribution(ax, df, base, metric, ['control', 'treated'],
+                           {'control': '#7F7F7F', 'treated': '#0072B2'}, np.random.default_rng(0))
+    chance = [line for line in ax.lines if line.get_label() == 'chance']
+    assert len(chance) == 1
+    assert list(chance[0].get_ydata()) == [0, 0]
+    assert chance[0].get_linestyle() == '--'
+    ax._replicate_simple_axis('focus')
+    first = ax.get_ylim()
+    assert first[1] > 3
+    assert first[0] <= 0 <= first[1]
+    fig2, ax2 = plt.subplots()
+    coupling._distribution(ax2, df, level, metric, ['control', 'treated'],
+                           {'control': '#7F7F7F', 'treated': '#0072B2'}, np.random.default_rng(0))
+    ax2._replicate_simple_axis('focus')
+    assert ax2.get_ylim() == first
+    plt.close(fig)
+    plt.close(fig2)
+
+
+def test_missing_well_suppresses_arm_bar():
+    import matplotlib.pyplot as plt
+    from fishsuite.report import coupling
+    df = toy_table()
+    base = df.loc[df.well.ne('C2')]
+    fig, ax = plt.subplots()
+    coupling._distribution(ax, df, base, 'n_miat_spots', ['control', 'treated'],
+                           {'control': '#7F7F7F', 'treated': '#0072B2'}, np.random.default_rng(0))
+    assert len(ax.patches) == 1
+    assert ax.patches[0].get_x() + ax.patches[0].get_width() / 2 == 1
+    assert ax.patches[0].get_height() == 12
+    plt.close(fig)
+
+
+def test_nested_preset_condition_colors_and_order(tmp_path):
+    from fishsuite.report.coupling import _configuration
+    config = tmp_path / 'preset.yaml'
+    config.write_text('conditions:\n  condition_order: [treated, control]\n  group_colors:\n    treated: "#0072B2"\n    control: "#7F7F7F"\n', encoding='utf-8')
+    order, colors = _configuration(config, ['control', 'treated'], 'treated')
+    assert order == ['treated', 'control']
+    assert colors['treated'] == '#0072B2'
+
+
+def test_footer_is_two_lines_and_title_one_line(monkeypatch, tmp_path):
+    import matplotlib.pyplot as plt
+    from fishsuite.report import coupling
+    coupling.figlib.set_style()
+    fig, ax = plt.subplots(figsize=(8.1, 4.8))
+    ax.set_ylabel(coupling._label('n_miat_spots'))
+    coupling._axis_variants(ax, [1, 2])
+    monkeypatch.setattr(coupling.figlib, 'save', lambda *args: None)
+    coupling._finish(fig, ax, tmp_path, 'test', 'MIAT puncta per nucleus',
+                     'Filter: threshold_multiplier=1; finite metric; N=0 retained when defined',
+                     'Input: SMOKE2_PROVISIONAL_LEVELS_NOT_RESULTS_20260917-175544/qki_association_per_nucleus.csv; single-plane', [])
+    fig.canvas.draw()
+    assert fig._suptitle.get_text() == 'MIAT puncta per nucleus'
+    footer = [t for t in fig.texts if t.get_text().startswith('Descriptive;')]
+    assert len(footer) == 1
+    assert footer[0].get_text().count('\n') <= 1
+    assert footer[0].get_fontsize() >= 7
+    assert footer[0].get_window_extent(fig.canvas.get_renderer()).x1 <= fig.bbox.x1
+    plt.close(fig)

@@ -16,6 +16,7 @@ def test_ortho_help_registered():
     result = CliRunner().invoke(cli, ['ortho', '--help'])
     assert result.exit_code == 0, result.output
     assert '--half-width-um' in result.output
+    assert '--qki-min' in result.output and '--miat-min' in result.output
 
 
 @pytest.fixture
@@ -77,6 +78,8 @@ def test_ortho_renders_records_fallback_and_exact_arguments(synthetic_run):
     assert selected.loc[0, 'arm_median'] == 2
     assert len(list(out.glob('*.png'))) == 1
     assert len(list(out.glob('*.svg'))) == 1
+    assert next(out.glob('*.png')).name == 'ortho_arm-A_synthetic_nuc1.png'
+    assert '<text' in next(out.glob('*.svg')).read_text()
     from PIL import Image
     with Image.open(next(out.glob('*.png'))) as image:
         assert image.info['dpi'][0] == pytest.approx(600, abs=.01)
@@ -204,7 +207,7 @@ def test_plane_calibration_and_selection_provenance(synthetic_run,monkeypatch):
     assert row.pixel_size_um == .13 and row.z_step_um == .21
     assert 'per_image_summary.csv:voxel_xy_nm' in row.pixel_size_source
     assert 'per_image_summary.csv:voxel_z_nm' in row.z_step_source
-    assert row.qki_threshold == 42
+    assert pd.isna(row.qki_min) and pd.isna(row.miat_min)
     assert row.display_mode == 'manual'
     assert row.configured_display_mode == 'auto_batch'
     assert 'per_image_summary.csv:z_plane' in row.analysed_plane_record
@@ -240,3 +243,30 @@ def test_calibration_preserves_both_acquisition_pixel_sizes(xy_nm):
     assert z == .21
     assert 'validated against per_image_summary.csv:voxel_xy_nm' in xy_source
     assert 'validated against per_image_summary.csv:voxel_z_nm' in z_source
+
+
+def test_user_minima_only_and_auto_crop_provenance(synthetic_run,monkeypatch):
+    from fishsuite.report import ortho
+    run,_ = synthetic_run
+    pd.DataFrame([{'image':'synthetic.tif','protein_threshold_value':2787.5}]).to_csv(run/'thresholds.csv',index=False)
+    captured = []
+    original = ortho.render_ortho_figure
+    def render(*args,**kwargs):
+        fig = original(*args,**kwargs)
+        raw = next(ax for ax in fig.axes if ax.get_label() == 'raw')
+        captured.append([line.get_label() for line in raw.lines])
+        y0,y1,x0,x1 = fig._ortho_crop_bounds
+        assert y0 <= 8 and y1 >= 24 and x0 <= 7 and x1 >= 26
+        fig.savefig = lambda *args,**kwargs: None
+        return fig
+    monkeypatch.setattr(ortho,'render_ortho_figure',render)
+    for options in ([],['--qki-min','42','--miat-min','21']):
+        result = CliRunner().invoke(cli,['ortho','--run-dir',str(run),'--k','1',*options])
+        assert result.exit_code == 0,result.output
+    assert not any('analysis' in label for label in captured[0])
+    assert 'QKI analysis min (user)' in captured[1]
+    assert 'MIAT analysis min (user)' in captured[1]
+    row = pd.read_csv(run/'ortho'/'ortho_selection.csv').iloc[0]
+    assert row.half_width_um == pytest.approx(19*.13/2+1.5)
+    assert row.half_width_used_um == pytest.approx(row.half_width_px*.13)
+    assert row.qki_min == 42 and row.miat_min == 21

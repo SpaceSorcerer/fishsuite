@@ -50,7 +50,7 @@ def test_fixed_levels_aspect_and_annotations(stack):
     mask = np.zeros((128,128), bool)
     mask[45:85,45:85] = True
     kw = dict(nucleus_mask=mask, pixel_size_um=.13, z_step_um=.21,
-              display_levels=((0,100),(0,100)), run_dir='synthetic', qki_threshold=35)
+              display_levels=((0,100),(0,100)), run_dir='synthetic', qki_min=35)
     f1 = core().render_ortho_figure(stack, (20,64,64), 24, **kw)
     altered = stack.copy()
     altered[:,20,50,50] = 10000
@@ -61,13 +61,13 @@ def test_fixed_levels_aspect_and_annotations(stack):
                             f2.axes[0].images[0].get_array()[24,24])
     assert len(axes['raw'].lines) == 7
     assert len(axes['normalised'].lines) == 3  # traces and in-range QKI threshold
-    assert {text.get_text() for text in axes['normalised'].texts} == {
+    assert set(axes['normalised']._outside_trace_bounds) == {
         'MIAT display min 0: outside trace range',
         'MIAT display max 100: outside trace range',
         'QKI display min 0: outside trace range',
         'QKI display max 100: outside trace range',
     }
-    assert any(t.get_text() == 'synthetic' for t in f1.texts)
+    assert any('synthetic' in t.get_text() for t in f1.texts)
     assert axes['xy'].collections
     plt.close(f1)
     plt.close(f2)
@@ -134,14 +134,14 @@ def test_default_profile_matches_visible_line_and_requested_width(stack):
 def test_normalised_limits_and_out_of_range_bound_annotations(stack):
     fig = core().render_ortho_figure(stack, (20,64,64), 12,
           nucleus_mask=np.ones((128,128),bool), pixel_size_um=.13, z_step_um=.21,
-          display_levels=((-100,1000),(-100,1000)), qki_threshold=500)
+          display_levels=((-100,1000),(-100,1000)), qki_min=500)
     normal = next(ax for ax in fig.axes if ax.get_label() == 'normalised')
     assert normal.get_ylim() == pytest.approx((-.05,1.05))
-    assert normal.get_ylabel() == "normalised to each channel's own min–max along this line (display only)"
+    assert normal.get_ylabel() == 'normalised (display only)'
     assert len(normal.lines) == 2
-    labels = [text.get_text() for text in normal.texts]
+    labels = normal._outside_trace_bounds
     assert len(labels) == 5
-    assert any('QKI analysis threshold' in label and '500' in label for label in labels)
+    assert any('QKI analysis min (user)' in label and '500' in label for label in labels)
     assert all('outside' in label for label in labels)
     plt.close(fig)
 
@@ -155,9 +155,10 @@ def test_analysed_plane_ticks_preserve_orthogonal_geometry(stack):
     tick_yz = next(line for line in axes['yz'].lines if line.get_label() == 'analysed plane')
     np.testing.assert_array_equal(tick_xz.get_ydata(), [9,9])
     assert np.mean(tick_yz.get_xdata()) == pytest.approx(9)
-    assert np.ptp(tick_yz.get_ydata()) == 0
-    assert any('analysed plane' in t.get_text() and '17' in t.get_text() for t in axes['xz'].texts)
-    assert any('analysed plane' in t.get_text() and '17' in t.get_text() for t in axes['yz'].texts)
+    assert np.ptp(tick_yz.get_xdata()) == 0
+    assert np.ptp(tick_yz.get_ydata()) > 0
+    assert any('z = 18' in t.get_text() for t in axes['xz'].texts)
+    assert any('z = 18' in t.get_text() for t in axes['yz'].texts)
     assert axes['xz'].get_aspect() == pytest.approx(.21/.13)
     assert axes['yz'].get_aspect() == pytest.approx(.13/.21)
     plt.close(fig)
@@ -165,9 +166,74 @@ def test_analysed_plane_ticks_preserve_orthogonal_geometry(stack):
 
 def test_analysed_plane_ticks_do_not_expand_edge_crop(stack):
     fig = core().render_ortho_figure(stack, (20,0,0), 1,
-          nucleus_mask=np.ones((128,128),bool), pixel_size_um=.13, z_step_um=.21,
+          nucleus_mask=np.pad(np.ones((2,2),bool),((0,126),(0,126))), pixel_size_um=.13, z_step_um=.21,
           display_levels=((0,100),(0,100)), analysed_plane_z=20)
     axes = {a.get_label():a for a in fig.axes}
     assert axes['xz'].get_xlim() == pytest.approx((-.5,1.5))
     assert axes['yz'].get_ylim() == pytest.approx((1.5,-.5))
+    plt.close(fig)
+
+
+def test_auto_crop_contains_bbox_and_crosshair_stays_on_punctum(stack):
+    mask = np.zeros((128,128),bool)
+    mask[20:105,35:95] = True
+    fig = core().render_ortho_figure(stack,(20,25,40),nucleus_mask=mask,
+          pixel_size_um=.13,z_step_um=.21,display_levels=((0,100),(0,100)))
+    y0,y1,x0,x1 = fig._ortho_crop_bounds
+    assert y0 <= 20 and y1 >= 105 and x0 <= 35 and x1 >= 95
+    xy = next(ax for ax in fig.axes if ax.get_label() == 'xy')
+    assert xy.lines[0].get_xdata()[0] == 40-x0
+    assert xy.lines[1].get_ydata()[0] == 25-y0
+    bars = [line for line in xy.lines if line.get_label() == 'scale bar']
+    assert len(bars) == 1
+    length = np.ptp(bars[0].get_xdata())*.13
+    assert length == pytest.approx(core().scale_bar_length((x1-x0)*.13))
+    assert round(length) in {1,2,5,10,20}
+    assert length <= (x1-x0)*.13*.25
+    plt.close(fig)
+
+
+@pytest.mark.parametrize('panel_width,expected',[(4,1),(8,2),(20,5),(40,10),(100,20),(3,None)])
+def test_round_scale_bar(panel_width,expected):
+    assert core().scale_bar_length(panel_width) == expected
+
+
+def test_header_channels_and_explicit_analysis_minima(stack):
+    kw = dict(nucleus_mask=np.ones((128,128),bool),pixel_size_um=.13,z_step_um=.21,
+              display_levels=((0,100),(0,100)),arm='arm A',image='example.vsi',
+              nucleus_id=12,analysed_plane_z=20,metric='nuclear_spot_count',metric_value=8,arm_median=7)
+    for minimum in (None,35):
+        fig = core().render_ortho_figure(stack,(20,64,64),24,qki_min=minimum,**kw)
+        axes = {ax.get_label():ax for ax in fig.axes}
+        labels = [line.get_label() for line in axes['raw'].lines]
+        assert ('QKI analysis min (user)' in labels) == (minimum is not None)
+        assert not any('analysis threshold' in label for label in labels)
+        assert all(word in fig._ortho_header for word in ('arm A','example.vsi','nucleus 12','z = 21 (1-based)','8 vs arm median 7'))
+        a = axes['xy_miat'].images[0].get_array()
+        b = axes['xy_qki'].images[0].get_array()
+        merged = axes['xy'].images[0].get_array()
+        np.testing.assert_array_equal(merged,np.clip(a+b,0,1))
+        plt.close(fig)
+
+
+def test_real_length_header_footer_and_panel_titles_fit(stack):
+    from matplotlib.offsetbox import AnchoredOffsetbox
+    fig = core().render_ortho_figure(stack,(20,64,64),24,
+          nucleus_mask=np.ones((128,128),bool),pixel_size_um=.13,z_step_um=.21,
+          display_levels=((0,100),(0,100)),arm='g2 noDox (control)',
+          image='UD-MIAT-FISH-QKI-IF-VPR-no Dox_15.vsi',nucleus_id=120,
+          analysed_plane_z=17,metric='nuclear_spot_count',metric_value=300,arm_median=250,
+          run_dir='F:/Image Analysis Work/MIAT-QKI-Coloc/UD/_OEvWT_2026-09/'
+                  'RUN_QC2_OEvControl_PLAIN_jointAF_diam11um_autoLoG_footprintcols_20260917-153923')
+    fig.canvas.draw()
+    renderer = fig.canvas.get_renderer()
+    texts = list(fig.texts)+[a for a in fig.artists if isinstance(a,AnchoredOffsetbox)]
+    for artist in texts:
+        bounds = artist.get_window_extent(renderer)
+        assert bounds.x0 >= 0 and bounds.x1 <= fig.bbox.x1
+        assert bounds.y0 >= 0 and bounds.y1 <= fig.bbox.y1
+    axes = {ax.get_label():ax for ax in fig.axes}
+    xz_title = axes['xz'].title.get_window_extent(renderer)
+    for text in axes['xy'].texts:
+        assert not xz_title.overlaps(text.get_window_extent(renderer))
     plt.close(fig)
