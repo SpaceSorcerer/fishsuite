@@ -32,22 +32,25 @@ def cli():
               help="Where to write outputs.")
 @click.option("--parallel", "-p", default="auto",
               help="Worker count: 'auto' (default) or an integer.")
-@click.option("--resume", is_flag=True, help="Skip images that already have outputs.")
+@click.option("--resume", is_flag=True, help="Not implemented; use a new output directory.")
 @click.option("--dry-run", is_flag=True, help="Discover inputs and print plan; do not process.")
 @click.option("--verbose", "-v", is_flag=True, help="Print full tracebacks on per-image failures.")
 def run(config, input_dir, output_dir, parallel, resume, dry_run, verbose):
     """Run the full pipeline on a folder of images."""
+    if resume:
+        raise click.UsageError("--resume is not implemented; re-run into a new output directory")
     from .runner import run_batch
     summary = run_batch(
         config_path=Path(config),
         input_dir=Path(input_dir),
         output_dir=Path(output_dir),
         parallel=parallel,
-        resume=resume,
         dry_run=dry_run,
         verbose=verbose,
     )
     click.echo(f"Summary: {summary}")
+    if summary.get("failures"):
+        raise click.exceptions.Exit(2)
 
 
 @cli.command('figure')
