@@ -106,7 +106,8 @@ def run_qki_association(run_dir, out, *, miat_min, qki_min,
     spots = pd.read_csv(source / REQUIRED_FILES[0], keep_default_na=False, dtype={"spot_id": str, "spot_uid": str})
     nuclei = pd.read_csv(source / REQUIRED_FILES[1], keep_default_na=False)
     pixels = pd.read_csv(source / REQUIRED_FILES[2], keep_default_na=False, dtype={"spot_uid": str})
-    manifest = pd.read_csv(source / REQUIRED_FILES[4], keep_default_na=False)
+    manifest = pd.read_csv(source / REQUIRED_FILES[4], keep_default_na=False,
+                           dtype={"condition": str, "well": str})
     _require(spots, ["image_key", "spot_id", "spot_uid", "nucleus_id", "center_y_px", "center_x_px",
         "footprint_area_px", "footprint_method", "null_candidate", "selected_z_1based",
         "selected_z_0based", "quantitation_plane", "miat_channel_index", "qki_channel_index", "dapi_channel_index"], "spot table")

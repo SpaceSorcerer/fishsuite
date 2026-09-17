@@ -1831,6 +1831,14 @@ def run_postrun_directory(
 
     source = Path(source_run).resolve()
     output = Path(output_dir).resolve()
+    parameters_path = source / "analysis_parameters.json"
+    if parameters_path.is_file():
+        parameters = json.loads(parameters_path.read_text(encoding="utf-8"))
+        if parameters.get("hierarchy_source") == "native_run_outputs":
+            raise PostrunValidationError(
+                "native well_id strata are not acquisition-slide blocks; "
+                "historical 12-set NT/KD inference is unsupported; use qki-assoc"
+            )
     if output == source or output.is_relative_to(source):
         raise PostrunValidationError(
             "output_dir must be outside the completed source run"

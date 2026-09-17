@@ -1135,6 +1135,19 @@ def sizefit(run_dir, input_dir, window_px, limit_images):
         click.echo(f"  SKIP {s}")
 
 
+@cli.command("footprint-backfill", context_settings={"ignore_unknown_options": True,
+                                                    "allow_extra_args": True},
+             add_help_option=False)
+@click.pass_context
+def footprint_backfill(ctx):
+    """Reconstruct exact footprints using recorded native or explicit hierarchy."""
+    from .core.exact_footprint_backfill import main
+    try:
+        ctx.exit(main(ctx.args))
+    except (ValueError, OSError) as exc:
+        raise click.ClickException(str(exc)) from exc
+
+
 @cli.command("qki-assoc")
 @click.option("--run-dir", required=True, type=click.Path(exists=True, file_okay=False),
               help="Retained exact-footprint run with saved single-plane pixels and masks.")
