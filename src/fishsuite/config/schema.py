@@ -406,12 +406,15 @@ class NucleiCfg(BaseModel):
     stardist_postprocess_mask_closing_px: int = 5
     min_area_px: int = 10000
     max_area_px: float = 1e12
+    min_area_um2: Optional[float] = Field(None, ge=0, allow_inf_nan=False)
+    max_area_um2: Optional[float] = Field(None, ge=0, allow_inf_nan=False)
     # Per-label boundary smoothing applied AFTER watershed/dilate postprocess.
     # 0 disables (current behavior); recommend 3-7 px to round off the sharp
     # corners introduced by StarDist's star-convex polygon predictions where
     # neighboring instances meet. See `core.segmentation._smooth_label_boundaries`.
     label_smoothing_radius_px: int = 0
     cellpose_diameter_px: float = 0.0
+    expected_diameter_um: Optional[float] = Field(None, ge=0, allow_inf_nan=False)
     cellpose_flow_threshold: float = 0.4
     cellpose_cellprob_threshold: float = 0.0
     cellpose_model_type: str = "cpsam"
@@ -445,6 +448,7 @@ class NucleiCfg(BaseModel):
     cellpose_device: Literal["cpu", "directml", "cuda"] = "cpu"
     exclude_border: bool = True
     border_margin_px: int = 5
+    border_margin_um: Optional[float] = Field(None, ge=0, allow_inf_nan=False)
     # 2026-05-29: OPT-IN ghost-nucleus rejection. DEFAULT False keeps every
     # other dataset/preset byte-for-byte unchanged. When True, a POST-spot-
     # detection composite rule drops empty 'ghost' shells — segmented objects
@@ -461,6 +465,7 @@ class NucleiCfg(BaseModel):
     reject_ghost_nuclei: bool = False
     reject_ghost_max_dapi_cv: float = 0.12
     reject_ghost_min_area_px: int = 6000
+    reject_ghost_min_area_um2: Optional[float] = Field(None, ge=0, allow_inf_nan=False)
 
 
 class SamplingCfg(BaseModel):
@@ -1546,5 +1551,8 @@ class FishsuiteConfig(BaseModel):
         return cls.model_validate(data)
 
     def dump_yaml(self, path: Path | str) -> None:
+        data = self.model_dump(mode="json")
+        # Preserve explicit units on reload; default pixel twins are not user input.
+        data["nuclei"] = self.nuclei.model_dump(mode="json", exclude_unset=True)
         with open(path, "w", encoding="utf-8") as f:
-            yaml.safe_dump(self.model_dump(mode="json"), f, sort_keys=False)
+            yaml.safe_dump(data, f, sort_keys=False)

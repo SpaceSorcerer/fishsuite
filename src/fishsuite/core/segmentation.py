@@ -181,7 +181,7 @@ def segment_nuclei(
     # is applied AFTER smoothing below — see Brian's Run R2 regression where
     # backend-side min_area=12000 dropped 305 labels that smoothing would
     # have lifted into compliance.
-    _user_min_area = int(p.get("min_area", 250))
+    _user_min_area = float(p.get("min_area", 250))
     _user_max_area = float(p.get("max_area", 1e12))
     _backend_min_area = max(250, _user_min_area // 2)
     kwargs = dict(
