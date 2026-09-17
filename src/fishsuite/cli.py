@@ -1176,6 +1176,25 @@ def ortho(ctx, run_dir, config, k, metric, seed, punctum, half_width_um, out):
                f"{int(selection.z_source.eq('miat_5x5_mean_argmax').sum())} used inferred Z "
                "(MIAT 5x5 mean-intensity maximum).")
 
+@cli.command("coupling")
+@click.option("--assoc-csv", required=True, type=click.Path(exists=True, dir_okay=False))
+@click.option("--treated", required=True, help="Exact treated condition label.")
+@click.option("--control", required=True, help="Exact control condition label.")
+@click.option("--config", default=None, type=click.Path(exists=True, dir_okay=False),
+              help="YAML with group_colors and condition_order.")
+@click.option("--seed", default=0, show_default=True, type=click.IntRange(min=0))
+@click.option("--n-boot", default=2000, show_default=True, type=click.IntRange(min=1))
+@click.option("--out", required=True, type=click.Path(file_okay=False))
+def coupling(assoc_csv, treated, control, config, seed, n_boot, out):
+    """Descriptive well-level single-plane MIAT abundance/QKI-association report."""
+    from .report.coupling import build_coupling
+    try:
+        result = build_coupling(assoc_csv, treated, control, out, config=config,
+                                seed=seed, n_boot=n_boot)
+    except (ValueError, OSError) as exc:
+        raise click.ClickException(str(exc)) from exc
+    click.echo(f"Single-plane coupling report: {result}")
+
 
 if __name__ == "__main__":
     cli()
