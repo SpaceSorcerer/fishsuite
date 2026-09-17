@@ -1,0 +1,208 @@
+# MIAT x QKI colocalization: undifferentiated hESC, MIAT OE versus control
+# Date: 2026-09-17
+# Purpose: compare g2 +Dox MIAT OE with g2 noDox and the Nog/VPR controls.
+# Verified acquisition source:
+# F:\Image Analysis Work\MIAT-QKI-Coloc\UD\_OEvWT_2026-09\acquisition_parity.md
+# Input root: F:\Raw Images\121925_MIAT-QKI_confocal_UD_MIAT OE v WT
+# Six leaf folders: g2\no Dox, g2\with Dox, Nog\no Dox, Nog\with Dox,
+# VPR\no Dox, VPR\with Dox. Filename conditions resolve both arm and Dox.
+# Acquisition: 12 plain .vsi, 2 per leaf = 2 wells per arm, one field per well;
+# 11 usable. 0.13 um/px (2x2 binned), 0.21 um z-step, 78 planes, 100x/1.5.
+# Excluded by basename from input_file_subset because it has no z-stack:
+# Nog\with Dox\UD-MIAT-FISH-QKI-IF-Nog-with Dox_09.vsi
+# OneDrive_1_6-3-2026 is a DUPLICATE g2 subset; exclude the entire folder.
+# Channel map: dapi=2 (405), rna=0 (640 MIAT FISH), antibody=1 (561 QKI IF).
+# Processing: fishsuite run -> exact-footprint backfill -> fishsuite qki-assoc
+# -> fishsuite coupling -> fishsuite ortho; all association metrics are single-plane.
+# PLAIN only: the cloned explicit basename roster excludes all '(decon)' files.
+
+experiment:
+  name: MIAT_QKI_coloc_UD_OEvControl_PLAIN_2026-09-17
+  description: 'Undifferentiated human hESC MIAT RNA FISH x diffuse QKI IF: g2 MIAT OE versus control with Nog and
+    VPR controls; 11 usable plain fields, one field per well; all association metrics are single-plane.'
+  cell_line: undifferentiated hESC (dCas9-VPR; g2 / Nog / VPR arms)
+  date: '2026-09-17'
+conditions:
+  mode: subfolders
+  recursive_discovery: true
+  filename_conditions:
+  - - -g2-Dox_
+    - g2 +Dox (MIAT OE)
+  - - -g2-no Dox_
+    - g2 noDox (control)
+  - - -Nog-with Dox_
+    - Nog +Dox
+  - - -Nog-no Dox_
+    - Nog noDox
+  - - -VPR-with Dox_
+    - VPR +Dox
+  - - -VPR-no Dox_
+    - VPR noDox
+  subfolder_conditions: {}
+  sec_only_folders: []
+  sec_only_files: []
+  condition_order:
+  - g2 +Dox (MIAT OE)
+  - g2 noDox (control)
+  - Nog +Dox
+  - Nog noDox
+  - VPR +Dox
+  - VPR noDox
+  min_nuclei_for_stats: 6
+  strict_filenames: true
+  exclude_subfolders:
+  - OneDrive_1_6-3-2026
+  well_from_image: ^(.+)\.vsi$
+  groups:
+    g2 +Dox (MIAT OE):
+    - UD-MIAT-FISH-QKI-IF-g2-Dox_01
+    - UD-MIAT-FISH-QKI-IF-g2-Dox_02
+    g2 noDox (control):
+    - UD-MIAT-FISH-QKI-IF-g2-no Dox_03
+    - UD-MIAT-FISH-QKI-IF-g2-no Dox_04
+    Nog +Dox:
+    - UD-MIAT-FISH-QKI-IF-Nog-with Dox_10
+    Nog noDox:
+    - UD-MIAT-FISH-QKI-IF-Nog-no Dox_07
+    - UD-MIAT-FISH-QKI-IF-Nog-no Dox_08
+    VPR +Dox:
+    - UD-MIAT-FISH-QKI-IF-VPR-with Dox_11
+    - UD-MIAT-FISH-QKI-IF-VPR-with Dox_12
+    VPR noDox:
+    - UD-MIAT-FISH-QKI-IF-VPR-no Dox_14
+    - UD-MIAT-FISH-QKI-IF-VPR-no Dox_15
+  group_order:
+  - g2 +Dox (MIAT OE)
+  - g2 noDox (control)
+  - Nog +Dox
+  - Nog noDox
+  - VPR +Dox
+  - VPR noDox
+  group_colors:
+    g2 +Dox (MIAT OE): '#56B4E9'
+    g2 noDox (control): '#7F7F7F'
+    Nog +Dox: '#7F7F7F'
+    Nog noDox: '#7F7F7F'
+    VPR +Dox: '#7F7F7F'
+    VPR noDox: '#7F7F7F'
+input_file_subset:
+- UD-MIAT-FISH-QKI-IF-g2-no Dox_03.vsi
+- UD-MIAT-FISH-QKI-IF-g2-no Dox_04.vsi
+- UD-MIAT-FISH-QKI-IF-g2-Dox_01.vsi
+- UD-MIAT-FISH-QKI-IF-g2-Dox_02.vsi
+- UD-MIAT-FISH-QKI-IF-Nog-no Dox_07.vsi
+- UD-MIAT-FISH-QKI-IF-Nog-no Dox_08.vsi
+- UD-MIAT-FISH-QKI-IF-Nog-with Dox_10.vsi
+- UD-MIAT-FISH-QKI-IF-VPR-no Dox_14.vsi
+- UD-MIAT-FISH-QKI-IF-VPR-no Dox_15.vsi
+- UD-MIAT-FISH-QKI-IF-VPR-with Dox_11.vsi
+- UD-MIAT-FISH-QKI-IF-VPR-with Dox_12.vsi
+channels:
+  analysis_mode: rna_protein
+  dapi: 2
+  rna: 0
+  antibody: 1
+  rna2: -1
+  dapi_label: DAPI
+  rna_label: MIAT-640
+  antibody_label: QKI-561
+  dapi_lut: blue
+  rna_lut: yellow
+  antibody_lut: magenta
+z_stack:
+  mode: autofocus
+  focus_metric: variance_of_laplacian
+  autofocus_intensity_weighted: true
+  focus_central_fraction: 0.6
+  focus_min_intensity_frac_of_peak: 0.3
+  start_slice: 8
+  end_slice: 70
+nuclei:
+  backend: cellpose
+  cellpose_model_type: cpsam
+  cellpose_flow_threshold: 0.4
+  cellpose_cellprob_threshold: 0.0
+  cellpose_downsample_factor: 2.0
+  cellpose_device: directml
+  max_area_px: 1000000000000.0
+  exclude_border: true
+  border_margin_px: 10
+  stardist_model: 2D_versatile_fluo
+  prob_threshold: 0.5
+  nms_threshold: 0.5
+  stardist_gauss_sigma: 3.0
+  stardist_postprocess: none
+  label_smoothing_radius_px: 0
+  reject_ghost_nuclei: false
+  # diameter is PROVISIONAL until the PI picks from `fishsuite seg-sweep`
+  expected_diameter_um: 11.0
+  min_area_um2: 67.6
+  # Inherited legacy 6000 px threshold; reject_ghost_nuclei remains false.
+  reject_ghost_min_area_um2: 101.4
+pixel_coloc:
+  threshold_mode: mad
+  threshold_scope: per_image
+  k_mad: 2.5
+spot_coloc:
+  pair_distance_um: 0.3
+  report_nn_distance: true
+foci:
+  enabled: true
+  backend: bigfish
+  bigfish_voxel_size_nm: 0.0
+  bigfish_voxel_z_nm: 0.0
+  bigfish_spot_radius_nm: 100.0
+  bigfish_spot_radius_z_nm: 300.0
+  threshold_multiplier: 1.0
+  # rna_overrides:
+  #   threshold_override: null
+  # set from the per-image LoG threshold table of the QC run; a fixed value is REQUIRED
+  # for the production run because the per-image automatic threshold over-detects in
+  # low-signal (no-Dox) fields
+  only_nuclear_spots: false
+  min_sep_px: 1
+  detect_in_sec_only: false
+  detect_antibody_spots: false
+  antibody_overrides:
+    bigfish_spot_radius_nm: 150.0
+    bigfish_spot_radius_z_nm: 350.0
+  compute_partner_intensity: true
+  compute_partner_null_enrichment: true
+  partner_null_n: 1000
+  partner_null_disk_px: 3.0
+  partner_null_seed: 0
+  exclude_nucleolus_from_partner_null: true
+  save_partner_null_draws: true
+  compute_partner_radial_profile: true
+cytoplasm:
+  enabled: true
+  voronoi_max_expansion_px: 40
+  measure_nc_ratio: true
+nucleolus:
+  enabled: true
+output:
+  save_qc_overlays: true
+  save_per_image_csv: true
+  save_masks: true
+  save_publication_images: true
+  save_publication_tifs: false
+  # PROVISIONAL — PI supplies final min/max; MAX is display-only
+  pub_contrast_mode: manual
+  manual_rna_min: 525.0
+  manual_rna_max: 2250.0
+  manual_antibody_min: 1250.0
+  manual_antibody_max: 6000.0
+  manual_rna2_min: 1250.0
+  manual_rna2_max: 6000.0
+  manual_dapi_min: 607.0
+  manual_dapi_max: 9000.0
+  apply_pub_contrast_floor_to_analysis: false
+  apply_pub_contrast_floor_to_spots: false
+  prefix: ''
+  scalebar_um: 25.0
+  scalebar_font_px: 52
+parallel:
+  workers: 1
+  seg_workers: 1
+  main_workers: 1
+  threads_per_worker: 4

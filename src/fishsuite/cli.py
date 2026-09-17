@@ -53,6 +53,24 @@ def run(config, input_dir, output_dir, parallel, resume, dry_run, verbose):
         raise click.exceptions.Exit(2)
 
 
+@cli.command('seg-sweep')
+@click.option('--config', '-c', required=True, type=click.Path(exists=True, dir_okay=False))
+@click.option('--input-dir', '-i', required=True, type=click.Path(exists=True, file_okay=False))
+@click.option('--diameters-um', required=True, help='Comma-separated positive nuclear diameters in µm.')
+@click.option('--max-images-per-condition', default=1, type=click.IntRange(min=1), show_default=True)
+@click.option('--seed', default=0, type=click.IntRange(min=0), show_default=True)
+@click.option('--out', required=True, type=click.Path(file_okay=False))
+def seg_sweep(config, input_dir, diameters_um, max_images_per_condition, seed, out):
+    """Compare nuclear diameters using the run's segmentation path."""
+    from .core.seg_sweep import parse_diameters, run_sweep
+    try:
+        result = run_sweep(config, input_dir, out, parse_diameters(diameters_um),
+                           max_images_per_condition, seed)
+    except (ValueError, OSError) as exc:
+        raise click.ClickException(str(exc)) from exc
+    click.echo(f'Segmentation sweep: {result}')
+
+
 @cli.command('figure')
 @click.option('--from-xlsx',required=True,type=click.Path(exists=True,dir_okay=False))
 @click.option('--sheet',required=True)
