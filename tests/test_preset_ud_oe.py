@@ -89,9 +89,16 @@ def test_colors_and_unchanged_analysis_settings():
         'Nog +Dox': '#7F7F7F', 'Nog noDox': '#7F7F7F',
         'VPR +Dox': '#7F7F7F', 'VPR noDox': '#7F7F7F',
     }
-    for key in ('channels', 'z_stack', 'foci', 'nucleolus', 'output', 'parallel',
+    for key in ('channels', 'foci', 'nucleolus', 'output', 'parallel',
                 'cytoplasm', 'spot_coloc', 'pixel_coloc', 'input_file_subset'):
         assert getattr(cfg, key) == getattr(old, key), key
+    # z handling differs from the June preset ONLY by the locked coloc rule:
+    # joint DAPI+MIAT+QKI autofocus over the full 8-70 window.
+    z_changed = {
+        'autofocus_channel': 'joint', 'autofocus_joint_reduce': 'product',
+        'autofocus_joint_nuclear_mask': True, 'focus_central_fraction': 1.0,
+    }
+    assert cfg.z_stack.model_dump() == {**old.z_stack.model_dump(), **z_changed}
     raw = yaml.safe_load(PRESET.read_text(encoding='utf-8'))
     raw['conditions']['group_colors']['Nog +Dox'] = 'invalid-color'
     with pytest.raises(ValueError, match='invalid group color'):
