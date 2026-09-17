@@ -36,6 +36,7 @@ from matplotlib.lines import Line2D
 from matplotlib.patches import Circle, Rectangle
 from scipy import integrate, stats
 
+from fishsuite.core.ortho_profile import chord_through, sample_profile
 from fishsuite.core import io as _io
 from fishsuite.core import output as _out
 from fishsuite.core import thresholds as _thr
@@ -1126,41 +1127,6 @@ def square_crop(shape, cy, cx, half):
 
 
 # --------------------------------------------------------------- line profile
-def chord_through(mask, cy, cx, orientation):
-    """Endpoints of the chord through (cy, cx) along the region principal axis.
-
-    skimage's ``orientation`` is the angle between the row axis and the major
-    axis, so the unit direction is (dy, dx) = (-sin theta, cos theta). Walk
-    outward in both directions in 0.5-px steps and keep the last in-mask point.
-    """
-    H, W = mask.shape
-    ddy, ddx = -math.sin(orientation), math.cos(orientation)
-    if not mask[int(round(cy)), int(round(cx))]:
-        ys, xs = np.nonzero(mask)
-        k = int(np.argmin((ys - cy) ** 2 + (xs - cx) ** 2))
-        cy, cx = float(ys[k]), float(xs[k])
-    ends = []
-    for sgn in (+1.0, -1.0):
-        last = (cy, cx)
-        t = 0.0
-        while True:
-            t += 0.5
-            y = cy + sgn * ddy * t
-            x = cx + sgn * ddx * t
-            iy, ix = int(round(y)), int(round(x))
-            if iy < 0 or ix < 0 or iy >= H or ix >= W or not mask[iy, ix]:
-                break
-            last = (y, x)
-        ends.append(last)
-    return ends[0], ends[1]
-
-
-def sample_profile(plane, src, dst):
-    from skimage.measure import profile_line
-    return profile_line(plane.astype(np.float64), src, dst, linewidth=1, order=1,
-                        mode="constant", reduce_func=None).ravel()
-
-
 # ------------------------------------------------------------------- figures
 def save(fig, out_dir, stem, manifest, description, source, gate, n, test):
     png = out_dir / f"{stem}.png"

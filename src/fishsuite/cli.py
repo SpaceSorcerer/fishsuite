@@ -1114,5 +1114,42 @@ def sizefit(run_dir, input_dir, window_px, limit_images):
         click.echo(f"  SKIP {s}")
 
 
+class _OrthoCommand(click.Command):
+    def parse_args(self, ctx, args):
+        ctx.meta['ortho_args'] = list(args)
+        return super().parse_args(ctx, args)
+
+
+@cli.command('ortho', cls=_OrthoCommand)
+@click.option('--run-dir', required=True, type=click.Path(exists=True, file_okay=False))
+@click.option('--config', type=click.Path(exists=True, dir_okay=False), default=None)
+@click.option('--k', type=click.IntRange(min=1), default=3, show_default=True)
+@click.option('--metric', default='nuclear_spot_count', show_default=True)
+@click.option('--seed', type=click.IntRange(min=0), default=0, show_default=True)
+@click.option('--punctum', type=click.Choice(['brightest', 'median']), default='brightest')
+@click.option('--half-width-um', type=click.FloatRange(min=0, min_open=True), default=8., show_default=True)
+@click.option('--out', type=click.Path(file_okay=False), default=None)
+@click.pass_context
+def ortho(ctx, run_dir, config, k, metric, seed, punctum, half_width_um, out):
+    """Render median-selected nuclei with orthogonal sections and line profiles.
+
+    Uses saved nucleus labels and source stacks; requires fixed manual RNA and
+    antibody display bounds. Uses the recorded analysed plane; when absent,
+    falls back to the MIAT 5x5 mean maximum. Cross-checks run/header calibration.
+    """
+    from subprocess import list2cmdline
+    from .report.ortho import render_run
+    command = list2cmdline(['fishsuite', 'ortho', *ctx.meta['ortho_args']])
+    try:
+        selection = render_run(run_dir, config=config, k=k, metric=metric, seed=seed,
+                               punctum=punctum, half_width_um=half_width_um, out=out,
+                               command=command)
+    except (ValueError, OSError, KeyError) as exc:
+        raise click.ClickException(str(exc)) from exc
+    click.echo(f"Wrote {len(selection)} orthogonal figures; "
+               f"{int(selection.z_source.eq('miat_5x5_mean_argmax').sum())} used inferred Z "
+               "(MIAT 5x5 mean-intensity maximum).")
+
+
 if __name__ == "__main__":
     cli()
