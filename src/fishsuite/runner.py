@@ -658,6 +658,7 @@ def run_batch(
         strict_subfolders=cfg.conditions.strict_subfolders,
         exclude_subfolders=cfg.conditions.exclude_subfolders,
         strict_filenames=cfg.conditions.strict_filenames,
+        recursive_discovery=cfg.conditions.recursive_discovery,
     )
     if not images:
         raise RuntimeError(f"No images discovered under {input_dir}")

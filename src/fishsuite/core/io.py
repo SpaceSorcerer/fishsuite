@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Optional, Tuple, List, Literal
 
 import numpy as np
@@ -1323,6 +1323,7 @@ def discover_inputs(
     sec_only_files: Optional[List[str]] = None,
     filename_conditions: Optional[List[List[str]]] = None,
     strict_filenames: bool = False,
+    recursive_discovery: bool = False,
     extensions: Tuple[str, ...] = (".vsi", ".czi", ".lif", ".nd2", ".tif", ".tiff"),
 ) -> List[DiscoveredImage]:
     """Walk an input dir and return image paths labelled by condition.
@@ -1353,6 +1354,13 @@ def discover_inputs(
         legacy behaviour (no filename-based condition assignment).
     strict_filenames : bool
         Reject non-sec-only filenames that match no configured pattern.
+    recursive_discovery : bool
+        Opt in to nested traversal, including root-level files. Default False
+        preserves the original flat-or-one-level traversal. Nested folder keys
+        are root-relative POSIX paths, independent of the host platform.
+        Filename-mapped discovery walks nested directories, preserving their
+        relative folder paths; excluded and underscore-prefixed directories
+        are pruned before traversal. Folder-only discovery remains one level.
     extensions : tuple of accepted file extensions (lowercase).
     """
     input_dir = Path(input_dir)
@@ -1420,6 +1428,24 @@ def discover_inputs(
             sec_only=is_sec,
             subfolder=subfolder,
         ))
+
+    if recursive_discovery:
+        def _walk(folder: Path):
+            for entry in sorted(folder.iterdir()):
+                if entry.name.startswith("_"):
+                    continue
+                if entry.is_dir():
+                    if entry.name in exclude_subfolders:
+                        logging.info("Skipping excluded folder %s", entry.relative_to(input_dir))
+                        continue
+                    if not entry.is_symlink():
+                        _walk(entry)
+                elif entry.is_file() and entry.suffix.lower() in extensions:
+                    relative_folder = entry.parent.relative_to(input_dir)
+                    _add(entry, "" if relative_folder == Path(".") else str(PurePosixPath(*relative_folder.parts)))
+
+        _walk(input_dir)
+        return out
 
     # Subfolder-mode
     children = sorted(p for p in input_dir.iterdir() if p.is_dir() and not p.name.startswith("_"))

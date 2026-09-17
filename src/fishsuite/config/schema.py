@@ -24,6 +24,7 @@ class ConditionsCfg(BaseModel):
     mode: Literal["auto", "explicit", "subfolders"] = "subfolders"
     subfolder_conditions: Dict[str, str] = Field(default_factory=dict)
     strict_subfolders: bool = False
+    recursive_discovery: bool = False
     exclude_subfolders: List[str] = Field(default_factory=list)
     sec_only_folders: List[str] = Field(default_factory=list)
     sec_only_files: List[str] = Field(default_factory=list)

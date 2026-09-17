@@ -150,71 +150,7 @@ def _median(values):
     return s[n // 2] if n % 2 == 1 else 0.5 * (s[n // 2 - 1] + s[n // 2])
 
 
-def run_one(
-    path,
-    *,
-    condition: str,
-    sec_only: bool,
-    cfg,
-    precomputed_rna_threshold: Optional[float] = None,
-    precomputed_labels: Optional[np.ndarray] = None,
-    analysis_floors: Optional[Dict[str, Any]] = None,
-    sampling_unit_key: Optional[str] = None,
-    sampling_n_alloc: Optional[int] = None,
-) -> ImageResult:
-    """Run the rna_only pipeline on a single image.
-
-    Parameters (fixed-N sampling)
-    -----------------------------
-    sampling_unit_key : str or None
-        Stable key for this image's sampling unit (input-relative image path
-        for ``sampling.unit='per_image'``, well name for ``per_well``). The
-        per-unit RNG is keyed on a hash of it, so the draw does not depend on
-        the order the parallel pool happened to process images in. Falls back
-        to a parent-dir/filename key when the caller supplies nothing.
-    sampling_n_alloc : int or None
-        This image's share of the unit's N (equal to ``sampling.n_per_unit``
-        for ``per_image``; pre-divided across a well's images for
-        ``per_well``). None -> ``sampling.n_per_unit``.
-
-    Parameters
-    ----------
-    precomputed_labels : np.ndarray or None
-        When supplied (by the batch runner during a
-        ``pixel_coloc.threshold_scope == 'batch'`` run), this is the FINAL
-        (already border-excluded) nuclei label image produced by the
-        pre-pass ``collect_nuclear_rna_pixels`` for THIS exact image. When
-        not None, ``run_one`` reuses it verbatim and SKIPS both the
-        ``segment_nuclei`` call and the ``exclude_border_labels`` call, so
-        each image is segmented exactly once per batch run (avoids the 2x
-        segmentation cost with slow backends such as cellpose). The collect
-        helper builds an identical ``seg_params`` and applies identical
-        border exclusion, so the cached labels are bit-equivalent to what
-        this function would otherwise compute. When None, segmentation runs
-        exactly as before (per-image / non-batch path is unchanged).
-    precomputed_rna_threshold : float or None
-        When supplied (typically by the batch runner during a
-        ``pixel_coloc.threshold_scope == 'batch'`` run), this scalar is used
-        verbatim as the pixel-coloc threshold for THIS image — bypassing the
-        per-image median+k*MAD computation. The runner does a pre-pass that
-        pools raw nuclear RNA pixels across all images and computes ONE
-        median+k*MAD value, then passes it here so every image in the batch
-        gets the same threshold (matches Fiji's ``COLOC_THR_SCOPE == 'batch'``
-        pre-scan; see ``Coloc_Analysis.run_batch_prescan_for_thresholds``).
-    """
-    t0 = time.time()
-    img = _io.read_image(path)
-    nuclear_pixel_nm = _safe_float(cfg.foci.bigfish_voxel_size_nm)
-    if not (math.isfinite(nuclear_pixel_nm) and nuclear_pixel_nm > 0):
-        nuclear_pixel_nm = _safe_float(img.voxel_xy_nm)
-    try:
-        nuclear_size = resolve_nuclear_size_px(
-            cfg.nuclei, nuclear_pixel_nm / 1000.0,
-            cfg.nuclei.cellpose_downsample_factor,
-        )
-    except ValueError as exc:
-        raise ValueError(f"{Path(path).name}: {exc}") from exc
-
+def prepare_segmentation_planes(img, path, cfg) -> Dict[str, Any]:
     one_indexed = bool(cfg.channels.one_indexed)
     def _chan(idx: int) -> int:
         return (idx - 1) if (one_indexed and idx > 0) else idx
@@ -364,25 +300,20 @@ def run_one(
             rna_2d = _io.extract_channel(img, rna_idx, z_mode=z_mode, z_start=z_start, z_end=z_end)
         if rna_2d.ndim != 2:
             rna_2d = rna_2d.max(axis=0)
+    return {
+        "dapi_idx": dapi_idx,
+        "rna_idx": rna_idx,
+        "z_mode": z_mode,
+        "z_start": z_start,
+        "z_end": z_end,
+        "dapi_autofocus_z": dapi_autofocus_z,
+        "dapi_2d": dapi_2d,
+        "rna_2d": rna_2d,
+    }
 
-    voxel_xy_nm = _safe_float(img.voxel_xy_nm)
-    if not (voxel_xy_nm > 0):
-        voxel_xy_nm = 65.0  # H9 100x fallback
-    voxel_z_nm = _safe_float(img.voxel_z_nm)
-    if not (voxel_z_nm > 0):
-        voxel_z_nm = 230.0
-    voxel_xy_um = voxel_xy_nm / 1000.0
-    voxel_z_um = voxel_z_nm / 1000.0
 
-    # ---- DAPI threshold mask (for walkthrough step 02) ---------------------
-    try:
-        dapi_thr_val = float(threshold_otsu(dapi_2d))
-    except Exception:
-        dapi_thr_val = float(dapi_2d.mean())
-    dapi_mask = (dapi_2d >= dapi_thr_val).astype(np.uint8) * 255
-
-    # ---- nuclear segmentation ----------------------------------------------
-    seg_params = dict(
+def segmentation_params(cfg, nuclear_size) -> Dict[str, Any]:
+    return dict(
         min_area=nuclear_size.min_area_px,
         max_area=nuclear_size.max_area_px,
         prob_threshold=cfg.nuclei.prob_threshold,
@@ -403,6 +334,102 @@ def run_one(
         cellpose_downsample_factor=cfg.nuclei.cellpose_downsample_factor,
         cellpose_device=getattr(cfg.nuclei, "cellpose_device", "cpu"),
     )
+
+
+def run_one(
+    path,
+    *,
+    condition: str,
+    sec_only: bool,
+    cfg,
+    precomputed_rna_threshold: Optional[float] = None,
+    precomputed_labels: Optional[np.ndarray] = None,
+    analysis_floors: Optional[Dict[str, Any]] = None,
+    sampling_unit_key: Optional[str] = None,
+    sampling_n_alloc: Optional[int] = None,
+) -> ImageResult:
+    """Run the rna_only pipeline on a single image.
+
+    Parameters (fixed-N sampling)
+    -----------------------------
+    sampling_unit_key : str or None
+        Stable key for this image's sampling unit (input-relative image path
+        for ``sampling.unit='per_image'``, well name for ``per_well``). The
+        per-unit RNG is keyed on a hash of it, so the draw does not depend on
+        the order the parallel pool happened to process images in. Falls back
+        to a parent-dir/filename key when the caller supplies nothing.
+    sampling_n_alloc : int or None
+        This image's share of the unit's N (equal to ``sampling.n_per_unit``
+        for ``per_image``; pre-divided across a well's images for
+        ``per_well``). None -> ``sampling.n_per_unit``.
+
+    Parameters
+    ----------
+    precomputed_labels : np.ndarray or None
+        When supplied (by the batch runner during a
+        ``pixel_coloc.threshold_scope == 'batch'`` run), this is the FINAL
+        (already border-excluded) nuclei label image produced by the
+        pre-pass ``collect_nuclear_rna_pixels`` for THIS exact image. When
+        not None, ``run_one`` reuses it verbatim and SKIPS both the
+        ``segment_nuclei`` call and the ``exclude_border_labels`` call, so
+        each image is segmented exactly once per batch run (avoids the 2x
+        segmentation cost with slow backends such as cellpose). The collect
+        helper builds an identical ``seg_params`` and applies identical
+        border exclusion, so the cached labels are bit-equivalent to what
+        this function would otherwise compute. When None, segmentation runs
+        exactly as before (per-image / non-batch path is unchanged).
+    precomputed_rna_threshold : float or None
+        When supplied (typically by the batch runner during a
+        ``pixel_coloc.threshold_scope == 'batch'`` run), this scalar is used
+        verbatim as the pixel-coloc threshold for THIS image — bypassing the
+        per-image median+k*MAD computation. The runner does a pre-pass that
+        pools raw nuclear RNA pixels across all images and computes ONE
+        median+k*MAD value, then passes it here so every image in the batch
+        gets the same threshold (matches Fiji's ``COLOC_THR_SCOPE == 'batch'``
+        pre-scan; see ``Coloc_Analysis.run_batch_prescan_for_thresholds``).
+    """
+    t0 = time.time()
+    img = _io.read_image(path)
+    nuclear_pixel_nm = _safe_float(cfg.foci.bigfish_voxel_size_nm)
+    if not (math.isfinite(nuclear_pixel_nm) and nuclear_pixel_nm > 0):
+        nuclear_pixel_nm = _safe_float(img.voxel_xy_nm)
+    try:
+        nuclear_size = resolve_nuclear_size_px(
+            cfg.nuclei, nuclear_pixel_nm / 1000.0,
+            cfg.nuclei.cellpose_downsample_factor,
+        )
+    except ValueError as exc:
+        raise ValueError(f"{Path(path).name}: {exc}") from exc
+
+    planes = prepare_segmentation_planes(img, path, cfg)
+    dapi_idx = planes["dapi_idx"]
+    rna_idx = planes["rna_idx"]
+    z_mode = planes["z_mode"]
+    z_start = planes["z_start"]
+    z_end = planes["z_end"]
+    dapi_autofocus_z = planes["dapi_autofocus_z"]
+    dapi_2d = planes["dapi_2d"]
+    rna_2d = planes["rna_2d"]
+    del planes
+
+    voxel_xy_nm = _safe_float(img.voxel_xy_nm)
+    if not (voxel_xy_nm > 0):
+        voxel_xy_nm = 65.0  # H9 100x fallback
+    voxel_z_nm = _safe_float(img.voxel_z_nm)
+    if not (voxel_z_nm > 0):
+        voxel_z_nm = 230.0
+    voxel_xy_um = voxel_xy_nm / 1000.0
+    voxel_z_um = voxel_z_nm / 1000.0
+
+    # ---- DAPI threshold mask (for walkthrough step 02) ---------------------
+    try:
+        dapi_thr_val = float(threshold_otsu(dapi_2d))
+    except Exception:
+        dapi_thr_val = float(dapi_2d.mean())
+    dapi_mask = (dapi_2d >= dapi_thr_val).astype(np.uint8) * 255
+
+    # ---- nuclear segmentation ----------------------------------------------
+    seg_params = segmentation_params(cfg, nuclear_size)
     _seg_stats: Dict[str, Any] = {}
     if precomputed_labels is not None:
         # Batch threshold_scope pre-pass already segmented + border-excluded

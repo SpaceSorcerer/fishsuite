@@ -42,7 +42,9 @@ def _source_and_mask(run_dir, row, roster, run_config):
     elif input_dir:
         source = Path(input_dir) / str(row.image)
         if not source.is_file():
-            candidates = [im.path for im in io.discover_inputs(Path(input_dir))
+            discovery = run_config.get('config_resolved', {}).get('conditions', {})
+            candidates = [im.path for im in io.discover_inputs(Path(input_dir),
+                          recursive_discovery=discovery.get('recursive_discovery', False))
                           if im.path.name == str(row.image)]
             if len(candidates) != 1:
                 raise ValueError(f'Missing or ambiguous source image {row.image!r} under {input_dir}')

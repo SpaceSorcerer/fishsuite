@@ -1075,110 +1075,7 @@ def _filter_spots_by_floor(
     return out
 
 
-def run_one(
-    path,
-    *,
-    condition: str,
-    sec_only: bool,
-    cfg,
-    precomputed_rna_threshold: Optional[float] = None,
-    precomputed_rna2_threshold: Optional[float] = None,
-    analysis_floors: Optional[Dict[str, float]] = None,
-    precomputed_labels: Optional[np.ndarray] = None,
-    rna2_is_antibody: bool = False,
-    sampling_unit_key: Optional[str] = None,
-    sampling_n_alloc: Optional[int] = None,
-    rna_pedestal_factor: Optional[float] = None,
-) -> ImageResult:
-    """Run the rna_rna pipeline on a single image.
-
-    Parameters (fixed-N sampling)
-    -----------------------------
-    sampling_unit_key : str or None
-        Stable key identifying this image's SAMPLING UNIT — the input-relative
-        image path for ``sampling.unit='per_image'``, the well name for
-        ``per_well``. The per-unit RNG is derived from a hash of this string
-        rather than from a shared global stream, so the draw does not depend on
-        which worker processed which image first. The runner supplies it;
-        callers that do not (e.g. rna_protein delegating here) fall back to a
-        parent-dir/filename key, which is equally stable.
-    sampling_n_alloc : int or None
-        This image's share of the unit's N. Equals ``sampling.n_per_unit`` for
-        ``per_image``; for ``per_well`` the runner has already divided the
-        well's N equally across the images beneath it. None -> use
-        ``sampling.n_per_unit``.
-
-    Parameters
-    ----------
-    precomputed_labels : np.ndarray or None
-        When supplied (by the batch runner during a
-        ``pixel_coloc.threshold_scope == 'batch'`` run), this is the FINAL
-        (already border-excluded) nuclei label image produced by the
-        pre-pass ``collect_nuclear_rna_pixels`` for THIS exact image. When
-        not None, ``run_one`` reuses it verbatim and SKIPS both the
-        ``segment_nuclei`` call and the ``exclude_border_labels`` call, so
-        each image is segmented exactly once per batch run (avoids the 2x
-        segmentation cost with slow backends such as cellpose). The collect
-        helper builds an identical ``seg_params``, uses the same DAPI 2D
-        (dust-speck masking touches only the RNA channels, never DAPI), and
-        applies identical border exclusion, so the cached labels are
-        bit-equivalent to what this function would otherwise compute. When
-        None, segmentation runs exactly as before (per-image / non-batch
-        path is unchanged).
-    precomputed_rna_threshold, precomputed_rna2_threshold : float or None
-        When supplied (typically by the batch runner's pre-pass in
-        ``pixel_coloc.threshold_scope == 'batch'`` mode), these scalars are
-        used verbatim as the pixel-coloc thresholds for THIS image's rna and
-        rna2 channels respectively — bypassing the per-image median+k*MAD
-        computation. Each channel has its OWN pooled pre-scan.
-    analysis_floors : dict or None
-        2026-05-20 Brian/Sam: per-channel floor values (keys ``"rna"`` and
-        ``"rna2"``) resolved from the publication-image contrast pipeline
-        (manual / auto_batch / reference_image). Used by TWO independent
-        flags:
-
-        * ``cfg.output.apply_pub_contrast_floor_to_analysis`` — apply the
-          floor as a hard pixel-intensity threshold to the per-nucleus /
-          per-cell pixel intensity quantification. Pixels with value <
-          floor are treated as 0 (cytoplasmic noise excluded from
-          intensity sums). The raw (no-floor) intensity columns remain.
-        * ``cfg.output.apply_pub_contrast_floor_to_spots`` — drop detected
-          BigFISH spots whose peak intensity is below the channel's floor.
-          Applied BEFORE per-nucleus stratification + pairing, so all
-          downstream counts (nuclear/cyto, paired_fraction, etc.) reflect
-          the filtered spot set. BigFISH LoG detection itself is unchanged.
-
-        Both flags are independent — either, both, or neither can be set.
-        When a channel's floor is missing/None (e.g. no global floor
-        available because pub-image was auto_per_image), the corresponding
-        above-floor analysis columns are NaN, and the spot filter is a
-        no-op for that channel.
-    rna2_is_antibody : bool
-        2026-06-05 Brian: set True ONLY by ``rna_protein.run_one`` (which
-        maps the diffuse antibody/protein channel into the rna2 slot). When
-        True AND ``cfg.foci.detect_antibody_spots`` is False, the rna2
-        (antibody) channel is NOT BigFISH spot-detected — an EMPTY spot set
-        is produced instead, so a diffuse antibody stain (e.g. QKI IF) does
-        not carpet the field with meaningless spots. The intensity-based
-        coloc is UNAFFECTED: ``compute_partner_intensity`` samples antibody
-        PIXELS at the rna1 spots (never the antibody spots), and pixel-coloc
-        reads the rna2 PIXEL plane — both still compute. Default False keeps
-        plain rna_rna byte-identical (both channels always detected); the
-        flag is meaningless unless rna2 is the antibody channel.
-    """
-    t0 = time.time()
-    img = _io.read_image(path)
-    nuclear_pixel_nm = _safe_float(cfg.foci.bigfish_voxel_size_nm)
-    if not (math.isfinite(nuclear_pixel_nm) and nuclear_pixel_nm > 0):
-        nuclear_pixel_nm = _safe_float(img.voxel_xy_nm)
-    try:
-        nuclear_size = resolve_nuclear_size_px(
-            cfg.nuclei, nuclear_pixel_nm / 1000.0,
-            cfg.nuclei.cellpose_downsample_factor,
-        )
-    except ValueError as exc:
-        raise ValueError(f"{Path(path).name}: {exc}") from exc
-
+def prepare_segmentation_planes(img, path, cfg) -> Dict[str, Any]:
     dapi_idx, rna_idx, rna2_idx = _resolve_channels(cfg, img)
 
     z_mode = cfg.z_stack.mode
@@ -1371,6 +1268,162 @@ def run_one(
         rna2_2d = _io.extract_channel(img, rna2_idx, z_mode=z_mode, z_start=z_start, z_end=z_end)
         if rna2_2d.ndim != 2:
             rna2_2d = rna2_2d.max(axis=0)
+    return {
+        "dapi_idx": dapi_idx,
+        "rna_idx": rna_idx,
+        "rna2_idx": rna2_idx,
+        "z_mode": z_mode,
+        "z_start": z_start,
+        "z_end": z_end,
+        "dapi_autofocus_z": dapi_autofocus_z,
+        "_z_af_extra": _z_af_extra,
+        "dapi_2d": dapi_2d,
+        "rna_2d": rna_2d,
+        "rna2_2d": rna2_2d,
+    }
+
+
+def segmentation_params(cfg, nuclear_size) -> Dict[str, Any]:
+    return dict(
+        min_area=nuclear_size.min_area_px,
+        max_area=nuclear_size.max_area_px,
+        prob_threshold=cfg.nuclei.prob_threshold,
+        nms_threshold=cfg.nuclei.nms_threshold,
+        n_tiles=cfg.nuclei.n_tiles,
+        stardist_model=cfg.nuclei.stardist_model,
+        stardist_gauss_sigma=cfg.nuclei.stardist_gauss_sigma,
+        stardist_postprocess=cfg.nuclei.stardist_postprocess,
+        stardist_postprocess_dilate_px=cfg.nuclei.stardist_postprocess_dilate_px,
+        stardist_postprocess_otsu_sigma=cfg.nuclei.stardist_postprocess_otsu_sigma,
+        stardist_postprocess_mask_closing_px=cfg.nuclei.stardist_postprocess_mask_closing_px,
+        label_smoothing_radius_px=cfg.nuclei.label_smoothing_radius_px,
+        diameter=nuclear_size.native_diameter_px,
+        flow_threshold=cfg.nuclei.cellpose_flow_threshold,
+        cellprob_threshold=cfg.nuclei.cellpose_cellprob_threshold,
+        cellpose_model_type=cfg.nuclei.cellpose_model_type,
+        cellpose_preclip_dapi_otsu=cfg.nuclei.cellpose_preclip_dapi_otsu,
+        cellpose_downsample_factor=cfg.nuclei.cellpose_downsample_factor,
+        cellpose_device=getattr(cfg.nuclei, "cellpose_device", "cpu"),
+    )
+
+
+def run_one(
+    path,
+    *,
+    condition: str,
+    sec_only: bool,
+    cfg,
+    precomputed_rna_threshold: Optional[float] = None,
+    precomputed_rna2_threshold: Optional[float] = None,
+    analysis_floors: Optional[Dict[str, float]] = None,
+    precomputed_labels: Optional[np.ndarray] = None,
+    rna2_is_antibody: bool = False,
+    sampling_unit_key: Optional[str] = None,
+    sampling_n_alloc: Optional[int] = None,
+    rna_pedestal_factor: Optional[float] = None,
+) -> ImageResult:
+    """Run the rna_rna pipeline on a single image.
+
+    Parameters (fixed-N sampling)
+    -----------------------------
+    sampling_unit_key : str or None
+        Stable key identifying this image's SAMPLING UNIT — the input-relative
+        image path for ``sampling.unit='per_image'``, the well name for
+        ``per_well``. The per-unit RNG is derived from a hash of this string
+        rather than from a shared global stream, so the draw does not depend on
+        which worker processed which image first. The runner supplies it;
+        callers that do not (e.g. rna_protein delegating here) fall back to a
+        parent-dir/filename key, which is equally stable.
+    sampling_n_alloc : int or None
+        This image's share of the unit's N. Equals ``sampling.n_per_unit`` for
+        ``per_image``; for ``per_well`` the runner has already divided the
+        well's N equally across the images beneath it. None -> use
+        ``sampling.n_per_unit``.
+
+    Parameters
+    ----------
+    precomputed_labels : np.ndarray or None
+        When supplied (by the batch runner during a
+        ``pixel_coloc.threshold_scope == 'batch'`` run), this is the FINAL
+        (already border-excluded) nuclei label image produced by the
+        pre-pass ``collect_nuclear_rna_pixels`` for THIS exact image. When
+        not None, ``run_one`` reuses it verbatim and SKIPS both the
+        ``segment_nuclei`` call and the ``exclude_border_labels`` call, so
+        each image is segmented exactly once per batch run (avoids the 2x
+        segmentation cost with slow backends such as cellpose). The collect
+        helper builds an identical ``seg_params``, uses the same DAPI 2D
+        (dust-speck masking touches only the RNA channels, never DAPI), and
+        applies identical border exclusion, so the cached labels are
+        bit-equivalent to what this function would otherwise compute. When
+        None, segmentation runs exactly as before (per-image / non-batch
+        path is unchanged).
+    precomputed_rna_threshold, precomputed_rna2_threshold : float or None
+        When supplied (typically by the batch runner's pre-pass in
+        ``pixel_coloc.threshold_scope == 'batch'`` mode), these scalars are
+        used verbatim as the pixel-coloc thresholds for THIS image's rna and
+        rna2 channels respectively — bypassing the per-image median+k*MAD
+        computation. Each channel has its OWN pooled pre-scan.
+    analysis_floors : dict or None
+        2026-05-20 Brian/Sam: per-channel floor values (keys ``"rna"`` and
+        ``"rna2"``) resolved from the publication-image contrast pipeline
+        (manual / auto_batch / reference_image). Used by TWO independent
+        flags:
+
+        * ``cfg.output.apply_pub_contrast_floor_to_analysis`` — apply the
+          floor as a hard pixel-intensity threshold to the per-nucleus /
+          per-cell pixel intensity quantification. Pixels with value <
+          floor are treated as 0 (cytoplasmic noise excluded from
+          intensity sums). The raw (no-floor) intensity columns remain.
+        * ``cfg.output.apply_pub_contrast_floor_to_spots`` — drop detected
+          BigFISH spots whose peak intensity is below the channel's floor.
+          Applied BEFORE per-nucleus stratification + pairing, so all
+          downstream counts (nuclear/cyto, paired_fraction, etc.) reflect
+          the filtered spot set. BigFISH LoG detection itself is unchanged.
+
+        Both flags are independent — either, both, or neither can be set.
+        When a channel's floor is missing/None (e.g. no global floor
+        available because pub-image was auto_per_image), the corresponding
+        above-floor analysis columns are NaN, and the spot filter is a
+        no-op for that channel.
+    rna2_is_antibody : bool
+        2026-06-05 Brian: set True ONLY by ``rna_protein.run_one`` (which
+        maps the diffuse antibody/protein channel into the rna2 slot). When
+        True AND ``cfg.foci.detect_antibody_spots`` is False, the rna2
+        (antibody) channel is NOT BigFISH spot-detected — an EMPTY spot set
+        is produced instead, so a diffuse antibody stain (e.g. QKI IF) does
+        not carpet the field with meaningless spots. The intensity-based
+        coloc is UNAFFECTED: ``compute_partner_intensity`` samples antibody
+        PIXELS at the rna1 spots (never the antibody spots), and pixel-coloc
+        reads the rna2 PIXEL plane — both still compute. Default False keeps
+        plain rna_rna byte-identical (both channels always detected); the
+        flag is meaningless unless rna2 is the antibody channel.
+    """
+    t0 = time.time()
+    img = _io.read_image(path)
+    nuclear_pixel_nm = _safe_float(cfg.foci.bigfish_voxel_size_nm)
+    if not (math.isfinite(nuclear_pixel_nm) and nuclear_pixel_nm > 0):
+        nuclear_pixel_nm = _safe_float(img.voxel_xy_nm)
+    try:
+        nuclear_size = resolve_nuclear_size_px(
+            cfg.nuclei, nuclear_pixel_nm / 1000.0,
+            cfg.nuclei.cellpose_downsample_factor,
+        )
+    except ValueError as exc:
+        raise ValueError(f"{Path(path).name}: {exc}") from exc
+
+    planes = prepare_segmentation_planes(img, path, cfg)
+    dapi_idx = planes["dapi_idx"]
+    rna_idx = planes["rna_idx"]
+    rna2_idx = planes["rna2_idx"]
+    z_mode = planes["z_mode"]
+    z_start = planes["z_start"]
+    z_end = planes["z_end"]
+    dapi_autofocus_z = planes["dapi_autofocus_z"]
+    _z_af_extra = planes["_z_af_extra"]
+    dapi_2d = planes["dapi_2d"]
+    rna_2d = planes["rna_2d"]
+    rna2_2d = planes["rna2_2d"]
+    del planes
 
     # ---- Image-level dust speck removal (optional) -------------------------
     # 2026-05-21 Brian: before any spot detection / per-pixel quantification,
@@ -1429,27 +1482,7 @@ def run_one(
     dapi_mask = (dapi_2d >= dapi_thr_val).astype(np.uint8) * 255
 
     # ---- Nuclear segmentation (single pass on DAPI) ------------------------
-    seg_params = dict(
-        min_area=nuclear_size.min_area_px,
-        max_area=nuclear_size.max_area_px,
-        prob_threshold=cfg.nuclei.prob_threshold,
-        nms_threshold=cfg.nuclei.nms_threshold,
-        n_tiles=cfg.nuclei.n_tiles,
-        stardist_model=cfg.nuclei.stardist_model,
-        stardist_gauss_sigma=cfg.nuclei.stardist_gauss_sigma,
-        stardist_postprocess=cfg.nuclei.stardist_postprocess,
-        stardist_postprocess_dilate_px=cfg.nuclei.stardist_postprocess_dilate_px,
-        stardist_postprocess_otsu_sigma=cfg.nuclei.stardist_postprocess_otsu_sigma,
-        stardist_postprocess_mask_closing_px=cfg.nuclei.stardist_postprocess_mask_closing_px,
-        label_smoothing_radius_px=cfg.nuclei.label_smoothing_radius_px,
-        diameter=nuclear_size.native_diameter_px,
-        flow_threshold=cfg.nuclei.cellpose_flow_threshold,
-        cellprob_threshold=cfg.nuclei.cellpose_cellprob_threshold,
-        cellpose_model_type=cfg.nuclei.cellpose_model_type,
-        cellpose_preclip_dapi_otsu=cfg.nuclei.cellpose_preclip_dapi_otsu,
-        cellpose_downsample_factor=cfg.nuclei.cellpose_downsample_factor,
-        cellpose_device=getattr(cfg.nuclei, "cellpose_device", "cpu"),
-    )
+    seg_params = segmentation_params(cfg, nuclear_size)
     _seg_stats: Dict[str, Any] = {}
     if precomputed_labels is not None:
         # Batch threshold_scope pre-pass already segmented + border-excluded
