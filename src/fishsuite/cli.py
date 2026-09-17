@@ -1114,5 +1114,27 @@ def sizefit(run_dir, input_dir, window_px, limit_images):
         click.echo(f"  SKIP {s}")
 
 
+@cli.command("qki-assoc")
+@click.option("--run-dir", required=True, type=click.Path(exists=True, file_okay=False),
+              help="Retained exact-footprint run with saved single-plane pixels and masks.")
+@click.option("--miat-min", required=True, type=float, help="Positive raw MIAT area threshold.")
+@click.option("--qki-min", required=True, type=float, help="Positive raw QKI threshold.")
+@click.option("--sensitivity", default="0.8,1.0,1.25", show_default=True,
+              help="Comma-separated positive multipliers; all levels are reported.")
+@click.option("--n-null", default=200, show_default=True, type=click.IntRange(min=1))
+@click.option("--seed", default=0, show_default=True, type=click.IntRange(min=0))
+@click.option("--out", required=True, type=click.Path(file_okay=False),
+              help="New or empty directory outside the source run.")
+def qki_assoc(run_dir, miat_min, qki_min, sensitivity, n_null, seed, out):
+    """Single-plane MIAT/QKI area occupancy with exact-footprint placement nulls."""
+    from .core.qki_association_postrun import run_qki_association
+    try:
+        levels = tuple(float(value.strip()) for value in sensitivity.split(","))
+        result = run_qki_association(run_dir, out, miat_min=miat_min, qki_min=qki_min,
+            sensitivity=levels, n_null=n_null, seed=seed)
+    except (ValueError, OSError) as exc:
+        raise click.ClickException(str(exc)) from exc
+    click.echo(f"Single-plane QKI association: {result}")
+
 if __name__ == "__main__":
     cli()
