@@ -204,6 +204,181 @@ def _unique_image_hierarchy(hierarchy: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(rows).reset_index(drop=True)
 
 
+def _source_image_key(value: Any) -> str:
+    path = Path(str(value))
+    if not path.is_absolute():
+        raise ValueError("native hierarchy source_path must record an absolute source path")
+    return path.resolve(strict=False).as_posix().casefold()
+
+
+def _uses_source_identity(hierarchy: pd.DataFrame) -> bool:
+    """Also accept an explicitly exported source-keyed hierarchy without altering legacy keys."""
+    if hierarchy.attrs.get("native_hierarchy"):
+        return True
+    if hierarchy.empty or not {"source_vsi", "image_key"}.issubset(hierarchy.columns):
+        return False
+    if not hierarchy["source_vsi"].map(lambda value: Path(str(value)).is_absolute()).all():
+        return False
+    return bool(hierarchy["image_key"].astype(str).eq(
+        hierarchy["source_vsi"].map(_source_image_key)).all())
+
+
+def _source_keys_for_table(frame: pd.DataFrame, hierarchy: pd.DataFrame, *, table: str) -> pd.Series:
+    """Join via recorded source paths, or an unambiguous exact recorded image label."""
+    roster = hierarchy[["image", "image_key", "source_vsi"]].drop_duplicates()
+    if roster["image_key"].duplicated().any():
+        raise ValueError("source_path identity must be unique in the image roster")
+    if "source_path" in frame:
+        keys = frame["source_path"].map(_source_image_key)
+    else:
+        if roster["image"].duplicated().any() and not frame.empty:
+            raise ValueError(f"{table} requires recorded source_path for ambiguous image labels")
+        lookup = roster.drop_duplicates("image").set_index("image")["image_key"]
+        keys = frame["image"].map(lookup)
+    if keys.isna().any() or not set(keys).issubset(set(roster["image_key"])):
+        raise ValueError(f"{table} contains source_path/image identities absent from recorded hierarchy")
+    expected_images = keys.map(roster.set_index("image_key")["image"])
+    if not frame["image"].eq(expected_images).all():
+        raise ValueError(f"{table} image label disagrees with recorded source_path hierarchy")
+    return keys
+
+
+def native_hierarchy_from_run(run_dir: str | Path) -> pd.DataFrame:
+    """Adapt recorded native metadata without inferring experimental identities.
+
+    Sampling-disabled exports represent the complete recorded nucleus population.
+    The legacy slide field carries well_id as a native computation stratum, never
+    an invented acquisition slide. Historical slide-blocked inference is separate.
+    This function reads tables only and never writes or reads image pixels.
+    """
+    run = Path(run_dir)
+    names = ("nuclei_metrics.csv", "resolved_experiment_hierarchy.csv",
+             "per_image_summary.csv", "spot_metrics.csv", "run_config.json")
+    for name in names:
+        if not (run / name).is_file():
+            raise FileNotFoundError(f"native hierarchy missing required run file: {run / name}")
+    nuclei = pd.read_csv(run / names[0], dtype=str, keep_default_na=False)
+    roster = pd.read_csv(run / names[1], dtype=str, keep_default_na=False)
+    per_image = pd.read_csv(run / names[2], dtype=str, keep_default_na=False)
+    config = json.loads((run / "run_config.json").read_text(encoding="utf-8"))
+    resolved = config.get("config_resolved", {})
+    sampling = resolved.get("sampling", {}) if isinstance(resolved, Mapping) else {}
+    if not isinstance(sampling, Mapping) or not isinstance(sampling.get("enabled"), bool):
+        raise ValueError("run_config.json must record config_resolved.sampling.enabled as a boolean")
+    native_provenance = {
+        "slide": "well_id (native computation stratum; not acquisition slide)",
+        "catalog_folder": "recorded in nuclei_metrics.csv",
+        "image_identity": "normalized recorded source_path",
+        "historical_slide_blocked_inference": "unsupported_native_well_strata",
+    }
+    if sampling["enabled"]:
+        _require_columns(nuclei, {"eligible_for_sampling", "sampled_in_analysis"},
+                         table="sampling enabled in run; nuclei_metrics.csv sampling records")
+        native_provenance["sampling"] = (
+            "enabled_in_run; mapped nuclei_metrics.csv.eligible_for_sampling and sampled_in_analysis")
+    else:
+        nuclei["eligible_for_sampling"] = "True"
+        nuclei["sampled_in_analysis"] = "True"
+        native_provenance["sampling"] = "disabled_in_run; all recorded nuclei eligible and sampled"
+    if "catalog_folder" not in nuclei:
+        nuclei["catalog_folder"] = "not_recorded"
+        native_provenance["catalog_folder"] = "not_recorded (native hierarchy)"
+    else:
+        missing_catalog = nuclei["catalog_folder"].str.strip().eq("")
+        if missing_catalog.any():
+            nuclei.loc[missing_catalog, "catalog_folder"] = "not_recorded"
+            native_provenance["catalog_folder"] = "not_recorded (native hierarchy); recorded values retained"
+    # This compatibility key makes native grouping use the recorded well, not
+    # an unknown slide sentinel. The actual source table remains checksummed.
+    nuclei["slide"] = ""  # assigned by the recorded roster after the join below
+    nucleus_columns = ["image", "nucleus_id", "slide", "catalog_folder",
+                       "eligible_for_sampling", "sampled_in_analysis",
+                       "z_mode", "z_range", "n_z_slices"]
+    roster_columns = ["image", "condition", "secondary_only", "group",
+                      "source_condition", "well_id", "field_id", "source_path"]
+    _require_columns(nuclei, nucleus_columns, table="native nuclei_metrics.csv")
+    _require_columns(roster, roster_columns, table="native resolved_experiment_hierarchy.csv")
+    _require_columns(per_image, {"image", "condition", "secondary_only"},
+                     table="native per_image_summary.csv")
+    missing_parity = sorted({"miat_footprint_area_px", "qki_at_miat_footprint"}.difference(
+        pd.read_csv(run / names[3], nrows=0).columns))
+    if missing_parity:
+        raise ValueError(f"native spot_metrics.csv missing {missing_parity}; "
+                         "re-run fishsuite with foci.compute_footprint_enrichment: true — "
+                         "the backfill verifies its reconstructed footprints against these run-time columns")
+    for frame, columns, name in ((nuclei, nucleus_columns, names[0]),
+                                 (roster, roster_columns, names[1]),
+                                 (per_image, ["image", "condition", "secondary_only"], names[2])):
+        for column in columns:
+            if column == "slide":
+                continue
+            if frame[column].str.strip().eq("").any():
+                raise ValueError(f"native {name} has missing values for {column}")
+    roster["image_key"] = roster["source_path"].map(_source_image_key)
+    if roster["image_key"].duplicated().any():
+        raise ValueError("native resolved_experiment_hierarchy.csv requires unique source_path identities")
+    source_roster = roster.rename(columns={"source_path": "source_vsi"})
+    for frame, name in ((per_image, names[2]), (nuclei, names[0])):
+        frame["image_key"] = _source_keys_for_table(frame, source_roster, table=name)
+    for frame, name in ((roster, names[1]), (per_image, names[2])):
+        if frame.empty or frame["image_key"].duplicated().any():
+            raise ValueError(f"native {name} must have unique nonempty source_path identities")
+    keys = set(roster["image_key"])
+    if set(per_image["image_key"]) != keys or set(nuclei["image_key"]) != keys:
+        raise ValueError("native image roster mismatch across resolved_experiment_hierarchy.csv, "
+                         "per_image_summary.csv and nuclei_metrics.csv")
+    nuclei["nucleus_id"] = nuclei["nucleus_id"].map(
+        lambda value: _finite_integer(value, name="native nucleus_id", minimum=1))
+    if nuclei.duplicated(["image_key", "nucleus_id"]).any():
+        raise ValueError("native nuclei_metrics.csv contains duplicate nucleus identities")
+    def recorded_bool(value: str) -> bool:
+        if value.strip().casefold() not in {"true", "false", "1", "0", "yes", "no", "y", "n"}:
+            raise ValueError(f"native hierarchy requires a recorded boolean, found {value!r}")
+        return _explicit_bool(value)
+
+    for flag in ("eligible_for_sampling", "sampled_in_analysis"):
+        nuclei[flag] = nuclei[flag].map(recorded_bool)
+    if (nuclei["sampled_in_analysis"] & ~nuclei["eligible_for_sampling"]).any():
+        raise ValueError("native sampled_in_analysis requires eligible_for_sampling")
+    roster["secondary_only"] = roster["secondary_only"].map(recorded_bool)
+    # Require consistency wherever metadata is repeated in native exports.
+    authoritative = roster.set_index("image_key")
+    for frame, name in ((per_image, names[2]), (nuclei, names[0])):
+        for column in roster_columns:
+            if column not in frame:
+                continue
+            recorded = frame[column]
+            expected = frame["image_key"].map(authoritative[column])
+            if column == "secondary_only":
+                recorded = recorded.map(recorded_bool)
+            elif column == "source_path":
+                recorded = recorded.map(_source_image_key)
+                expected = expected.map(_source_image_key)
+            if not recorded.eq(expected).all():
+                raise ValueError(f"native {name} disagrees with recorded hierarchy: {column}")
+    result = nuclei[["image_key", *nucleus_columns[1:]]].merge(
+        roster[["image_key", *roster_columns]], on="image_key", validate="many_to_one")
+    for target, source in {"arm": "group", "source_arm": "source_condition",
+                           "replicate": "well_id", "fov": "field_id",
+                           "biological_set": "well_id", "source_vsi": "source_path",
+                           "well": "well_id", "is_control": "secondary_only"}.items():
+        result[target] = result[source]
+    result["slide"] = result["well_id"]
+    columns = ["image", "image_key", "nucleus_id", "condition", "secondary_only",
+               "slide", "arm", "source_arm", "replicate", "fov", "biological_set",
+               "catalog_folder", "is_control", "eligible_for_sampling", "sampled_in_analysis",
+               "source_vsi", "well", "z_mode", "z_range", "n_z_slices"]
+    result = result[columns]
+    if "output_stem" in roster:
+        result["output_stem"] = result["image_key"].map(roster.set_index("image_key")["output_stem"])
+    _unique_image_hierarchy(result)  # validate invariant image-level metadata
+    result.attrs["native_hierarchy"] = True
+    native_provenance["observed_native_design"] = [
+        int(len(roster)), int(roster["condition"].nunique()), int(roster["well_id"].nunique())]
+    result.attrs["native_provenance"] = native_provenance
+    return result
+
+
 def _subset_lookup(run_config: Mapping[str, Any]) -> tuple[dict[str, str], Path | None]:
     resolved = run_config.get("config_resolved", {})
     if not isinstance(resolved, Mapping):
@@ -357,13 +532,18 @@ def build_image_manifest(
         table="per_image_summary",
     )
     _require_columns(spot_metrics, {"image", "channel", "spot_id"}, table="spot_metrics")
+    source_identity = _uses_source_identity(hierarchy)
     base = per_image.copy()
-    base["image_key"] = base["image"].map(_casefold_basename)
+    base["image_key"] = (_source_keys_for_table(base, hierarchy, table="per_image_summary.csv")
+                         if source_identity else base["image"].map(_casefold_basename))
     if base["image_key"].duplicated().any():
         dup = sorted(base.loc[base["image_key"].duplicated(False), "image_key"].unique())
         raise ValueError(f"per_image_summary has duplicate images: {dup}")
     audited = _unique_image_hierarchy(hierarchy)
     audited["image_key"] = audited["image_key"].astype(str).str.casefold()
+    if source_identity and "output_stem" in audited:
+        if audited["output_stem"].astype(str).str.casefold().duplicated().any():
+            raise ValueError("recorded output_stem must be unique per source_path; duplicate masks are ambiguous")
     hierarchy_columns = [
         "image",
         "image_key",
@@ -383,6 +563,8 @@ def build_image_manifest(
     ]
     if "source_vsi" in audited.columns:
         hierarchy_columns.append("source_vsi")
+    if source_identity:
+        hierarchy_columns.extend(column for column in ("well", "output_stem") if column in audited)
     merged = base.merge(
         audited[hierarchy_columns],
         on="image_key",
@@ -420,18 +602,24 @@ def build_image_manifest(
     )
     counts = (
         spot_metrics.loc[spot_metrics["channel"].astype(str).eq("rna1")]
-        .assign(image_key=lambda x: x["image"].map(_casefold_basename))
+        .assign(image_key=lambda x: _source_keys_for_table(x, hierarchy, table="spot_metrics.csv")
+                if source_identity else x["image"].map(_casefold_basename))
         .groupby("image_key", sort=False)
         .size()
     )
     merged["n_input_spots"] = merged["image_key"].map(counts).fillna(0).astype(int)
 
-    subset, input_dir = _subset_lookup(run_config)
+    if source_identity:
+        subset, input_dir = {}, None
+    else:
+        subset, input_dir = _subset_lookup(run_config)
     merged["source_relpath"] = merged["image_key"].map(subset)
     if subset and merged["source_relpath"].isna().any():
         missing = sorted(merged.loc[merged["source_relpath"].isna(), "image_key"])
         raise ValueError(f"input_file_subset is missing images: {missing}")
-    if input_dir is None:
+    if source_identity:
+        merged["analyzed_vsi_path"] = merged["source_vsi"]
+    elif input_dir is None:
         merged["analyzed_vsi_path"] = merged["source_relpath"].fillna(merged["image"])
     else:
         merged["analyzed_vsi_path"] = merged["source_relpath"].map(
@@ -485,9 +673,17 @@ def build_image_manifest(
             if not source_path.is_file():
                 raise FileNotFoundError(f"analyzed VSI is missing: {source_path}")
             ets_path, ets_size = validate_vsi_companion(source_path)
-            mask_path = resolve_unique_mask_path(
-                masks_dir, str(row["image"]), str(row["condition"])
-            )
+            if source_identity and "output_stem" in merged:
+                stem = str(row["output_stem"])
+                if not stem.strip() or Path(stem).name != stem or stem in {".", ".."}:
+                    raise ValueError("recorded output_stem must be a nonempty filename stem")
+                mask_path = masks_dir / f"{stem}__nuclei_label_mask.tif"
+                if not mask_path.is_file():
+                    raise FileNotFoundError(f"recorded output_stem nucleus mask is missing: {mask_path}")
+            else:
+                mask_path = resolve_unique_mask_path(
+                    masks_dir, str(row["image"]), str(row["condition"])
+                )
             merged.at[index, "mask_path"] = str(mask_path)
             merged.at[index, "mask_status"] = "resolved_unique"
             merged.at[index, "companion_ets_path"] = str(ets_path)
@@ -506,6 +702,8 @@ def build_image_manifest(
         )
     result = merged.reset_index(drop=True)
     result.attrs["observed_design"] = observed_design
+    if source_identity:
+        result.attrs["source_path_identity"] = True
     return result
 
 
@@ -2215,7 +2413,8 @@ def _select_execution_keys(
     available = [str(value).casefold() for value in manifest["image_key"]]
     if image_keys is None:
         return available, "full_manifest"
-    requested = [_casefold_basename(value) for value in image_keys]
+    requested = [(_source_image_key(value) if manifest.attrs.get("source_path_identity")
+                  else _casefold_basename(value)) for value in image_keys]
     if not requested:
         raise ValueError("image_keys cannot be an empty sequence")
     if len(set(requested)) != len(requested):
@@ -2759,7 +2958,7 @@ def _enforce_resource_gates(
 
 def run_exact_footprint_backfill(
     run_dir: str | Path,
-    hierarchy_path: str | Path,
+    hierarchy_path: str | Path | None,
     output_dir: str | Path,
     *,
     parameters: ExactFootprintParameters | None = None,
@@ -2770,6 +2969,7 @@ def run_exact_footprint_backfill(
     validate_expected_design: bool = True,
     image_keys: Sequence[str] | None = None,
     phase1_only: bool = False,
+    allow_output_inside_run: bool = False,
 ) -> dict[str, Any]:
     """Run the two-phase, serial, resumable exact-footprint reconstruction.
 
@@ -2782,13 +2982,20 @@ def run_exact_footprint_backfill(
 
     params = parameters or ExactFootprintParameters()
     source_run = Path(run_dir)
-    hierarchy_file = Path(hierarchy_path)
+    native = hierarchy_path is None
+    hierarchy_file = (source_run / "resolved_experiment_hierarchy.csv"
+                      if native else Path(hierarchy_path))
+    if native:
+        validate_expected_design = False
+    native_provenance = ({"design_check": "not_applicable_native_hierarchy",
+                          "hierarchy_source": "native_run_outputs"} if native else {})
     output = Path(output_dir)
     resolved_output = output.resolve(strict=False)
     resolved_source_run = source_run.resolve(strict=False)
     if (
         resolved_output == resolved_source_run
-        or resolved_source_run in resolved_output.parents
+        or (resolved_source_run in resolved_output.parents
+            and not (native and allow_output_inside_run))
     ):
         raise ValueError(
             "output directory cannot equal or be inside the historical run"
@@ -2803,11 +3010,17 @@ def run_exact_footprint_backfill(
     # validation succeeds.
     per_image = pd.read_csv(source_run / "per_image_summary.csv")
     historical_spots = pd.read_csv(source_run / "spot_metrics.csv")
-    hierarchy = pd.read_csv(hierarchy_file)
+    hierarchy = native_hierarchy_from_run(source_run) if native else pd.read_csv(hierarchy_file)
+    if native:
+        native_provenance.update(hierarchy.attrs["native_provenance"])
     run_config = json.loads(
         (source_run / "run_config.json").read_text(encoding="utf-8")
     )
-    _subset, raw_input_dir = _subset_lookup(run_config)
+    source_identity = _uses_source_identity(hierarchy)
+    if source_identity:
+        raw_input_dir = Path(run_config["input_dir"]) if run_config.get("input_dir") else None
+    else:
+        _subset, raw_input_dir = _subset_lookup(run_config)
     if raw_input_dir is not None:
         resolved_raw_input = raw_input_dir.resolve(strict=False)
         if (
@@ -2826,6 +3039,10 @@ def run_exact_footprint_backfill(
         validate_expected_design=validate_expected_design,
         resolve_paths=True,
     )
+    if native:
+        print("DESIGN CHECK not_applicable_native_hierarchy: observed design "
+              f"(images, biological, controls, sets) = {manifest.attrs.get('observed_design')}",
+              flush=True)
     selected_image_keys, analysis_scope = _select_execution_keys(manifest, image_keys)
     selected_key_set = set(selected_image_keys)
     biological_inference_output = bool(
@@ -2880,6 +3097,7 @@ def run_exact_footprint_backfill(
         _atomic_write_json(
             {
                 **params.to_dict(),
+                **native_provenance,
                 "parameter_fingerprint": fingerprint,
                 "source_run_dir": str(source_run.resolve()),
                 "hierarchy_path": str(hierarchy_file.resolve()),
@@ -2912,7 +3130,9 @@ def run_exact_footprint_backfill(
     hierarchy_keys = hierarchy.copy()
     hierarchy_keys["image_key"] = hierarchy_keys["image_key"].astype(str).str.casefold()
     historical = historical_spots.copy()
-    historical["image_key"] = historical["image"].map(_casefold_basename)
+    historical["image_key"] = (
+        _source_keys_for_table(historical, hierarchy, table="spot_metrics.csv")
+        if source_identity else historical["image"].map(_casefold_basename))
     checksum_path = output / "input_checksums.csv"
     if resume:
         if not checksum_path.is_file():
@@ -3237,6 +3457,7 @@ def run_exact_footprint_backfill(
         )
         summary = {
             "run_status": "phase1_only_complete",
+            **native_provenance,
             "analysis_scope": analysis_scope,
             "phase1_only": True,
             "selected_image_keys": selected_image_keys,
@@ -3468,6 +3689,7 @@ def run_exact_footprint_backfill(
     )
     summary = {
         "run_status": "complete",
+        **native_provenance,
         "analysis_scope": analysis_scope,
         "phase1_only": False,
         "selected_image_keys": selected_image_keys,
@@ -3503,8 +3725,8 @@ def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Reconstruct exact MIAT footprints on recorded single z planes."
     )
-    parser.add_argument("--run", required=True, help="Completed historical FishSuite run")
-    parser.add_argument("--hierarchy", required=True, help="Authoritative nuclei_coloc_derived.csv")
+    parser.add_argument("--run", required=True, help="Completed FishSuite run")
+    parser.add_argument("--hierarchy", help="Authoritative nuclei_coloc_derived.csv; otherwise use recorded native hierarchy")
     parser.add_argument("--output-root", help="Parent for a new timestamped output")
     parser.add_argument("--miat-floor", type=float, default=364.0)
     parser.add_argument("--n-null", type=int, default=1000)
@@ -3546,29 +3768,38 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
     run_dir = Path(args.run)
-    hierarchy_path = Path(args.hierarchy)
+    hierarchy_path = Path(args.hierarchy) if args.hierarchy else None
     required = [
         run_dir / "per_image_summary.csv",
         run_dir / "spot_metrics.csv",
         run_dir / "nuclei_metrics.csv",
         run_dir / "run_config.json",
-        hierarchy_path,
     ]
+    if hierarchy_path is not None:
+        required.append(hierarchy_path)
     missing = [str(path) for path in required if not path.is_file()]
     if missing:
         parser.error(f"missing required inputs: {missing}")
     run_config = json.loads((run_dir / "run_config.json").read_text(encoding="utf-8"))
-    validate_design = not args.skip_design_check
+    validate_design = hierarchy_path is not None and not args.skip_design_check
+    try:
+        hierarchy = (native_hierarchy_from_run(run_dir) if hierarchy_path is None
+                     else pd.read_csv(hierarchy_path))
+    except (ValueError, OSError) as exc:
+        parser.error(str(exc))
     manifest = build_image_manifest(
         pd.read_csv(run_dir / "per_image_summary.csv"),
-        pd.read_csv(hierarchy_path),
+        hierarchy,
         pd.read_csv(run_dir / "spot_metrics.csv"),
         run_config=run_config,
         run_dir=run_dir,
         validate_expected_design=validate_design,
         resolve_paths=True,
     )
-    if not validate_design:
+    if hierarchy_path is None:
+        print("DESIGN CHECK not_applicable_native_hierarchy: observed design "
+              f"(images, biological, controls, sets) = {manifest.attrs.get('observed_design')}")
+    elif not validate_design:
         print(
             "DESIGN CHECK SKIPPED (--skip-design-check): observed design "
             f"(images, biological, controls, sets) = {manifest.attrs.get('observed_design')}; "
@@ -3613,7 +3844,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         output = Path(args.resume)
         resume = True
     else:
-        if not args.output_root:
+        if not args.output_root and hierarchy_path is not None:
             parser.error("--output-root is required for a new production run")
         if analysis_scope == "smoke_subset":
             prefix = "EXACT_FOOTPRINT_SMOKE_SUBSET_"
@@ -3621,7 +3852,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             prefix = "EXACT_FOOTPRINT_PHASE1_ONLY_"
         else:
             prefix = "EXACT_FOOTPRINT_BACKFILL_"
-        output = Path(args.output_root) / (
+        output = (Path(args.output_root) if args.output_root else run_dir.resolve().parent) / (
             prefix + datetime.now().strftime("%Y%m%d-%H%M%S")
         )
         resume = False
@@ -3634,6 +3865,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         validate_expected_design=validate_design,
         image_keys=args.image_key,
         phase1_only=args.phase1_only,
+        **({"allow_output_inside_run": bool(args.output_root)}
+           if hierarchy_path is None else {}),
     )
     print(json.dumps(summary, indent=2, sort_keys=True))
     return 0
