@@ -113,7 +113,15 @@ z_stack:
   mode: autofocus
   focus_metric: variance_of_laplacian
   autofocus_intensity_weighted: true
-  focus_central_fraction: 0.6
+  # 2026-09-17: colocalization needs ONE plane in focus for DAPI + MIAT + QKI
+  # together (locked skill rule, 2026-07-20). The June preset used DAPI-only
+  # autofocus with focus_central_fraction 0.6, which pins fields whose cells sit
+  # high or low in the stack to a blurry mid plane. Window 8-70 stays as the
+  # edge guard; the chosen plane is written to per_image_summary.csv (z_plane).
+  autofocus_channel: joint
+  autofocus_joint_reduce: product
+  autofocus_joint_nuclear_mask: true
+  focus_central_fraction: 1.0
   focus_min_intensity_frac_of_peak: 0.3
   start_slice: 8
   end_slice: 70
