@@ -10,6 +10,7 @@ compatibility) and patch bffile at import time — see
 """
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, Tuple, List, Literal
@@ -1316,9 +1317,12 @@ def discover_inputs(
     input_dir: Path,
     *,
     subfolder_conditions: Optional[dict] = None,
+    strict_subfolders: bool = False,
+    exclude_subfolders: Optional[List[str]] = None,
     sec_only_folders: Optional[List[str]] = None,
     sec_only_files: Optional[List[str]] = None,
     filename_conditions: Optional[List[List[str]]] = None,
+    strict_filenames: bool = False,
     extensions: Tuple[str, ...] = (".vsi", ".czi", ".lif", ".nd2", ".tif", ".tiff"),
 ) -> List[DiscoveredImage]:
     """Walk an input dir and return image paths labelled by condition.
@@ -1329,6 +1333,10 @@ def discover_inputs(
     subfolder_conditions : optional dict
         Mapping ``{subfolder_name: condition_label}``. If a subfolder is
         not in the map, its name is used as the condition.
+    strict_subfolders : bool
+        Reject unmapped folders when the folder map is nonempty and filename
+        conditions are not used. Otherwise warn once per unmapped folder.
+    exclude_subfolders : list of relative directory components to skip.
     sec_only_folders : list of subfolder names whose images are flagged
         ``sec_only=True``.
     sec_only_files : list of filename substrings flagged ``sec_only=True``.
@@ -1343,12 +1351,17 @@ def discover_inputs(
         label and are NOT relabelled by this map (so a ``-NT_`` substring on a
         sec-only file can't steal it back). Default ``None`` / empty =
         legacy behaviour (no filename-based condition assignment).
+    strict_filenames : bool
+        Reject non-sec-only filenames that match no configured pattern.
     extensions : tuple of accepted file extensions (lowercase).
     """
     input_dir = Path(input_dir)
     sec_only_folders = set(sec_only_folders or [])
     sec_only_files = [s.lower() for s in (sec_only_files or [])]
     subfolder_conditions = subfolder_conditions or {}
+    exclude_subfolders = set(exclude_subfolders or [])
+    excluded_folders = set()
+    unmapped_folders = set()
     # Normalise filename_conditions to a list of (lower-substring, label) in
     # the user-supplied order (first match wins).
     fname_conds: List[Tuple[str, str]] = []
@@ -1359,12 +1372,29 @@ def discover_inputs(
     out: List[DiscoveredImage] = []
 
     def _add(p: Path, subfolder: str):
+        relative = p.relative_to(input_dir)
+        for index, part in enumerate(relative.parts[:-1]):
+            if part in exclude_subfolders:
+                folder = Path(*relative.parts[:index + 1])
+                if folder not in excluded_folders:
+                    logging.info("Skipping excluded folder %s", folder)
+                    excluded_folders.add(folder)
+                return
         name_l = p.name.lower()
         is_sec = (
             subfolder in sec_only_folders
             or any(s in name_l for s in sec_only_files)
         )
         condition = subfolder_conditions.get(subfolder, subfolder)
+        if not fname_conds and subfolder not in subfolder_conditions:
+            if strict_subfolders and subfolder_conditions:
+                raise ValueError(
+                    f"Unmapped subfolder {subfolder!r}; mapped folders: "
+                    f"{', '.join(repr(name) for name in sorted(subfolder_conditions))}"
+                )
+            if subfolder not in unmapped_folders:
+                logging.warning("Unmapped subfolder %r; using its name as the condition", subfolder)
+                unmapped_folders.add(subfolder)
         if is_sec:
             # Force the "Sec-Only" label when the file/folder is sec-only,
             # so downstream stats grouping is consistent.
@@ -1376,6 +1406,14 @@ def discover_inputs(
                 if sub_l in name_l:
                     condition = label
                     break
+            else:
+                message = (
+                    f"Filename {p.name!r} matches no condition pattern; mapped patterns: "
+                    f"{', '.join(repr(pattern) for pattern, _ in fname_conds)}"
+                )
+                if strict_filenames:
+                    raise ValueError(message)
+                logging.warning("%s; keeping condition %r", message, condition)
         out.append(DiscoveredImage(
             path=p,
             condition=condition,

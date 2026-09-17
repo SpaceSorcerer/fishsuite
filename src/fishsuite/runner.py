@@ -549,7 +549,6 @@ def run_batch(
     output_dir: Path,
     *,
     parallel: str | int = "auto",
-    resume: bool = False,
     dry_run: bool = False,
     verbose: bool = False,
 ) -> dict:
@@ -643,6 +642,9 @@ def run_batch(
         sec_only_folders=cfg.conditions.sec_only_folders,
         sec_only_files=cfg.conditions.sec_only_files,
         filename_conditions=cfg.conditions.filename_conditions,
+        strict_subfolders=cfg.conditions.strict_subfolders,
+        exclude_subfolders=cfg.conditions.exclude_subfolders,
+        strict_filenames=cfg.conditions.strict_filenames,
     )
     if not images:
         raise RuntimeError(f"No images discovered under {input_dir}")
@@ -1613,6 +1615,7 @@ def run_batch(
     coloc_radial_dfs: List[pd.DataFrame] = []
     coloc_rotation_null_dfs: List[pd.DataFrame] = []
     failures: List[tuple] = []
+    failed_images: List[dict] = []
     t_start = time.time()
 
     # Reorder images: process every non-sec-only image FIRST, then sec-only
@@ -2457,11 +2460,17 @@ def run_batch(
                 import traceback
                 tb = traceback.format_exc()
                 failures.append((dimg.path.name, repr(e), tb))
+                failed_images.append(dict(path=str(dimg.path), exception_type=type(e).__name__, message=str(e)))
                 if verbose:
                     _console.print(f"[red]FAIL {dimg.path.name}: {e}[/red]\n{tb}")
                 else:
                     _console.print(f"[red]FAIL {dimg.path.name}: {e}[/red]")
             progress.advance(task)
+
+    pd.DataFrame(failed_images, columns=["path", "exception_type", "message"]).to_csv(
+        output_dir / "failed_images.csv", index=False,
+    )
+    _console.print(f"Image summary: n_ok={len(images) - len(failures)} / n_failed={len(failures)}")
 
     # 2026-07-05: ADDITIVE run-level RNA1 over-detection outlier flag. Needs the
     # whole batch (median + MAD across images), so it runs here after every
@@ -2747,7 +2756,7 @@ def run_batch(
 
     _console.print(
         f"[green]Done[/green] in {run_config['runtime_s']}s  "
-        f"-> {output_dir}  (failures: {len(failures)})"
+        f"-> {output_dir}  (n_ok={len(images) - len(failures)} / n_failed={len(failures)})"
     )
 
     # ── Auto-run downstream figure step ────────────────────────────────────
@@ -2822,13 +2831,18 @@ def run_batch(
                              note='Measurement completion and grouped figure completion are separate.')
     (output_dir / 'condition_output_status.json').write_text(json.dumps(_condition_status, indent=2), encoding='utf-8')
     if _groups_cfg and not _condition_complete:
-        raise RuntimeError(f'Measurements saved in {output_dir}, but CONDITION FIGURES INCOMPLETE. See _downstream_plots.log and condition_output_status.json; retry native-figures into a new output directory.')
+        message = f'Measurements saved in {output_dir}, but CONDITION FIGURES INCOMPLETE. See _downstream_plots.log and condition_output_status.json; retry native-figures into a new output directory.'
+        if not failures:
+            raise RuntimeError(message)
+        _console.print(f"[red]{message}[/red]")
 
     # Grouped native output is finalized by the downstream module using the
     # report renderer; no additional, competing by_group plots are emitted.
 
     return dict(
         n_images=len(images),
+        n_ok=len(images) - len(failures),
+        n_failed=len(failures),
         n_nuclei=int(len(nuclei_df)),
         n_spots=int(len(spots_df)),
         failures=failures,

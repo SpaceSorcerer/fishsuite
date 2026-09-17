@@ -23,6 +23,8 @@ class ExperimentCfg(BaseModel):
 class ConditionsCfg(BaseModel):
     mode: Literal["auto", "explicit", "subfolders"] = "subfolders"
     subfolder_conditions: Dict[str, str] = Field(default_factory=dict)
+    strict_subfolders: bool = False
+    exclude_subfolders: List[str] = Field(default_factory=list)
     sec_only_folders: List[str] = Field(default_factory=list)
     sec_only_files: List[str] = Field(default_factory=list)
     # 2026-05-31 Brian: FLAT-folder, filename-encoded condition assignment.
@@ -40,6 +42,7 @@ class ConditionsCfg(BaseModel):
     #     - ["-NT_", "NT ASO"]
     #     - ["-MIAT-KD_", "KD ASO"]
     filename_conditions: List[List[str]] = Field(default_factory=list)
+    strict_filenames: bool = False
     well_from_image: Optional[str] = None
     condition_order: List[str] = Field(default_factory=list)
     min_nuclei_for_stats: int = 6
