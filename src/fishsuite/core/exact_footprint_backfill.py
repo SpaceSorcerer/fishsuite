@@ -499,6 +499,95 @@ def read_and_validate_label_mask(
     return labels
 
 
+def _native_spot_eligibility(
+    spots: pd.DataFrame, labels: np.ndarray, *, image_key: str,
+) -> tuple[pd.DataFrame, dict[str, int]]:
+    """Select native nuclear centres; territory assignment is not containment.
+
+    Reasons are exclusive: a recorded non-nuclear spot is counted first,
+    including unassigned parent 0. A claimed nuclear centre off its parent is
+    excluded only at distance <= 1 px; larger disagreement is corruption.
+    """
+    _require_columns(spots, {"in_nucleus", "y_px", "x_px", "nucleus_id"},
+                     table="native RNA1 spots")
+    work = spots.copy()
+    keep = np.zeros(len(work), dtype=bool)
+    counts = dict(n_input_spots=len(work), n_eligible_spots=0,
+                  not_in_nucleus=0, centre_off_parent_label=0)
+    for position, row in enumerate(work.itertuples(index=False)):
+        flag = row.in_nucleus
+        if pd.isna(flag) or str(flag).strip().casefold() in {"", "nan", "none"}:
+            raise ValueError(f"native in_nucleus must record a boolean: {image_key}")
+        if isinstance(flag, (int, float, np.integer, np.floating)):
+            if flag not in (0, 1):
+                raise ValueError(f"native in_nucleus must record a boolean: {flag!r}")
+            nuclear = bool(flag)
+        else:
+            nuclear = _explicit_bool(flag)
+        if not nuclear:
+            counts["not_in_nucleus"] += 1
+            continue
+        centre = np.asarray([row.y_px, row.x_px], dtype=float)
+        if not np.isfinite(centre).all():
+            raise ValueError(f"native nuclear spot centre must be finite: {image_key}")
+        # The native footprint sampler uses np.rint (rna_rna.py); persisted
+        # native detections are already integer x_px/y_px, not fitted centres.
+        y, x = (int(value) for value in np.rint(centre))
+        nid = _finite_integer(row.nucleus_id, name="native nuclear parent", minimum=1)
+        on_parent = (0 <= y < labels.shape[0] and 0 <= x < labels.shape[1]
+                     and int(labels[y, x]) == nid)
+        if not on_parent:
+            # Only the four axial neighbours can be within 1 Euclidean pixel.
+            # Do not admit these spots or relax the strict historical assertion.
+            within_one = any(
+                0 <= yy < labels.shape[0] and 0 <= xx < labels.shape[1]
+                and int(labels[yy, xx]) == nid
+                for yy, xx in ((y - 1, x), (y + 1, x), (y, x - 1), (y, x + 1))
+            )
+            if not within_one:
+                raise ValueError(
+                    f"native spot {getattr(row, 'spot_id', position)!r} in {image_key}: "
+                    f"in_nucleus=True but centre (y={y}, x={x}) is > 1 px "
+                    f"from recorded parent nucleus {nid} (or parent is absent)"
+                )
+            counts["centre_off_parent_label"] += 1
+            continue
+        keep[position] = True
+        work.iloc[position, work.columns.get_loc("y_px")] = y
+        work.iloc[position, work.columns.get_loc("x_px")] = x
+    counts["n_eligible_spots"] = int(keep.sum())
+    return work.loc[keep].copy(), counts
+
+
+def _filter_native_spots(
+    historical: pd.DataFrame, manifest: pd.DataFrame, hierarchy: pd.DataFrame,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Read saved masks only; retain per-image accounting even for empty images."""
+    import tifffile
+
+    work = historical.copy()
+    keep = pd.Series(True, index=work.index)
+    summaries = []
+    for row in manifest.loc[manifest["selected_for_execution"]].itertuples(index=False):
+        scoped = work["image_key"].eq(row.image_key) & work["channel"].eq("rna1")
+        image_spots = work.loc[scoped]
+        expected_ids = hierarchy.loc[hierarchy["image_key"].eq(row.image_key), "nucleus_id"]
+        with tifffile.TiffFile(row.mask_path) as mask:
+            shape = mask.series[0].shape
+        if len(shape) != 2:
+            raise ValueError(f"saved native nucleus mask must be 2D: {row.mask_path}")
+        labels = read_and_validate_label_mask(
+            row.mask_path, expected_shape=shape, expected_nucleus_ids=expected_ids,
+            spots=image_spots.iloc[:0],
+        )
+        eligible, counts = _native_spot_eligibility(image_spots, labels, image_key=row.image_key)
+        keep.loc[scoped] = False
+        keep.loc[eligible.index] = True
+        work.loc[eligible.index, ["y_px", "x_px"]] = eligible[["y_px", "x_px"]]
+        summaries.append({"image": row.image, "image_key": row.image_key, **counts})
+    return work.loc[keep].copy(), pd.DataFrame(summaries)
+
+
 def build_image_manifest(
     per_image: pd.DataFrame,
     hierarchy: pd.DataFrame,
@@ -3063,6 +3152,12 @@ def run_exact_footprint_backfill(
     ] = "not_selected_smoke"
 
     fingerprint = _parameter_fingerprint(params)
+    if native:
+        # Reject pre-eligibility checkpoints, which reconstructed a different
+        # population. The explicit-hierarchy fingerprint remains unchanged.
+        fingerprint = hashlib.sha256(
+            (fingerprint + ":native_spot_eligibility_v1").encode("utf-8")
+        ).hexdigest()
     source_fingerprint = _source_table_fingerprint(source_run, hierarchy_file)
     execution_fingerprint = _execution_fingerprint(
         parameter_fingerprint=fingerprint,
@@ -3133,6 +3228,19 @@ def run_exact_footprint_backfill(
     historical["image_key"] = (
         _source_keys_for_table(historical, hierarchy, table="spot_metrics.csv")
         if source_identity else historical["image"].map(_casefold_basename))
+    if native:
+        historical, eligibility = _filter_native_spots(historical, manifest, hierarchy_keys)
+        count_columns = ["n_input_spots", "n_eligible_spots", "not_in_nucleus",
+                         "centre_off_parent_label"]
+        native_provenance["native_spot_eligibility"] = {
+            "rule": "recorded in_nucleus=True AND rounded centre on saved parent label",
+            "center_rounding": "numpy_rint_ties_to_even; native persisted centres are integers",
+            "reason_precedence": ["not_in_nucleus", "centre_off_parent_label"],
+            "hard_error": "in_nucleus=True and distance to parent label > 1 Euclidean px",
+            "scope": "selected execution images; RNA1 spots before floor and nucleolus gates",
+            "summary_file": "spot_eligibility_summary.csv",
+            "totals": {column: int(eligibility[column].sum()) for column in count_columns},
+        }
     checksum_path = output / "input_checksums.csv"
     if resume:
         if not checksum_path.is_file():
@@ -3145,6 +3253,12 @@ def run_exact_footprint_backfill(
             manifest, source_run=source_run, hierarchy_file=hierarchy_file
         )
         _atomic_write_dataframe(input_checksums, checksum_path)
+    if native:
+        # A rejected resume must not rewrite previously published provenance.
+        _atomic_write_dataframe(eligibility, output / "spot_eligibility_summary.csv")
+        recorded_parameters = json.loads(parameter_path.read_text(encoding="utf-8"))
+        recorded_parameters.update(native_provenance)
+        _atomic_write_json(recorded_parameters, parameter_path)
     source_hash = (
         input_checksums.loc[
             input_checksums["source_role"].eq("analyzed_vsi"),
@@ -3534,6 +3648,20 @@ def run_exact_footprint_backfill(
             nucleus_labels=labels,
             nucleolus_labels=nucleoli,
         )
+        if native:
+            # Eligibility can empty an image. Keep its zero-spot nuclei and
+            # correlation columns so CSV fragments have the populated schema.
+            for index in nucleus_table.index[nucleus_table["n_spots_all"].eq(0)]:
+                nid = int(nucleus_table.at[index, "nucleus_id"])
+                for corr in correlation_records(
+                    reconstruction.spot_metrics, nucleus_id=nid,
+                ).to_dict("records"):
+                    stem = f"corr_{corr['population']}_{corr['measurement_pair']}"
+                    for key in (
+                        "n_spots", "pearson_r", "pearson_p", "spearman_rho", "spearman_p",
+                        "estimable", "nonestimable_reason", "conditional_descriptive",
+                    ):
+                        nucleus_table.at[index, f"{stem}_{key}"] = corr[key]
         reconciliation_columns = [
             f"population_reconciliation_pass_q{p}"
             for p in THRESHOLD_PERCENTILES

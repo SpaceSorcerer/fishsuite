@@ -22,6 +22,7 @@ from test_exact_footprint_backfill import (
 def native_run(tmp_path):
     run, explicit_path, planes = _write_synthetic_completed_run(tmp_path)
     original_spots = pd.read_csv(run / "spot_metrics.csv")
+    original_spots["in_nucleus"] = True
     images = ["field.vsi", "opaque_b.vsi", "opaque_c.vsi", "opaque_d.vsi"]
     for image in images[1:]:
         _append_synthetic_image(run, explicit_path, image=image, with_spots=False)
