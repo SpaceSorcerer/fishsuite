@@ -189,11 +189,11 @@ def test_auto_crop_contains_bbox_and_crosshair_stays_on_punctum(stack):
     length = np.ptp(bars[0].get_xdata())*.13
     assert length == pytest.approx(core().scale_bar_length((x1-x0)*.13))
     assert round(length) in {1,2,5,10,20}
-    assert length <= (x1-x0)*.13*.25
+    assert length <= (x1-x0)*.13*.40
     plt.close(fig)
 
 
-@pytest.mark.parametrize('panel_width,expected',[(4,1),(8,2),(20,5),(40,10),(100,20),(3,None)])
+@pytest.mark.parametrize('panel_width,expected',[(4,1),(8,2),(12.5,5),(20,5),(25,10),(40,10),(50,20),(100,20),(2,None)])
 def test_round_scale_bar(panel_width,expected):
     assert core().scale_bar_length(panel_width) == expected
 
@@ -236,4 +236,49 @@ def test_real_length_header_footer_and_panel_titles_fit(stack):
     xz_title = axes['xz'].title.get_window_extent(renderer)
     for text in axes['xy'].texts:
         assert not xz_title.overlaps(text.get_window_extent(renderer))
+    plt.close(fig)
+
+
+@pytest.mark.parametrize('nz',[20,40,60])
+@pytest.mark.parametrize('minimum',[None,42])
+def test_fixed_xy_width_and_orthogonal_layout_independent_of_stack_depth(nz,minimum):
+    stack = np.zeros((3,nz,128,128))
+    mask = np.zeros((128,128),bool)
+    mask[32:96,32:96] = True
+    fig = core().render_ortho_figure(stack,(nz//2,64,64),48,nucleus_mask=mask,
+          pixel_size_um=.13,z_step_um=.21,display_levels=((0,100),(0,100)),
+          qki_min=minimum,miat_min=minimum,analysed_plane_z=nz//2)
+    fig.canvas.draw()
+    np.testing.assert_allclose(fig.get_size_inches(),[11,6.5])
+    axes = {ax.get_label():ax for ax in fig.axes}
+    xy,xz,raw,normal = [axes[key].get_position() for key in ('xy','xz','raw','normalised')]
+    assert xy.width*11 == pytest.approx(2.3)
+    assert xy.height*6.5 == pytest.approx(2.3)
+    assert xz.x0 == pytest.approx(xy.x0)
+    assert xz.width == pytest.approx(xy.width)
+    assert xz.height*6.5 == pytest.approx(2.3*nz*.21/(97*.13))
+    assert 0 < (xy.y0-xz.y1)*6.5 < .6
+    assert raw.x0 == pytest.approx(axes['xy_miat'].get_position().x0)
+    assert raw.x1 == pytest.approx(axes['xy_qki'].get_position().x1)
+    assert normal.x0 == pytest.approx(axes['yz'].get_position().x0)
+    grid = axes['raw'].get_subplotspec().get_gridspec()
+    assert grid.hspace <= .25
+    legend = axes['raw'].get_legend()
+    assert legend._ncols == len(legend.get_texts())
+    assert legend.get_frame().get_alpha() == pytest.approx(.6)
+    legend_bounds = legend.get_window_extent(fig.canvas.get_renderer())
+    raw_bounds = axes['raw'].get_window_extent()
+    assert legend_bounds.x0 >= raw_bounds.x0
+    assert legend_bounds.x1 <= raw_bounds.x1
+    assert legend_bounds.y0 >= raw_bounds.y0
+    assert legend_bounds.y1 <= raw_bounds.y1
+    renderer = fig.canvas.get_renderer()
+    normal_ax = axes['normalised']
+    normal_label = normal_ax.yaxis.label.get_window_extent(renderer)
+    assert normal_label.x1 <= fig.bbox.x1
+    assert not normal_label.overlaps(axes['xz'].get_window_extent())
+    for text in axes['xz'].texts:
+        assert not text.get_window_extent(renderer).overlaps(normal_ax.get_window_extent())
+    for text in axes['yz'].texts:
+        assert not text.get_window_extent(renderer).overlaps(normal_ax.title.get_window_extent(renderer))
     plt.close(fig)

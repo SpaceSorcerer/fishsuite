@@ -130,7 +130,7 @@ def nucleus_crop(nucleus_mask, pixel_size_um, half_width_um=None):
 
 
 def scale_bar_length(panel_width_um):
-    candidates = [v for v in (1, 2, 5, 10, 20) if v <= panel_width_um*.25]
+    candidates = [v for v in (1, 2, 5, 10, 20) if v <= panel_width_um*.40]
     return max(candidates) if candidates else None
 
 
@@ -172,20 +172,26 @@ def render_ortho_figure(stack_czyx, center_zyx, half_width_px=None, *, nucleus_m
     distance,values = line_profile(stack_czyx[:,z],*endpoints,width_px=profile_width_px,
                                    pixel_size_um=pixel_size_um)
     with plt.rc_context({'font.family':'Arial', 'font.size':8, 'svg.fonttype':'none'}):
-        fig = plt.figure(figsize=(14,6.8))
+        fig = plt.figure(figsize=(11,6.5))
     nx, ny, nz = x1-x0, y1-y0, (z1-z0)*z_step_um/pixel_size_um
-    unit = min(2.7/nx,2.8/ny,1.35/nz)
-    top = 5.8
-    def image_axes(left, width, height, label, panel_top=top):
-        return fig.add_axes([left/14,(panel_top-height)/6.8,width/14,height/6.8],label=label)
-    # Preserve identical micrometres per inch in XY, XZ and YZ.
-    xy = image_axes(6.9,nx*unit,ny*unit,'xy')
-    miat = image_axes(.7,nx*unit,ny*unit,'xy_miat')
-    qki = image_axes(3.8,nx*unit,ny*unit,'xy_qki')
-    yz = image_axes(10.25,nz*unit,ny*unit,'yz')
-    xz = image_axes(6.9,nx*unit,nz*unit,'xz',panel_top=2.45)
-    raw = fig.add_axes([.055,.17,.395,.205],label='raw')
-    normal = fig.add_axes([.755,.17,.205,.205],label='normalised')
+    panel_width = 2.3
+    grid = fig.add_gridspec(2,4,left=.045,right=(.045*11+panel_width*4.39)/11,
+                           bottom=.14,top=.88,wspace=.13,hspace=.20,
+                           height_ratios=(2.3,2.13))
+    def image_axes(cell, width, height, label):
+        position = cell.get_position(fig)
+        ax = fig.add_subplot(cell,label=label)
+        ax.set_position([position.x0,position.y1-height/6.5,width/11,height/6.5])
+        return ax
+    unit = panel_width/nx
+    # XY width is independent of stack depth; orthogonal axes retain physical scale.
+    xy = image_axes(grid[0,2],panel_width,ny*unit,'xy')
+    miat = image_axes(grid[0,0],panel_width,ny*unit,'xy_miat')
+    qki = image_axes(grid[0,1],panel_width,ny*unit,'xy_qki')
+    yz = image_axes(grid[0,3],nz*unit,ny*unit,'yz')
+    xz = image_axes(grid[1,2],panel_width,nz*unit,'xz')
+    raw = fig.add_subplot(grid[1,:2],label='raw')
+    normal = fig.add_subplot(grid[1,3],label='normalised')
     def rgb(plane, channel=None):
         a,b = [np.clip((plane[i]-lo)/(hi-lo),0,1) for i,(lo,hi) in enumerate(levels)]
         if channel == 0:
@@ -210,13 +216,13 @@ def render_ortho_figure(stack_czyx, center_zyx, half_width_px=None, *, nucleus_m
         label = f'z = {int(analysed_plane_z)+1}'
         if z0 <= analysed_plane_z < z1:
             local_z = analysed_plane_z-z0
-            xz.plot([1.01,1.06],[local_z]*2,color='#526d88',lw=1.5,label='analysed plane',
+            xz.plot([1.01,1.04],[local_z]*2,color='#526d88',lw=1.5,label='analysed plane',
                     transform=xz.get_yaxis_transform(),clip_on=False)
-            xz.text(1.08,local_z,label,color='#526d88',fontsize=7,va='center',
+            xz.text(1.055,local_z,label,color='#526d88',fontsize=7,va='center',ha='left',rotation=90,
                     transform=xz.get_yaxis_transform(),clip_on=False)
-            yz.plot([local_z]*2,[-.035,-.10],color='#526d88',lw=1.5,
+            yz.plot([local_z]*2,[-.005,-.02],color='#526d88',lw=1.5,
                     label='analysed plane',transform=yz.get_xaxis_transform(),clip_on=False)
-            yz.text(local_z,-.13,label,color='#526d88',fontsize=7,ha='center',va='top',
+            yz.text(local_z,-.026,label,color='#526d88',fontsize=7,ha='center',va='top',
                     transform=yz.get_xaxis_transform(),clip_on=False)
         else:
             for ax in (xz,yz):
@@ -261,9 +267,14 @@ def render_ortho_figure(stack_czyx, center_zyx, half_width_px=None, *, nucleus_m
         ax.set_xlabel('Distance (µm)',fontsize=8)
         ax.tick_params(labelsize=7)
     raw.set_ylabel('Intensity (a.u.)',fontsize=8)
-    raw.legend(fontsize=7,ncol=3,loc='upper center',bbox_to_anchor=(.5,-.36),frameon=False)
+    legend_columns = len(raw.get_legend_handles_labels()[0])
+    raw.legend(fontsize=min(6,36/legend_columns),ncol=legend_columns,loc='upper right',
+               framealpha=.6,handlelength=1.,handletextpad=.3,columnspacing=.5,borderpad=.3)
     normal.set_ylim(-.05,1.05)
-    normal.set_ylabel('normalised (display only)',fontsize=8)
+    normal.yaxis.tick_right()
+    normal.yaxis.set_label_position('right')
+    normal.tick_params(axis='y',pad=2)
+    normal.set_ylabel('normalised (display only)',fontsize=8,labelpad=2)
     normal._outside_trace_bounds = outside
     plane_text = (f'analysed plane z = {int(analysed_plane_z)+1} (1-based)'
                   if analysed_plane_z is not None else f'analysed plane unavailable; displayed z = {z+1} (1-based)')
