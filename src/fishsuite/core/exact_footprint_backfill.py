@@ -298,7 +298,7 @@ def native_hierarchy_from_run(run_dir: str | Path) -> pd.DataFrame:
                       "source_condition", "well_id", "field_id", "source_path"]
     _require_columns(nuclei, nucleus_columns, table="native nuclei_metrics.csv")
     _require_columns(roster, roster_columns, table="native resolved_experiment_hierarchy.csv")
-    _require_columns(per_image, {"image", "condition", "secondary_only"},
+    _require_columns(per_image, {"image", "condition", "secondary_only", "z_plane", "n_z"},
                      table="native per_image_summary.csv")
     missing_parity = sorted({"miat_footprint_area_px", "qki_at_miat_footprint"}.difference(
         pd.read_csv(run / names[3], nrows=0).columns))
@@ -331,6 +331,45 @@ def native_hierarchy_from_run(run_dir: str | Path) -> pd.DataFrame:
         lambda value: _finite_integer(value, name="native nucleus_id", minimum=1))
     if nuclei.duplicated(["image_key", "nucleus_id"]).any():
         raise ValueError("native nuclei_metrics.csv contains duplicate nucleus identities")
+    # Native autofocus z_range records the SEARCH interval, not quantitation.
+    # The run exports its selected physical plane in per_image.z_plane, already
+    # 1-based. Preserve that convention here; only the pixel reader subtracts 1.
+    single_plane_modes = {"autofocus", "single", "single_plane"}
+    mode_records = {"nuclei_metrics.csv": nuclei["z_mode"]}
+    if "z_mode" in per_image:
+        mode_records["per_image_summary.csv"] = per_image["z_mode"]
+    z_config = resolved.get("z_stack", {})
+    if isinstance(z_config, Mapping) and "mode" in z_config:
+        mode_records["run_config.json"] = pd.Series([z_config["mode"]])
+    for source, modes in mode_records.items():
+        observed = set(modes.astype(str).str.strip().str.casefold())
+        if not observed.issubset(single_plane_modes):
+            raise ValueError(
+                f"native {source} z_mode {sorted(observed)} does not prove single-plane "
+                "quantitation; projection/MIP/3d association is undefined"
+            )
+    per_image["z_plane"] = per_image["z_plane"].map(
+        lambda value: _finite_integer(value, name="native z_plane (1-based)", minimum=1))
+    per_image["n_z"] = per_image["n_z"].map(
+        lambda value: _finite_integer(value, name="native n_z", minimum=1))
+    if (per_image["z_plane"] > per_image["n_z"]).any():
+        raise ValueError("native z_plane is outside the recorded n_z slice range")
+    plane_roster = per_image.set_index("image_key")
+    nucleus_depth = nuclei["n_z_slices"].map(
+        lambda value: _finite_integer(value, name="native n_z_slices", minimum=1))
+    if not nucleus_depth.eq(nuclei["image_key"].map(plane_roster["n_z"])).all():
+        raise ValueError("native n_z_slices disagrees with per_image_summary.n_z")
+    native_provenance["native_quantitation_z"] = {
+        "source": "per_image_summary.csv.z_plane",
+        "indexing": "1-based; canonical z_range is selected_z-selected_z",
+        "recorded_nucleus_z_ranges": {
+            key: sorted(group["z_range"].unique().tolist())
+            for key, group in nuclei.groupby("image_key", sort=False)
+        },
+        "selected_z_1based": plane_roster["z_plane"].to_dict(),
+    }
+    selected_z = nuclei["image_key"].map(plane_roster["z_plane"]).astype(str)
+    nuclei["z_range"] = selected_z + "-" + selected_z
     def recorded_bool(value: str) -> bool:
         if value.strip().casefold() not in {"true", "false", "1", "0", "yes", "no", "y", "n"}:
             raise ValueError(f"native hierarchy requires a recorded boolean, found {value!r}")
@@ -2450,6 +2489,27 @@ def _write_null_image_atomic(
         handle.flush()
 
 
+def _validate_native_selected_cache(
+    path: Path, image: Mapping[str, Any], *,
+    expected_planes: Mapping[str, np.ndarray] | None = None,
+) -> None:
+    """Assert cached z/channel locks and, after writing, exact plane pixels."""
+    from .exact_footprint_figures import load_selected_plane
+
+    cached = load_selected_plane(
+        path, str(image["image_key"]),
+        expected_z_1based=int(image["selected_z_1based"]),
+        expected_channel_indices={
+            role: int(image[f"{role}_channel_index"])
+            for role in ("miat", "qki", "dapi")
+        },
+    )
+    if expected_planes is not None:
+        for role in ("miat", "qki", "dapi"):
+            if not np.array_equal(cached.planes[role], expected_planes[role]):
+                raise ValueError(f"native selected-plane cache pixels changed for {role}: {image['image_key']}")
+
+
 def _read_cached_selected_image(
     path: Path, image_key: str
 ) -> tuple[dict[str, np.ndarray], np.ndarray, np.ndarray]:
@@ -3156,7 +3216,7 @@ def run_exact_footprint_backfill(
         # Reject pre-eligibility checkpoints, which reconstructed a different
         # population. The explicit-hierarchy fingerprint remains unchanged.
         fingerprint = hashlib.sha256(
-            (fingerprint + ":native_spot_eligibility_v1").encode("utf-8")
+            (fingerprint + ":native_spot_eligibility_v1:native_single_plane_hierarchy_v1").encode("utf-8")
         ).hexdigest()
     source_fingerprint = _source_table_fingerprint(source_run, hierarchy_file)
     execution_fingerprint = _execution_fingerprint(
@@ -3319,6 +3379,8 @@ def run_exact_footprint_backfill(
                 selected_h5=selected_h5,
                 image_key=image_key,
             )
+            if native:
+                _validate_native_selected_cache(selected_h5, image_row)
             manifest.at[manifest_index, "load_status"] = "phase1_complete"
             continue
         planes, loaded = plane_reader(
@@ -3450,6 +3512,8 @@ def run_exact_footprint_backfill(
             raise RuntimeError(
                 f"selected-plane HDF5 readback failed for {image_key}"
             )
+        if native:
+            _validate_native_selected_cache(selected_h5, image_row, expected_planes=planes)
         audit_payload = dict(reconstruction.audit)
         plane_shape = tuple(planes["miat"].shape)
         del planes, loaded, labels, nucleoli, reconstruction

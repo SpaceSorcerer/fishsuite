@@ -43,7 +43,7 @@ def native_run(tmp_path):
                              fov="001", biological_set=well, catalog_folder=source_condition,
                              is_control=False, eligible_for_sampling=True,
                              sampled_in_analysis=True, source_vsi=source, well=well,
-                             z_mode="single_plane", z_range="5-5", n_z_slices=9,
+                             z_mode="autofocus", z_range="5-5", n_z_slices=9,
                              output_stem=f"S1_NT_1__{Path(image).stem}"))
         image_spots = original_spots.copy()
         image_spots["image"] = image
@@ -60,10 +60,12 @@ def native_run(tmp_path):
     nuclei_path = run / "nuclei_metrics.csv"
     nuclei = pd.read_csv(nuclei_path)
     nuclei["slide"] = "recorded_acquisition_slide"
+    nuclei["z_range"] = "2-8"
     nuclei.to_csv(nuclei_path, index=False)
     config_path = run / "run_config.json"
     config = json.loads(config_path.read_text(encoding="utf-8"))
     config["config_resolved"]["sampling"] = {"enabled": True}
+    config["config_resolved"]["z_stack"] = {"mode": "autofocus", "start": 2, "end": 8}
     config_path.write_text(json.dumps(config), encoding="utf-8")
     per_image = pd.read_csv(run / "per_image_summary.csv")
     per_image["condition"] = per_image.image.map(explicit_frame.set_index("image").condition)
