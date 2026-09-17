@@ -1,0 +1,358 @@
+{
+  "workbook": {
+    "title": "MIAT×QKI exact-footprint single-z analysis",
+    "subtitle": "Publication and dissertation review workbook",
+    "purpose": "Consolidate the final exact-footprint postrun tables without altering source measurements.",
+    "interpretationGuard": "Exact-footprint spatial association is an imaging measurement; this workbook does not test direct molecular binding.",
+    "analysisConvention": "One reviewed z plane per FOV, shared by DAPI, MIAT, and QKI; no projection is used for colocalization quantitation.",
+    "provenance": "Source tables are copied or pivoted without changing cell values. Derived summary, control, representative-path, and audit rows are labeled.",
+    "freezePanes": false,
+    "summaryPreviewLastColumn": "Y",
+    "readmeNotes": [
+      "Primary displayed endpoint p-values are sampled-primary, full-cohort, exact within-slide permutation p-values.",
+      "Welch and slide-adjusted results remain available in the inference worksheets.",
+      "q95 is primary; q90 and q99 are sensitivity thresholds.",
+      "The q95 usable-spot fraction must be read beside the conservative all-floor fraction and null-usability coverage.",
+      "NT and KD biological sets are independent; replicate numbers are not pairing keys.",
+      "Secondary-only controls are QC-only and excluded from biological inference.",
+      "The 707,446-row footprint-pixel table remains in its canonical gz CSV; path, hash, and omission reason are in Sampling Audit."
+    ]
+  },
+  "summaryTableKey": "summary",
+  "tables": [
+    {
+      "key": "summary",
+      "file": "summary.csv",
+      "sheet": "Summary",
+      "tableName": "SummaryTable",
+      "description": "Selected sampled-primary full-cohort endpoints and q95 associated/global ratio-of-ratios contrasts.",
+      "required": true,
+      "requiredColumns": [
+        "section", "result", "mean_nt", "mean_kd", "kd_over_nt",
+        "percent_change_kd_vs_nt", "primary_exact_permutation_p",
+        "ratio_of_ratios", "ratio_of_ratios_ci95_low", "ratio_of_ratios_ci95_high",
+        "ratio_of_ratios_p_two_sided", "note"
+      ],
+      "columns": {
+        "section": {"type": "text", "role": "result group", "definition": "Summary section."},
+        "result": {"type": "text", "role": "result label", "definition": "Neutral observation-first result label."},
+        "mean_nt": {"type": "number", "role": "set-level mean", "definition": "Mean across independent NT biological sets."},
+        "mean_kd": {"type": "number", "role": "set-level mean", "definition": "Mean across independent MIAT-KD biological sets."},
+        "kd_over_nt": {"type": "number", "role": "effect", "definition": "KD divided by NT."},
+        "percent_change_kd_vs_nt": {"type": "percent_points", "numberFormat": "0.00\"%\"", "role": "effect", "definition": "KD-versus-NT percent change, stored in percentage-point units."},
+        "primary_exact_permutation_p": {"type": "pvalue", "role": "primary inference", "definition": "Sampled-primary full-cohort exact within-slide permutation p-value."},
+        "ratio_of_ratios": {"type": "number", "role": "contrast", "definition": "Associated KD/NT ratio divided by global KD/NT ratio."},
+        "ratio_of_ratios_ci95_low": {"type": "number", "role": "confidence interval", "definition": "Lower 95% confidence limit for ratio of ratios."},
+        "ratio_of_ratios_ci95_high": {"type": "number", "role": "confidence interval", "definition": "Upper 95% confidence limit for ratio of ratios."},
+        "ratio_of_ratios_p_two_sided": {"type": "pvalue", "role": "ratio inference", "definition": "Two-sided p-value for the ratio-of-ratios contrast."},
+        "note": {"type": "text", "role": "interpretation guard", "definition": "Neutral interpretation note and denominator caveat."}
+      }
+    },
+    {
+      "key": "spots",
+      "file": "corrected_spots_exact.csv",
+      "sheet": "Spots Exact",
+      "tableName": "SpotsExactTable",
+      "description": "All 23,829 corrected per-spot exact-footprint records; every source column is retained.",
+      "required": true,
+      "requiredColumns": [
+        "spot_uid", "image_key", "nucleus_uid", "selected_z_1based",
+        "quantitation_plane", "footprint_area_px", "qki_footprint_mean_raw",
+        "qki_threshold_positive_q95", "null_usable", "eligible_for_sampling",
+        "sampled_in_analysis", "sampling_metadata_source"
+      ],
+      "compactStyle": true,
+      "writeChunkRows": 250
+    },
+    {
+      "key": "nucleus",
+      "file": "nucleus_endpoints.csv",
+      "sheet": "Nucleus Endpoints",
+      "tableName": "NucleusEndpointTable",
+      "description": "All 1,682 per-nucleus records and all 417 source metrics.",
+      "required": true,
+      "requiredColumns": [
+        "nucleus_uid", "image_key", "arm", "biological_set", "is_control",
+        "eligible_for_sampling", "sampled_in_analysis", "n_spots_floor",
+        "threshold_positive_spots_per_nucleus_q95",
+        "association_fraction_among_usable_q95",
+        "association_fraction_among_all_floor_spots_q95",
+        "threshold_usability_coverage_q95",
+        "miat_footprint_mass_floor_union_deduplicated",
+        "miat_footprint_mass_q95_positive_union_deduplicated"
+      ],
+      "compactStyle": true,
+      "writeChunkRows": 150
+    },
+    {
+      "key": "fov",
+      "file": "fov_endpoints_wide.csv",
+      "sheet": "FOV Wide",
+      "tableName": "FovWideTable",
+      "description": "Wide FOV endpoint table; endpoint-specific finite-nucleus counts are retained.",
+      "required": true,
+      "requiredColumns": [
+        "cohort", "image_key", "slide", "arm", "biological_set", "n_nuclei_total",
+        "n_spots_floor", "threshold_positive_spots_per_nucleus_q95",
+        "association_fraction_among_usable_q95",
+        "association_fraction_among_all_floor_spots_q95"
+      ],
+      "writeChunkRows": 50
+    },
+    {
+      "key": "set",
+      "file": "set_endpoints_wide.csv",
+      "sheet": "Set Wide",
+      "tableName": "SetWideTable",
+      "description": "Wide biological-set endpoint table; finite FOV/nucleus counts and completeness are retained per endpoint.",
+      "required": true,
+      "requiredColumns": [
+        "cohort", "slide", "arm", "biological_set", "n_fovs_total", "n_nuclei_total",
+        "n_spots_floor", "threshold_positive_spots_per_nucleus_q95",
+        "association_fraction_among_usable_q95",
+        "association_fraction_among_all_floor_spots_q95",
+        "threshold_usability_coverage_q95"
+      ],
+      "writeChunkRows": 25
+    },
+    {
+      "key": "endpoint_inference",
+      "file": "endpoint_inference.csv",
+      "sheet": "Endpoint Inference",
+      "tableName": "EndpointInferenceTable",
+      "description": "Endpoint inference including Welch, slide-adjusted, exact within-slide permutation, and leave-one-set-out rows.",
+      "required": true,
+      "requiredColumns": [
+        "cohort", "endpoint", "excluded_biological_set", "inference_status",
+        "mean_nt", "mean_kd", "ratio_kd_over_nt", "percent_change_kd_vs_nt",
+        "welch_p_two_sided", "slide_adjusted_p_two_sided",
+        "permutation_p_exact_two_sided"
+      ],
+      "columns": {
+        "percent_change_kd_vs_nt": {"type": "percent_points", "numberFormat": "0.00\"%\"", "role": "effect", "definition": "KD-versus-NT percent change in percentage-point units."}
+      }
+    },
+    {
+      "key": "cartesian",
+      "file": "cartesian_contrasts.csv",
+      "sheet": "Cartesian Contrasts",
+      "tableName": "CartesianContrastTable",
+      "description": "All within-slide NT×KD biological-set contrasts; replicate number is not a pairing key.",
+      "required": true,
+      "requiredColumns": [
+        "cohort", "endpoint", "slide", "nt_biological_set", "kd_biological_set",
+        "pairing_semantics", "replicate_is_pairing_key", "kd_minus_nt",
+        "kd_over_nt", "percent_change_kd_vs_nt"
+      ],
+      "columns": {
+        "percent_change_kd_vs_nt": {"type": "percent_points", "numberFormat": "0.00\"%\"", "role": "effect", "definition": "KD-versus-NT percent change in percentage-point units."}
+      }
+    },
+    {
+      "key": "ratio_of_ratios",
+      "file": "ratio_of_ratios.csv",
+      "sheet": "Ratio of Ratios",
+      "tableName": "RatioOfRatiosTable",
+      "description": "Associated-signal KD/NT change relative to global-signal KD/NT change.",
+      "required": true,
+      "requiredColumns": [
+        "cohort", "numerator_endpoint", "denominator_endpoint",
+        "numerator_ratio_kd_over_nt", "denominator_ratio_kd_over_nt",
+        "ratio_of_ratios", "ratio_of_ratios_ci95_low", "ratio_of_ratios_ci95_high",
+        "p_two_sided"
+      ]
+    },
+    {
+      "key": "fov_correlations",
+      "file": "fov_correlations.csv",
+      "sheet": "FOV Correlations",
+      "tableName": "FovCorrelationTable",
+      "description": "FOV-level all-spot and threshold-positive MIAT–QKI correlations.",
+      "required": true,
+      "requiredColumns": [
+        "cohort", "image_key", "arm", "biological_set", "population",
+        "measurement_pair", "correlation_method", "n_spots", "correlation",
+        "p_value", "estimable", "nonestimable_reason"
+      ]
+    },
+    {
+      "key": "set_correlations",
+      "file": "set_correlations.csv",
+      "sheet": "Set Correlations",
+      "tableName": "SetCorrelationTable",
+      "description": "Biological-set correlation summaries aggregated from estimable FOV values.",
+      "required": true,
+      "requiredColumns": [
+        "cohort", "population", "measurement_pair", "correlation_method",
+        "arm", "biological_set", "n_fovs_estimable", "n_spots_total",
+        "correlation_backtransformed", "complete_for_inference"
+      ]
+    },
+    {
+      "key": "correlation_inference",
+      "file": "correlation_inference.csv",
+      "sheet": "Correlation Inference",
+      "tableName": "CorrelationInferenceTable",
+      "description": "Inference for biological-set correlation endpoints.",
+      "required": true,
+      "requiredColumns": [
+        "cohort", "population", "measurement_pair", "correlation_method",
+        "endpoint", "inference_status", "mean_nt", "mean_kd",
+        "welch_p_two_sided", "slide_adjusted_p_two_sided",
+        "permutation_p_exact_two_sided"
+      ],
+      "columns": {
+        "percent_change_kd_vs_nt": {"type": "percent_points", "numberFormat": "0.00\"%\"", "role": "effect", "definition": "KD-versus-NT percent change in percentage-point units."}
+      }
+    },
+    {
+      "key": "representatives",
+      "file": "representatives.csv",
+      "sheet": "Representatives",
+      "tableName": "RepresentativeTable",
+      "description": "Deterministic V2 representative selections and exact threshold-walkthrough/composite paths.",
+      "required": true,
+      "requiredColumns": [
+        "slide", "arm", "image_key", "biological_set", "selected_z_1based",
+        "nucleus_uid", "nucleus_id", "selection_role", "output_file_png",
+        "output_file_pdf", "output_file_svg", "composite_png", "composite_pdf",
+        "composite_svg"
+      ]
+    },
+    {
+      "key": "controls",
+      "file": "controls.csv",
+      "sheet": "Controls",
+      "tableName": "ControlTable",
+      "description": "V2 secondary-only control calls and corrected per-spot aggregates; controls are excluded from biological inference.",
+      "required": true,
+      "requiredColumns": [
+        "image_key", "miat_call_count", "control_signal_qc_status", "designation",
+        "corrected_spot_rows", "null_usable", "q90_positive", "q95_positive",
+        "q99_positive", "biological_inference_eligible", "status", "notes"
+      ],
+      "columns": {
+        "status": {"type": "text", "role": "control disposition", "definition": "PASS for expected-negative/retained controls; REVIEW for artifact-bearing diagnostic controls."},
+        "notes": {"type": "text", "role": "neutral QC note", "definition": "Observation-first control interpretation."}
+      }
+    },
+    {
+      "key": "sampling_audit",
+      "file": "sampling_audit.csv",
+      "sheet": "Sampling Audit",
+      "tableName": "SamplingAuditTable",
+      "description": "Authoritative sampling-correction, hierarchy, plane, and omitted pixel-table provenance.",
+      "required": true,
+      "requiredColumns": ["item", "value", "source", "note"]
+    },
+    {
+      "key": "image_qc",
+      "file": "image_qc.csv",
+      "sheet": "Image QC",
+      "tableName": "ImageQcTable",
+      "description": "All 44 renderer image-audit rows and all 305 source fields.",
+      "required": true,
+      "requiredColumns": [
+        "image_key", "image", "arm", "is_control", "selected_z_1based",
+        "plane_lock_pass", "population_reconciliation_pass", "mask_qc_pass",
+        "footprint_parity_pass", "image_qc_status"
+      ],
+      "writeChunkRows": 25
+    },
+    {
+      "key": "nucleus_qc",
+      "file": "nucleus_qc.csv",
+      "sheet": "Nucleus QC",
+      "tableName": "NucleusQcTable",
+      "description": "Complete 1,682-row nucleus QC roster.",
+      "required": true,
+      "requiredColumns": [
+        "image_key", "nucleus_id", "nucleus_uid", "nucleus_qc_status",
+        "nucleus_qc_reason"
+      ]
+    },
+    {
+      "key": "threshold_sensitivity",
+      "file": "threshold_sensitivity.csv",
+      "sheet": "Threshold Sensitivity",
+      "tableName": "ThresholdSensitivityTable",
+      "description": "V2 q90/q95/q99 representative-nucleus threshold counts and fractions.",
+      "required": true,
+      "requiredColumns": [
+        "slide", "arm", "image_key", "nucleus_uid", "selection_role",
+        "percentile", "is_primary", "n_positive", "n_negative", "n_unusable",
+        "association_fraction_among_usable"
+      ]
+    }
+  ],
+  "superplots": [
+    {
+      "title": "Global MIAT spots per nucleus",
+      "sourceTable": "set",
+      "conditionColumn": "arm",
+      "valueColumn": "n_spots_all",
+      "labelColumn": "biological_set",
+      "filters": {"cohort": "sampled_primary"},
+      "xAxisTitle": "Condition (NT=1, KD=2)",
+      "yAxisTitle": "All-detected MIAT spots per nucleus",
+      "chartStartColumn": "Q",
+      "chartEndColumn": "Y",
+      "required": true,
+      "groups": [
+        {"value": "NT", "label": "NT sets", "x": 1, "color": "#0072B2"},
+        {"value": "KD", "label": "MIAT-KD sets", "x": 2, "color": "#D55E00"}
+      ]
+    },
+    {
+      "title": "q95-associated MIAT spots per nucleus",
+      "sourceTable": "set",
+      "conditionColumn": "arm",
+      "valueColumn": "threshold_positive_spots_per_nucleus_q95",
+      "labelColumn": "biological_set",
+      "filters": {"cohort": "sampled_primary"},
+      "xAxisTitle": "Condition (NT=1, KD=2)",
+      "yAxisTitle": "q95-positive MIAT spots per nucleus",
+      "chartStartColumn": "Q",
+      "chartEndColumn": "Y",
+      "required": true,
+      "groups": [
+        {"value": "NT", "label": "NT sets", "x": 1, "color": "#0072B2"},
+        {"value": "KD", "label": "MIAT-KD sets", "x": 2, "color": "#D55E00"}
+      ]
+    },
+    {
+      "title": "q95 association fraction among null-usable spots",
+      "sourceTable": "set",
+      "conditionColumn": "arm",
+      "valueColumn": "association_fraction_among_usable_q95",
+      "labelColumn": "biological_set",
+      "filters": {"cohort": "sampled_primary"},
+      "xAxisTitle": "Condition (NT=1, KD=2)",
+      "yAxisTitle": "q95 association fraction among usable spots",
+      "chartStartColumn": "Q",
+      "chartEndColumn": "Y",
+      "required": true,
+      "groups": [
+        {"value": "NT", "label": "NT sets", "x": 1, "color": "#0072B2"},
+        {"value": "KD", "label": "MIAT-KD sets", "x": 2, "color": "#D55E00"}
+      ]
+    },
+    {
+      "title": "q95 association fraction among all floor spots",
+      "sourceTable": "set",
+      "conditionColumn": "arm",
+      "valueColumn": "association_fraction_among_all_floor_spots_q95",
+      "labelColumn": "biological_set",
+      "filters": {"cohort": "sampled_primary"},
+      "xAxisTitle": "Condition (NT=1, KD=2)",
+      "yAxisTitle": "q95 association fraction, all-floor denominator",
+      "chartStartColumn": "Q",
+      "chartEndColumn": "Y",
+      "required": true,
+      "groups": [
+        {"value": "NT", "label": "NT sets", "x": 1, "color": "#0072B2"},
+        {"value": "KD", "label": "MIAT-KD sets", "x": 2, "color": "#D55E00"}
+      ]
+    }
+  ]
+}

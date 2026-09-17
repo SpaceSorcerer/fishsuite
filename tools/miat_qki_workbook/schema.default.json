@@ -1,0 +1,176 @@
+{
+  "workbook": {
+    "title": "MIAT×QKI exact-footprint single-z analysis",
+    "subtitle": "Processed nucleus, FOV, set-level, inference, correlation, representative-image, control, and QC tables",
+    "purpose": "Consolidate final postrun CSV outputs into a readable, auditable workbook for dissertation and publication review.",
+    "interpretationGuard": "Spatial colocalization is a pseudo-binding/association measurement and is not evidence of direct MIAT–QKI molecular binding.",
+    "analysisConvention": "Exact MIAT detected footprints sampled on one reviewed z plane per FOV; the same z plane is used for DAPI, MIAT, and QKI.",
+    "provenance": "All numerical source values are imported from postrun CSV files. Superplot helper values are formula-linked to the Set sheet.",
+    "readmeNotes": [
+      "The q95 KEEP-N null call is primary; q90 and q99 are sensitivity thresholds.",
+      "Controls are QC-only and excluded from biological inference.",
+      "NT and KD sets are independent biological replicates; no NT1-to-KD1 pairing is implied.",
+      "FOVs and nuclei are nested observations; set-level summaries are the inferential unit.",
+      "Maximum-intensity projections are not used as inputs for colocalization measurements."
+    ]
+  },
+  "summaryTableKey": "summary",
+  "tables": [
+    {
+      "key": "summary",
+      "file": "summary.csv",
+      "sheet": "Summary",
+      "tableName": "SummaryTable",
+      "description": "Compact primary findings and interpretation-ready endpoint summary.",
+      "required": true,
+      "requiredColumns": ["metric", "nt_value", "kd_value", "percent_change", "primary_p_value", "interpretation"],
+      "freezeColumns": 1,
+      "columns": {
+        "metric": {"type": "text", "role": "identifier", "definition": "Endpoint or result label."},
+        "nt_value": {"type": "number", "role": "result", "definition": "NT set-level summary value."},
+        "kd_value": {"type": "number", "role": "result", "definition": "MIAT-KD set-level summary value."},
+        "percent_change": {"type": "percentage", "role": "derived result", "definition": "Relative KD-versus-NT change stored as a fraction."},
+        "primary_p_value": {"type": "pvalue", "role": "inference", "definition": "Primary inferential p-value for the endpoint."},
+        "interpretation": {"type": "text", "role": "annotation", "definition": "Concise interpretation constrained to spatial association evidence."}
+      }
+    },
+    {
+      "key": "nucleus",
+      "file": "nucleus.csv",
+      "sheet": "Nucleus",
+      "tableName": "NucleusTable",
+      "description": "Per-nucleus exact-footprint endpoint table.",
+      "required": true,
+      "requiredColumns": ["image_key", "nucleus_id", "condition", "slide", "set_id", "sampled_in_analysis", "miat_spots_per_nucleus", "q95_positive_spots_per_nucleus", "association_fraction_among_usable"],
+      "freezeColumns": 2,
+      "columns": {
+        "image_key": {"type": "text", "role": "identifier", "definition": "Unique image/FOV key."},
+        "nucleus_id": {"type": "text", "role": "identifier", "definition": "Nucleus identifier within image."},
+        "condition": {"type": "text", "role": "group", "definition": "NT or MIAT-KD condition."},
+        "slide": {"type": "integer", "role": "block", "definition": "Slide/block identifier."},
+        "set_id": {"type": "text", "role": "replicate", "definition": "Independent biological replicate set."},
+        "sampled_in_analysis": {"type": "boolean", "role": "cohort flag", "definition": "Authoritative nucleus-level sampled-primary membership."},
+        "miat_spots_per_nucleus": {"type": "integer", "unit": "spots/nucleus", "role": "endpoint", "definition": "Detected MIAT spot count in nucleus."},
+        "q95_positive_spots_per_nucleus": {"type": "integer", "unit": "spots/nucleus", "role": "endpoint", "definition": "MIAT spots called QKI-associated at q95."},
+        "association_fraction_among_usable": {"type": "percentage", "role": "endpoint", "definition": "q95-positive fraction among null-usable MIAT spots."}
+      }
+    },
+    {
+      "key": "fov",
+      "file": "fov.csv",
+      "sheet": "FOV",
+      "tableName": "FovTable",
+      "description": "Per-FOV summaries calculated after nucleus aggregation.",
+      "required": true,
+      "requiredColumns": ["image_key", "condition", "slide", "set_id", "nuclei_count", "miat_spots_per_nucleus", "q95_positive_spots_per_nucleus", "association_fraction_among_usable"],
+      "freezeColumns": 1
+    },
+    {
+      "key": "set",
+      "file": "set.csv",
+      "sheet": "Set",
+      "tableName": "SetTable",
+      "description": "Exactly one equal-weight row per biological replicate set.",
+      "required": true,
+      "requiredColumns": ["set_id", "condition", "slide", "fov_count", "nuclei_count", "miat_spots_per_nucleus", "q95_positive_spots_per_nucleus", "association_fraction_among_usable"],
+      "freezeColumns": 1,
+      "columns": {
+        "set_id": {"type": "text", "role": "replicate", "definition": "Independent biological replicate set."},
+        "condition": {"type": "text", "role": "group", "definition": "NT or MIAT-KD condition."},
+        "slide": {"type": "integer", "role": "block", "definition": "Slide/block identifier."},
+        "fov_count": {"type": "integer", "role": "sample size", "definition": "FOV count contributing to set mean."},
+        "nuclei_count": {"type": "integer", "role": "sample size", "definition": "Nuclei count contributing to set summaries."},
+        "miat_spots_per_nucleus": {"type": "number", "unit": "spots/nucleus", "role": "endpoint", "definition": "Equal-FOV-weight set mean MIAT count per nucleus."},
+        "q95_positive_spots_per_nucleus": {"type": "number", "unit": "spots/nucleus", "role": "endpoint", "definition": "Equal-FOV-weight set mean q95-associated MIAT count per nucleus."},
+        "association_fraction_among_usable": {"type": "percentage", "role": "endpoint", "definition": "Equal-FOV-weight q95 association fraction among usable spots."}
+      }
+    },
+    {
+      "key": "inference",
+      "file": "inference.csv",
+      "sheet": "Inference",
+      "tableName": "InferenceTable",
+      "description": "Unpaired Welch, slide-block, and exact permutation inference with sensitivity analyses.",
+      "required": true,
+      "requiredColumns": ["endpoint", "analysis_cohort", "nt_mean", "kd_mean", "percent_change", "welch_p_value", "permutation_p_value", "status"],
+      "freezeColumns": 2
+    },
+    {
+      "key": "correlation",
+      "file": "correlation.csv",
+      "sheet": "Correlation",
+      "tableName": "CorrelationTable",
+      "description": "Continuous MIAT–QKI spot correlations for all spots and threshold-positive subsets.",
+      "required": true,
+      "requiredColumns": ["analysis_cohort", "population", "scale", "condition", "correlation_method", "n_spots", "rho", "p_value", "estimable"],
+      "freezeColumns": 2
+    },
+    {
+      "key": "representative",
+      "file": "representative.csv",
+      "sheet": "Representative",
+      "tableName": "RepresentativeTable",
+      "description": "Deterministic representative FOV and nucleus selections with exact analyzed z planes.",
+      "required": true,
+      "requiredColumns": ["slide", "condition", "image_key", "set_id", "nucleus_id", "selection_role", "selected_z", "medoid_distance", "output_file"],
+      "freezeColumns": 2
+    },
+    {
+      "key": "control",
+      "file": "control.csv",
+      "sheet": "Control",
+      "tableName": "ControlTable",
+      "description": "Secondary-only and other QC-only control ledger.",
+      "required": true,
+      "requiredColumns": ["image_key", "control_type", "spots_total", "null_usable", "q95_positive", "status", "notes"],
+      "freezeColumns": 1,
+      "columns": {
+        "spots_total": {"type": "integer", "role": "QC count", "definition": "Detected MIAT spots in the control image."},
+        "null_usable": {"type": "integer", "role": "QC count", "definition": "Control spots usable for the KEEP-N null."},
+        "q95_positive": {"type": "integer", "role": "QC count", "definition": "Control spots called positive at q95."},
+        "status": {"type": "text", "role": "QC flag", "definition": "PASS, REVIEW, or FAIL control disposition."},
+        "notes": {"type": "text", "role": "annotation", "definition": "Human-readable control interpretation."}
+      }
+    },
+    {
+      "key": "qc",
+      "file": "qc.csv",
+      "sheet": "QC",
+      "tableName": "QcTable",
+      "description": "Run completeness, parity, reconciliation, immutability, and metadata checks.",
+      "required": true,
+      "requiredColumns": ["check_name", "scope", "status", "observed", "expected", "notes"],
+      "freezeColumns": 2
+    }
+  ],
+  "superplots": [
+    {
+      "title": "MIAT spots per nucleus across independent sets",
+      "sourceTable": "set",
+      "conditionColumn": "condition",
+      "valueColumn": "miat_spots_per_nucleus",
+      "labelColumn": "set_id",
+      "xAxisTitle": "Condition (NT=1, KD=2)",
+      "yAxisTitle": "MIAT spots per nucleus",
+      "required": true,
+      "groups": [
+        {"value": "NT", "label": "NT sets", "x": 1, "color": "#0072B2"},
+        {"value": "KD", "label": "MIAT-KD sets", "x": 2, "color": "#D55E00"}
+      ]
+    },
+    {
+      "title": "q95-associated MIAT spots per nucleus across independent sets",
+      "sourceTable": "set",
+      "conditionColumn": "condition",
+      "valueColumn": "q95_positive_spots_per_nucleus",
+      "labelColumn": "set_id",
+      "xAxisTitle": "Condition (NT=1, KD=2)",
+      "yAxisTitle": "q95-associated spots per nucleus",
+      "required": true,
+      "groups": [
+        {"value": "NT", "label": "NT sets", "x": 1, "color": "#0072B2"},
+        {"value": "KD", "label": "MIAT-KD sets", "x": 2, "color": "#D55E00"}
+      ]
+    }
+  ]
+}

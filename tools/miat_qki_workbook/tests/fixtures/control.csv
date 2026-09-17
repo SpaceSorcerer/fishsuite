@@ -1,0 +1,3 @@
+image_key,control_type,spots_total,null_usable,q95_positive,status,notes
+S1_SEC_ONLY_01,secondary_only,2,0,0,PASS,Near-zero detected spots
+S2_NT_SEC_ONLY_21,secondary_only,304,159,13,REVIEW,Anomalous control retained for QC review only
