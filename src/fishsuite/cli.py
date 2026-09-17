@@ -1184,10 +1184,13 @@ class _OrthoCommand(click.Command):
 @click.option('--metric', default='nuclear_spot_count', show_default=True)
 @click.option('--seed', type=click.IntRange(min=0), default=0, show_default=True)
 @click.option('--punctum', type=click.Choice(['brightest', 'median']), default='brightest')
-@click.option('--half-width-um', type=click.FloatRange(min=0, min_open=True), default=8., show_default=True)
+@click.option('--half-width-um', type=click.FloatRange(min=0, min_open=True), default=None,
+              help='Crop half-width override in µm; default is nucleus bounding box + 1.5 µm.')
+@click.option('--qki-min', type=float, default=None, help='Explicit user QKI analysis minimum to annotate.')
+@click.option('--miat-min', type=float, default=None, help='Explicit user MIAT analysis minimum to annotate.')
 @click.option('--out', type=click.Path(file_okay=False), default=None)
 @click.pass_context
-def ortho(ctx, run_dir, config, k, metric, seed, punctum, half_width_um, out):
+def ortho(ctx, run_dir, config, k, metric, seed, punctum, half_width_um, qki_min, miat_min, out):
     """Render median-selected nuclei with orthogonal sections and line profiles.
 
     Uses saved nucleus labels and source stacks; requires fixed manual RNA and
@@ -1199,7 +1202,8 @@ def ortho(ctx, run_dir, config, k, metric, seed, punctum, half_width_um, out):
     command = list2cmdline(['fishsuite', 'ortho', *ctx.meta['ortho_args']])
     try:
         selection = render_run(run_dir, config=config, k=k, metric=metric, seed=seed,
-                               punctum=punctum, half_width_um=half_width_um, out=out,
+                               punctum=punctum, half_width_um=half_width_um, qki_min=qki_min,
+                               miat_min=miat_min, out=out,
                                command=command)
     except (ValueError, OSError, KeyError) as exc:
         raise click.ClickException(str(exc)) from exc

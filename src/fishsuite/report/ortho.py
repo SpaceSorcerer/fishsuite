@@ -2,13 +2,14 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 
 from ..core import io
-from ..core.ortho_profile import clipped_default_line, pick_punctum, render_ortho_figure, select_nuclei
+from ..core.ortho_profile import clipped_default_line, pick_punctum, render_ortho_figure, select_nuclei, nucleus_crop
 
 
 def _display_levels(cfg):
@@ -144,7 +145,7 @@ def _spot_center(spots, nucleus_id, rule, stack, *, analysed_plane_z=None):
 
 
 def render_run(run_dir, *, config=None, k=3, metric='nuclear_spot_count', seed=0,
-               punctum='brightest', half_width_um=8., out=None, command=''):
+               punctum='brightest', half_width_um=None, qki_min=None, miat_min=None, out=None, command=''):
     from .. import __version__
     from ..config.schema import FishsuiteConfig
     import matplotlib.pyplot as plt
@@ -201,8 +202,6 @@ def render_run(run_dir, *, config=None, k=3, metric='nuclear_spot_count', seed=0
         raise ValueError('No nuclei available for selection')
     hierarchy_path = run_dir / 'resolved_experiment_hierarchy.csv'
     roster = pd.read_csv(hierarchy_path) if hierarchy_path.is_file() else None
-    thresholds_path = run_dir / f'{prefix}thresholds.csv'
-    thresholds = pd.read_csv(thresholds_path) if thresholds_path.is_file() else None
     out.mkdir(parents=True, exist_ok=True)
     with (out / 'command.log').open('a', encoding='utf-8') as handle:
         handle.write(command + '\n')
@@ -235,32 +234,34 @@ def render_run(run_dir, *, config=None, k=3, metric='nuclear_spot_count', seed=0
             image_spots = image_spots.loc[image_spots.channel.isin(['rna1', 'rna'])]
         center, z_source = _spot_center(image_spots, row.nucleus_id, punctum, stack,
                                         analysed_plane_z=analysed_plane_z)
-        half = max(1, int(np.ceil(half_width_um / pixel_size)))
-        endpoints = clipped_default_line(mask, center, half)
-        threshold = None
-        if thresholds is not None and 'image' in thresholds:
-            match = thresholds.loc[thresholds.image == row.image]
-            if len(match) > 1:
-                raise ValueError(f'Multiple threshold rows for {row.image!r}')
-            if len(match):
-                column = 'rna2_threshold_value' if cfg.channels.analysis_mode == 'rna_rna' else 'protein_threshold_value'
-                if column in match and pd.notna(match.iloc[0][column]) and np.isfinite(float(match.iloc[0][column])):
-                    threshold = float(match.iloc[0][column])
+        crop_yx, half, used_half_um = nucleus_crop(mask, pixel_size, half_width_um)
+        # The chord stays on punctum Y and is clipped to the nucleus-centred crop.
+        ys, xs = np.nonzero(mask)
+        endpoints = ((float(center[1]), float(max(xs.min(), crop_yx[1]-half, 0))),
+                     (float(center[1]), float(min(xs.max(), crop_yx[1]+half, mask.shape[1]-1))))
         profile_width_px = 3
         fig = render_ortho_figure(stack, center, half, nucleus_mask=mask,
                                   pixel_size_um=pixel_size, z_step_um=z_step,
                                   display_levels=levels, line_endpoints=endpoints,
                                   profile_width_px=profile_width_px, analysed_plane_z=analysed_plane_z,
-                                  qki_threshold=threshold, run_dir=str(run_dir))
-        name = f'ortho_{index+1:03d}_nucleus_{int(row.nucleus_id)}'
+                                  qki_min=qki_min, miat_min=miat_min, run_dir=str(run_dir),
+                                  arm=str(row[arm_col]),
+                                  arm_color=cfg.conditions.group_colors.get(str(row[arm_col]), '#595959'),
+                                  image=Path(str(row.image)).name, nucleus_id=int(row.nucleus_id),
+                                  metric=metric, metric_value=float(row[metric]), arm_median=float(row.arm_median))
+        slug = lambda text: re.sub(r'[^A-Za-z0-9]+', '-', str(text)).strip('-')
+        name = f'ortho_{slug(row[arm_col])}_{slug(Path(str(row.image)).stem)}_nuc{int(row.nucleus_id)}'
         try:
             fig.savefig(out / f'{name}.png', dpi=600)
-            fig.savefig(out / f'{name}.svg')
+            with plt.rc_context({'svg.fonttype': 'none'}):
+                fig.savefig(out / f'{name}.svg')
         finally:
             plt.close(fig)
         rows.append(dict(arm=row[arm_col], image=row.image, nucleus_id=row.nucleus_id,
                          metric=metric, metric_value=row[metric], arm_median=row.arm_median,
-                         punctum_rule=punctum, seed=seed, k=k, half_width_um=half_width_um,
+                         punctum_rule=punctum, seed=seed, k=k, half_width_um=used_half_um,
+                         half_width_px=half, half_width_used_um=half*pixel_size,
+                         crop_center_y=crop_yx[0], crop_center_x=crop_yx[1],
                          profile_width_px=profile_width_px,
                          punctum_z=center[0], punctum_y=center[1], punctum_x=center[2],
                          z_source=z_source, line_p0_y=endpoints[0][0], line_p0_x=endpoints[0][1],
@@ -274,7 +275,7 @@ def render_run(run_dir, *, config=None, k=3, metric='nuclear_spot_count', seed=0
                          display_mode='manual', configured_display_mode=cfg.output.pub_contrast_mode,
                          miat_display_min=levels[0][0], miat_display_max=levels[0][1],
                          qki_display_min=levels[1][0], qki_display_max=levels[1][1],
-                         qki_threshold=threshold, figure=name))
+                         qki_min=qki_min, miat_min=miat_min, figure=name))
     result = pd.DataFrame(rows)
     result.to_csv(out / 'ortho_selection.csv', index=False)
     return result
