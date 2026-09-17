@@ -43,6 +43,7 @@ from skimage.filters import threshold_otsu
 
 from .. import io as _io
 from .. import segmentation as _seg
+from ..nuclear_size import resolve_nuclear_size_px
 from .. import spots as _spots
 from .. import morphology as _morph
 from .. import thresholds as _thr
@@ -1167,6 +1168,16 @@ def run_one(
     """
     t0 = time.time()
     img = _io.read_image(path)
+    nuclear_pixel_nm = _safe_float(cfg.foci.bigfish_voxel_size_nm)
+    if not (math.isfinite(nuclear_pixel_nm) and nuclear_pixel_nm > 0):
+        nuclear_pixel_nm = _safe_float(img.voxel_xy_nm)
+    try:
+        nuclear_size = resolve_nuclear_size_px(
+            cfg.nuclei, nuclear_pixel_nm / 1000.0,
+            cfg.nuclei.cellpose_downsample_factor,
+        )
+    except ValueError as exc:
+        raise ValueError(f"{Path(path).name}: {exc}") from exc
 
     dapi_idx, rna_idx, rna2_idx = _resolve_channels(cfg, img)
 
@@ -1419,8 +1430,8 @@ def run_one(
 
     # ---- Nuclear segmentation (single pass on DAPI) ------------------------
     seg_params = dict(
-        min_area=cfg.nuclei.min_area_px,
-        max_area=cfg.nuclei.max_area_px,
+        min_area=nuclear_size.min_area_px,
+        max_area=nuclear_size.max_area_px,
         prob_threshold=cfg.nuclei.prob_threshold,
         nms_threshold=cfg.nuclei.nms_threshold,
         n_tiles=cfg.nuclei.n_tiles,
@@ -1431,7 +1442,7 @@ def run_one(
         stardist_postprocess_otsu_sigma=cfg.nuclei.stardist_postprocess_otsu_sigma,
         stardist_postprocess_mask_closing_px=cfg.nuclei.stardist_postprocess_mask_closing_px,
         label_smoothing_radius_px=cfg.nuclei.label_smoothing_radius_px,
-        diameter=cfg.nuclei.cellpose_diameter_px,
+        diameter=nuclear_size.native_diameter_px,
         flow_threshold=cfg.nuclei.cellpose_flow_threshold,
         cellprob_threshold=cfg.nuclei.cellpose_cellprob_threshold,
         cellpose_model_type=cfg.nuclei.cellpose_model_type,
@@ -1456,7 +1467,7 @@ def run_one(
         )
         n_before = int(labels.max())
         if cfg.nuclei.exclude_border:
-            labels = _seg.exclude_border_labels(labels, margin_px=cfg.nuclei.border_margin_px)
+            labels = _seg.exclude_border_labels(labels, margin_px=nuclear_size.border_margin_px)
         n_after = int(labels.max())
         n_border_excluded = n_before - n_after
 
@@ -2325,7 +2336,7 @@ def run_one(
                 _ghost_probe,
                 spot_count_col="total_spot_count",
                 max_dapi_cv=float(getattr(cfg.nuclei, "reject_ghost_max_dapi_cv", 0.12)),
-                min_area_px=int(getattr(cfg.nuclei, "reject_ghost_min_area_px", 6000)),
+                min_area_px=nuclear_size.reject_ghost_min_area_px,
             )
         if _samp_on:
             _n_alloc = (
@@ -4524,7 +4535,7 @@ def run_one(
         ),
         "spot_coloc_pair_distance_um": pair_um,
         "watershed": cfg.nuclei.stardist_postprocess in ("watershed_otsu", "watershed_triangle"),
-        "nuc_min_area_px": cfg.nuclei.min_area_px,
+        "nuc_min_area_px": nuclear_size.min_area_px,
         "exclude_border_nuclei": cfg.nuclei.exclude_border,
         "z_mode": z_mode,
         "z_start": z_start,
@@ -4678,6 +4689,16 @@ def collect_nuclear_rna_pixels(path, *, cfg) -> Tuple[np.ndarray, np.ndarray, np
     the labels are still returned so the runner can cache them.
     """
     img = _io.read_image(path)
+    nuclear_pixel_nm = _safe_float(cfg.foci.bigfish_voxel_size_nm)
+    if not (math.isfinite(nuclear_pixel_nm) and nuclear_pixel_nm > 0):
+        nuclear_pixel_nm = _safe_float(img.voxel_xy_nm)
+    try:
+        nuclear_size = resolve_nuclear_size_px(
+            cfg.nuclei, nuclear_pixel_nm / 1000.0,
+            cfg.nuclei.cellpose_downsample_factor,
+        )
+    except ValueError as exc:
+        raise ValueError(f"{Path(path).name}: {exc}") from exc
     dapi_idx, rna_idx, rna2_idx = _resolve_channels(cfg, img)
 
     z_mode = cfg.z_stack.mode
@@ -4801,8 +4822,8 @@ def collect_nuclear_rna_pixels(path, *, cfg) -> Tuple[np.ndarray, np.ndarray, np
             rna2_2d = rna2_2d.max(axis=0)
 
     seg_params = dict(
-        min_area=cfg.nuclei.min_area_px,
-        max_area=cfg.nuclei.max_area_px,
+        min_area=nuclear_size.min_area_px,
+        max_area=nuclear_size.max_area_px,
         prob_threshold=cfg.nuclei.prob_threshold,
         nms_threshold=cfg.nuclei.nms_threshold,
         n_tiles=cfg.nuclei.n_tiles,
@@ -4813,7 +4834,7 @@ def collect_nuclear_rna_pixels(path, *, cfg) -> Tuple[np.ndarray, np.ndarray, np
         stardist_postprocess_otsu_sigma=cfg.nuclei.stardist_postprocess_otsu_sigma,
         stardist_postprocess_mask_closing_px=cfg.nuclei.stardist_postprocess_mask_closing_px,
         label_smoothing_radius_px=cfg.nuclei.label_smoothing_radius_px,
-        diameter=cfg.nuclei.cellpose_diameter_px,
+        diameter=nuclear_size.native_diameter_px,
         flow_threshold=cfg.nuclei.cellpose_flow_threshold,
         cellprob_threshold=cfg.nuclei.cellpose_cellprob_threshold,
         cellpose_model_type=cfg.nuclei.cellpose_model_type,
@@ -4823,7 +4844,7 @@ def collect_nuclear_rna_pixels(path, *, cfg) -> Tuple[np.ndarray, np.ndarray, np
     )
     labels = _seg.segment_nuclei(dapi_2d, backend=cfg.nuclei.backend, params=seg_params)
     if cfg.nuclei.exclude_border:
-        labels = _seg.exclude_border_labels(labels, margin_px=cfg.nuclei.border_margin_px)
+        labels = _seg.exclude_border_labels(labels, margin_px=nuclear_size.border_margin_px)
 
     nuc_mask = labels > 0
     if not nuc_mask.any():

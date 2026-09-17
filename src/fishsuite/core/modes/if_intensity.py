@@ -25,6 +25,8 @@ the identical cpsam/DirectML params, and runs skimage ``regionprops_table``
 from __future__ import annotations
 
 import re
+import json
+import logging
 import datetime
 import platform
 import sys
@@ -298,7 +300,7 @@ def _exposures(img, scene_index, idx):
     return out
 
 
-def _load_fov(path, channel_keys, dapi_key):
+def _load_fov(path, channel_keys, dapi_key, *, metadata_only=False):
     """Return (chans{key:2D float64}, exp{key:sec}, dapi_idx:int, px_um:float).
 
     Verbatim standalone loader: forced bioio_bioformats.Reader, largest Z==1
@@ -312,6 +314,15 @@ def _load_fov(path, channel_keys, dapi_key):
     if sc is None:
         raise RuntimeError(f"no valid 3ch single-plane scene: {path}")
     img.set_scene(sc)
+    px_um = 0.0
+    try:
+        pxs = img.physical_pixel_sizes
+        if pxs is not None and getattr(pxs, "X", None):
+            px_um = float(pxs.X)
+    except Exception:
+        pass
+    if metadata_only:
+        return px_um
     names = [str(n) for n in list(img.channel_names or [])]
     idx = {}
     for key in channel_keys:
@@ -323,24 +334,37 @@ def _load_fov(path, channel_keys, dapi_key):
     chans = {k: np.asarray(arr[idx[k]]).astype(np.float64) for k in idx}
     scene_index = getattr(img, "current_scene_index", 0)
     exp = _exposures(img, scene_index, idx)
-    px_um = 0.0
-    try:
-        pxs = img.physical_pixel_sizes
-        if pxs is not None and getattr(pxs, "X", None):
-            px_um = float(pxs.X)
-    except Exception:
-        pass
     return chans, exp, idx[dapi_key], px_um
 
 
 # ---------------------------------------------------------------------------
 # Segmentation (reuse fishsuite segment_nuclei exactly as the standalone did).
 # ---------------------------------------------------------------------------
-def _segment_dapi(dapi_f32, cfg):
+def _resolve_pixel_size_um(cfg, metadata_pixel_size_um, image):
+    override = cfg.if_intensity.pixel_size_um
+    if "pixel_size_um" in cfg.if_intensity.model_fields_set and override:
+        if not np.isfinite(override) or override <= 0:
+            raise ValueError(f"{image}: if_intensity.pixel_size_um must be finite and positive")
+        logging.warning("%s: using explicit if_intensity.pixel_size_um=%s override", image, override)
+        return float(override)
+    if metadata_pixel_size_um is not None:
+        value = float(metadata_pixel_size_um)
+        if np.isfinite(value) and value > 0:
+            return value
+    raise ValueError(
+        f"{image}: unreadable XY pixel size; set if_intensity.pixel_size_um explicitly "
+        "to a finite positive value in micrometers"
+    )
+
+
+def _segment_dapi(dapi_f32, cfg, pixel_size_um=None):
+    from ..nuclear_size import resolve_nuclear_size_px
+
+    size = resolve_nuclear_size_px(cfg.nuclei, pixel_size_um, cfg.nuclei.cellpose_downsample_factor)
     params = dict(
-        min_area=cfg.nuclei.min_area_px,
-        max_area=cfg.nuclei.max_area_px,
-        diameter=cfg.nuclei.cellpose_diameter_px,
+        min_area=size.min_area_px,
+        max_area=size.max_area_px,
+        diameter=size.native_diameter_px,
         flow_threshold=cfg.nuclei.cellpose_flow_threshold,
         cellprob_threshold=cfg.nuclei.cellpose_cellprob_threshold,
         cellpose_model_type=cfg.nuclei.cellpose_model_type,
@@ -350,8 +374,25 @@ def _segment_dapi(dapi_f32, cfg):
     )
     labels = _seg.segment_nuclei(dapi_f32, backend=cfg.nuclei.backend, params=params)
     if cfg.nuclei.exclude_border:
-        labels = _seg.exclude_border_labels(labels, margin_px=cfg.nuclei.border_margin_px)
+        labels = _seg.exclude_border_labels(labels, margin_px=size.border_margin_px)
     return labels.astype(np.int32)
+
+
+def _record_nuclear_size(cfg, pixel_size_um, image, output_dir, resolved_sizes, *, dry_run=False):
+    from ..nuclear_size import resolve_nuclear_size_px
+
+    try:
+        size = resolve_nuclear_size_px(cfg.nuclei, pixel_size_um, cfg.nuclei.cellpose_downsample_factor)
+    except ValueError as exc:
+        raise ValueError(f"{image}: {exc}") from exc
+    record = size.as_dict()
+    if record not in resolved_sizes:
+        resolved_sizes.append(record)
+        print("RESOLVED NUCLEAR SIZE")
+        print(json.dumps(record, indent=2))
+        if not dry_run:
+            path = Path(output_dir) / "resolved_nuclear_size.json"
+            path.write_text(json.dumps(resolved_sizes, indent=2), encoding="utf-8")
 
 
 # ---------------------------------------------------------------------------
@@ -756,6 +797,11 @@ def run_if_batch(cfg, config_path, input_dir, output_dir, dirs,
           f"{len(set(w for _, w in manifest))} well(s) under {input_dir}")
 
     if dry_run:
+        resolved_sizes = []
+        for f, _w in manifest:
+            metadata_px_um = _load_fov(f, channel_keys, dapi_key, metadata_only=True)
+            px_um = _resolve_pixel_size_um(cfg, metadata_px_um, f)
+            _record_nuclear_size(cfg, px_um, f, output_dir, resolved_sizes, dry_run=True)
         print("[if_intensity] --dry-run set, exiting before processing.")
         return dict(n_wells=len(set(w for _, w in manifest)), n_fov=n_fov_total,
                     dry_run=True)
@@ -770,7 +816,9 @@ def run_if_batch(cfg, config_path, input_dir, output_dir, dirs,
     print("\n=== Segment + quantify Set-2 FOVs ===")
     fov_rows, nuc_rows = [], []
     fov_runtime, fov_dapi_ch, fov_px_um = {}, {}, {}
+    fov_resolved_px_um = {}
     rep_images = {}   # well -> (dapi2d, qki2d, secondary) first FOV, for micrographs
+    resolved_sizes = []
     n_pixels = None
     for f, w in manifest:
         pv = plate[w]
@@ -780,9 +828,15 @@ def run_if_batch(cfg, config_path, input_dir, output_dir, dirs,
                     file=f.name, fov_seq=_seq_num_from_file(f))
         ft = time.time()
         try:
-            chans, exp, dapi_idx, px_um = _load_fov(f, channel_keys, dapi_key)
+            chans, exp, dapi_idx, metadata_px_um = _load_fov(f, channel_keys, dapi_key)
+        except Exception as exc:
+            print(f"  [ERROR] well{w} {f.name}: {exc}")
+            continue
+        px_um = _resolve_pixel_size_um(cfg, metadata_px_um, f)
+        _record_nuclear_size(cfg, px_um, f, output_dir, resolved_sizes)
+        try:
             dapi_f32 = chans[dapi_key].astype(np.float32)   # bit-identical to raw uint16->f32
-            labels = _segment_dapi(dapi_f32, cfg)
+            labels = _segment_dapi(dapi_f32, cfg, pixel_size_um=px_um)
             if save_masks:
                 masks_dir.mkdir(parents=True, exist_ok=True)
                 mp = masks_dir / f"well{w}_{pv['genotype']}_{pv['arm']}_{f.stem}__labels.npy"
@@ -795,7 +849,8 @@ def run_if_batch(cfg, config_path, input_dir, output_dir, dirs,
             n_pixels = int(chans[dapi_key].size)
         fov_runtime[f.name] = round(time.time() - ft, 2)
         fov_dapi_ch[f.name] = int(dapi_idx)
-        fov_px_um[f.name] = px_um
+        fov_px_um[f.name] = metadata_px_um
+        fov_resolved_px_um[f.name] = px_um
         if w not in rep_images:
             rep_images[w] = (chans[dapi_key], chans[qki_key], pv["secondary"])
         fov_rows.append({**meta, **fov})
@@ -834,15 +889,15 @@ def run_if_batch(cfg, config_path, input_dir, output_dir, dirs,
     seconly_df = pd.DataFrame(seconly_rows)
 
     # ---- resolve pixel size for figures / scalebar ----
-    px_um = float(cfg.if_intensity.pixel_size_um or 0.0)
-    if px_um <= 0:
-        px_vals = [v for v in fov_px_um.values() if v and v > 0]
-        px_um = float(px_vals[0]) if px_vals else 0.2167
+    px_um = next(iter(fov_resolved_px_um.values()))
 
     # ---- write CSVs (IF deliverables + standard master CSVs) ----
     _write_csvs(output_dir, prefix, per_fov, per_nucleus, per_well, stats_df,
                 exposure_report, seconly_df, conflict_report, fov_runtime,
-                fov_dapi_ch, fov_px_um, px_um)
+                fov_dapi_ch, fov_px_um, px_um,
+                pixel_size_um_config_override=(
+                    cfg.if_intensity.pixel_size_um
+                    if "pixel_size_um" in cfg.if_intensity.model_fields_set else None))
 
     # ---- figures / micrographs / excel (never abort the run on failure) ----
     fig_dir = output_dir / "figures"
@@ -922,7 +977,7 @@ def _headline_wt_ko(stats_df, per_secondary):
 
 def _write_csvs(output_dir, prefix, per_fov, per_nucleus, per_well, stats_df,
                 exposure_report, seconly_df, conflict_report, fov_runtime,
-                fov_dapi_ch, fov_px_um, px_um):
+                fov_dapi_ch, fov_px_um, px_um, *, pixel_size_um_config_override=None):
     output_dir = Path(output_dir)
 
     # --- IF-native deliverable CSVs (exact standalone schemas) ---
@@ -947,10 +1002,13 @@ def _write_csvs(output_dir, prefix, per_fov, per_nucleus, per_well, stats_df,
     pis["runtime_s"] = pis["file"].map(fov_runtime)
     pis["dapi_channel"] = pis["file"].map(fov_dapi_ch)
     pis["voxel_xy_nm"] = pis["file"].map(lambda f: (fov_px_um.get(f) or px_um) * 1000.0)
+    pis["pixel_size_um_config_override"] = (
+        pixel_size_um_config_override if pixel_size_um_config_override is not None else np.nan)
     pis["voxel_z_nm"] = np.nan
     pis["n_z"] = 1
     base_cols = ["image", "condition", "secondary_only", "nuclei_analyzed",
-                 "runtime_s", "dapi_channel", "voxel_xy_nm", "voxel_z_nm", "n_z"]
+                 "runtime_s", "dapi_channel", "voxel_xy_nm", "voxel_z_nm", "n_z",
+                 "pixel_size_um_config_override"]
     other_cols = [c for c in per_fov.columns]  # meta + IF per-FOV metrics
     pis = pis[base_cols + other_cols]
     pis.to_csv(output_dir / f"{prefix}per_image_summary.csv", index=False)
@@ -984,6 +1042,12 @@ def _write_csvs(output_dir, prefix, per_fov, per_nucleus, per_well, stats_df,
 
 def _append_provenance(output_dir, cfg, n_pixels, px_um):
     """Append an IF-specific note to command.log (runner already wrote the header)."""
+    diameter_note = f"diameter={cfg.nuclei.cellpose_diameter_px}"
+    if cfg.nuclei.expected_diameter_um is not None:
+        diameter_note = (
+            f"expected_diameter_um={cfg.nuclei.expected_diameter_um} "
+            "resolved_per_image=resolved_nuclear_size.json"
+        )
     try:
         with open(Path(output_dir) / "command.log", "a", encoding="utf-8") as f:
             f.write(f"\n# --- if_intensity mode ({datetime.datetime.now().isoformat()}) ---\n")
@@ -992,7 +1056,7 @@ def _append_provenance(output_dir, cfg, n_pixels, px_um):
                     f"cyto_ring_px={cfg.if_intensity.cyto_ring_px} "
                     f"exposure_tol_s={cfg.if_intensity.exposure_tol_s}\n")
             f.write(f"# seg backend={cfg.nuclei.backend} model={cfg.nuclei.cellpose_model_type} "
-                    f"diameter={cfg.nuclei.cellpose_diameter_px} device={cfg.nuclei.cellpose_device} "
+                    f"{diameter_note} device={cfg.nuclei.cellpose_device} "
                     f"seed={cfg.seed} fig_seed={cfg.if_intensity.fig_seed}\n")
     except Exception as exc:
         print(f"  [WARN] provenance append failed: {exc}")
