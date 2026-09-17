@@ -175,6 +175,11 @@ foci:
     bigfish_spot_radius_nm: 150.0
     bigfish_spot_radius_z_nm: 350.0
   compute_partner_intensity: true
+  # 2026-09-17: REQUIRED by the downstream chain. The exact-footprint backfill
+  # checks its reconstructed footprints against the run-time per-spot columns
+  # miat_footprint_area_px / qki_at_miat_footprint; without this flag the run
+  # does not record them and `fishsuite footprint-backfill` cannot start.
+  compute_footprint_enrichment: true
   compute_partner_null_enrichment: true
   partner_null_n: 1000
   partner_null_disk_px: 3.0

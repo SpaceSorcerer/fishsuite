@@ -89,7 +89,10 @@ def test_colors_and_unchanged_analysis_settings():
         'Nog +Dox': '#7F7F7F', 'Nog noDox': '#7F7F7F',
         'VPR +Dox': '#7F7F7F', 'VPR noDox': '#7F7F7F',
     }
-    for key in ('channels', 'foci', 'nucleolus', 'output', 'parallel',
+    # foci differs ONLY by the run-time footprint columns the backfill requires.
+    assert cfg.foci.model_dump() == {**old.foci.model_dump(),
+                                     'compute_footprint_enrichment': True}
+    for key in ('channels', 'nucleolus', 'output', 'parallel',
                 'cytoplasm', 'spot_coloc', 'pixel_coloc', 'input_file_subset'):
         assert getattr(cfg, key) == getattr(old, key), key
     # z handling differs from the June preset ONLY by the locked coloc rule:
