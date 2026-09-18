@@ -20,8 +20,14 @@ SHEET_ORDER = ['README', 'per_well', 'contrast', 'ratio_of_ratios',
                'within_well_correlation', 'sensitivity', 'all_arms']
 PERMUTATION_NOTE = '2 v 2 wells: exact permutation has 6 allocations; smallest two-sided p = 0.333'
 MARKERS = ('o', '^', 's', 'D')
+PLOT_METRICS = (*METRICS, 'mean_nuclear_miat', 'n_miat_spots_per_100um2')
 METRIC_LABELS = {
     'n_miat_spots': 'MIAT puncta per nucleus',
+    'mean_nuclear_miat': 'Mean nuclear MIAT intensity (a.u.)',
+    'qki_pos_area_frac': 'Fraction of nuclear area QKI-positive',
+    'miat_pos_area_frac': 'Fraction of nuclear area MIAT-positive',
+    'frac_qki_area_on_miat_area': 'Fraction of QKI-positive area on MIAT-positive pixels (raw)',
+    'frac_qki_area_on_miat_footprints': 'Fraction of QKI-positive area on MIAT puncta (raw, uncorrected)',
     'n_miat_spots_per_100um2': 'MIAT puncta per 100 µm² nuclear area',
     'integrated_nuclear_miat': 'Total nuclear MIAT intensity (a.u.)',
     'frac_miat_spots_qki_pos': 'Fraction of MIAT puncta with QKI ≥ threshold (single plane)',
@@ -36,6 +42,11 @@ METRIC_LABELS = {
     'sat_frac_miat': 'Fraction of saturated MIAT pixels',
     'sat_frac_qki': 'Fraction of saturated QKI pixels',
 }
+
+
+def _plot_metrics(available):
+    available = set(available)
+    return [metric for metric in PLOT_METRICS if metric in available]
 
 
 def _well_markers(df, order):
@@ -205,7 +216,7 @@ def _figures(df, sheets, treated, control, order, colors, source, out, seed):
     manifest = []
     shapes = _well_markers(df, order)
     pairs = list(base[['condition', 'well']].drop_duplicates().itertuples(index=False, name=None))
-    metrics = sheets['sensitivity'].metric.tolist()
+    metrics = _plot_metrics(sheets['sensitivity'].metric)
     size = (max(6.5, 1.1 * len(order) + 1.5), 4.8)
     for metric in metrics:
         for kind, arms, nuclei in (('distribution', order, True),

@@ -521,3 +521,113 @@ def test_footer_is_two_lines_and_title_one_line(monkeypatch, tmp_path):
     assert footer[0].get_fontsize() >= 7
     assert footer[0].get_window_extent(fig.canvas.get_renderer()).x1 <= fig.bbox.x1
     plt.close(fig)
+
+
+def allcols_table():
+    data = toy_table()
+    for metric in ('mean_nuclear_miat', 'n_miat_spots_per_100um2', 'qki_pos_area_frac',
+                   'miat_pos_area_frac', 'frac_qki_area_on_miat_area',
+                   'frac_qki_area_on_miat_footprints', 'miat_footprint_area_frac',
+                   'median_footprint_area_px', 'null_valid_center_count',
+                   'null_mean_frac_miat_spots_qki_pos', 'null_sd_frac_miat_spots_qki_pos',
+                   'exp_frac_qki_area_on_miat_area', 'obs_minus_exp_frac_qki_area_on_miat_area'):
+        data[metric] = data.n_miat_spots / 100
+    data['arbitrary numeric measurement (a.u.)'] = data.well.map({'C1': 10., 'C2': 20., 'T1': 30., 'T2': 40.})
+    data['all_missing_numeric'] = np.nan
+    data['nullable_integer_measurement'] = pd.Series([1, 2, pd.NA] + list(range(4, 21)), dtype='Int64')
+    data['obs_minus_null_extra'] = np.where(data.condition.eq('control'), -.01, .02)
+    data['sample_id'] = 55
+    data['extra_min_used'] = 60
+    data['n_null_effective'] = 200
+    data['na_reason_numeric'] = 7
+    data['well_from_image'] = False
+    data['unrelated_boolean_flag'] = True
+    data['text_measurement'] = 'not numeric'
+    data['nuclear_area_um2'] = data.nuclear_area_um2.astype(str)
+    return data
+
+
+def test_allcols_numeric_discovery_and_literal_contrasts():
+    from fishsuite.report.coupling_stats import METRICS
+    from fishsuite.core.qki_association import COLUMN_DEFINITIONS
+    data = allcols_table()
+    level = data.copy()
+    level['threshold_multiplier'] = .8
+    result = summary(pd.concat([data, level], ignore_index=True))
+    numeric_extras = {
+        'mean_nuclear_miat', 'n_miat_spots_per_100um2', 'qki_pos_area_frac', 'miat_pos_area_frac',
+        'frac_qki_area_on_miat_area', 'frac_qki_area_on_miat_footprints', 'miat_footprint_area_frac',
+        'median_footprint_area_px', 'null_valid_center_count', 'null_mean_frac_miat_spots_qki_pos',
+        'null_sd_frac_miat_spots_qki_pos', 'exp_frac_qki_area_on_miat_area',
+        'obs_minus_exp_frac_qki_area_on_miat_area', 'arbitrary numeric measurement (a.u.)', 'all_missing_numeric',
+        'nullable_integer_measurement', 'obs_minus_null_extra',
+    }
+    assert set(result['contrast'].metric) == set(METRICS) | numeric_extras
+    assert set(result['sensitivity'].metric) == set(METRICS) | numeric_extras
+    per_well = result['per_well'].set_index(['well', 'threshold_multiplier'])
+    arbitrary = 'arbitrary numeric measurement (a.u.)'
+    assert per_well.loc[('C1', 1), 'mean_' + arbitrary] == 10
+    row = result['contrast'].set_index('metric').loc[arbitrary]
+    assert row.control_well_1_mean == 10
+    assert row.control_well_2_mean == 20
+    assert row.control_mean_of_well_means == 15
+    assert row.treated_mean_of_well_means == 35
+    assert row.difference == 20
+    assert row.ratio == pytest.approx(7 / 3)
+    assert result['sensitivity'].set_index('metric').loc[arbitrary, 'difference_multiplier_0.8'] == 20
+    assert per_well.loc[('C1', 1), 'n_excluded_all_missing_numeric'] == 5
+    assert per_well.loc[('C1', 1), 'mean_nullable_integer_measurement'] == 3
+    assert per_well.loc[('C1', 1), 'n_excluded_nullable_integer_measurement'] == 1
+    assert pd.isna(result['contrast'].set_index('metric').loc['all_missing_numeric', 'difference'])
+    readme = result['README'].set_index('topic').description
+    assert readme[arbitrary] == arbitrary
+    assert readme['frac_qki_area_on_miat_footprints'] == COLUMN_DEFINITIONS['frac_qki_area_on_miat_footprints']
+    for metric in ('obs_minus_null_frac_miat_spots_qki_pos', 'qki_at_spots_minus_nuclear', 'obs_minus_null_extra'):
+        assert result['contrast'].set_index('metric').loc[metric, 'ratio_na_reason'] == 'DIFFERENCE_SCALE'
+
+
+def test_allcols_plot_selection_is_bounded():
+    from fishsuite.report.coupling import _plot_metrics
+    from fishsuite.report.coupling_stats import METRICS
+    extras = ['mean_nuclear_miat', 'n_miat_spots_per_100um2']
+    available = list(allcols_table().columns) + ['obs_minus_null_extra', 'sat_frac_extra']
+    assert _plot_metrics(available) == METRICS + extras
+    assert _plot_metrics(pd.Series(available)) == METRICS + extras
+    assert _plot_metrics(['unknown_numeric', 'mean_nuclear_miat']) == ['mean_nuclear_miat']
+
+
+@pytest.mark.parametrize('metric,expected', [
+    ('mean_nuclear_miat', 'Mean nuclear MIAT intensity (a.u.)'),
+    ('n_miat_spots_per_100um2', 'MIAT puncta per 100 µm² nuclear area'),
+    ('qki_pos_area_frac', 'Fraction of nuclear area QKI-positive'),
+    ('miat_pos_area_frac', 'Fraction of nuclear area MIAT-positive'),
+    ('frac_qki_area_on_miat_area', 'Fraction of QKI-positive area on MIAT-positive pixels (raw)'),
+    ('frac_qki_area_on_miat_footprints', 'Fraction of QKI-positive area on MIAT puncta (raw, uncorrected)'),
+])
+def test_allcols_additional_plain_language_labels(metric, expected):
+    from fishsuite.report.coupling import _label
+    assert _label(metric) == expected
+
+
+def test_allcols_workbook_expands_without_expanding_every_numeric_plot(tmp_path, monkeypatch):
+    import matplotlib.pyplot as plt
+    from fishsuite.report import coupling
+    from fishsuite.report.coupling_stats import METRICS
+    source = tmp_path / 'all_columns.csv'
+    allcols_table().to_csv(source, index=False)
+    stems = []
+    def capture_save(fig, destination, stem, *args):
+        Path(destination).mkdir(parents=True, exist_ok=True)
+        stems.append(stem)
+        plt.close(fig)
+    monkeypatch.setattr(coupling.figlib, 'save', capture_save)
+    output = coupling.build_coupling(source, 'treated', 'control', tmp_path / 'report', n_boot=10)
+    contrast = pd.read_excel(output / 'coupling_summary.xlsx', sheet_name='contrast', header=1)
+    assert 'arbitrary numeric measurement (a.u.)' in set(contrast.metric)
+    expected = {f'{kind}_{metric}' for kind in ('distribution', 'well_means', 'sensitivity')
+                for metric in METRICS + ['mean_nuclear_miat', 'n_miat_spots_per_100um2']}
+    expected |= {f'scatter_{abundance}_vs_{association}' for abundance in coupling.ABUNDANCE
+                 for association in coupling.ASSOCIATION}
+    expected.add('precision_funnel')
+    assert set(stems) == expected
+    assert len(stems) == len(expected)

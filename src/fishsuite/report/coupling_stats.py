@@ -19,10 +19,20 @@ DIFFERENCE_SCALE_METRICS = {
     metric for metric in COLUMN_DEFINITIONS if metric.startswith('obs_minus_null_')
 } | {'qki_at_spots_minus_nuclear'}
 PERMUTATION_NOTE = '2 v 2 wells: exact permutation has 6 allocations; smallest two-sided p = 0.333'
+NON_METRIC_COLUMNS = {
+    'condition', 'well', 'image', 'nucleus_id', 'measurement_plane',
+    'threshold_multiplier', 'well_from_image', 'n_null_effective',
+}
 
 
 def _metrics(data):
-    return METRICS + sorted(c for c in data if c.startswith(('sat_frac_', 'obs_minus_null_')) and c not in METRICS)
+    """Every numeric per-nucleus measurement; identifiers and bookkeeping are not endpoints."""
+    discovered = [c for c in data if c not in METRICS and c not in NON_METRIC_COLUMNS
+                  and not c.endswith(('_id', '_min_used', '_na_reason'))
+                  and not c.startswith('na_reason_')
+                  and pd.api.types.is_numeric_dtype(data[c])
+                  and not pd.api.types.is_bool_dtype(data[c])]
+    return METRICS + discovered
 
 
 def prepare_data(df: pd.DataFrame) -> pd.DataFrame:
@@ -93,6 +103,7 @@ def _per_well(data, metrics):
     result['well_from_image'] = result.well_from_image.eq(True)
     for reason in reasons:
         result[reason] = result[reason].fillna('')
+    result = result.copy()  # Per-column assignment over every metric fragments the frame.
     result['na_reason_threshold'] = np.where(absent, 'missing well at threshold multiplier', '')
     return result.reset_index().sort_values(['condition', 'well', 'threshold_multiplier']).reset_index(drop=True)
 
@@ -123,9 +134,10 @@ def _contrast(per_well, metrics, treated, control, level):
             wells = level_data[level_data.condition.eq(condition)].sort_values('well')
             row[f'{name}_n_wells'] = len(wells)
             row[f'{name}_mean_of_well_means'] = _arm_mean(wells[f'mean_{metric}'])
-            for i, well in enumerate(wells.itertuples(index=False), 1):
-                row[f'{name}_well_{i}'] = well.well
-                row[f'{name}_well_{i}_mean'] = getattr(well, f'mean_{metric}')
+            # Metric names are arbitrary column labels; itertuples would mangle them.
+            for i, (_, well) in enumerate(wells.iterrows(), 1):
+                row[f'{name}_well_{i}'] = well['well']
+                row[f'{name}_well_{i}_mean'] = well[f'mean_{metric}']
         treated_mean, control_mean = row['treated_mean_of_well_means'], row['control_mean_of_well_means']
         row['difference'] = treated_mean - control_mean
         row['na_reason'] = '' if np.isfinite(row['difference']) else 'missing well or finite well mean in a contrast arm'
@@ -244,8 +256,12 @@ def _readme(data, per_well, metrics, treated, control, seed, n_boot):
     for condition, group in per_well[per_well.threshold_multiplier.eq(1)].groupby('condition', sort=True):
         entries.append((f'observed_replicates_{condition}', f'{len(group)} wells; images per well: ' + ', '.join(f'{r.well}={r.n_images}' for r in group.itertuples())))
     for metric in metrics:
-        fallback = ('Additional supplied observed minus null statistic; difference-scale; exact upstream definition missing; single-plane'
-                    if metric.startswith('obs_minus_null_') else 'Additional supplied saturation fraction; single-plane')
+        if metric.startswith('obs_minus_null_'):
+            fallback = 'Additional supplied observed minus null statistic; difference-scale; exact upstream definition missing; single-plane'
+        elif metric.startswith('sat_frac_'):
+            fallback = 'Additional supplied saturation fraction; single-plane'
+        else:
+            fallback = metric
         entries.append((metric, COLUMN_DEFINITIONS.get(metric, fallback)))
     return pd.DataFrame(entries, columns=['topic', 'description'])
 
