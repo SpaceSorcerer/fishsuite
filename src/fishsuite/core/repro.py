@@ -195,7 +195,8 @@ def _source_identity() -> tuple[str, str, str]:
             ).stdout.strip()
 
         commit = _git("rev-parse", "HEAD") or "UNKNOWN"
-        dirty = "true" if _git("status", "--porcelain") else "false"
+        # tracked changes only — untracked files (handoff folders, scratch) are not code identity
+        dirty = "true" if _git("status", "--porcelain", "--untracked-files=no") else "false"
         return commit, dirty, source_path
     except Exception:
         return "UNKNOWN", "UNKNOWN", source_path

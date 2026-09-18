@@ -26,7 +26,7 @@ def test_versions_records_imported_source_identity(tmp_path, monkeypatch, status
     assert f"fishsuite_source_path: {package_dir.resolve()}" in lines
     expected_prefix = ["git", "-C", str(package_dir.resolve())]
     assert expected_prefix + ["rev-parse", "HEAD"] in [call[0] for call in calls]
-    assert expected_prefix + ["status", "--porcelain"] in [call[0] for call in calls]
+    assert expected_prefix + ["status", "--porcelain", "--untracked-files=no"] in [call[0] for call in calls]
     assert all(kwargs["timeout"] <= 10 for command, kwargs in calls if command[0] == "git")
 
 
