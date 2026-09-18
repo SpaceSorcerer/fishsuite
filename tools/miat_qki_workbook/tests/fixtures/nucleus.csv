@@ -1,0 +1,7 @@
+image_key,nucleus_id,condition,slide,set_id,sampled_in_analysis,miat_spots_per_nucleus,q95_positive_spots_per_nucleus,association_fraction_among_usable,association_fraction_among_all_floor_spots,miat_footprint_mass_all,qki_footprint_enrichment_all,unexpected_extra_metric
+S1_NT_01,1,NT,1,S1_NT_1,true,24,3,0.1500,0.1250,1700000,1.18,alpha
+S1_NT_02,1,NT,1,S1_NT_2,true,20,2,0.1176,0.1000,1450000,1.12,beta
+S2_NT_01,1,NT,2,S2_NT_1,true,19,1,0.0667,0.0526,1320000,1.09,gamma
+S1_KD_01,1,KD,1,S1_KD_1,true,14,1,0.0833,0.0714,810000,1.11,delta
+S1_KD_02,1,KD,1,S1_KD_2,true,12,1,0.1000,0.0833,680000,1.08,epsilon
+S2_KD_01,1,KD,2,S2_KD_1,true,11,1,0.1111,0.0909,620000,1.06,zeta

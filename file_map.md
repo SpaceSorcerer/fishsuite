@@ -231,3 +231,36 @@ nuclear-column / report-layer work. Both branches were fast-forwarded into `main
 | `tests\test_report_coloc_existing.py` | New tests for `report/coloc_existing.py`. |
 | `tests\test_report_slides.py` | New tests for `report/slides.py`. |
 | `tests\test_report_localization.py` | New tests for the localization endpoints (nuclear_spot_fraction, nuclear_spot_count, cyto_spot_count). |
+
+## Added 2026-09-17 - MIAT x QKI standard metric set (nuclear scale, association, coupling, ortho, seg sweep)
+
+| Path | Description |
+|---|---|
+| `src/fishsuite/core/nuclear_size.py` | Resolves the nuclear diameter and area configuration keys from micrometres to pixels for the segmentation backend, so a preset written in µm transfers across pixel sizes. The downsample factor is applied exactly once, which is the defect this module exists to prevent. |
+| `src/fishsuite/core/qki_association.py` | Per-nucleus MIAT x QKI association at the user's own MIAT and QKI thresholds: QKI-positive punctum counts and fractions, QKI-positive area occupancy, and a self-normalised footprint-area statistic. Carries a placement null for chance correction and a sensitivity sweep over threshold levels; single plane only. |
+| `src/fishsuite/core/qki_association_postrun.py` | Loader and CLI layer behind `fishsuite qki-assoc`: validates that an exact-footprint backfill directory carries the required files, then feeds those footprints to the association core and writes the per-nucleus table. |
+| `src/fishsuite/report/coupling.py` | The `fishsuite coupling` command - builds the well-weighted treated-versus-control contrast report and its figures from a per-nucleus association table. |
+| `src/fishsuite/report/coupling_stats.py` | The arithmetic behind that report: the descriptive ratio of ratios, the per-well correlations, and a two-level bootstrap that is only offered when an arm has at least three wells. |
+| `src/fishsuite/core/ortho_profile.py` | Computes the orthogonal XY / XZ / YZ views and the line profile through a selected punctum, independent of any figure styling. |
+| `src/fishsuite/report/ortho.py` | The `fishsuite ortho` command - renders the orthogonal view panels and the line-profile figure for a finished run. |
+| `src/fishsuite/core/seg_sweep.py` | The `fishsuite seg-sweep` command - renders a nuclear-diameter contact sheet across candidate `nuclei.expected_diameter_um` values so the diameter is chosen from evidence rather than assumed. |
+| `docs/seg_sweep.md` | How to run and read the nuclear-diameter contact sheet, and how its result is transferred into a preset. |
+| `src/fishsuite/config/presets/miat_qki_coloc_ud_OEvControl_PLAIN_2026-09-17.yaml` | UD MIAT-OE versus control preset on PLAIN images: 6 arms, the 11-field roster, joint autofocus, nuclear size keys in µm, footprint columns on. Display levels in this preset are PROVISIONAL and are not Brian's locked values. |
+| `tests/test_guardrail_conditions.py` | Guardrail on condition assignment through `discover_inputs` and `ConditionsCfg` - an image that cannot be assigned a condition must be surfaced, not silently absorbed. |
+| `tests/test_guardrail_failures.py` | Guardrail that per-image failures reach the CLI exit code: a run with a failed image exits non-zero instead of reporting success. |
+| `tests/test_guardrail_resume.py` | Guardrail that `--resume` is rejected before the runner starts, with the message directing the user to a new output directory, rather than being silently accepted. |
+| `tests/test_guardrail_versions.py` | Guardrail that `versions.txt` records the identity of the source actually imported, including whether that tree was dirty, so provenance names the code that ran. |
+| `tests/test_scale_aware_nuclei.py` | Unit tests for `resolve_nuclear_size_px`: a µm-only config must not collide with the pixel defaults, and the downsample factor must be applied once. |
+| `tests/test_runner_nuclear_scale.py` | Runner-level tests that the resolved nuclear sizes are computed and reported (including on a dry run) and recorded for the run. |
+| `tests/test_rna_nuclear_scale.py` | Tests that `rna_only` and `rna_rna` hand the resolved, scale-aware nuclear sizes to segmentation rather than raw pixel defaults. |
+| `tests/test_if_intensity_scale.py` | Tests that the `if_intensity` mode refuses to guess when pixel-size metadata is missing, zero, negative or NaN, and requires an explicit override instead. |
+| `tests/test_qki_association.py` | Tests for the association core: the metric definitions, the placement null, the sensitivity levels, and the footprint interface it shares with `core.footprint_null`. |
+| `tests/test_coupling_report.py` | Tests the coupling arithmetic on a toy well-structured table - well weighting, the ratio of ratios, per-well correlations, and the three-well floor on the bootstrap interval. |
+| `tests/test_ortho_profile.py` | Tests the orthogonal-view and line-profile computation on synthetic volumes, independent of rendering. |
+| `tests/test_ortho_cli.py` | Integration test of `fishsuite ortho` against a synthetic run directory, exercising the command end to end. |
+| `tests/test_preset_ud_oe.py` | Validates the 2026-09-17 UD preset: schema validation, the discovery roster it selects, and that its nuclear size keys resolve; compares it against the 2026-06-05 ALLARMS preset it was derived from. |
+| `tests/test_seg_sweep.py` | Tests that the sweep's diagnostics capture the segmentation backend's own area rejections without changing the masks it reports. |
+| `tests/test_seg_sweep_shared.py` | Tests that the sweep and the analysis modes resolve nuclear size through the same code path, so a diameter chosen from the contact sheet is the diameter a run uses. |
+| `tests/test_backfill_native_hierarchy.py` | End-to-end tests of the native exact-footprint backfill over a synthetic run: the CLI path, the required-file contract consumed by `qki_association_postrun`, and the postrun directory reader. |
+| `tests/test_backfill_native_eligibility.py` | Tests which nuclei and spots the native backfill treats as eligible, built on the shared synthetic native run fixture. |
+| `tests/test_backfill_native_zrange.py` | Tests that the native autofocus search window resolves to the plane the run recorded as selected - the defect where the hierarchy's `z_range` held the search window instead. |

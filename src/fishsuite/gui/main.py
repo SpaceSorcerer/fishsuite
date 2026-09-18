@@ -554,7 +554,8 @@ if _QT_OK:
                 raise ValueError('Select the input directory first')
             images = discover_inputs(root, subfolder_conditions=conditions.subfolder_conditions,
                 sec_only_folders=conditions.sec_only_folders, sec_only_files=conditions.sec_only_files,
-                filename_conditions=conditions.filename_conditions)
+                filename_conditions=conditions.filename_conditions,
+                recursive_discovery=conditions.recursive_discovery)
             subset = cfg.get('input_file_subset') or []
             if subset:
                 from fishsuite.config.hierarchy import select_inputs
@@ -1003,6 +1004,7 @@ if _QT_OK:
                     subfolder_conditions=subfolder_conditions,
                     sec_only_folders=sec_folders,
                     sec_only_files=sec_files,
+                    recursive_discovery=self._cfg.get("conditions", {}).get("recursive_discovery", False),
                 )
             except Exception as e:
                 QMessageBox.warning(

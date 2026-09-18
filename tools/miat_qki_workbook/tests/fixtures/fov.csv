@@ -1,0 +1,7 @@
+image_key,condition,slide,set_id,nuclei_count,miat_spots_per_nucleus,q95_positive_spots_per_nucleus,association_fraction_among_usable,miat_footprint_mass_all
+S1_NT_01,NT,1,S1_NT_1,10,22.4,1.8,0.1050,1510000
+S1_NT_02,NT,1,S1_NT_2,10,20.2,1.5,0.0980,1420000
+S2_NT_01,NT,2,S2_NT_1,10,19.7,1.4,0.0940,1360000
+S1_KD_01,KD,1,S1_KD_1,10,14.1,1.2,0.0910,810000
+S1_KD_02,KD,1,S1_KD_2,10,12.8,1.0,0.0860,700000
+S2_KD_01,KD,2,S2_KD_1,10,11.9,0.9,0.0800,650000

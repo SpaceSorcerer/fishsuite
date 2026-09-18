@@ -51,6 +51,7 @@ desktop.ini
 # Local logs / scratch
 *.log
 _validate_run.log
+.superpowers/
 
 # Test/run output directories (user-generated)
 runs/

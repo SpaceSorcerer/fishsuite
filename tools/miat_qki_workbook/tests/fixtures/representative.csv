@@ -1,0 +1,5 @@
+slide,condition,image_key,set_id,nucleus_id,selection_role,selected_z,medoid_distance,q95_positive_spots,output_file
+1,NT,S1_NT_01,S1_NT_1,1,representative_fov,18,0.12,3,S1_NT_01_exact_z18.png
+1,KD,S1_KD_02,S1_KD_2,1,representative_fov,21,0.09,1,S1_KD_02_exact_z21.png
+2,NT,S2_NT_01,S2_NT_1,1,representative_fov,16,0.15,1,S2_NT_01_exact_z16.png
+2,KD,S2_KD_01,S2_KD_1,1,representative_fov,19,0.11,1,S2_KD_01_exact_z19.png

@@ -1,0 +1,6 @@
+metric,nt_value,kd_value,percent_change,primary_p_value,interpretation
+MIAT spots per nucleus,21.1,13.0,-0.384,0.0025,MIAT puncta are lower after MIAT knockdown
+q95-positive spots per nucleus,1.59,1.06,-0.334,0.0173,QKI-associated MIAT puncta decline
+Association fraction among usable,0.1125,0.0868,-0.2286,0.0322,Association fraction is modestly lower
+MIAT footprint mass,1493900,715990,-0.5207,0.0022,MIAT footprint mass is approximately halved
+q95-positive MIAT mass,152030,78699,-0.4823,0.0212,Associated MIAT mass declines near the global MIAT decrease

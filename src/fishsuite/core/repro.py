@@ -182,6 +182,25 @@ def engine_git_commit() -> str:
         return "unknown"
 
 
+def _source_identity() -> tuple[str, str, str]:
+    import fishsuite
+    import subprocess
+
+    source_path = str(Path(fishsuite.__file__).resolve().parent)
+    try:
+        def _git(*args: str) -> str:
+            return subprocess.run(
+                ("git", "-C", source_path) + args,
+                capture_output=True, text=True, timeout=5, check=True,
+            ).stdout.strip()
+
+        commit = _git("rev-parse", "HEAD") or "UNKNOWN"
+        dirty = "true" if _git("status", "--porcelain") else "false"
+        return commit, dirty, source_path
+    except Exception:
+        return "UNKNOWN", "UNKNOWN", source_path
+
+
 def write_versions_txt(out_dir: Path | str, seed: int) -> bool:
     """Write ``versions.txt`` into ``out_dir``. Crash-proof (returns bool).
 
@@ -204,6 +223,9 @@ def write_versions_txt(out_dir: Path | str, seed: int) -> bool:
         lines = []
         lines.append(f"fishsuite_version: {_fs_version}")
         lines.append(f"fishsuite_git_commit: {engine_git_commit()}")
+        _commit, dirty, source_path = _source_identity()
+        lines.append(f"fishsuite_git_dirty: {dirty}")
+        lines.append(f"fishsuite_source_path: {source_path}")
         lines.append(f"global_seed: {seed}")
         lines.append(
             f"written_utc: {datetime.now(tz=timezone.utc).isoformat()}"

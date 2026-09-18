@@ -16,11 +16,55 @@ from __future__ import annotations
 
 import hashlib
 import sys
+import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, Any, Iterable, List, Sequence, Tuple
 
 import numpy as np
+
+
+_diagnostic_model_lock = threading.RLock()
+
+
+def _observe_cellpose_backend(run_backend, backend, image, kwargs, diagnostics):
+    """Observe eval masks without changing the model call or vendor filtering.
+
+    The temporary getter proxy applies only to this thread; concurrent ordinary
+    segmentation receives the original model. Restoration also runs on errors.
+    """
+    from ._vendor.segmentation import segment_image as vendor
+    owner = threading.get_ident()
+    captured = {}
+    with _diagnostic_model_lock:
+        original = vendor._get_cellpose_model
+
+        class ObservedModel:
+            def __init__(self, model):
+                self.model = model
+
+            def eval(self, *args, **kw):
+                result = self.model.eval(*args, **kw)
+                masks = result[0] if isinstance(result, tuple) else result
+                captured['masks'] = masks.copy()
+                return result
+
+        def getter(*args, **kw):
+            model = original(*args, **kw)
+            return ObservedModel(model) if threading.get_ident() == owner else model
+
+        vendor._get_cellpose_model = getter
+        try:
+            labels = run_backend(backend, image, **kwargs)
+        finally:
+            vendor._get_cellpose_model = original
+    masks = captured.get('masks')
+    rejected = np.zeros_like(labels)
+    if masks is not None:
+        surviving = np.unique(masks[labels > 0])
+        rejected = np.where(np.isin(masks, surviving), 0, masks)
+    diagnostics['labels_backend_area_rejected'] = rejected
+    return labels
 
 
 # The segmentation backends now ship inside this package at
@@ -149,6 +193,7 @@ def segment_nuclei(
     backend: str = "stardist",
     params: Dict[str, Any] | None = None,
     stats: Dict[str, Any] | None = None,
+    diagnostics: Dict[str, Any] | None = None,
 ) -> np.ndarray:
     """Segment nuclei in a 2D DAPI image.
 
@@ -181,7 +226,7 @@ def segment_nuclei(
     # is applied AFTER smoothing below — see Brian's Run R2 regression where
     # backend-side min_area=12000 dropped 305 labels that smoothing would
     # have lifted into compliance.
-    _user_min_area = int(p.get("min_area", 250))
+    _user_min_area = float(p.get("min_area", 250))
     _user_max_area = float(p.get("max_area", 1e12))
     _backend_min_area = max(250, _user_min_area // 2)
     kwargs = dict(
@@ -245,11 +290,21 @@ def segment_nuclei(
                            anti_aliasing=True, preserve_range=True)
         kwargs["diameter"] = float(kwargs.get("diameter", 0.0)) / _ds
         kwargs["min_area"] = max(1, int(kwargs["min_area"] / (_ds * _ds)))
-    labels = run_backend(backend, seg_img, **kwargs)
+    if diagnostics is not None and backend == 'cellpose':
+        labels = _observe_cellpose_backend(run_backend, backend, seg_img, kwargs, diagnostics)
+    else:
+        labels = run_backend(backend, seg_img, **kwargs)
     if _do_ds and labels.shape != dapi_2d.shape:
         from skimage.transform import resize as _resize
         labels = _resize(labels, dapi_2d.shape, order=0, preserve_range=True,
                          anti_aliasing=False).astype(np.int32)
+    if diagnostics is not None and 'labels_backend_area_rejected' in diagnostics:
+        rejected = diagnostics['labels_backend_area_rejected']
+        if rejected.shape != dapi_2d.shape:
+            from skimage.transform import resize as _resize
+            rejected = _resize(rejected, dapi_2d.shape, order=0, preserve_range=True,
+                               anti_aliasing=False).astype(np.int32)
+        diagnostics['labels_backend_area_rejected'] = rejected
     # Per-label boundary smoothing AFTER backend postprocess (watershed /
     # dilate / none / closing). Default radius 0 = disabled = current
     # behavior. Recommended 3-7 px to round off star-convex artifacts that
@@ -266,6 +321,11 @@ def segment_nuclei(
     # zeroed. Zeroing does NOT renumber, so ``labels.max()`` afterwards is a
     # max label ID, not a count — hence the explicit bookkeeping.
     _n_segmented = int(np.count_nonzero(np.unique(labels)))
+    if diagnostics is not None:
+        # Opt-in copy for QC only; preserves the backend and filter call path.
+        diagnostics['labels_before_area'] = labels.copy()
+        diagnostics['min_area_px'] = _user_min_area
+        diagnostics['max_area_px'] = _user_max_area
     _n_area_excluded = 0
     if _user_min_area > _backend_min_area or _user_max_area < 1e12:
         from scipy.ndimage import sum as _ndi_sum

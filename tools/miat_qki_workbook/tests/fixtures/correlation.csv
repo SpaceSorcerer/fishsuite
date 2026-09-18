@@ -1,0 +1,9 @@
+analysis_cohort,population,scale,condition,correlation_method,n_spots,rho,p_value,estimable
+sampled_primary,all_detected_exact_valid,raw,NT,spearman,3100,0.42,0.0001,true
+sampled_primary,all_detected_exact_valid,raw,KD,spearman,2100,0.39,0.0001,true
+sampled_primary,all_detected_exact_valid,within_nucleus_normalized,NT,spearman,3100,0.20,0.0010,true
+sampled_primary,all_detected_exact_valid,within_nucleus_normalized,KD,spearman,2100,0.18,0.0030,true
+sampled_primary,q95_positive,raw,NT,spearman,240,0.31,0.0020,true
+sampled_primary,q95_positive,raw,KD,spearman,150,0.27,0.0100,true
+sampled_primary,q95_positive,within_nucleus_normalized,NT,spearman,240,0.14,0.0300,true
+sampled_primary,q95_positive,within_nucleus_normalized,KD,spearman,150,0.10,0.2200,true

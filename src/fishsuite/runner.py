@@ -405,6 +405,21 @@ def _sampling_methods_text(cfg, samp: Dict[str, Any], per_image_df) -> str:
     except Exception:
         observed = ""
 
+    area_text = (
+        f"outside {int(ncfg.min_area_px)}"
+        + (f"-{int(ncfg.max_area_px)}" if float(ncfg.max_area_px) < 1e12 else "+")
+        + " px was excluded"
+    )
+    if ncfg.min_area_um2 is not None or ncfg.max_area_um2 is not None:
+        minimum = (f"{ncfg.min_area_um2} um2" if ncfg.min_area_um2 is not None
+                   else f"{ncfg.min_area_px} px2")
+        maximum = (f"{ncfg.max_area_um2} um2" if ncfg.max_area_um2 is not None
+                   else f"{ncfg.max_area_px} px2")
+        area_text = (f"outside the native-mask limits (minimum {minimum}, maximum {maximum}) "
+                     "was excluded; per-image pixel limits are recorded in run_config.json")
+    border = (f"{ncfg.border_margin_um} um" if ncfg.border_margin_um is not None
+              else f"{int(ncfg.border_margin_px)} px")
+
     return (
         "Nucleus sampling (generated from the resolved configuration of this run "
         "— do not edit by hand)\n"
@@ -413,10 +428,8 @@ def _sampling_methods_text(cfg, samp: Dict[str, Any], per_image_df) -> str:
         f"{ncfg.backend} backend"
         + (f" (model {ncfg.stardist_model})" if ncfg.backend == "stardist" else "")
         + f". Segmented objects were then filtered, in this order: nuclear area "
-        f"outside {int(ncfg.min_area_px)}"
-        + (f"-{int(ncfg.max_area_px)}" if float(ncfg.max_area_px) < 1e12 else "+")
-        + " px was excluded"
-        + (f"; objects touching within {int(ncfg.border_margin_px)} px of the "
+        + area_text
+        + (f"; objects touching within {border} of the "
            f"image border were excluded" if ncfg.exclude_border else "")
         + ("; empty 'ghost' shells (zero detected spots, large area and low DAPI "
            "texture) were excluded" if getattr(ncfg, "reject_ghost_nuclei", False) else "")
@@ -549,7 +562,6 @@ def run_batch(
     output_dir: Path,
     *,
     parallel: str | int = "auto",
-    resume: bool = False,
     dry_run: bool = False,
     verbose: bool = False,
 ) -> dict:
@@ -643,6 +655,10 @@ def run_batch(
         sec_only_folders=cfg.conditions.sec_only_folders,
         sec_only_files=cfg.conditions.sec_only_files,
         filename_conditions=cfg.conditions.filename_conditions,
+        strict_subfolders=cfg.conditions.strict_subfolders,
+        exclude_subfolders=cfg.conditions.exclude_subfolders,
+        strict_filenames=cfg.conditions.strict_filenames,
+        recursive_discovery=cfg.conditions.recursive_discovery,
     )
     if not images:
         raise RuntimeError(f"No images discovered under {input_dir}")
@@ -688,6 +704,42 @@ def run_batch(
             _console.print(f"Condition {_group}: {_rows.well_id.nunique()} biological wells; {len(_rows)} technical FOVs")
     else:
         _console.print('[yellow]Biological condition grouping unspecified: legacy output; configure conditions.groups for well-based condition inference.[/yellow]')
+
+    # Resolve from raw metadata before any prescan or per-image exception
+    # handler can turn a missing physical scale into a partial successful run.
+    from .core.nuclear_size import resolve_nuclear_size_px
+    resolved_nuclear_size = []
+    nuclear_size_by_path = {}
+    physical_nuclei = any(key in cfg.nuclei.model_fields_set and getattr(cfg.nuclei, key) is not None for key in (
+        "expected_diameter_um", "min_area_um2", "max_area_um2",
+        "reject_ghost_min_area_um2", "border_margin_um",
+    ))
+    for im in images:
+        pixel_size_um = None
+        override_nm = float(cfg.foci.bigfish_voxel_size_nm)
+        if override_nm > 0:
+            pixel_size_um = override_nm / 1000.0
+        elif physical_nuclei:
+            try:
+                handle = _io.read_image(im.path)
+                raw_nm = getattr(handle, "voxel_xy_nm", None)
+                pixel_size_um = float(raw_nm) / 1000.0 if raw_nm is not None else None
+            except Exception as exc:
+                if physical_nuclei:
+                    raise ValueError(f"{im.path}: cannot read pixel size for nuclear size: {exc}") from exc
+        try:
+            resolved = resolve_nuclear_size_px(
+                cfg.nuclei, pixel_size_um, cfg.nuclei.cellpose_downsample_factor,
+            )
+        except ValueError as exc:
+            raise ValueError(f"{im.path}: {exc}") from exc
+        nuclear_size_by_path[str(im.path)] = resolved
+        record = resolved.as_dict()
+        if record not in resolved_nuclear_size:
+            resolved_nuclear_size.append(record)
+            if dry_run:
+                _console.print("RESOLVED NUCLEAR SIZE")
+                _console.print(json.dumps(record, indent=2), markup=False)
 
     if dry_run:
         _console.print("[yellow]--dry-run set, exiting before processing.[/yellow]")
@@ -1352,8 +1404,8 @@ def run_batch(
                 if floor_region in ("cytoplasm", "nucleus") or ceil_region in ("cytoplasm", "nucleus"):
                     try:
                         seg_params = dict(
-                            min_area=cfg.nuclei.min_area_px,
-                            max_area=cfg.nuclei.max_area_px,
+                            min_area=nuclear_size_by_path[str(dimg.path)].min_area_px,
+                            max_area=nuclear_size_by_path[str(dimg.path)].max_area_px,
                             prob_threshold=cfg.nuclei.prob_threshold,
                             nms_threshold=cfg.nuclei.nms_threshold,
                             n_tiles=cfg.nuclei.n_tiles,
@@ -1364,7 +1416,12 @@ def run_batch(
                             stardist_postprocess_otsu_sigma=cfg.nuclei.stardist_postprocess_otsu_sigma,
                             stardist_postprocess_mask_closing_px=cfg.nuclei.stardist_postprocess_mask_closing_px,
                             label_smoothing_radius_px=cfg.nuclei.label_smoothing_radius_px,
-                            diameter=cfg.nuclei.cellpose_diameter_px,
+                            diameter=nuclear_size_by_path[str(dimg.path)].native_diameter_px,
+                            # Historical reference-only segmentation used the
+                            # native grid. Preserve it for pixel-only presets.
+                            cellpose_downsample_factor=(
+                                cfg.nuclei.cellpose_downsample_factor if physical_nuclei else 1.0
+                            ),
                             flow_threshold=cfg.nuclei.cellpose_flow_threshold,
                             cellprob_threshold=cfg.nuclei.cellpose_cellprob_threshold,
                             cellpose_model_type=cfg.nuclei.cellpose_model_type,
@@ -1376,7 +1433,7 @@ def run_batch(
                         )
                         if cfg.nuclei.exclude_border:
                             labels = _seg.exclude_border_labels(
-                                labels, margin_px=cfg.nuclei.border_margin_px,
+                                labels, margin_px=nuclear_size_by_path[str(dimg.path)].border_margin_px,
                             )
                         nuc_mask = labels > 0
                         if cfg.cytoplasm.enabled and labels.max() > 0:
@@ -1613,6 +1670,7 @@ def run_batch(
     coloc_radial_dfs: List[pd.DataFrame] = []
     coloc_rotation_null_dfs: List[pd.DataFrame] = []
     failures: List[tuple] = []
+    failed_images: List[dict] = []
     t_start = time.time()
 
     # Reorder images: process every non-sec-only image FIRST, then sec-only
@@ -2457,11 +2515,17 @@ def run_batch(
                 import traceback
                 tb = traceback.format_exc()
                 failures.append((dimg.path.name, repr(e), tb))
+                failed_images.append(dict(path=str(dimg.path), exception_type=type(e).__name__, message=str(e)))
                 if verbose:
                     _console.print(f"[red]FAIL {dimg.path.name}: {e}[/red]\n{tb}")
                 else:
                     _console.print(f"[red]FAIL {dimg.path.name}: {e}[/red]")
             progress.advance(task)
+
+    pd.DataFrame(failed_images, columns=["path", "exception_type", "message"]).to_csv(
+        output_dir / "failed_images.csv", index=False,
+    )
+    _console.print(f"Image summary: n_ok={len(images) - len(failures)} / n_failed={len(failures)}")
 
     # 2026-07-05: ADDITIVE run-level RNA1 over-detection outlier flag. Needs the
     # whole batch (median + MAD across images), so it runs here after every
@@ -2578,6 +2642,7 @@ def run_batch(
         n_workers=n_workers,
         config_path=str(config_path),
         config_resolved=cfg.model_dump(mode="json"),
+        resolved_nuclear_size=resolved_nuclear_size,
         input_dir=str(input_dir),
         output_dir=str(output_dir),
         n_images=len(images),
@@ -2599,7 +2664,11 @@ def run_batch(
         BIGFISH_SPOT_RADIUS_NM=cfg.foci.bigfish_spot_radius_nm,
         BIGFISH_SPOT_RADIUS_Z_NM=cfg.foci.bigfish_spot_radius_z_nm,
         BIGFISH_THRESHOLD=cfg.foci.threshold_override,
-        NUC_MIN_AREA_PX=cfg.nuclei.min_area_px,
+        # A single scalar cannot describe a physical-area cutoff on mixed
+        # acquisition scales; the resolved records carry every native value.
+        NUC_MIN_AREA_PX=(resolved_nuclear_size[0]["sizes"]["min_area_px"]["value"]
+                         if len({r["sizes"]["min_area_px"]["value"] for r in resolved_nuclear_size}) == 1
+                         else None),
         EXCLUDE_BORDER_NUCLEI=cfg.nuclei.exclude_border,
         DO_FOCI=cfg.foci.enabled,
         DO_CYTOPLASM=cfg.cytoplasm.enabled,
@@ -2647,6 +2716,8 @@ def run_batch(
     )
     with open(output_dir / "run_config.json", "w", encoding="utf-8") as f:
         json.dump(run_config, f, indent=2, default=str)
+    with open(output_dir / "resolved_nuclear_size.json", "w", encoding="utf-8") as f:
+        json.dump(resolved_nuclear_size, f, indent=2)
 
     # ---- Fixed-N sampling: Methods sentence + honesty line -----------------
     # The Methods text is GENERATED from the resolved config, so it cannot
@@ -2747,7 +2818,7 @@ def run_batch(
 
     _console.print(
         f"[green]Done[/green] in {run_config['runtime_s']}s  "
-        f"-> {output_dir}  (failures: {len(failures)})"
+        f"-> {output_dir}  (n_ok={len(images) - len(failures)} / n_failed={len(failures)})"
     )
 
     # ── Auto-run downstream figure step ────────────────────────────────────
@@ -2822,13 +2893,18 @@ def run_batch(
                              note='Measurement completion and grouped figure completion are separate.')
     (output_dir / 'condition_output_status.json').write_text(json.dumps(_condition_status, indent=2), encoding='utf-8')
     if _groups_cfg and not _condition_complete:
-        raise RuntimeError(f'Measurements saved in {output_dir}, but CONDITION FIGURES INCOMPLETE. See _downstream_plots.log and condition_output_status.json; retry native-figures into a new output directory.')
+        message = f'Measurements saved in {output_dir}, but CONDITION FIGURES INCOMPLETE. See _downstream_plots.log and condition_output_status.json; retry native-figures into a new output directory.'
+        if not failures:
+            raise RuntimeError(message)
+        _console.print(f"[red]{message}[/red]")
 
     # Grouped native output is finalized by the downstream module using the
     # report renderer; no additional, competing by_group plots are emitted.
 
     return dict(
         n_images=len(images),
+        n_ok=len(images) - len(failures),
+        n_failed=len(failures),
         n_nuclei=int(len(nuclei_df)),
         n_spots=int(len(spots_df)),
         failures=failures,

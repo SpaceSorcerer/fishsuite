@@ -1,0 +1,5 @@
+endpoint,analysis_cohort,nt_mean,kd_mean,percent_change,welch_p_value,slide_block_p_value,permutation_p_value,status
+miat_spots_per_nucleus,sampled_primary,20.77,12.93,-0.3775,0.0050,0.0070,0.0100,PASS
+q95_positive_spots_per_nucleus,sampled_primary,1.57,1.03,-0.3404,0.0200,0.0280,0.0250,PASS
+association_fraction_among_usable,sampled_primary,0.0990,0.0857,-0.1347,0.1800,0.2000,0.2250,PASS
+miat_footprint_mass_all,sampled_primary,1430000,720000,-0.4965,0.0040,0.0060,0.0075,PASS

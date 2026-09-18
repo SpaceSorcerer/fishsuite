@@ -32,22 +32,43 @@ def cli():
               help="Where to write outputs.")
 @click.option("--parallel", "-p", default="auto",
               help="Worker count: 'auto' (default) or an integer.")
-@click.option("--resume", is_flag=True, help="Skip images that already have outputs.")
+@click.option("--resume", is_flag=True, help="Not implemented; use a new output directory.")
 @click.option("--dry-run", is_flag=True, help="Discover inputs and print plan; do not process.")
 @click.option("--verbose", "-v", is_flag=True, help="Print full tracebacks on per-image failures.")
 def run(config, input_dir, output_dir, parallel, resume, dry_run, verbose):
     """Run the full pipeline on a folder of images."""
+    if resume:
+        raise click.UsageError("--resume is not implemented; re-run into a new output directory")
     from .runner import run_batch
     summary = run_batch(
         config_path=Path(config),
         input_dir=Path(input_dir),
         output_dir=Path(output_dir),
         parallel=parallel,
-        resume=resume,
         dry_run=dry_run,
         verbose=verbose,
     )
     click.echo(f"Summary: {summary}")
+    if summary.get("failures"):
+        raise click.exceptions.Exit(2)
+
+
+@cli.command('seg-sweep')
+@click.option('--config', '-c', required=True, type=click.Path(exists=True, dir_okay=False))
+@click.option('--input-dir', '-i', required=True, type=click.Path(exists=True, file_okay=False))
+@click.option('--diameters-um', required=True, help='Comma-separated positive nuclear diameters in µm.')
+@click.option('--max-images-per-condition', default=1, type=click.IntRange(min=1), show_default=True)
+@click.option('--seed', default=0, type=click.IntRange(min=0), show_default=True)
+@click.option('--out', required=True, type=click.Path(file_okay=False))
+def seg_sweep(config, input_dir, diameters_um, max_images_per_condition, seed, out):
+    """Compare nuclear diameters using the run's segmentation path."""
+    from .core.seg_sweep import parse_diameters, run_sweep
+    try:
+        result = run_sweep(config, input_dir, out, parse_diameters(diameters_um),
+                           max_images_per_condition, seed)
+    except (ValueError, OSError) as exc:
+        raise click.ClickException(str(exc)) from exc
+    click.echo(f'Segmentation sweep: {result}')
 
 
 @cli.command('figure')
@@ -1112,6 +1133,102 @@ def sizefit(run_dir, input_dir, window_px, limit_images):
     click.echo(f"size_fit_ok   : {100.0 * res['frac_size_fit_ok']:.2f}%")
     for s in res["skipped"][:10]:
         click.echo(f"  SKIP {s}")
+
+
+@cli.command("footprint-backfill", context_settings={"ignore_unknown_options": True,
+                                                    "allow_extra_args": True},
+             add_help_option=False)
+@click.pass_context
+def footprint_backfill(ctx):
+    """Reconstruct exact footprints using recorded native or explicit hierarchy."""
+    from .core.exact_footprint_backfill import main
+    try:
+        ctx.exit(main(ctx.args))
+    except (ValueError, OSError) as exc:
+        raise click.ClickException(str(exc)) from exc
+
+
+@cli.command("qki-assoc")
+@click.option("--run-dir", required=True, type=click.Path(exists=True, file_okay=False),
+              help="Retained exact-footprint run with saved single-plane pixels and masks.")
+@click.option("--miat-min", required=True, type=float, help="Positive raw MIAT area threshold.")
+@click.option("--qki-min", required=True, type=float, help="Positive raw QKI threshold.")
+@click.option("--sensitivity", default="0.8,1.0,1.25", show_default=True,
+              help="Comma-separated positive multipliers; all levels are reported.")
+@click.option("--n-null", default=200, show_default=True, type=click.IntRange(min=1))
+@click.option("--seed", default=0, show_default=True, type=click.IntRange(min=0))
+@click.option("--out", required=True, type=click.Path(file_okay=False),
+              help="New or empty directory outside the source run.")
+def qki_assoc(run_dir, miat_min, qki_min, sensitivity, n_null, seed, out):
+    """Single-plane MIAT/QKI area occupancy with exact-footprint placement nulls."""
+    from .core.qki_association_postrun import run_qki_association
+    try:
+        levels = tuple(float(value.strip()) for value in sensitivity.split(","))
+        result = run_qki_association(run_dir, out, miat_min=miat_min, qki_min=qki_min,
+            sensitivity=levels, n_null=n_null, seed=seed)
+    except (ValueError, OSError) as exc:
+        raise click.ClickException(str(exc)) from exc
+    click.echo(f"Single-plane QKI association: {result}")
+
+
+class _OrthoCommand(click.Command):
+    def parse_args(self, ctx, args):
+        ctx.meta['ortho_args'] = list(args)
+        return super().parse_args(ctx, args)
+
+
+@cli.command('ortho', cls=_OrthoCommand)
+@click.option('--run-dir', required=True, type=click.Path(exists=True, file_okay=False))
+@click.option('--config', type=click.Path(exists=True, dir_okay=False), default=None)
+@click.option('--k', type=click.IntRange(min=1), default=3, show_default=True)
+@click.option('--metric', default='nuclear_spot_count', show_default=True)
+@click.option('--seed', type=click.IntRange(min=0), default=0, show_default=True)
+@click.option('--punctum', type=click.Choice(['brightest', 'median']), default='brightest')
+@click.option('--half-width-um', type=click.FloatRange(min=0, min_open=True), default=None,
+              help='Crop half-width override in µm; default is nucleus bounding box + 1.5 µm.')
+@click.option('--qki-min', type=float, default=None, help='Explicit user QKI analysis minimum to annotate.')
+@click.option('--miat-min', type=float, default=None, help='Explicit user MIAT analysis minimum to annotate.')
+@click.option('--out', type=click.Path(file_okay=False), default=None)
+@click.pass_context
+def ortho(ctx, run_dir, config, k, metric, seed, punctum, half_width_um, qki_min, miat_min, out):
+    """Render median-selected nuclei with orthogonal sections and line profiles.
+
+    Uses saved nucleus labels and source stacks; requires fixed manual RNA and
+    antibody display bounds. Uses the recorded analysed plane; when absent,
+    falls back to the MIAT 5x5 mean maximum. Cross-checks run/header calibration.
+    """
+    from subprocess import list2cmdline
+    from .report.ortho import render_run
+    command = list2cmdline(['fishsuite', 'ortho', *ctx.meta['ortho_args']])
+    try:
+        selection = render_run(run_dir, config=config, k=k, metric=metric, seed=seed,
+                               punctum=punctum, half_width_um=half_width_um, qki_min=qki_min,
+                               miat_min=miat_min, out=out,
+                               command=command)
+    except (ValueError, OSError, KeyError) as exc:
+        raise click.ClickException(str(exc)) from exc
+    click.echo(f"Wrote {len(selection)} orthogonal figures; "
+               f"{int(selection.z_source.eq('miat_5x5_mean_argmax').sum())} used inferred Z "
+               "(MIAT 5x5 mean-intensity maximum).")
+
+@cli.command("coupling")
+@click.option("--assoc-csv", required=True, type=click.Path(exists=True, dir_okay=False))
+@click.option("--treated", required=True, help="Exact treated condition label.")
+@click.option("--control", required=True, help="Exact control condition label.")
+@click.option("--config", default=None, type=click.Path(exists=True, dir_okay=False),
+              help="YAML with group_colors and condition_order.")
+@click.option("--seed", default=0, show_default=True, type=click.IntRange(min=0))
+@click.option("--n-boot", default=2000, show_default=True, type=click.IntRange(min=1))
+@click.option("--out", required=True, type=click.Path(file_okay=False))
+def coupling(assoc_csv, treated, control, config, seed, n_boot, out):
+    """Descriptive well-level single-plane MIAT abundance/QKI-association report."""
+    from .report.coupling import build_coupling
+    try:
+        result = build_coupling(assoc_csv, treated, control, out, config=config,
+                                seed=seed, n_boot=n_boot)
+    except (ValueError, OSError) as exc:
+        raise click.ClickException(str(exc)) from exc
+    click.echo(f"Single-plane coupling report: {result}")
 
 
 if __name__ == "__main__":
