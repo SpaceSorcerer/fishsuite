@@ -234,6 +234,8 @@ nuclear-column / report-layer work. Both branches were fast-forwarded into `main
 
 ## Added 2026-09-17 - MIAT x QKI standard metric set (nuclear scale, association, coupling, ortho, seg sweep)
 
+**Preset and branch state, as of 2026-09-18.** The UD OE preset `miat_qki_coloc_ud_OEvControl_PLAIN_2026-09-17.yaml` now carries the production values - MIAT min 500, QKI min 1050, fixed MIAT LoG `threshold_override` 174 - as of commit `446be69`; its display levels are no longer provisional. `main` is at `c80f511`. Note that `446be69` is reachable from `main`, `feat/coupling-allcols` and `fix/provenance-review-2026-09-17`, but **not** from `feat/preset-ud-oe`, whose head `741c3e8` still holds the earlier provisional-level preset - read the preset from `main`, not from that feature branch.
+
 | Path | Description |
 |---|---|
 | `src/fishsuite/core/nuclear_size.py` | Resolves the nuclear diameter and area configuration keys from micrometres to pixels for the segmentation backend, so a preset written in µm transfers across pixel sizes. The downsample factor is applied exactly once, which is the defect this module exists to prevent. |
@@ -264,3 +266,4 @@ nuclear-column / report-layer work. Both branches were fast-forwarded into `main
 | `tests/test_backfill_native_hierarchy.py` | End-to-end tests of the native exact-footprint backfill over a synthetic run: the CLI path, the required-file contract consumed by `qki_association_postrun`, and the postrun directory reader. |
 | `tests/test_backfill_native_eligibility.py` | Tests which nuclei and spots the native backfill treats as eligible, built on the shared synthetic native run fixture. |
 | `tests/test_backfill_native_zrange.py` | Tests that the native autofocus search window resolves to the plane the run recorded as selected - the defect where the hierarchy's `z_range` held the search window instead. |
+| `tests/test_provenance_review_2026_09_17.py` | Regression suite (23 tests) pinning the provenance fixes made after the 2026-09-17 three-lens review: the exact-footprint backfill writes a `command.log`; `--miat-floor` defaults from the run config rather than from a hard-coded constant; publication display ranges are recorded as resolved rather than as requested; the ortho stage records its own versions and command provenance; the QC over-detection flag is carried as an advisory column instead of a silent pass/fail; the colocalization panel records its well key and its minimum-detectable-effect column; and `versions.txt` carries the preset SHA-256 alongside a quoted, re-runnable `run_command`. |
