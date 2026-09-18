@@ -230,20 +230,51 @@ def _power_two_sided(d, alpha, n1, n2):
     return float(up + lo)
 
 
+def mde_reason(n1, n2):
+    """Why no MDE can be computed for ``n1`` vs ``n2`` wells, else ""."""
+    if min(int(n1), int(n2)) < 2:
+        return "TOO_FEW_WELLS"
+    return ""
+
+
 def mde_hedges_g(alpha=ALPHA, power=POWER, n1=3, n2=3):
-    if not np.isfinite(alpha) or alpha <= 0 or alpha >= 1:
+    """Standardized mean difference detectable at ``power``, two-sided ``alpha``.
+
+    2026-09-17 review, finding 6: this returned 1.65e-24 for every row of a
+    1-vs-1 comparison. With n1 = n2 = 1 the t test has df = 0, so
+    ``_power_two_sided`` returns NaN, every ``NaN < power`` comparison is False,
+    and the bisection collapsed to 2**-79 instead of refusing - a check that
+    could not fire. n < 2 per arm now returns NaN (see :func:`mde_reason`).
+
+    The reported value is the POPULATION effect size delta, no small-sample
+    bias correction. Multiplying by Hedges' j shrank the answer by 0.57x at
+    n = 2 (5.65 -> 3.23), and 3.23 has only 43% power, not 80%: j corrects an
+    ESTIMATOR for bias and has no business scaling the true effect a design can
+    detect. The column keeps its delivered name; the README states the scale.
+    """
+    if (not np.isfinite(alpha) or alpha <= 0 or alpha >= 1
+            or mde_reason(n1, n2) or (n1 + n2 - 2) < 1):
         return float("nan")
     lo, hi = 0.0, 1.0
-    while _power_two_sided(hi, alpha, n1, n2) < power and hi < 1e3:
+    while hi < 1e3:
+        p = _power_two_sided(hi, alpha, n1, n2)
+        if not np.isfinite(p):
+            return float("nan")
+        if p >= power:
+            break
         hi *= 2
+    else:
+        return float("nan")
     for _ in range(80):
         mid = (lo + hi) / 2
-        if _power_two_sided(mid, alpha, n1, n2) < power:
+        p = _power_two_sided(mid, alpha, n1, n2)
+        if not np.isfinite(p):
+            return float("nan")
+        if p < power:
             lo = mid
         else:
             hi = mid
-    j = 1.0 - 3.0 / (4.0 * (n1 + n2) - 9.0)
-    return float((lo + hi) / 2 * j)
+    return float((lo + hi) / 2)
 
 
 def mean_ci(v, alpha=ALPHA):
@@ -527,6 +558,25 @@ def read_recorded_plane(img,channel,z_1indexed):
     return np.asarray(img.bio.get_image_dask_data('YX',T=0,C=channel,Z=z).compute())
 
 
+def recorded_well_ids(run_dir):
+    """({image -> well_id}, source) from the run's own recorded hierarchy.
+
+    The hierarchy is what ``fishsuite report`` / ``fishsuite coupling`` key
+    wells on. When the run did not write one, the mapping is empty and the
+    caller falls back to the condition — which is what the panel always did,
+    and what made its n_wells disagree with the coupling report.
+    """
+    path = Path(run_dir) / "resolved_experiment_hierarchy.csv"
+    if not path.is_file():
+        return {}, "per_image_summary.csv:condition"
+    table = pd.read_csv(path)
+    if not {"image", "well_id"}.issubset(table.columns):
+        return {}, "per_image_summary.csv:condition"
+    pairs = table[["image", "well_id"]].dropna().drop_duplicates()
+    return ({str(k): str(v) for k, v in pairs.values},
+            "resolved_experiment_hierarchy.csv:well_id")
+
+
 class Run:
     """Read-only view of one completed fishsuite run directory."""
 
@@ -550,6 +600,7 @@ class Run:
         self.summary = pd.read_csv(self.dir / "per_image_summary.csv")
         self.nuclei = pd.read_csv(self.dir / "nuclei_metrics.csv")
         self.thresholds = pd.read_csv(self.dir / "thresholds.csv")
+        self.well_by_image, self.well_key_source = recorded_well_ids(self.dir)
         self.prefix = _compute_common_filename_prefix(
             [Path(s).stem for s in self.summary["image"].astype(str)])
 
@@ -572,6 +623,10 @@ class Run:
         missing = [c for c in self.run_cols.values() if c not in self.nuclei.columns]
         if missing:
             raise SystemExit(f"nuclei_metrics.csv is missing {missing}")
+
+    def well_for(self, image_name, condition):
+        """The recorded well id for one image; the condition when none exists."""
+        return self.well_by_image.get(str(image_name), str(condition))
 
     def channel_index(self, slot):
         one_ix = bool(self.ch.get("one_indexed", False))
@@ -886,7 +941,8 @@ def compute_tables(run, spots, well_map, arm_rules, seed, costes_fit="tls",
 
             nuc_index[(name, nid)] = len(rows)
             rows.append(dict(
-                image=name, stem=stem, condition=cond, line=line,
+                image=name, stem=stem, condition=cond,
+                well_id=run.well_for(name, cond), line=line,
                 stratum=stratum_for(cond),
                 secondary_only=sec_only, z_plane=z, nucleus_id=nid,
                 n_pix=npix,
@@ -1036,21 +1092,61 @@ ALL_ENDPOINTS = (PIXEL_ENDPOINTS + PIXEL_SENSITIVITY + OBJECT_ENDPOINTS
 
 def rollup(per_nucleus):
     """nucleus -> FOV mean -> well mean, the convention used by the run's own
-    report (per_well.csv column ``well_mean_of_fov_values``)."""
+    report (per_well.csv column ``well_mean_of_fov_values``).
+
+    2026-09-17 review, finding 5: the well key was the run CONDITION, so two
+    wells of one arm collapsed into a single "well" and the panel reported
+    n_wells 1 where ``fishsuite coupling`` reported 2 for the same run. The key
+    is now ``well_id``, taken from the run's recorded
+    resolved_experiment_hierarchy.csv (see :func:`recorded_well_ids`);
+    ``condition`` is carried alongside, not aggregated on.
+    """
     cols = [c for c, _ in ALL_ENDPOINTS if c in per_nucleus.columns]
+    keys = ["line", "well_id", "secondary_only"]
     fov = (per_nucleus
-           .groupby(["line", "condition", "secondary_only", "image"], as_index=False)
+           .groupby(keys + ["image"], as_index=False)
            .agg(n_nuclei=("nucleus_id", "size"),
+                condition=("condition", "first"),
                 **{c: (c, "mean") for c in cols}))
-    well = (fov.groupby(["line", "condition", "secondary_only"], as_index=False)
+    well = (fov.groupby(keys, as_index=False)
             .agg(n_fov=("image", "size"), n_nuclei=("n_nuclei", "sum"),
+                 condition=("condition", "first"),
                  **{c: (c, "mean") for c in cols}))
-    sd = (fov.groupby(["line", "condition", "secondary_only"])[cols]
+    sd = (fov.groupby(keys)[cols]
           .std(ddof=1).add_suffix("_sd_across_fov").reset_index())
-    well = well.merge(sd, on=["line", "condition", "secondary_only"], how="left")
-    well = well.rename(columns={"condition": "well_id"})
-    fov = fov.rename(columns={"condition": "well_id"})
+    well = well.merge(sd, on=keys, how="left")
     return fov, well
+
+
+def nan_reason(n_test, n_ref, diff, p_welch, tested):
+    """Why a contrast row has no number, as a leading machine-readable token.
+
+    2026-09-17 review, finding 5: the panel's designated PRIMARY endpoint was
+    delivered as a bare NaN. A NaN with no reason beside it reads as "no
+    difference" to anyone skimming the CSV; the reason belongs in the row.
+    """
+    n_test, n_ref = int(n_test), int(n_ref)
+    detail = "n_wells_test={}, n_wells_ref={}".format(n_test, n_ref)
+    if n_test == 0 or n_ref == 0:
+        return "NO_FINITE_WELL_MEANS: " + detail
+    if min(n_test, n_ref) < 2:
+        return ("TOO_FEW_WELLS: {}; a two-sample test and a within-arm spread "
+                "need at least 2 wells per arm".format(detail))
+    if tested and not np.isfinite(p_welch):
+        return "TEST_UNDEFINED: " + detail
+    if not np.isfinite(diff):
+        return "NON_FINITE_DIFFERENCE: " + detail
+    return ""
+
+
+def primary_readme_rows(primary_col, reason):
+    """README rows stating why the tested primary endpoint carries no number."""
+    if not reason:
+        return []
+    return [("PRIMARY endpoint NOT testable in this run",
+             "The tested endpoint {} is NaN in the contrasts table. Reason: {}. "
+             "Do not read that NaN as 'no difference' - no test was run."
+             .format(primary_col, reason))]
 
 
 def contrasts_table(well, per_nucleus, mde, primary_col, secondary_col):
@@ -1090,6 +1186,9 @@ def contrasts_table(well, per_nucleus, mde, primary_col, secondary_col):
             hedges_g=w["hedges_g"], t=w["t"], df=w["df"], p_welch=w["p_welch"],
             stars=stars(w["p_welch"]) if primary else "n/a (not tested)",
             mde_hedges_g_alpha_0p05_power_0p80=mde,
+            mde_note=mde_reason(w["n_test"], w["n_ref"]),
+            nan_reason=nan_reason(w["n_test"], w["n_ref"], w["diff"],
+                                  w["p_welch"], primary),
             n_nuclei_biological=int(v.size),
             nucleus_pooled_mean=float(v.mean()) if v.size else np.nan,
             zero_variance_arm=bool(
@@ -1144,10 +1243,10 @@ def superplot_axes(ax, per_nucleus, well, col, label, title):
     lines = list(ARMS)
     for xi, ln in enumerate(lines):
         sub = per_nucleus[(~per_nucleus["secondary_only"]) & (per_nucleus["line"] == ln)]
-        wells = sorted(sub["condition"].unique())
+        wells = sorted(sub["well_id"].unique())
         nwell = max(1, len(wells))
         for wi, wname in enumerate(wells):
-            v = sub.loc[sub["condition"] == wname, col].to_numpy(dtype=float)
+            v = sub.loc[sub["well_id"] == wname, col].to_numpy(dtype=float)
             v = v[np.isfinite(v)]
             if not v.size:
                 continue
@@ -1867,7 +1966,7 @@ def questions_sheet(run, per_nucleus, per_well, ctx):
     """
     rna, par = ctx["rna_label"], ctx["partner_label"]
     nm = run.nuclei.copy()
-    key = per_nucleus[["image", "nucleus_id", "line", "condition",
+    key = per_nucleus[["image", "nucleus_id", "line", "condition", "well_id",
                        "secondary_only"]].copy()
     nm = key.merge(nm, on=["image", "nucleus_id"], how="left",
                    suffixes=("", "_run"))
@@ -1882,7 +1981,7 @@ def questions_sheet(run, per_nucleus, per_well, ctx):
         f"{par} nuclear to cytoplasmic ratio": "protein_nc_ratio",
         f"{par} nuclear puncta per nucleus": "nuclear_spot_count_protein",
     }
-    rows = nm[["image", "line", "condition", "secondary_only"]].copy()
+    rows = nm[["image", "line", "condition", "well_id", "secondary_only"]].copy()
     for label, col in q1.items():
         rows[label] = nm[col].to_numpy() if (col and col in nm.columns) else np.nan
 
@@ -1927,12 +2026,13 @@ def questions_sheet(run, per_nucleus, per_well, ctx):
         "paired_frac_partner_at_rna1_shuffle")
 
     value_cols = [c for c in rows.columns
-                  if c not in ("image", "line", "condition", "secondary_only")]
-    fov = rows.groupby(["line", "condition", "secondary_only", "image"],
+                  if c not in ("image", "line", "condition", "well_id",
+                               "secondary_only")]
+    fov = rows.groupby(["line", "well_id", "secondary_only", "image"],
                        as_index=False)[value_cols].mean()
-    well = fov.groupby(["line", "condition", "secondary_only"],
+    well = fov.groupby(["line", "well_id", "secondary_only"],
                        as_index=False)[value_cols].mean()
-    well = well.rename(columns={"condition": "well"})
+    well = well.rename(columns={"well_id": "well"})
     order = [a for a in ARMS] + [SEC_ONLY]
     well["_o"] = well["line"].map({a: i for i, a in enumerate(order)}).fillna(99)
     well = well.sort_values(["_o", "well"]).drop(columns="_o").reset_index(drop=True)
@@ -1986,7 +2086,17 @@ def write_workbook(path, ctx, per_nucleus, per_fov, per_well, contrasts,
              ctx["costes_floor"], ctx["secondary_obs"])),
         ("Primary object endpoint column", ctx["primary_obs"]),
         ("Sensitivity twin column", ctx["secondary_obs"]),
+        ("Well key (THIS RUN)",
+         "Wells are keyed on {}. One row per well in per_well; n_wells in the "
+         "contrasts table counts those wells, so it agrees with the run's own "
+         "coupling report.".format(ctx.get("well_key_source", "unrecorded"))),
+        ("mde_hedges_g_alpha_0p05_power_0p80 scale",
+         "The POPULATION standardized mean difference detectable at alpha 0.05 "
+         "two-sided and 80% power for this design's well counts; no Hedges "
+         "small-sample bias correction is applied to it. NaN means the design "
+         "cannot support the test (see the mde_note and nan_reason columns)."),
     ]
+    dynamic += primary_readme_rows(ctx["primary_obs"], ctx.get("primary_nan_reason", ""))
     if ctx.get("note"):
         dynamic.append(("Run-specific caveat", ctx["note"]))
     readme = pd.DataFrame(dynamic + list(README_ROWS), columns=["item", "definition"])
@@ -2280,9 +2390,19 @@ def main(argv=None):
     _n_ref = int((_bw["line"] == ARMS[0]).sum())
     _n_test = int((_bw["line"] == ARMS[1]).sum())
     mde = mde_hedges_g(n1=_n_test, n2=_n_ref)
-    print("      MDE Hedges g = {:.3f} at alpha {} / power {} with {} vs {} wells".format(
-        mde, ALPHA, POWER, _n_ref, _n_test), flush=True)
+    print("      well key: {} ({} wells ref / {} wells test)".format(
+        run.well_key_source, _n_ref, _n_test), flush=True)
+    print("      MDE (standardized mean difference) = {:.3f} at alpha {} / power {} "
+          "with {} vs {} wells{}".format(
+              mde, ALPHA, POWER, _n_ref, _n_test,
+              "; " + mde_reason(_n_test, _n_ref) if mde_reason(_n_test, _n_ref) else ""),
+          flush=True)
     contrasts = contrasts_table(per_well, per_nucleus, mde, primary_obs, secondary_obs)
+    _primary_row = contrasts.loc[contrasts["endpoint"] == primary_obs, "nan_reason"]
+    primary_nan_reason = str(_primary_row.iloc[0]) if len(_primary_row) else ""
+    if primary_nan_reason:
+        print("      PRIMARY endpoint {} is NOT testable: {}".format(
+            primary_obs, primary_nan_reason), flush=True)
 
     ctx = dict(
         seed=args.seed, rna_label=run.rna_label, partner_label=run.partner_label,
@@ -2298,6 +2418,8 @@ def main(argv=None):
         fp_area_min=float(fp_all.min()) if len(fp_all) else float('nan'),
         fp_area_max=float(fp_all.max()) if len(fp_all) else float('nan'),
         n_shuffle_relaxed=n_relaxed_total,
+        primary_nan_reason=primary_nan_reason,
+        well_key_source=run.well_key_source,
         primary_obs=primary_obs, primary_shuf=primary_shuf,
         primary_diff=primary_diff, secondary_obs=secondary_obs,
         secondary_shuf=secondary_shuf,
@@ -2380,6 +2502,12 @@ def main(argv=None):
         "max_abs_manders_m1_runthr_diff_vs_run": max_m1_diff,
         "max_abs_manders_m2_runthr_diff_vs_run": max_m2_diff,
         "mde_hedges_g_alpha_0p05_power_0p80": mde,
+        "mde_scale": "population standardized mean difference; no Hedges bias correction",
+        "mde_note": mde_reason(_n_test, _n_ref),
+        "well_key_source": run.well_key_source,
+        "n_wells_ref": _n_ref,
+        "n_wells_test": _n_test,
+        "primary_endpoint_nan_reason": primary_nan_reason,
         "built_utc": datetime.now(timezone.utc).isoformat(),
     }
     per_nucleus.to_csv(out_dir / "coloc_standard_per_nucleus.csv", index=False)
@@ -2412,8 +2540,8 @@ def build_line_profiles(run, per_nucleus, spots, ctx):
     picks = []
     for ln in ARMS:
         sub = bio[bio["line"] == ln]
-        for wname in sorted(sub["condition"].unique()):
-            w = sub[(sub["condition"] == wname) & (sub["n_rna1_nuclear_puncta"] > 0)]
+        for wname in sorted(sub["well_id"].unique()):
+            w = sub[(sub["well_id"] == wname) & (sub["n_rna1_nuclear_puncta"] > 0)]
             if not len(w):
                 continue
             med = float(w["n_rna1_nuclear_puncta"].median())
@@ -2447,11 +2575,11 @@ def build_line_profiles(run, per_nucleus, spots, ctx):
                                       par[y0:y1, x0:x1], ctx["win"], ctx["luts"])
         prof.update(src_y=src[0] - y0, src_x=src[1] - x0,
                     dst_y=dst[0] - y0, dst_x=dst[1] - x0,
-                    line=p["line"], well_id=p["condition"], image=p["image"],
+                    line=p["line"], well_id=p["well_id"], image=p["image"],
                     nucleus_id=int(p["nucleus_id"]))
         profiles.append(prof)
         for i in range(n):
-            rows.append(dict(line=p["line"], well_id=p["condition"], image=p["image"],
+            rows.append(dict(line=p["line"], well_id=p["well_id"], image=p["image"],
                              nucleus_id=int(p["nucleus_id"]), sample_index=i,
                              distance_um=float(prof["dist_um"][i]),
                              rna1_raw=float(prof["rna1"][i]),
@@ -2469,14 +2597,14 @@ def build_overlays(run, per_nucleus, spots, ctx, out_dir, n_per_well):
     from PIL import Image
     from skimage.measure import find_contours
     bio = per_nucleus[~per_nucleus["secondary_only"]]
-    fov = (bio.groupby(["line", "condition", "image"], as_index=False)
+    fov = (bio.groupby(["line", "well_id", "image"], as_index=False)
            .agg(frac=(ctx["primary_obs"], "mean"),
                 n_puncta=("n_rna1_nuclear_puncta", "sum"),
                 n_called=("n_called_coloc", "sum")))
     picks = []
     for ln in ARMS:
-        for wname in sorted(fov.loc[fov["line"] == ln, "condition"].unique()):
-            sub = fov[(fov["line"] == ln) & (fov["condition"] == wname)].copy()
+        for wname in sorted(fov.loc[fov["line"] == ln, "well_id"].unique()):
+            sub = fov[(fov["line"] == ln) & (fov["well_id"] == wname)].copy()
             sub["d"] = (sub["frac"] - sub["frac"].mean()).abs()
             picks.extend(sub.sort_values("d").head(int(n_per_well)).to_dict("records"))
     sp_nuc = spots[(spots["channel"] == "rna1") & (spots["in_nucleus"].astype(bool))]
@@ -2520,7 +2648,7 @@ def build_overlays(run, per_nucleus, spots, ctx, out_dir, n_per_well):
                                        margin_px=10, font_px=13)
         inz = (cys >= zy0) & (cys < zy1) & (cxs >= zx0) & (cxs < zx1)
         fields.append(dict(
-            line=rec["line"], well_id=rec["condition"], image=name,
+            line=rec["line"], well_id=rec["well_id"], image=name,
             short=Path(name).stem[-26:], field_rgb=field_rgb,
             outlines=outlines,
             puncta=list(zip(cys.tolist(), cxs.tolist(), called.tolist())),
@@ -2536,7 +2664,7 @@ def build_overlays(run, per_nucleus, spots, ctx, out_dir, n_per_well):
         _save_field_overlay(full_png, field_rgb, outlines, cys, cxs, called, vx_nm,
                             ctx, rec, radius=11.0, bar_um=20.0)
         _save_zoom_overlay(zoom_png, zoom_rgb, cys[inz] - zy0, cxs[inz] - zx0, called[inz])
-        idx_rows.append(dict(line=rec["line"], well_id=rec["condition"], image=name,
+        idx_rows.append(dict(line=rec["line"], well_id=rec["well_id"], image=name,
                              stem=stem, z_plane=int(prow["z_plane"]),
                              n_nuclear_rna1_puncta=int(cys.size),
                              n_called_coloc=int(called.sum()),

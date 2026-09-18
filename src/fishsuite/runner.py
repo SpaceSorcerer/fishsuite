@@ -556,6 +556,20 @@ def _validate_output_stems(images):
     return stems
 
 
+def _sha256_file(path: Path | str) -> str:
+    """SHA-256 of a file's bytes, or "unreadable: <reason>". Never raises."""
+    import hashlib
+
+    try:
+        digest = hashlib.sha256()
+        with open(path, "rb") as handle:
+            for chunk in iter(lambda: handle.read(1 << 20), b""):
+                digest.update(chunk)
+        return digest.hexdigest()
+    except Exception as exc:
+        return f"unreadable: {exc}"
+
+
 def run_batch(
     config_path: Path,
     input_dir: Path,
@@ -609,11 +623,18 @@ def run_batch(
     # 2026-06-10: ADDITIVE provenance — emit versions.txt + command.log near the
     # START so they exist even if the run later fails. Crash-proof: any failure
     # is logged and the run continues unaffected.
+    # 2026-09-17 review, finding 19: run_config.json identified the preset by
+    # PATH only, and a preset on E: is mutable (this one was touched 28 s before
+    # the run started). Hash the bytes AS READ at run start so the identity of
+    # what ran is on disk, not an mtime argument after the fact.
+    _preset_sha256 = _sha256_file(config_path)
+
     try:
         from .core.repro import write_run_metadata as _write_run_metadata
         _meta_extra = {
             "analysis_mode": getattr(cfg.channels, "analysis_mode", "?"),
             "z_mode": getattr(cfg.z_stack, "mode", "?"),
+            "preset_sha256": _preset_sha256,
         }
         _write_run_metadata(
             output_dir,
@@ -2532,12 +2553,14 @@ def run_batch(
     # per_image dict is collected. Advisory only — mutates qc_* columns, never
     # drops/reorders an image. Crash-proof (warn, never abort).
     try:
+        from .core.qc import OVERDETECT_ADVISORY as _OVERDETECT_ADVISORY
         from .core.qc import flag_overdetect_outliers as _flag_overdetect_outliers
         _n_over = _flag_overdetect_outliers(per_image_rows, cfg)
         if _n_over:
             _console.print(
                 f"[yellow]QC: {_n_over} image(s) flagged qc_overdetect_rna1_run_outlier "
-                f"(RNA1 spots/nucleus robust-outlier vs run median)[/yellow]"
+                f"(RNA1 spots/nucleus robust-outlier vs run median) - "
+                f"{_OVERDETECT_ADVISORY}[/yellow]"
             )
     except Exception as _over_err:
         _console.print(
@@ -2641,6 +2664,7 @@ def run_batch(
         runtime_s=round(time.time() - t_start, 2),
         n_workers=n_workers,
         config_path=str(config_path),
+        preset_sha256=_preset_sha256,
         config_resolved=cfg.model_dump(mode="json"),
         resolved_nuclear_size=resolved_nuclear_size,
         input_dir=str(input_dir),

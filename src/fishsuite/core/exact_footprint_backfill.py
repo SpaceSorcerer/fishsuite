@@ -3266,13 +3266,7 @@ def run_exact_footprint_backfill(
                 "phase1_only": bool(phase1_only),
                 "analysis_scope": analysis_scope,
                 "eligible_for_biological_inference": biological_inference_output,
-                "display_only_ranges": {
-                    "dapi": [334, 5500],
-                    "miat_primary": [400, 4000],
-                    "miat_optional": [700, 5000],
-                    "qki": [555, 3000],
-                    "quantitative_effect": "none",
-                },
+                "display_only_ranges": resolved_display_only_ranges(run_config),
                 "laser_power_status":
                     "absent_from_vsi_ome_metadata_unverified",
             },
@@ -3913,6 +3907,107 @@ def run_exact_footprint_backfill(
     return summary
 
 
+# The pre-2026-09-17 hardcoded floor. Kept ONLY as the last-resort fallback for
+# a run whose config records neither pin, and warned about when it is used: on
+# the production MIAT-500 preset it silently analysed a different population
+# from the one the run detected.
+LEGACY_MIAT_FLOOR_RAW = 364.0
+
+# Where the MIAT floor is taken from, most specific first. output.
+# rna_intensity_threshold is the resolved post-detection spot floor the run
+# actually applied; manual_rna_min is the display/pub floor it is derived from.
+_MIAT_FLOOR_KEYS = ("rna_intensity_threshold", "manual_rna_min")
+
+
+def resolve_miat_floor(run_config: Mapping[str, Any],
+                       explicit: float | None) -> tuple[float, str]:
+    """(floor, source) for ``--miat-floor``.
+
+    An explicit flag always wins. Otherwise the run's own recorded floor is
+    used, and the literal legacy default only survives when the run records
+    neither pin — in which case the caller warns.
+    """
+    if explicit is not None:
+        return float(explicit), "--miat-floor"
+    resolved = run_config.get("config_resolved", {}) if isinstance(run_config, Mapping) else {}
+    output = resolved.get("output", {}) if isinstance(resolved, Mapping) else {}
+    if isinstance(output, Mapping):
+        for key in _MIAT_FLOOR_KEYS:
+            value = output.get(key)
+            try:
+                value = float(value)  # type: ignore[arg-type]
+            except (TypeError, ValueError):
+                continue
+            if np.isfinite(value) and value > 0:
+                return value, f"run_config.json:config_resolved.output.{key}"
+    return LEGACY_MIAT_FLOOR_RAW, "legacy_default_no_recorded_floor"
+
+
+def resolved_display_only_ranges(run_config: Mapping[str, Any]) -> dict[str, Any]:
+    """The run's OWN manual display levels, for the provenance record.
+
+    Replaces a hardcoded five-key block that contradicted the run it was
+    written into. Display levels change no measurement, which is why the
+    ``quantitative_effect`` statement is kept verbatim.
+    """
+    resolved = run_config.get("config_resolved", {}) if isinstance(run_config, Mapping) else {}
+    output = resolved.get("output", {}) if isinstance(resolved, Mapping) else {}
+    channels = resolved.get("channels", {}) if isinstance(resolved, Mapping) else {}
+    if not isinstance(output, Mapping):
+        output = {}
+    partner = ("rna2" if (isinstance(channels, Mapping)
+                          and channels.get("analysis_mode") == "rna_rna") else "antibody")
+
+    def _pair(name: str) -> list[float] | None:
+        lo, hi = output.get(f"manual_{name}_min"), output.get(f"manual_{name}_max")
+        try:
+            lo, hi = float(lo), float(hi)  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            return None
+        return [lo, hi] if np.isfinite(lo) and np.isfinite(hi) else None
+
+    return {
+        "source": "run_config.json:config_resolved.output",
+        "pub_contrast_mode": output.get("pub_contrast_mode"),
+        "partner_slot": partner,
+        "dapi": _pair("dapi"),
+        "rna": _pair("rna"),
+        "partner": _pair(partner),
+        "quantitative_effect": "none",
+    }
+
+
+def write_backfill_command_log(output: Path, *, argv: Sequence[str], run_dir: Path,
+                               hierarchy: Path | None, miat_floor: float,
+                               miat_floor_source: str, n_null: int, seed: int) -> bool:
+    """``command.log`` for a footprint-backfill output. Crash-proof.
+
+    2026-09-17 review: this subcommand was the only one that wrote no argv
+    record, so a backfill output could not be tied to the flags that produced
+    it. Written after the run so the output-dir existence guard is untouched.
+    """
+    try:
+        from subprocess import list2cmdline
+
+        from .repro import reproduction_command, write_command_log
+        return write_command_log(
+            output, run_dir / "run_config.json", output, seed,
+            extra={
+                "subcommand": "footprint-backfill",
+                "backfill_argv": list2cmdline([str(a) for a in argv]),
+                "run_dir": str(run_dir),
+                "hierarchy": str(hierarchy) if hierarchy is not None else "native",
+                "miat_floor": miat_floor,
+                "miat_floor_source": miat_floor_source,
+                "n_null": n_null,
+                "seed": seed,
+                "reproduction": reproduction_command(["footprint-backfill", *argv]),
+            },
+        )
+    except Exception:
+        return False
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Reconstruct exact MIAT footprints on recorded single z planes."
@@ -3920,7 +4015,10 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--run", required=True, help="Completed FishSuite run")
     parser.add_argument("--hierarchy", help="Authoritative nuclei_coloc_derived.csv; otherwise use recorded native hierarchy")
     parser.add_argument("--output-root", help="Parent for a new timestamped output")
-    parser.add_argument("--miat-floor", type=float, default=364.0)
+    parser.add_argument("--miat-floor", type=float, default=None,
+                        help="Raw MIAT floor; default is the run's own recorded "
+                             "output.rna_intensity_threshold, else manual_rna_min, "
+                             f"else the legacy {LEGACY_MIAT_FLOOR_RAW} with a warning.")
     parser.add_argument("--n-null", type=int, default=1000)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--max-redraw", type=int, default=1000)
@@ -4024,8 +4122,16 @@ def main(argv: Sequence[str] | None = None) -> int:
             f"{len(selected_image_keys)}; phase1 only={bool(args.phase1_only)}"
         )
         return 0
+    miat_floor, miat_floor_source = resolve_miat_floor(run_config, args.miat_floor)
+    if miat_floor_source == "legacy_default_no_recorded_floor":
+        print(f"WARNING: --miat-floor not given and {run_dir / 'run_config.json'} records "
+              f"neither output.rna_intensity_threshold nor output.manual_rna_min; "
+              f"falling back to the legacy literal {LEGACY_MIAT_FLOOR_RAW}, which is NOT "
+              "this run's floor unless the two happen to agree.", flush=True)
+    else:
+        print(f"MIAT floor {miat_floor} from {miat_floor_source}", flush=True)
     parameters = ExactFootprintParameters(
-        miat_floor_raw=args.miat_floor,
+        miat_floor_raw=miat_floor,
         n_null=args.n_null,
         global_seed=args.seed,
         max_redraw=args.max_redraw,
@@ -4048,18 +4154,29 @@ def main(argv: Sequence[str] | None = None) -> int:
             prefix + datetime.now().strftime("%Y%m%d-%H%M%S")
         )
         resume = False
-    summary = run_exact_footprint_backfill(
-        run_dir,
-        hierarchy_path,
-        output,
-        parameters=parameters,
-        resume=resume,
-        validate_expected_design=validate_design,
-        image_keys=args.image_key,
-        phase1_only=args.phase1_only,
-        **({"allow_output_inside_run": bool(args.output_root)}
-           if hierarchy_path is None else {}),
-    )
+    try:
+        summary = run_exact_footprint_backfill(
+            run_dir,
+            hierarchy_path,
+            output,
+            parameters=parameters,
+            resume=resume,
+            validate_expected_design=validate_design,
+            image_keys=args.image_key,
+            phase1_only=args.phase1_only,
+            **({"allow_output_inside_run": bool(args.output_root)}
+               if hierarchy_path is None else {}),
+        )
+    finally:
+        # After the run: the callee refuses a pre-existing output directory, so
+        # the log cannot be written first. In `finally` so a failed backfill
+        # still records what was asked for.
+        if output.is_dir():
+            write_backfill_command_log(
+                output, argv=list(argv) if argv is not None else sys.argv[1:],
+                run_dir=run_dir, hierarchy=hierarchy_path, miat_floor=miat_floor,
+                miat_floor_source=miat_floor_source, n_null=args.n_null,
+                seed=args.seed)
     print(json.dumps(summary, indent=2, sort_keys=True))
     return 0
 

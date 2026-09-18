@@ -213,6 +213,19 @@ def compute_qc_flags(res: Any, cfg: Any, dtype_max: int = 65535) -> Dict[str, An
     return out
 
 
+# 2026-09-17 three-lens review, finding 21: the over-detection flag sets
+# qc_pass False, and on an induced/overexpression arm it fires BY CONSTRUCTION
+# because that arm really does carry more puncta. A reader who filters the run
+# on qc_pass therefore deletes the treated arm entirely and compares nothing.
+# The sentence travels with the flag — console warning, per-image summary row,
+# and any deliverable built from them — instead of living in a review file.
+OVERDETECT_ADVISORY = (
+    "advisory; fires by construction for an induced/overexpression arm; "
+    "filtering on qc_pass drops the entire arm - do not filter on it for "
+    "arm comparisons"
+)
+
+
 def flag_overdetect_outliers(rows, cfg) -> int:
     """Run-level robust RNA1 over-detection outlier flag (2026-07-05, ADVISORY).
 
@@ -226,7 +239,9 @@ def flag_overdetect_outliers(rows, cfg) -> int:
     Mutates each row dict IN PLACE (never drops/reorders rows):
       * adds ``qc_overdetect_rna1_run_outlier`` (bool) to every row, and
       * when it fires, appends ``overdetect_rna1_outlier`` to that row's
-        ``qc_flags`` and sets ``qc_pass`` False.
+        ``qc_flags``, sets ``qc_pass`` False, and writes
+        :data:`OVERDETECT_ADVISORY` into ``qc_overdetect_advisory`` so the
+        run's own summary carries the do-not-filter warning.
 
     Purely advisory — it changes NO detection result. Fully defensive: on any
     problem it leaves rows untouched (adds the column as False) and returns 0.
@@ -250,6 +265,7 @@ def flag_overdetect_outliers(rows, cfg) -> int:
     for r in rows:
         if isinstance(r, dict):
             r.setdefault("qc_overdetect_rna1_run_outlier", False)
+            r.setdefault("qc_overdetect_advisory", "")
             v = r.get("qc_rna1_spots_per_nucleus")
             try:
                 v = float(v)
@@ -279,6 +295,7 @@ def flag_overdetect_outliers(rows, cfg) -> int:
             continue
         if np.isfinite(v) and v > cutoff and v > floor:
             r["qc_overdetect_rna1_run_outlier"] = True
+            r["qc_overdetect_advisory"] = OVERDETECT_ADVISORY
             n_flagged += 1
             # Fold into the human-readable flag summary without duplicating.
             existing = str(r.get("qc_flags", "") or "")

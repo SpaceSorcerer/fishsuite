@@ -84,7 +84,12 @@ def test_ortho_renders_records_fallback_and_exact_arguments(synthetic_run):
     with Image.open(next(out.glob('*.png'))) as image:
         assert image.info['dpi'][0] == pytest.approx(600, abs=.01)
     from subprocess import list2cmdline
-    assert (out / 'command.log').read_text().strip() == list2cmdline(['fishsuite', *args])
+    # 2026-09-17 review: command.log is now a keyed provenance block (the bare
+    # line was not runnable), so the exact command is asserted on its own key
+    # and the runnable -m reproduction is asserted alongside it.
+    log = (out / 'command.log').read_text()
+    assert f"command: {list2cmdline(['fishsuite', *args])}" in log
+    assert '-m fishsuite.cli ortho ' in log
 
 
 def test_ortho_missing_display_levels_fails_before_images(synthetic_run, monkeypatch):

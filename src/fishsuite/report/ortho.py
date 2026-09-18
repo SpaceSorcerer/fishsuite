@@ -2,7 +2,10 @@
 from __future__ import annotations
 
 import json
+import os
 import re
+import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 import numpy as np
@@ -23,6 +26,32 @@ def _display_levels(cfg):
             raise ValueError(f'Fixed output.manual_{name}_min/max are required (finite min < max)')
         levels.append((float(lo), float(hi)))
     return levels
+
+
+def _write_provenance(out, command, seed):
+    """versions.txt + command.log for one ortho render (2026-09-17 review).
+
+    versions.txt came from a 3-line local writer with no commit, no seed and no
+    interpreter, so a figure could not be tied to an engine; command.log held a
+    bare ``fishsuite ortho ...`` that reproduces a DIFFERENT source tree when the
+    console script is not the one on PYTHONPATH. Both now use the shared writer.
+    """
+    from ..core import repro
+
+    repro.write_versions_txt(out, seed)
+    tail = command.split(' ', 1)[1] if command.startswith('fishsuite ') else command
+    lines = [f'written_utc: {datetime.now(tz=timezone.utc).isoformat()}',
+             f'command: {command}',
+             f'argv: {" ".join(sys.argv)}',
+             f'python_executable: {sys.executable}',
+             f'PYTHONPATH: {os.environ.get("PYTHONPATH", "")}',
+             f'fishsuite_source_path: {Path(__file__).resolve().parents[1]}',
+             f'reproduction: {repro.reproduction_prefix()} {tail}']
+    note = repro.console_script_note()
+    if note:
+        lines.append(f'console_script: {note}')
+    with (out / 'command.log').open('a', encoding='utf-8') as handle:
+        handle.write('\n'.join(lines) + '\n')
 
 
 def _source_and_mask(run_dir, row, roster, run_config):
@@ -146,7 +175,6 @@ def _spot_center(spots, nucleus_id, rule, stack, *, analysed_plane_z=None):
 
 def render_run(run_dir, *, config=None, k=3, metric='nuclear_spot_count', seed=0,
                punctum='brightest', half_width_um=None, qki_min=None, miat_min=None, out=None, command=''):
-    from .. import __version__
     from ..config.schema import FishsuiteConfig
     import matplotlib.pyplot as plt
     import tifffile
@@ -203,10 +231,7 @@ def render_run(run_dir, *, config=None, k=3, metric='nuclear_spot_count', seed=0
     hierarchy_path = run_dir / 'resolved_experiment_hierarchy.csv'
     roster = pd.read_csv(hierarchy_path) if hierarchy_path.is_file() else None
     out.mkdir(parents=True, exist_ok=True)
-    with (out / 'command.log').open('a', encoding='utf-8') as handle:
-        handle.write(command + '\n')
-    (out / 'versions.txt').write_text(f'fishsuite {__version__}\nnumpy {np.__version__}\n'
-                                      f'pandas {pd.__version__}\n', encoding='utf-8')
+    _write_provenance(out, command, seed)
     rows = []
     cached_image = None
     for index, row in selected.iterrows():

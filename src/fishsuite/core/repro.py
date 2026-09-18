@@ -202,6 +202,51 @@ def _source_identity() -> tuple[str, str, str]:
         return "UNKNOWN", "UNKNOWN", source_path
 
 
+def console_script_note() -> str:
+    """Empty when the ``fishsuite`` console script imports THIS source tree.
+
+    2026-09-17 review: a recorded ``fishsuite ortho ...`` line is only runnable
+    if the console script on PATH resolves to the same checkout the run used.
+    When it does not (a worktree on PYTHONPATH vs an installed package), the
+    bare command silently reproduces a DIFFERENT engine, so the difference is
+    stated in the log instead of being left for the reader to discover.
+    """
+    try:
+        import shutil
+        import sysconfig
+
+        import fishsuite
+
+        here = Path(fishsuite.__file__).resolve().parent
+        exe = shutil.which("fishsuite")
+        if not exe:
+            return "no 'fishsuite' console script on PATH; use the -m form below"
+        root = Path(exe).resolve().parent.parent
+        installed = Path(sysconfig.get_path(
+            "purelib", vars={"base": str(root), "platbase": str(root)})) / "fishsuite"
+        if installed.resolve() == here:
+            return ""
+        return (f"'fishsuite' on PATH ({exe}) imports {installed}, NOT {here}; "
+                "the -m form below is the runnable one")
+    except Exception:  # pragma: no cover - defensive
+        return ""
+
+
+def reproduction_prefix() -> str:
+    """``set PYTHONPATH=<src>; <python> -m fishsuite.cli`` for THIS source tree."""
+    import fishsuite
+
+    src = Path(fishsuite.__file__).resolve().parents[1]
+    return f"set PYTHONPATH={src}; {sys.executable} -m fishsuite.cli"
+
+
+def reproduction_command(argv_tail: Any) -> str:
+    """A copy-pasteable line that re-runs ``argv_tail`` against THIS source."""
+    from subprocess import list2cmdline
+
+    return reproduction_prefix() + " " + list2cmdline([str(a) for a in argv_tail])
+
+
 def write_versions_txt(out_dir: Path | str, seed: int) -> bool:
     """Write ``versions.txt`` into ``out_dir``. Crash-proof (returns bool).
 
@@ -270,9 +315,17 @@ def write_command_log(
     try:
         out_dir = Path(out_dir)
         out_dir.mkdir(parents=True, exist_ok=True)
+        from subprocess import list2cmdline
+
         lines = []
         lines.append(f"written_utc: {datetime.now(tz=timezone.utc).isoformat()}")
         lines.append(f"argv: {' '.join(sys.argv)}")
+        # 2026-09-17 review: ``argv`` joined on spaces is NOT copy-pasteable once
+        # any path contains a space, which every path under "Image Analysis Work"
+        # does. list2cmdline quotes each token the way the shell will re-split it.
+        lines.append(f"run_command: {list2cmdline([str(a) for a in sys.argv])}")
+        lines.append(f"python_executable: {sys.executable}")
+        lines.append(f"PYTHONPATH: {os.environ.get('PYTHONPATH', '')}")
         lines.append(f"config_path: {str(config_path)}")
         lines.append(f"output_dir: {str(output_dir)}")
         lines.append(f"global_seed: {seed}")
