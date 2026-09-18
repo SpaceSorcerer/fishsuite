@@ -219,3 +219,15 @@ nuclear-column / report-layer work. Both branches were fast-forwarded into `main
 | `tests/test_only_nuclear_spots_regression_2026_09_05.py` | 7 tests asserting the OUTCOME rather than the code path: zero `in_nucleus=0` rows under the shared flag, one channel only under a per-channel override, the protein channel under `antibody_overrides` in `rna_protein`, and a guard that the fixture really produces extra-nuclear spots so the assertions cannot pass vacuously. |
 | `tests/test_rna_rna_only_nuclear_spots.py`, `tests/test_rna_only_spot_filters.py` | Arrived with the cherry-pick of `da5b350` onto `fix/only-nuclear-spots`; they were written with the original fix and had never been on `main`. |
 | `E:/Claude/_fs_fix_only_nuclear_spots` | Git worktree on branch `fix/only-nuclear-spots` (`e081d71`), holding the restored `only_nuclear_spots` filter plus its regression test. Kept outside `E:/Claude/fishsuite` so live runs importing the editable install were not changed mid-flight. The branch is merged into `main`; the worktree still existed on disk at 2026-09-05 16:47 and is safe to remove. |
+
+## Merged 2026-09-07 (imaging close-out pass 2, worktree `imaging-closeout-2026-09-07`, unmerged)
+
+| Path | Description |
+|---|---|
+| `E:\Claude\fishsuite-imaging-closeout-2026-09-07` | Git worktree, branch `imaging-closeout-2026-09-07` off `main` 19495c6, HEAD `a9568ba`. NOT merged into `main`, NOT pushed. Full suite at `a9568ba`: 819 passed, 4 skipped, 0 failed. |
+| `src\fishsuite\report\coloc_existing.py` | Imports a persisted standard colocalization panel into `fishsuite report` output rather than re-computing one. |
+| `src\fishsuite\report\slides.py` | Optional `deck` extra; builds a python-pptx slide deck from report artefacts, with every slide number resolving to a workbook cell. |
+| `tests\test_report_replicate_simple.py` | New tests for `--plot-style replicate-simple`. |
+| `tests\test_report_coloc_existing.py` | New tests for `report/coloc_existing.py`. |
+| `tests\test_report_slides.py` | New tests for `report/slides.py`. |
+| `tests\test_report_localization.py` | New tests for the localization endpoints (nuclear_spot_fraction, nuclear_spot_count, cyto_spot_count). |
