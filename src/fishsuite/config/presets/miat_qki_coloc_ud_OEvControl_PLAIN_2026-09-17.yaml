@@ -142,7 +142,7 @@ nuclei:
   stardist_postprocess: none
   label_smoothing_radius_px: 0
   reject_ghost_nuclei: false
-  # diameter is PROVISIONAL until the PI picks from `fishsuite seg-sweep`
+  # 11 um kept (Brian 2026-09-17): seg-sweep showed masks insensitive across 9-13 um at 0.13 um/px
   expected_diameter_um: 11.0
   min_area_um2: 67.6
   # Inherited legacy 6000 px threshold; reject_ghost_nuclei remains false.
@@ -162,11 +162,12 @@ foci:
   bigfish_spot_radius_nm: 100.0
   bigfish_spot_radius_z_nm: 300.0
   threshold_multiplier: 1.0
-  # rna_overrides:
-  #   threshold_override: null
-  # set from the per-image LoG threshold table of the QC run; a fixed value is REQUIRED
-  # for the production run because the per-image automatic threshold over-detects in
-  # low-signal (no-Dox) fields
+  # 2026-09-17 PRODUCTION: fixed MIAT BigFISH LoG detection threshold = the
+  # median of the per-image automatic thresholds of the QC run
+  # (QC_run_summary_2026-09-17.xlsx, sheet log_threshold; the automatic value
+  # ran lowest in the no-Dox control fields). The antibody channel is not
+  # spot-detected, so this shared value pins MIAT only.
+  threshold_override: 174.0
   only_nuclear_spots: false
   min_sep_px: 1
   detect_in_sec_only: false
@@ -199,18 +200,21 @@ output:
   save_masks: true
   save_publication_images: true
   save_publication_tifs: false
-  # PROVISIONAL — PI supplies final min/max; MAX is display-only
+  # 2026-09-17 Brian: MIAT min 500 / QKI min 1050 (MIN gates analysis + display floor; MAX display-only)
   pub_contrast_mode: manual
-  manual_rna_min: 525.0
+  manual_rna_min: 500.0
   manual_rna_max: 2250.0
-  manual_antibody_min: 1250.0
+  manual_antibody_min: 1050.0
   manual_antibody_max: 6000.0
-  manual_rna2_min: 1250.0
+  manual_rna2_min: 1050.0
   manual_rna2_max: 6000.0
   manual_dapi_min: 607.0
   manual_dapi_max: 9000.0
-  apply_pub_contrast_floor_to_analysis: false
-  apply_pub_contrast_floor_to_spots: false
+  # 2026-09-17: PI MIN values gate the run-level thresholded-intensity columns and drop
+  # detected spots whose peak is below the MIAT min (post-detection; detection itself is
+  # gated by threshold_override above).
+  apply_pub_contrast_floor_to_analysis: true
+  apply_pub_contrast_floor_to_spots: true
   prefix: ''
   scalebar_um: 25.0
   scalebar_font_px: 52

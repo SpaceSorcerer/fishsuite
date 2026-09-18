@@ -91,8 +91,16 @@ def test_colors_and_unchanged_analysis_settings():
     }
     # foci differs ONLY by the run-time footprint columns the backfill requires.
     assert cfg.foci.model_dump() == {**old.foci.model_dump(),
-                                     'compute_footprint_enrichment': True}
-    for key in ('channels', 'nucleolus', 'output', 'parallel',
+                                     'compute_footprint_enrichment': True,
+                                     'threshold_override': 174.0}
+    # output differs ONLY by Brian's 2026-09-17 levels and the MIN-gates-analysis rule.
+    assert cfg.output.model_dump() == {**old.output.model_dump(),
+                                       'manual_rna_min': 500.0,
+                                       'manual_antibody_min': 1050.0,
+                                       'manual_rna2_min': 1050.0,
+                                       'apply_pub_contrast_floor_to_analysis': True,
+                                       'apply_pub_contrast_floor_to_spots': True}
+    for key in ('channels', 'nucleolus', 'parallel',
                 'cytoplasm', 'spot_coloc', 'pixel_coloc', 'input_file_subset'):
         assert getattr(cfg, key) == getattr(old, key), key
     # z handling differs from the June preset ONLY by the locked coloc rule:
