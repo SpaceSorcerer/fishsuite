@@ -161,8 +161,8 @@ def test_sensitivity_level_one_matches_single_run_and_seed_bytes():
     null_columns += [c for c in SEED_DEPENDENT_NEW if c in single]
     assert not changed[null_columns].equals(single[null_columns])
     pd.testing.assert_frame_equal(changed.drop(columns=null_columns), single.drop(columns=null_columns))
-    pd.testing.assert_frame_equal(changed_spots.drop(columns="null_midrank_qki"),
-                                  single_spots.drop(columns="null_midrank_qki"))
+    pd.testing.assert_frame_equal(changed_spots.drop(columns="uniform_position_percentile_qki"),
+                                  single_spots.drop(columns="uniform_position_percentile_qki"))
 
 
 @pytest.mark.parametrize("name", ["miat_min", "qki_min"])
@@ -280,6 +280,9 @@ import pandas as pd
 import pytest
 
 
+OPTICS = dict(numerical_aperture=1.5, emission_nm_miat=668.0, emission_nm_qki=603.0)
+
+
 def _assoc_cached_run(root):
     import h5py
     root.mkdir()
@@ -316,12 +319,12 @@ def _assoc_cached_run(root):
 def test_assoc_adapter_roundtrip(tmp_path):
     from fishsuite.core.qki_association_postrun import run_qki_association
     root = _assoc_cached_run(tmp_path / 'source')
-    first = run_qki_association(root, tmp_path / 'out1', miat_min=10, qki_min=10, n_null=10)
-    second = run_qki_association(root, tmp_path / 'out2', miat_min=10, qki_min=10, n_null=10)
+    first = run_qki_association(root, tmp_path / 'out1', miat_min=10, qki_min=10, n_null=10, optics=OPTICS)
+    second = run_qki_association(root, tmp_path / 'out2', miat_min=10, qki_min=10, n_null=10, optics=OPTICS)
     from click.testing import CliRunner
     from fishsuite.cli import cli
     cli_out = tmp_path / 'cli_out'
-    result = CliRunner().invoke(cli, ['qki-assoc', '--run-dir', str(root),
+    result = CliRunner().invoke(cli, ['qki-assoc', '--run-dir', str(root), '--objective-na', '1.5', '--emission-nm-miat', '668', '--emission-nm-qki', '603',
         '--miat-min', '10', '--qki-min', '10', '--sensitivity', '0.8,1.0,1.25',
         '--n-null', '10', '--seed', '0', '--out', str(cli_out)])
     assert result.exit_code == 0, result.output
@@ -368,7 +371,7 @@ def test_assoc_adapter_empty_spots_and_missing_scale(tmp_path):
     root = _assoc_cached_run(tmp_path / 'source')
     for name in ('spot_exact_footprint_metrics.csv.gz', 'footprint_pixels.csv.gz'):
         pd.read_csv(root / name).iloc[:0].to_csv(root / name, index=False)
-    out = run_qki_association(root, tmp_path / 'empty', miat_min=10, qki_min=10, n_null=5)
+    out = run_qki_association(root, tmp_path / 'empty', miat_min=10, qki_min=10, n_null=5, optics=OPTICS)
     table = pd.read_csv(out / 'qki_association_per_nucleus.csv')
     assert len(table) == 6
     assert table.n_miat_spots.eq(0).all()
@@ -387,7 +390,7 @@ def test_assoc_adapter_parent_specific_exclusion(tmp_path):
     root = _assoc_cached_run(tmp_path / 'source')
     with h5py.File(root / 'selected_planes_and_masks.h5', 'r+') as h:
         h['images/a/nucleolus_labels'][3, 3] = 2
-    out = run_qki_association(root, tmp_path / 'out', miat_min=10, qki_min=10, n_null=5)
+    out = run_qki_association(root, tmp_path / 'out', miat_min=10, qki_min=10, n_null=5, optics=OPTICS)
     table = pd.read_csv(out / 'qki_association_per_nucleus.csv')
     assert table.loc[table.nucleus_id == 1, 'n_miat_spots'].eq(1).all()
     assert table.loc[table.nucleus_id == 1, 'nuclear_area_um2'].to_numpy() == pytest.approx([1.28, 1.28, 1.28])
@@ -571,7 +574,7 @@ def test_assoc_adapter_sorts_source_spot_id_not_uid(tmp_path):
     pixel_pair = pd.concat([pixels, pixels], ignore_index=True)
     pixel_pair["spot_uid"] = ["uid-z", "uid-a"]
     pixel_pair.to_csv(root / "footprint_pixels.csv.gz", index=False)
-    out = run_qki_association(root, tmp_path / "out", miat_min=10, qki_min=10, n_null=5)
+    out = run_qki_association(root, tmp_path / "out", miat_min=10, qki_min=10, n_null=5, optics=OPTICS)
     result = pd.read_csv(out / "qki_association_per_spot.csv")
     assert result.spot_id.tolist() == ["a", "b", "a", "b", "a", "b"]
 
@@ -650,7 +653,7 @@ def test_null_fraction_denominator_reason_contract(metric, reason, prefix, undef
 def test_generated_dictionary_explains_coverage_denominators_and_null_scope(tmp_path):
     from fishsuite.core.qki_association_postrun import run_qki_association
     root = _assoc_cached_run(tmp_path / "source")
-    out = run_qki_association(root, tmp_path / "out", miat_min=10, qki_min=10, n_null=3)
+    out = run_qki_association(root, tmp_path / "out", miat_min=10, qki_min=10, n_null=3, optics=OPTICS)
     text = (out / "qki_association_columns.md").read_text()
     header = text.split("- `threshold_multiplier`:", 1)[0]
     entry = next(line for line in text.splitlines() if line.startswith("- `frac_qki_area_on_miat_footprints`:"))
@@ -671,7 +674,7 @@ def test_generated_dictionary_explains_coverage_denominators_and_null_scope(tmp_
 def test_assoc_adapter_writes_ccf_tables_costes_settings_and_condition_filter(tmp_path):
     from fishsuite.core.qki_association_postrun import run_qki_association
     root = _assoc_cached_run(tmp_path / 'source')
-    out = run_qki_association(root, tmp_path / 'out', miat_min=10, qki_min=10, n_null=10, n_costes=17)
+    out = run_qki_association(root, tmp_path / 'out', miat_min=10, qki_min=10, n_null=10, n_costes=17, optics=OPTICS)
     per_field = pd.read_csv(out / 'qki_association_ccf_per_field.csv')
     assert {'image', 'condition', 'well', 'axis', 'shift_px', 'shift_um', 'mean_r_over_nuclei',
             'n_nuclei_finite'} <= set(per_field.columns)
@@ -686,9 +689,9 @@ def test_assoc_adapter_writes_ccf_tables_costes_settings_and_condition_filter(tm
     columns_md = (out / 'qki_association_columns.md').read_text(encoding='utf-8')
     assert 'costes_rand_p' in columns_md and 'not a test across nuclei' in columns_md
     kept = run_qki_association(root, tmp_path / 'kept', miat_min=10, qki_min=10, n_null=10,
-                               conditions=('test',))
+                               conditions=('test',), optics=OPTICS)
     assert (kept / 'qki_association_per_nucleus.csv').read_bytes() == (
-        run_qki_association(root, tmp_path / 'all', miat_min=10, qki_min=10, n_null=10)
+        run_qki_association(root, tmp_path / 'all', miat_min=10, qki_min=10, n_null=10, optics=OPTICS)
         / 'qki_association_per_nucleus.csv').read_bytes()
     with pytest.raises(ValueError, match='no image'):
         run_qki_association(root, tmp_path / 'none', miat_min=10, qki_min=10, n_null=10,
@@ -699,9 +702,68 @@ def test_assoc_cli_accepts_n_costes_and_condition(tmp_path):
     from click.testing import CliRunner
     from fishsuite.cli import cli
     root = _assoc_cached_run(tmp_path / 'source')
-    result = CliRunner().invoke(cli, ['qki-assoc', '--run-dir', str(root), '--miat-min', '10',
+    result = CliRunner().invoke(cli, ['qki-assoc', '--run-dir', str(root), '--miat-min', '10', '--objective-na', '1.5', '--emission-nm-miat', '668', '--emission-nm-qki', '603',
         '--qki-min', '10', '--n-null', '10', '--n-costes', '9', '--condition', 'test',
         '--out', str(tmp_path / 'cli')])
     assert result.exit_code == 0, result.output
     log = (tmp_path / 'cli' / 'command.log').read_text(encoding='utf-8')
     assert "--condition test" in log and 'n_costes: 9' in log
+
+
+
+def test_assoc_adapter_fails_loudly_without_optics_metadata(tmp_path):
+    """Astra F1: the PSF needs objective NA and emission wavelengths from the
+    acquisition metadata; a synthetic run has no source VSI, so no default."""
+    from fishsuite.core.qki_association_postrun import run_qki_association
+    root = _assoc_cached_run(tmp_path / 'source')
+    with pytest.raises(ValueError, match='(?i)numerical aperture|NA|emission'):
+        run_qki_association(root, tmp_path / 'out', miat_min=10, qki_min=10, n_null=5)
+    with pytest.raises(ValueError, match='optics'):
+        run_qki_association(root, tmp_path / 'out2', miat_min=10, qki_min=10, n_null=5,
+                            optics=dict(numerical_aperture=1.5))
+
+
+def test_assoc_adapter_records_psf_from_explicit_optics(tmp_path):
+    from fishsuite.core.qki_association_postrun import run_qki_association
+    root = _assoc_cached_run(tmp_path / 'source')
+    out = run_qki_association(root, tmp_path / 'out', miat_min=10, qki_min=10, n_null=5, optics=OPTICS)
+    nuclei = pd.read_csv(out / 'qki_association_per_nucleus.csv')
+    assert np.allclose(nuclei.costes_psf_fwhm_px, 0.51 * 668.0 / 1.5 / 100.0)
+    assert nuclei.costes_psf_source.str.startswith('explicit').all()
+    log = (out / 'command.log').read_text(encoding='utf-8')
+    assert 'objective_na: 1.5' in log and 'psf_formula' in log
+
+
+def _with_source_run_config(root, tmp_path):
+    import json
+    run = tmp_path / 'source_run'
+    run.mkdir()
+    params = dict(enabled=True, intra_nuclear_percentile=25.0, min_area_um2=0.01,
+                  max_area_frac_of_nucleus=0.6, closing_radius_px=0, min_border_distance_px=0)
+    (run / 'run_config.json').write_text(json.dumps({'config_resolved': {'nucleolus': params}}), encoding='utf-8')
+    (root / 'analysis_parameters.json').write_text(json.dumps({'source_run_dir': str(run)}), encoding='utf-8')
+    return params
+
+
+def test_assoc_adapter_persists_nucleolus_parameters_and_runs_sensitivity(tmp_path):
+    from fishsuite.core.qki_association_postrun import run_qki_association
+    root = _assoc_cached_run(tmp_path / 'source')
+    _with_source_run_config(root, tmp_path)
+    out = run_qki_association(root, tmp_path / 'out', miat_min=10, qki_min=10, n_null=5, optics=OPTICS,
+                              nucleolus_percentiles=(20, 25, 30))
+    log = (out / 'command.log').read_text(encoding='utf-8')
+    assert 'nucleolus_params:' in log and 'intra_nuclear_percentile' in log and 'run_config.json' in log
+    per_nucleus = pd.read_csv(out / 'qki_association_nucleolus_sensitivity_per_nucleus.csv')
+    assert sorted(per_nucleus.percentile.unique()) == [20, 25, 30]
+    per_well = pd.read_csv(out / 'qki_association_nucleolus_sensitivity_per_well.csv')
+    assert {'condition', 'well', 'percentile', 'n_nuclei', 'well_mean_pearson_r_nucleoplasm',
+            'well_mean_spearman_rho_nucleoplasm', 'delta_pearson_vs_production',
+            'delta_spearman_vs_production', 'saved_mask_reproduced_frac'} <= set(per_well.columns)
+
+
+def test_nucleolus_sensitivity_without_recorded_parameters_fails_loudly(tmp_path):
+    from fishsuite.core.qki_association_postrun import run_qki_association
+    root = _assoc_cached_run(tmp_path / 'source')
+    with pytest.raises(ValueError, match='nucleolus'):
+        run_qki_association(root, tmp_path / 'out', miat_min=10, qki_min=10, n_null=5, optics=OPTICS,
+                            nucleolus_percentiles=(20, 25, 30))

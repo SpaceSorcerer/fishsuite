@@ -46,31 +46,39 @@ LEGACY_SPOT_COLUMNS = _IDENTITY + ("spot_id", "footprint_area_px", "footprint_me
                                    "qki_positive")
 # 2026-09-24 threshold-free additions (metric_inventory.md section c, items 1-4).
 # Appended AFTER every legacy column so the legacy CSV prefix is unchanged.
-_RANK = ("mean_null_rank_qki_at_miat", "frac_spots_ge_null_q90", "frac_spots_ge_null_q75")
+_UPP = ("mean_uniform_position_percentile_qki", "frac_spots_upp_ge_0p90", "frac_spots_upp_ge_0p75")
+_UPP_REFERENCE = ("n_spots_upp", "chance_mean_upp", "chance_frac_spots_upp_ge_0p90",
+                  "chance_frac_spots_upp_ge_0p75")
 _PIXEL = ("pearson_r_nucleoplasm", "spearman_rho_nucleoplasm", "n_pixels_nucleoplasm",
           "pearson_r_whole_nucleus_mask")
 _CCF = ("ccf_r0",) + tuple(f"{name}_{axis}" for axis in ("x", "y") for name in (
     "ccf_peak_r", "ccf_peak_shift_px", "ccf_peak_shift_um", "ccf_peak_fwhm_px",
     "ccf_r0_minus_flank"))
-_COSTES = ("costes_block_px", "costes_rand_n_blocks", "costes_rand_r_obs",
-           "costes_rand_null_mean_r", "costes_rand_r_obs_minus_null_mean", "costes_rand_p")
-_NEW_REASONS = (tuple(f"na_reason_{name}" for name in _RANK)
+_COSTES_PARAMS = ("costes_psf_fwhm_px", "costes_acf_fwhm_px_miat", "costes_acf_fwhm_px_qki",
+                  "costes_block_px", "costes_tile_phase_y", "costes_tile_phase_x",
+                  "costes_rand_n_blocks", "costes_core_coverage", "costes_rand_n_draws")
+_COSTES_STATS = ("costes_rand_r_obs", "costes_rand_null_mean_r", "costes_rand_r_obs_minus_null_mean",
+                 "costes_rand_p")
+_NEW_REASONS = (tuple(f"na_reason_{name}" for name in _UPP)
                 + ("na_reason_pearson_r_nucleoplasm", "na_reason_spearman_rho_nucleoplasm",
                    "na_reason_pearson_r_whole_nucleus_mask", "na_reason_ccf_r0")
                 + tuple(f"na_reason_{name}_{axis}" for axis in ("x", "y")
                         for name in ("ccf_peak", "ccf_peak_fwhm_px", "ccf_r0_minus_flank"))
-                + ("na_reason_costes_rand",))
-# Columns that depend on --seed (placement-null draws or Costes block scramble).
-SEED_DEPENDENT_NEW = _RANK + tuple(c for c in _COSTES if c.startswith("costes_rand_")
-                                   and c != "costes_rand_n_blocks" and c != "costes_rand_r_obs")
-NEW_NUCLEUS_COLUMNS = _RANK + _PIXEL + _CCF + _COSTES + _NEW_REASONS
+                + ("na_reason_costes_rand", "costes_psf_source"))
+# Columns that depend on --seed (placement-null draws, UPP tie-breaks, Costes scramble).
+SEED_DEPENDENT_NEW = _UPP + ("costes_rand_null_mean_r", "costes_rand_r_obs_minus_null_mean",
+                             "costes_rand_p")
+NEW_NUCLEUS_COLUMNS = _UPP + _UPP_REFERENCE + _PIXEL + _CCF + _COSTES_PARAMS + _COSTES_STATS + _NEW_REASONS
 NUCLEUS_COLUMNS = list(LEGACY_NUCLEUS_COLUMNS + NEW_NUCLEUS_COLUMNS)
-SPOT_COLUMNS = list(LEGACY_SPOT_COLUMNS + ("null_midrank_qki",))
+SPOT_COLUMNS = list(LEGACY_SPOT_COLUMNS + ("uniform_position_percentile_qki",))
 # Signed correlation / shift / difference statistics: a treated/control ratio is undefined.
 DIFFERENCE_SCALE_NEW = frozenset(
     ("pearson_r_nucleoplasm", "spearman_rho_nucleoplasm", "pearson_r_whole_nucleus_mask",
      "costes_rand_r_obs", "costes_rand_null_mean_r", "costes_rand_r_obs_minus_null_mean")
     + tuple(c for c in _CCF if not c.startswith("ccf_peak_fwhm_px")))
+# Astra F3: parameters, randomization p-values and chance references are
+# descriptive QC. They never enter well/arm contrasts, differences or ratios.
+DESCRIPTIVE_ONLY = frozenset(_COSTES_PARAMS + ("costes_rand_p",) + _UPP_REFERENCE)
 
 _DEFINITIONS = {
     "threshold_multiplier": "Multiplier applied to both raw thresholds; dimensionless",
@@ -108,22 +116,34 @@ _DEFINITIONS = {
     "footprint_area_px": "Complete eligible footprint pixel count; pixels",
     "footprint_mean_qki": "Mean raw QKI over complete footprint pixels; raw intensity",
     "qki_positive": "Whether footprint-mean raw QKI is >= qki_min_used; boolean",
-    "null_midrank_qki": "Mid-rank of this spot's footprint-mean raw QKI within its OWN exact-footprint placement-null draws, (#{draw < observed} + 0.5 #{draw = observed}) / n_null_effective; threshold-free (no qki_min), invariant to monotone intensity transforms; chance 0.5; NaN when the nucleus placement null is NO_DOMAIN or SPARSE_DOMAIN; fraction",
-    "mean_null_rank_qki_at_miat": "Mean over eligible spots of null_midrank_qki (each spot ranked against its own placement-null draws); threshold-free and independent of threshold_multiplier; chance 0.5; fraction",
-    "frac_spots_ge_null_q90": "Fraction of eligible spots with null_midrank_qki >= 0.9 (QKI at or above the spot's own null 90th percentile); threshold-free; chance 0.10; fraction",
-    "frac_spots_ge_null_q75": "Fraction of eligible spots with null_midrank_qki >= 0.75; threshold-free; chance 0.25; fraction",
+    "uniform_position_percentile_qki": "Uniform-position percentile score of this spot: rank R of its footprint-mean raw QKI among its OWN K exact-footprint uniform-position placement draws, R = #{draw < observed} + J with J uniform on {0..#{draw = observed}} (randomized tie-breaking; replaces the round-1 mid-rank), divided by K = n_null_effective; threshold-free, invariant to monotone intensity transforms; exactly uniform on {0..K}/K only if MIAT centres are exchangeable with uniform admissible positions (mean 0.5); NaN when the placement null is NO_DOMAIN or SPARSE_DOMAIN; fraction",
+    "mean_uniform_position_percentile_qki": "Mean over this nucleus's eligible spots of uniform_position_percentile_qki (each nucleus weighted equally at the well level; the spot-pooled well value is in coupling per_well); chance chance_mean_upp; fraction",
+    "frac_spots_upp_ge_0p90": "Fraction of eligible spots with uniform_position_percentile_qki >= 0.9; finite-K chance is chance_frac_spots_upp_ge_0p90 = (K - ceil(0.9K) + 1)/(K + 1) (21/201 at K = 200), not 0.10; fraction",
+    "frac_spots_upp_ge_0p75": "Fraction of eligible spots with uniform_position_percentile_qki >= 0.75; finite-K chance chance_frac_spots_upp_ge_0p75 (51/201 at K = 200); fraction",
+    "n_spots_upp": "Spots scored by the uniform-position percentile (0 when undefined); weight for the spot-pooled well value; count; descriptive only",
+    "chance_mean_upp": "Chance reference for mean_uniform_position_percentile_qki under exchangeability (0.5); descriptive only",
+    "chance_frac_spots_upp_ge_0p90": "Finite-K chance reference (K - ceil(0.9K) + 1)/(K + 1) with K = n_null_effective; descriptive only",
+    "chance_frac_spots_upp_ge_0p75": "Finite-K chance reference (K - ceil(0.75K) + 1)/(K + 1); descriptive only",
     "pearson_r_nucleoplasm": "Pearson r of raw MIAT vs raw QKI over the nucleoplasm mask N (eligible pixels of this nucleus, nucleoli excluded); offset- and gain-invariant; NaN below 100 pixels (LOW_PIX) or for a constant channel (ZERO_VAR); r",
     "spearman_rho_nucleoplasm": "Spearman rho (Pearson on average ranks) of raw MIAT vs raw QKI over the nucleoplasm mask N; same gates as pearson_r_nucleoplasm; rho",
     "n_pixels_nucleoplasm": "Pixel count of the nucleoplasm mask N used by the pixel metrics; pixels",
     "pearson_r_whole_nucleus_mask": "Comparator: Pearson r over the WHOLE nuclear label mask without nucleolar exclusion (the convention of the panel's pearson_r_csp); pearson_r_whole_nucleus_mask minus pearson_r_nucleoplasm is the nucleolar-exclusion contribution; r",
     "ccf_r0": "Van Steensel CCF at zero shift: Pearson r of M(y,x) vs Q(y,x) over pixel pairs inside N (equals pearson_r_nucleoplasm); r",
-    "costes_block_px": "Costes block edge b = round(sqrt(median footprint_area_px over all eligible footprints of this IMAGE)), minimum 3 px (PSF scale); pixels",
-    "costes_rand_n_blocks": "Number of b x b blocks, tiled from the nucleus bounding-box corner, lying entirely inside N and used by the Costes randomization; count",
-    "costes_rand_r_obs": "Pearson r of raw MIAT vs raw QKI over the pixels of the full blocks (unpermuted); r",
-    "costes_rand_null_mean_r": "Mean Pearson r over the Costes block-scramble draws (QKI blocks permuted among full-block positions, orientation kept, MIAT fixed); r",
+    "costes_psf_fwhm_px": "Theoretical lateral PSF FWHM 0.51 * lambda_em / NA in pixels, lambda_em = the longer of the MIAT and QKI emission wavelengths; source in costes_psf_source and command.log; descriptive only; pixels",
+    "costes_psf_source": "Where objective NA and emission wavelengths came from (e.g. source VSI OME metadata path or explicit CLI values); text",
+    "costes_acf_fwhm_px_miat": "FWHM of the radially averaged, overlap-normalized, mean-centered 2-D autocorrelation of raw MIAT over in-mask pixel pairs of N (2 x radius where ACF first < 0.5, <= 20 px); descriptive only; pixels",
+    "costes_acf_fwhm_px_qki": "Same ACF FWHM for raw QKI; descriptive only; pixels",
+    "costes_block_px": "Costes block edge b = ceil(max(costes_psf_fwhm_px, min(costes_acf_fwhm_px_miat, costes_acf_fwhm_px_qki))) (Astra round 2); descriptive only; pixels",
+    "costes_tile_phase_y": "Grid phase (rows) maximising complete-block coverage of N, chosen from mask geometry only; descriptive only; pixels",
+    "costes_tile_phase_x": "Grid phase (columns) maximising complete-block coverage of N; descriptive only; pixels",
+    "costes_rand_n_blocks": "Complete b x b blocks in the frozen core N_core; descriptive only; count",
+    "costes_core_coverage": "Pixels of N_core divided by pixels of N; Costes is NA (MASK_BLOCK_COVERAGE) below 0.80 or below 10 blocks; descriptive only; fraction",
+    "costes_rand_n_draws": "Block-scramble permutations per nucleus (--n-costes); descriptive only; count",
+    "costes_rand_r_obs": "Pearson r of raw MIAT vs raw QKI over exactly N_core (unpermuted); r",
+    "costes_rand_null_mean_r": "Mean Pearson r over the block-scramble draws on N_core (QKI blocks permuted among N_core block positions, orientation kept, MIAT fixed); r",
     "costes_rand_r_obs_minus_null_mean": "costes_rand_r_obs minus costes_rand_null_mean_r; r",
-    "costes_rand_p": "Costes randomization tail fraction (1 + #{r_perm >= r_obs}) / (1 + n_costes), one-sided; n_costes and seed are recorded in command.log; per-nucleus descriptive; not a test across nuclei and never read as nucleus-level inference; like the placement null it does NOT remove MIAT/QKI co-preference for the same sub-nuclear compartment; fraction",
-    "na_reason_costes_rand": "Undefined reason for every costes_rand_* value: empty when defined, R0 (no eligible pixels), NO_BLOCK_SIZE (no eligible footprints in the image), FEW_BLOCKS (<10 full blocks or <100 block pixels), ZERO_VAR (constant channel); code",
+    "costes_rand_p": "Costes randomization tail fraction (1 + #{r_perm >= r_obs}) / (1 + costes_rand_n_draws), one-sided, on N_core; seed recorded in command.log; per-nucleus descriptive; not a test across nuclei and never read as nucleus-level inference; excluded from coupling contrasts; like the placement null it does NOT remove MIAT/QKI co-preference for the same sub-nuclear compartment; fraction",
+    "na_reason_costes_rand": "Undefined reason for every costes_rand_* value: empty when defined, R0, NO_PSF (optics unavailable to the library call), ACF_NO_HALF / ACF_LOW_PIX / ACF_ZERO_VAR (a channel ACF has no half-height crossing within 20 px or is not estimable), MASK_BLOCK_COVERAGE (<10 complete blocks or <80% of N in complete blocks), ZERO_VAR; code",
     "na_reason_ccf_r0": "Undefined reason for ccf_r0: empty when defined, LOW_PIX (<100 pixel pairs) or NO_CCF; code",
 }
 for _axis, _long in (("x", "x (columns)"), ("y", "y (rows)")):
@@ -137,7 +157,7 @@ for _axis, _long in (("x", "x (columns)"), ("y", "y (rows)")):
         f"na_reason_ccf_peak_fwhm_px_{_axis}": f"Undefined reason for ccf_peak_fwhm_px_{_axis}: empty when defined, NO_CCF, NO_PEAK_ABOVE_FLANK, NO_HALF_CROSSING (curve never falls to half height inside +-20 px); code",
         f"na_reason_ccf_r0_minus_flank_{_axis}": f"Undefined reason for ccf_r0_minus_flank_{_axis}: empty when defined, NO_CCF, NO_FLANK; code",
     })
-for _metric in _RANK:
+for _metric in _UPP:
     _DEFINITIONS[f"na_reason_{_metric}"] = f"Undefined reason for {_metric}: empty when defined, N0 (no spots), NO_DOMAIN or SPARSE_DOMAIN (placement null withheld); code"
 for _metric in ("pearson_r_nucleoplasm", "spearman_rho_nucleoplasm", "pearson_r_whole_nucleus_mask"):
     _DEFINITIONS[f"na_reason_{_metric}"] = f"Undefined reason for {_metric}: empty when defined, R0, LOW_PIX (<100 pixels), ZERO_VAR; code"
@@ -195,8 +215,15 @@ def _costes_rng(seed: int, image: str, nucleus_id: int) -> np.random.Generator:
     return np.random.default_rng(np.random.SeedSequence(list(map(int, words))))
 
 
+def _stream_rng(seed: int, image: str, nucleus_id: int, tag: str) -> np.random.Generator:
+    identity = json.dumps([int(seed), str(image), int(nucleus_id), tag],
+                          ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    words = np.frombuffer(hashlib.sha256(identity).digest(), dtype="<u4")
+    return np.random.default_rng(np.random.SeedSequence(list(map(int, words))))
+
+
 def _pixel_and_costes_columns(miat, qki, labels, region, nucleus_id, *, pixel_size_um,
-                              block_px, n_costes, rng, curves):
+                              psf_fwhm_px, psf_source, n_costes, rng, curves):
     corr = _cpm.masked_correlations(miat, qki, region)
     whole = _cpm.masked_correlations(miat, qki, labels == nucleus_id)
     row = dict(pearson_r_nucleoplasm=corr["pearson"], spearman_rho_nucleoplasm=corr["spearman"],
@@ -206,10 +233,8 @@ def _pixel_and_costes_columns(miat, qki, labels, region, nucleus_id, *, pixel_si
                na_reason_spearman_rho_nucleoplasm=corr["reason"],
                na_reason_pearson_r_whole_nucleus_mask=whole["reason"])
     row.update(_cpm.nucleus_ccf(miat, qki, region, pixel_size_um=pixel_size_um, curves=curves))
-    costes = _cpm.costes_randomization(miat, qki, region, block_px, n_costes, rng)
-    row["costes_block_px"] = float(block_px) if block_px is not None else float("nan")
-    row["na_reason_costes_rand"] = costes.pop("reason")
-    row.update(costes)
+    row.update(_cpm.nucleus_costes(miat, qki, region, psf_px=psf_fwhm_px, n_iter=n_costes, rng=rng))
+    row["costes_psf_source"] = str(psf_source or "")
     return row
 
 
@@ -231,6 +256,8 @@ def association_tables(
     well: str = "",
     n_costes: int = _cpm.COSTES_N_ITER,
     ccf_records: list | None = None,
+    psf_fwhm_px: float | None = None,
+    psf_source: str = "",
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Compute all requested levels using the same retained exact placements.
 
@@ -245,8 +272,10 @@ def association_tables(
 
     The threshold-free additions (placement-null rank, nucleoplasm Pearson /
     Spearman, CCF, Costes randomization) are computed once per nucleus and
-    repeated on every threshold row. The Costes scramble uses its own seeded
-    stream. ``ccf_records``, when a list, receives the per-nucleus CCF curves.
+    repeated on every threshold row. The Costes scramble and the percentile
+    tie-breaks use their own seeded streams. ``ccf_records``, when a list,
+    receives the per-nucleus CCF curves. ``psf_fwhm_px`` (from acquisition
+    metadata) is required for Costes; without it Costes is NA (NO_PSF).
     """
     miat_min = _positive(miat_min, "miat_min")
     qki_min = _positive(qki_min, "qki_min")
@@ -276,10 +305,6 @@ def association_tables(
         raise ValueError("n_costes must be a positive integer")
     nucleus_rows, spot_rows = [], []
     height, width = labels.shape
-    block_px = _cpm.costes_block_size(
-        fp.area_px for fp in footprints if fp.full_mask_valid and not fp.invalid_reason
-        and 0 <= fp.center_y_px < height and 0 <= fp.center_x_px < width
-        and labels[fp.center_y_px, fp.center_x_px] > 0)
     for nucleus_id in np.unique(labels[labels > 0]):
         region = eligible & (labels == nucleus_id)
         region_size = int(region.sum())
@@ -314,14 +339,15 @@ def association_tables(
         n_spots = len(selected)
         r_reason = "" if region_size else "R0"
         rank_reason = "N0" if not n_spots else domain_reason
-        midranks = (_cpm.null_midrank(observed_means, null_means) if not rank_reason
-                    else np.full(n_spots, np.nan))
-        extra = _cpm.rank_summary(midranks) if not rank_reason else dict.fromkeys(_RANK, float("nan"))
-        extra.update({f"na_reason_{name}": rank_reason for name in _RANK})
+        percentiles = (_cpm.uniform_position_percentile(
+            observed_means, null_means, _stream_rng(seed, image, nucleus_id, "upp_tiebreak"))
+            if not rank_reason else np.full(n_spots, np.nan))
+        extra = _cpm.upp_summary(percentiles if not rank_reason else np.empty(0), n_effective)
+        extra.update({f"na_reason_{name}": rank_reason for name in _UPP})
         curves = [] if ccf_records is not None else None
         extra.update(_pixel_and_costes_columns(
             miat, qki, labels, region, nucleus_id, pixel_size_um=pixel_size_um,
-            block_px=block_px, n_costes=int(n_costes),
+            psf_fwhm_px=psf_fwhm_px, psf_source=psf_source, n_costes=int(n_costes),
             rng=_costes_rng(seed, image, nucleus_id), curves=curves))
         if curves is not None:
             ccf_records.extend(dict(image=image, condition=condition, well=well,
@@ -387,10 +413,10 @@ def association_tables(
                     row[key], row[f"na_reason_{key}"] = value, reason
             row.update(extra)
             nucleus_rows.append(row)
-            for fp, mean, midrank in zip(selected, observed_means, midranks):
+            for fp, mean, percentile in zip(selected, observed_means, percentiles):
                 spot_rows.append(dict(identity, spot_id=fp.spot_index, footprint_area_px=fp.area_px,
                                       footprint_mean_qki=float(mean), qki_positive=bool(mean >= qki_min * level),
-                                      null_midrank_qki=float(midrank)))
+                                      uniform_position_percentile_qki=float(percentile)))
     nuclei = pd.DataFrame(nucleus_rows, columns=NUCLEUS_COLUMNS)
     spots = pd.DataFrame(spot_rows, columns=SPOT_COLUMNS)
     # Preserve caller level order, with nuclei and spots deterministic within it.

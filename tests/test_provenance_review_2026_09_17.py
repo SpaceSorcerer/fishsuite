@@ -256,7 +256,7 @@ def test_run_well_ids_load_from_resolved_experiment_hierarchy(panel, tmp_path):
                  ).to_csv(hierarchy, index=False)
     mapping, source = panel.recorded_well_ids(tmp_path)
     assert mapping == {"a.vsi": "g2_Dox_01", "b.vsi": "g2_Dox_02"}
-    assert source == "resolved_experiment_hierarchy.csv:well_id"
+    assert source == "resolved_experiment_hierarchy.csv:well_id (validated globally unique)"
 
     hierarchy.unlink()
     mapping, source = panel.recorded_well_ids(tmp_path)
@@ -294,7 +294,7 @@ def test_nan_primary_carries_its_reason(panel):
     assert not np.isfinite(row["p_welch"])
     assert row["nan_reason"].startswith("TOO_FEW_WELLS")
     assert "n_wells_test=1" in row["nan_reason"]
-    assert np.isnan(row["mde_hedges_g_alpha_0p05_power_0p80"])
+    assert np.isnan(row["mde_cohen_d_equal_variance"])
     assert "nan_reason" in contrasts.columns
 
 

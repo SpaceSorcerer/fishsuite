@@ -299,7 +299,7 @@ def test_report_artifacts(tmp_path):
     for name in ('coupling_summary.xlsx', 'command.log', 'versions.txt', 'figure_well_key.csv'):
         assert (out / name).stat().st_size > 0
     book = load_workbook(out / 'coupling_summary.xlsx', read_only=False)
-    assert book.sheetnames == ['README', 'per_well', 'per_arm', 'contrast', 'ratio_of_ratios',
+    assert book.sheetnames == ['README', 'per_well', 'per_arm', 'descriptive_qc', 'contrast', 'ratio_of_ratios',
                               'within_well_correlation', 'sensitivity', 'all_arms']
     assert book['per_well'].auto_filter.ref
     assert book['per_well'].freeze_panes == 'A3'
@@ -659,3 +659,53 @@ def test_signed_new_coloc_metrics_are_difference_scale(metric):
     row = summary(df)['contrast'].set_index('metric').loc[metric]
     assert row.difference == pytest.approx(.2)
     assert pd.isna(row.ratio) and row.ratio_na_reason == 'DIFFERENCE_SCALE'
+
+
+def _with_new_columns():
+    df = toy_table()
+    df['costes_rand_p'] = np.where(df.condition.eq('control'), 1 / 201, .5)
+    df['costes_rand_n_draws'] = 200
+    df['costes_block_px'] = 7.0
+    df['costes_core_coverage'] = .9
+    df['costes_rand_n_blocks'] = 40
+    df['costes_rand_r_obs_minus_null_mean'] = .2
+    df['chance_frac_spots_upp_ge_0p90'] = 21 / 201
+    df['n_spots_upp'] = np.where(df.nucleus_id.eq(1), 10, 1)
+    df['mean_uniform_position_percentile_qki'] = np.where(df.nucleus_id.eq(1), .9, .5)
+    df['frac_spots_upp_ge_0p90'] = np.where(df.nucleus_id.eq(1), .6, 0.)
+    return df
+
+
+def test_costes_p_and_parameters_never_enter_contrasts_or_ratios():
+    result = summary(_with_new_columns())
+    contrasted = set(result['contrast'].metric)
+    for column in ('costes_rand_p', 'costes_block_px', 'costes_core_coverage', 'costes_rand_n_blocks',
+                   'costes_rand_n_draws', 'chance_frac_spots_upp_ge_0p90', 'n_spots_upp'):
+        assert column not in contrasted
+        assert column not in set(result['sensitivity'].metric)
+        assert f'mean_of_well_means_{column}' not in result['per_arm'].columns
+    assert 'costes_rand_r_obs_minus_null_mean' in contrasted
+
+
+def test_descriptive_qc_sheet_reports_p_distribution_and_floor_fraction():
+    qc = summary(_with_new_columns())['descriptive_qc'].set_index(['condition', 'well'])
+    row = qc.loc[('control', 'C1')]
+    assert row.n_finite_costes_rand_p == 5
+    assert row.frac_costes_rand_p_at_floor == 1.0
+    assert row.median_costes_rand_p == pytest.approx(1 / 201)
+    assert qc.loc[('treated', 'T1')].frac_costes_rand_p_at_floor == 0.0
+    for column in ('q25_costes_rand_p', 'q75_costes_rand_p', 'min_costes_rand_p', 'max_costes_rand_p',
+                   'median_costes_block_px', 'median_costes_core_coverage'):
+        assert column in qc.columns
+
+
+def test_spot_pooled_percentile_score_per_well_and_arm():
+    result = summary(_with_new_columns())
+    well = result['per_well'].set_index('well').loc['C1']
+    # nucleus 1: 10 spots at 0.9; nuclei 2-5: 1 spot each at 0.5 -> (9 + 2) / 14
+    assert well.spot_pooled_mean_uniform_position_percentile_qki == pytest.approx(11 / 14)
+    assert well.spot_pooled_frac_spots_upp_ge_0p90 == pytest.approx(6 / 14)
+    assert well.n_spots_upp_pooled == 14
+    assert well.mean_mean_uniform_position_percentile_qki == pytest.approx((.9 + 4 * .5) / 5)
+    arm = result['per_arm'].set_index(['condition', 'threshold_multiplier']).loc[('control', 1.0)]
+    assert arm.mean_of_well_spot_pooled_mean_uniform_position_percentile_qki == pytest.approx(11 / 14)

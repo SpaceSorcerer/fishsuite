@@ -4,7 +4,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from ..core.qki_association import COLUMN_DEFINITIONS, DIFFERENCE_SCALE_NEW
+from ..core.qki_association import COLUMN_DEFINITIONS, DESCRIPTIVE_ONLY, DIFFERENCE_SCALE_NEW
 
 METRICS = [
     'n_miat_spots', 'integrated_nuclear_miat', 'nuclear_area_um2',
@@ -21,13 +21,14 @@ DIFFERENCE_SCALE_METRICS = {
 PERMUTATION_NOTE = '2 v 2 wells: exact permutation has 6 allocations; smallest two-sided p = 0.333'
 NON_METRIC_COLUMNS = {
     'condition', 'well', 'image', 'nucleus_id', 'measurement_plane',
-    'threshold_multiplier', 'well_from_image', 'n_null_effective',
+    'threshold_multiplier', 'well_from_image', 'n_null_effective', 'biological_set', 'slide',
 }
 
 
 def _metrics(data):
     """Every numeric per-nucleus measurement; identifiers and bookkeeping are not endpoints."""
     discovered = [c for c in data if c not in METRICS and c not in NON_METRIC_COLUMNS
+                  and c not in DESCRIPTIVE_ONLY
                   and not c.endswith(('_id', '_min_used', '_na_reason'))
                   and not c.startswith('na_reason_')
                   and pd.api.types.is_numeric_dtype(data[c])
@@ -52,6 +53,9 @@ def prepare_data(df: pd.DataFrame) -> pd.DataFrame:
     data['well_from_image'] = previous.astype(bool) | blank
     data['well'] = data.well.astype(str)
     data.loc[blank, 'well'] = data.loc[blank, 'image']
+    # Astra F9 (2026-09-24): composite or validated globally unique well key.
+    from ..core.well_key import resolve_well_ids
+    data['well'], data.attrs['well_key_source'] = resolve_well_ids(data)
     metrics = _metrics(data)
     for column in ['threshold_multiplier', 'nucleus_id'] + metrics:
         data[column] = pd.to_numeric(data[column], errors='raise').astype(float)
@@ -87,6 +91,7 @@ def _per_well(data, metrics):
         for reason in reasons:
             counts = group[reason].fillna('').astype(str).value_counts()
             row[reason] = '; '.join(f'{key}: {value}' for key, value in sorted(counts.items()) if key)
+        row.update(_spot_pooled(group))
         rows.append(row)
     result = pd.DataFrame(rows)
     roster = data[['condition', 'well']].drop_duplicates()
@@ -108,6 +113,53 @@ def _per_well(data, metrics):
     return result.reset_index().sort_values(['condition', 'well', 'threshold_multiplier']).reset_index(drop=True)
 
 
+POOLED_UPP = ('mean_uniform_position_percentile_qki', 'frac_spots_upp_ge_0p90', 'frac_spots_upp_ge_0p75')
+
+
+def _spot_pooled(group):
+    """Astra F4 sensitivity: every scored spot of the well pooled (a 20-spot
+    nucleus weighs 20x a 1-spot nucleus), from per-nucleus value x n_spots_upp."""
+    if 'n_spots_upp' not in group:
+        return {}
+    weights = pd.to_numeric(group['n_spots_upp'], errors='coerce').fillna(0)
+    out = {'n_spots_upp_pooled': int(weights.sum())}
+    for column in POOLED_UPP:
+        if column not in group:
+            continue
+        values = pd.to_numeric(group[column], errors='coerce')
+        keep = values.notna() & weights.gt(0)
+        total = float(weights[keep].sum())
+        out[f'spot_pooled_{column}'] = float((values[keep] * weights[keep]).sum() / total) if total else np.nan
+    return out
+
+
+def _descriptive_qc(data):
+    """Per condition/well/threshold distribution of descriptive-only columns:
+    Costes p (with the 1/(1+n_draws) floor fraction), block parameters and
+    chance references. Never contrasted, averaged into arms, or ratioed."""
+    present = [c for c in sorted(DESCRIPTIVE_ONLY) if c in data]
+    rows = []
+    for (condition, well, level), group in data.groupby(['condition', 'well', 'threshold_multiplier'], sort=True):
+        row = dict(condition=condition, well=well, threshold_multiplier=level, n_nuclei=len(group))
+        for column in present:
+            values = pd.to_numeric(group[column], errors='coerce').dropna()
+            row[f'n_finite_{column}'] = len(values)
+            row[f'median_{column}'] = float(values.median()) if len(values) else np.nan
+            if column == 'costes_rand_p':
+                for name, q in (('min', 0), ('q25', .25), ('q75', .75), ('max', 1)):
+                    row[f'{name}_{column}'] = float(values.quantile(q)) if len(values) else np.nan
+                draws = pd.to_numeric(group.get('costes_rand_n_draws', pd.Series(np.nan, index=group.index)),
+                                      errors='coerce').loc[values.index]
+                floor = 1.0 / (1.0 + draws)
+                row['frac_costes_rand_p_at_floor'] = float((values <= floor + 1e-12).mean()) if len(values) else np.nan
+        if 'na_reason_costes_rand' in group:
+            counts = group['na_reason_costes_rand'].fillna('').astype(str).value_counts()
+            row['costes_na_reasons'] = '; '.join(f'{k}: {v}' for k, v in sorted(counts.items()) if k)
+            row['frac_costes_na'] = float(group['na_reason_costes_rand'].fillna('').astype(str).ne('').mean())
+        rows.append(row)
+    return pd.DataFrame(rows)
+
+
 def _per_arm(per_well, metrics):
     """Every arm at every multiplier: equal-weight mean of its well means."""
     rows = []
@@ -120,6 +172,8 @@ def _per_arm(per_well, metrics):
             finite = values.dropna()
             row[f'n_wells_finite_{metric}'] = len(finite)
             row[f'mean_of_well_means_{metric}'] = _arm_mean(values) if len(present) else np.nan
+        for column in [c for c in present if c.startswith('spot_pooled_')]:
+            row[f'mean_of_well_{column}'] = _arm_mean(present[column]) if len(present) else np.nan
         rows.append(row)
     return pd.DataFrame(rows)
 
@@ -257,7 +311,8 @@ def _readme(data, per_well, metrics, treated, control, seed, n_boot):
         ('README', 'Definitions, threshold values, replicate structure, filtering, and sheet guide.'),
         ('per_well', 'Each condition/well/threshold: nucleus counts, metric finite and excluded counts, means and medians; source na_reason_* counts retained where supplied.'),
         ('per_arm', "Every arm (not only treated/control) at every threshold multiplier: n_wells, wells, n_nuclei, and mean_of_well_means_<metric> = equal-weight mean of the arm's well means (NaN when any well mean is missing, never silently dropped); n_wells_finite_<metric> counts wells with a finite mean. Descriptive."),
-        ('costes_rand_p_well_mean', 'mean_costes_rand_p is the well mean of per-nucleus DESCRIPTIVE Costes tail fractions; it is not a p-value for the well or the arm and carries no inference.'),
+        ('descriptive_qc', 'Astra F3: Costes p, Costes block size / count / coverage / ACF and PSF widths / draws, and the percentile-score chance references are DESCRIPTIVE QC only. They are excluded from per_well means, per_arm, contrast, ratios and sensitivity; descriptive_qc gives per-well n_finite, median, and for costes_rand_p min/q25/q75/max plus frac_costes_rand_p_at_floor (p = 1/(1+n_draws)) and the Costes NA reasons. A mean of per-nucleus randomization p-values is not a well- or arm-level p-value.'),
+        ('spot_pooled_upp', 'Astra F4 sensitivity in per_well: spot_pooled_<percentile metric> pools every scored spot of the well (weights n_spots_upp), beside the per-nucleus mean that weights each nucleus equally; per_arm carries mean_of_well_spot_pooled_<metric>.'),
         ('contrast_sheet', 'At multiplier 1.0: every well identifier and mean, equal-weight arm mean, treated-control difference and ratio. exploratory_boot_lo/hi apply to difference only.'),
         ('ratio_of_ratios', 'Secondary descriptive values only; no significance tests.'),
         ('within_well_correlation', 'Pearson and Spearman separately per condition/well/threshold; require >=10 finite paired nuclei with N>0 and >=5 distinct values in each variable; otherwise NaN with reason.'),
@@ -322,6 +377,7 @@ def summarize(df, treated, control, seed=0, n_boot=2000):
         for column in ['difference', 'ratio', 'na_reason', 'ratio_na_reason']:
             sensitivity[f'{column}_multiplier_{level:g}'] = level_contrast[column].to_numpy()
     return dict(README=_readme(data, per_well, metrics, treated, control, seed, n_boot),
-                per_well=per_well, per_arm=_per_arm(per_well, metrics), contrast=contrast, ratio_of_ratios=_ratio_of_ratios(contrast),
+                per_well=per_well, per_arm=_per_arm(per_well, metrics), descriptive_qc=_descriptive_qc(data),
+                contrast=contrast, ratio_of_ratios=_ratio_of_ratios(contrast),
                 within_well_correlation=_correlations(data), sensitivity=sensitivity,
                 all_arms=per_well[~per_well.condition.isin([treated, control])].reset_index(drop=True))

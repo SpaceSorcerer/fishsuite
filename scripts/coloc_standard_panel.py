@@ -277,6 +277,19 @@ def mde_hedges_g(alpha=ALPHA, power=POWER, n1=3, n2=3):
     return float((lo + hi) / 2)
 
 
+MDE_README_ROWS = [
+    ("mde_cohen_d_equal_variance",
+     "Planning value: the POPULATION standardized mean difference (Cohen d, pooled "
+     "SD) detectable at alpha 0.05 two-sided and 80% power for THIS row's finite "
+     "well counts, from exact noncentral Student-t power with df = n1 + n2 - 2. "
+     "ASSUMPTION: equal-variance arms (pooled SD). The tested statistic is Welch "
+     "t, which does not assume that, so the MDE is a planning approximation, not "
+     "the Welch test's exact detectable effect. No Hedges small-sample correction. "
+     "NaN = the design cannot support the test (see mde_note and nan_reason). "
+     "Renamed 2026-09-24 from mde_hedges_g_alpha_0p05_power_0p80."),
+]
+
+
 def mean_ci(v, alpha=ALPHA):
     v = np.asarray([x for x in v if np.isfinite(x)], dtype=float)
     n = v.size
@@ -572,9 +585,17 @@ def recorded_well_ids(run_dir):
     table = pd.read_csv(path)
     if not {"image", "well_id"}.issubset(table.columns):
         return {}, "per_image_summary.csv:condition"
-    pairs = table[["image", "well_id"]].dropna().drop_duplicates()
+    from fishsuite.core.well_key import resolve_well_ids
+    table = table.dropna(subset=["image", "well_id"]).copy()
+    if "condition" in table.columns:
+        # Astra F9 (2026-09-24): composite (biological_set, slide, well_id) when
+        # recorded, else a validated globally unique well_id; reuse fails loudly.
+        table["well_id"], source = resolve_well_ids(table, well_col="well_id")
+    else:
+        source = "well_id (condition absent; uniqueness not validated)"
+    pairs = table[["image", "well_id"]].drop_duplicates()
     return ({str(k): str(v) for k, v in pairs.values},
-            "resolved_experiment_hierarchy.csv:well_id")
+            "resolved_experiment_hierarchy.csv:" + source)
 
 
 class Run:
@@ -1196,7 +1217,7 @@ def contrasts_table(well, per_nucleus, mde, primary_col, secondary_col):
             diff_test_minus_ref=w["diff"], ci95_low=w["ci_low"], ci95_high=w["ci_high"],
             hedges_g=w["hedges_g"], t=w["t"], df=w["df"], p_welch=w["p_welch"],
             stars=stars(w["p_welch"]) if primary else "n/a (not tested)",
-            mde_hedges_g_alpha_0p05_power_0p80=_row_mde(w["n_test"], w["n_ref"]),
+            mde_cohen_d_equal_variance=_row_mde(w["n_test"], w["n_ref"]),
             mde_note=mde_reason(w["n_test"], w["n_ref"]),
             nan_reason=nan_reason(w["n_test"], w["n_ref"], w["diff"],
                                   w["p_welch"], primary),
@@ -1584,8 +1605,8 @@ def fig_object_fraction(well, contrasts, ctx, out_dir, manifest):
         + (". CAUTION: " + str(row["note"]) if str(row.get("note", "")).strip()
            and str(row.get("note", "")).strip().lower() != "nan" else ".")
         + " No multiplicity correction is applied because only one "
-        "endpoint is tested. MDE at alpha 0.05 and 80% power is Hedges g = "
-        f"{row['mde_hedges_g_alpha_0p05_power_0p80']:.2f}, so anything smaller is not "
+        "endpoint is tested. MDE at alpha 0.05 and 80% power (equal-variance Cohen d, planning value) = "
+        f"{row['mde_cohen_d_equal_variance']:.2f}, so anything smaller is not "
         "detectable in this design and 'ns' here does not mean 'no difference'. "
         f"PANEL B repeats the calculation with the {ctx['secondary_thr_label']} and is NOT "
         f"tested (Hedges g {row_s['hedges_g']:.3g}). Costes converged in "
@@ -1821,8 +1842,8 @@ def fig_composite(per_nucleus, well, contrasts, pooled, fields, ctx, out_dir, ma
         "Costes-with-fallback variant is a mixture of two conventions and is shown "
         "separately in csp01b. C: nucleus -> FoV -> well rollup; Welch t on "
         f"well means of the OBSERVED fraction, p = {fmt_p(row['p_welch'])}, "
-        f"Hedges g = {row['hedges_g']:.3g}, MDE Hedges g = "
-        f"{row['mde_hedges_g_alpha_0p05_power_0p80']:.2f} at alpha 0.05 / 80% power; the "
+        f"Hedges g = {row['hedges_g']:.3g}, MDE (equal-variance Cohen d) = "
+        f"{row['mde_cohen_d_equal_variance']:.2f} at alpha 0.05 / 80% power; the "
         "open circles are the within-nucleus shuffle control and they sit close to the "
         "observed value. D-E: pooled nuclear pixels subsampled to at most "
         f"{CYTO_MAX_PIXELS:,}; POOLED Costes thresholds are drawn as dashed lines only "
@@ -2101,12 +2122,7 @@ def write_workbook(path, ctx, per_nucleus, per_fov, per_well, contrasts,
          "Wells are keyed on {}. One row per well in per_well; n_wells in the "
          "contrasts table counts those wells, so it agrees with the run's own "
          "coupling report.".format(ctx.get("well_key_source", "unrecorded"))),
-        ("mde_hedges_g_alpha_0p05_power_0p80 scale",
-         "The POPULATION standardized mean difference detectable at alpha 0.05 "
-         "two-sided and 80% power for this design's well counts; no Hedges "
-         "small-sample bias correction is applied to it. NaN means the design "
-         "cannot support the test (see the mde_note and nan_reason columns)."),
-    ]
+    ] + list(MDE_README_ROWS)
     dynamic += primary_readme_rows(ctx["primary_obs"], ctx.get("primary_nan_reason", ""))
     if ctx.get("note"):
         dynamic.append(("Run-specific caveat", ctx["note"]))
@@ -2512,8 +2528,8 @@ def main(argv=None):
         "max_abs_li_icq_diff_vs_run": max_icq_diff,
         "max_abs_manders_m1_runthr_diff_vs_run": max_m1_diff,
         "max_abs_manders_m2_runthr_diff_vs_run": max_m2_diff,
-        "mde_hedges_g_alpha_0p05_power_0p80": mde,
-        "mde_scale": "population standardized mean difference; no Hedges bias correction",
+        "mde_cohen_d_equal_variance": mde,
+        "mde_scale": "equal-variance Cohen d (population, pooled SD) planning value; tested statistic is Welch t",
         "mde_note": mde_reason(_n_test, _n_ref),
         "well_key_source": run.well_key_source,
         "n_wells_ref": _n_ref,

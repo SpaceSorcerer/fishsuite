@@ -1,6 +1,7 @@
 """Saved exact-footprint single-plane adapter for QKI association metrics."""
 from __future__ import annotations
 
+import json
 import shlex
 from pathlib import Path
 
@@ -125,9 +126,116 @@ def _ccf_field_tables(records):
     return curves[curve_columns], pd.DataFrame(rows, columns=reg_columns)
 
 
+OPTICS_KEYS = ("numerical_aperture", "emission_nm_miat", "emission_nm_qki")
+_NUCLEOLUS_KEYS = ("intra_nuclear_percentile", "min_area_um2", "max_area_frac_of_nucleus",
+                   "closing_radius_px", "min_border_distance_px")
+
+
+def _explicit_optics(optics):
+    missing = [k for k in OPTICS_KEYS if optics.get(k) is None]
+    if missing:
+        raise ValueError("explicit optics must give " + ", ".join(OPTICS_KEYS) + "; missing " + ", ".join(missing))
+    values = {k: float(optics[k]) for k in OPTICS_KEYS}
+    label = "explicit (" + ", ".join(f"{k}={values[k]:g}" for k in OPTICS_KEYS) + ")"
+    return values, label
+
+
+def _metadata_optics(image_key, channels):
+    """Objective NA and per-channel emission wavelength from the source image's
+    OME metadata. Raises when the file or any value is unavailable."""
+    path = Path(str(image_key))
+    if not path.is_file():
+        raise ValueError(
+            f"Costes PSF needs objective numerical aperture (NA) and emission wavelengths; the source "
+            f"image {image_key} is not readable and no explicit optics were given "
+            "(--objective-na / --emission-nm-miat / --emission-nm-qki)")
+    from . import io as _io
+    try:
+        img = _io.read_image(path)
+    except Exception as exc:
+        raise ValueError(f"Costes PSF needs objective numerical aperture (NA) and emission wavelengths; "
+                         f"OME metadata of {image_key} is unreadable ({exc}); supply --objective-na / "
+                         "--emission-nm-miat / --emission-nm-qki") from exc
+    try:
+        meta = img.bio.ome_metadata
+        image = meta.images[0]
+        objective_id = image.objective_settings.id if image.objective_settings else None
+        objectives = [o for inst in meta.instruments for o in inst.objectives]
+        chosen = [o for o in objectives if o.id == objective_id] or (objectives if len(objectives) == 1 else [])
+        na = chosen[0].lens_na if chosen else None
+        channel_meta = image.pixels.channels
+        emission = {}
+        for role in ("miat", "qki"):
+            index = int(channels[role])
+            channel = channel_meta[index] if index < len(channel_meta) else None
+            value = channel.emission_wavelength if channel is not None else None
+            unit = str(getattr(channel, "emission_wavelength_unit", "")) if channel is not None else ""
+            if value is not None and "NANOMETER" not in unit.upper() and unit:
+                raise ValueError(f"emission wavelength unit {unit} for {role} in {image_key} is not nm")
+            emission[role] = value
+    finally:
+        try:
+            img.bio.__exit__(None, None, None)
+        except Exception:
+            pass
+    missing = [name for name, value in (("objective numerical aperture (NA)", na),
+                                        ("MIAT emission wavelength", emission["miat"]),
+                                        ("QKI emission wavelength", emission["qki"])) if value is None]
+    if missing:
+        raise ValueError(f"source OME metadata of {image_key} lacks " + ", ".join(missing)
+                         + "; supply --objective-na / --emission-nm-miat / --emission-nm-qki")
+    values = dict(numerical_aperture=float(na), emission_nm_miat=float(emission["miat"]),
+                  emission_nm_qki=float(emission["qki"]))
+    return values, f"source OME metadata: {image_key}"
+
+
+def _nucleolus_parameters(source):
+    """Production nucleolus parameters and their source, from the backfill's
+    analysis_parameters.json -> source_run_dir/run_config.json. (None, reason)
+    when not recorded."""
+    import json
+    parameters = source / "analysis_parameters.json"
+    if not parameters.is_file():
+        return None, "analysis_parameters.json absent"
+    run_dir = json.loads(parameters.read_text(encoding="utf-8")).get("source_run_dir")
+    config = Path(str(run_dir)) / "run_config.json" if run_dir else None
+    if config is None or not config.is_file():
+        return None, f"source run_config.json not found (source_run_dir={run_dir!r})"
+    resolved = json.loads(config.read_text(encoding="utf-8")).get("config_resolved", {})
+    block = resolved.get("nucleolus") or {}
+    missing = [k for k in _NUCLEOLUS_KEYS if k not in block]
+    if missing:
+        return None, f"{config} lacks nucleolus keys {missing}"
+    return {k: block[k] for k in _NUCLEOLUS_KEYS}, str(config)
+
+
+def _nucleolus_sensitivity_tables(rows, production_percentile):
+    per_nucleus = pd.DataFrame(rows)
+    if per_nucleus.empty:
+        return per_nucleus, pd.DataFrame()
+    per_well = (per_nucleus.groupby(["condition", "well", "percentile"], sort=True)
+                .agg(n_nuclei=("nucleus_id", "size"),
+                     mean_nucleolus_area_frac=("nucleolus_area_frac", "mean"),
+                     well_mean_pearson_r_nucleoplasm=("pearson_r_nucleoplasm", "mean"),
+                     well_mean_spearman_rho_nucleoplasm=("spearman_rho_nucleoplasm", "mean"),
+                     saved_mask_reproduced_frac=("saved_mask_reproduced", "mean"))
+                .reset_index())
+    base = per_well[per_well.percentile.eq(production_percentile)].set_index(["condition", "well"])
+    key = pd.MultiIndex.from_frame(per_well[["condition", "well"]])
+    per_well["delta_pearson_vs_production"] = (
+        per_well.well_mean_pearson_r_nucleoplasm.to_numpy()
+        - base.well_mean_pearson_r_nucleoplasm.reindex(key).to_numpy())
+    per_well["delta_spearman_vs_production"] = (
+        per_well.well_mean_spearman_rho_nucleoplasm.to_numpy()
+        - base.well_mean_spearman_rho_nucleoplasm.reindex(key).to_numpy())
+    per_well["production_percentile"] = production_percentile
+    return per_nucleus, per_well
+
+
 def run_qki_association(run_dir, out, *, miat_min, qki_min,
                         sensitivity=(0.8, 1.0, 1.25), n_null=200, seed=0,
-                        n_costes=200, conditions=None, image_keys=None):
+                        n_costes=200, conditions=None, image_keys=None, optics=None,
+                        nucleolus_percentiles=()):
     from .qki_association import association_tables, COLUMN_DEFINITIONS
 
     levels = tuple(float(value) for value in sensitivity)
@@ -189,7 +297,14 @@ def run_qki_association(run_dir, out, *, miat_min, qki_min,
         selected_manifest = selected_manifest[selected_manifest.image_key.isin(wanted)]
     if selected_manifest.empty:
         raise ValueError("the condition / image filter matched no image in the manifest")
-    all_nuclei, all_spots, ccf_records = [], [], []
+    if optics is not None:
+        explicit_optics = _explicit_optics(optics)
+    nucleolus_params, nucleolus_source = _nucleolus_parameters(source)
+    percentiles = tuple(float(v) for v in (nucleolus_percentiles or ()))
+    if percentiles and nucleolus_params is None:
+        raise ValueError("nucleolus sensitivity needs the production nucleolus parameters: "
+                         + nucleolus_source)
+    all_nuclei, all_spots, ccf_records, sensitivity_rows, optics_log = [], [], [], [], {}
     for record in selected_manifest.sort_values("image_key").itertuples(index=False):
         key = record.image_key
         image_spots = spots.loc[spots.image_key == key].sort_values("spot_id")
@@ -223,11 +338,35 @@ def run_qki_association(run_dir, out, *, miat_min, qki_min,
             raise ValueError(f"spot and manifest voxel_xy_nm disagree: {key}")
         eligible = (data.nucleus_labels > 0) & (data.nucleolus_labels != data.nucleus_labels)
         footprints, identifiers = _restore_footprints(image_spots, pixels, data, eligible)
+        from .coloc_pixel_metrics import nucleoplasm_sensitivity, psf_fwhm_px
+        optic_values, optic_source = (explicit_optics if optics is not None
+                                      else _metadata_optics(key, channels))
+        emission = max(optic_values["emission_nm_miat"], optic_values["emission_nm_qki"])
+        psf_px = psf_fwhm_px(emission, optic_values["numerical_aperture"], scale * 1000.0)
+        optics_log[key] = dict(optic_values, source=optic_source, psf_fwhm_px=psf_px)
+        if percentiles:
+            table = nucleoplasm_sensitivity(data.planes["miat"], data.planes["qki"], data.planes["dapi"],
+                                            data.nucleus_labels, scale, nucleolus_params, percentiles)
+            if float(nucleolus_params["intra_nuclear_percentile"]) in percentiles:
+                from .nucleolus import NucleolusParams, detect_nucleoli
+                production = detect_nucleoli(data.nucleus_labels, data.planes["dapi"], scale,
+                                             NucleolusParams(**nucleolus_params))
+                same = {int(n): bool(np.array_equal(production == n, data.nucleolus_labels == n))
+                        for n in np.unique(data.nucleus_labels[data.nucleus_labels > 0])}
+            else:
+                same = {}
+            for row in table.to_dict("records"):
+                row.update(image=key, condition=str(getattr(record, "condition", "")),
+                           well=str(getattr(record, "well", "")),
+                           saved_mask_reproduced=same.get(row["nucleus_id"], np.nan)
+                           if row["percentile"] == float(nucleolus_params["intra_nuclear_percentile"]) else np.nan)
+                sensitivity_rows.append(row)
         nuc_table, spot_table = association_tables(data.planes["miat"], data.planes["qki"],
             data.nucleus_labels, footprints, pixel_size_um=scale, miat_min=miat_min,
             qki_min=qki_min, sensitivity=levels, n_null=n_null, seed=seed,
             eligible_mask=eligible, image=key, condition=str(getattr(record, "condition", "")),
-            well=str(getattr(record, "well", "")), n_costes=int(n_costes), ccf_records=ccf_records)
+            well=str(getattr(record, "well", "")), n_costes=int(n_costes), ccf_records=ccf_records,
+            psf_fwhm_px=psf_px, psf_source=optic_source)
         spot_table["spot_id"] = spot_table.spot_id.map(identifiers)
         all_nuclei.append(nuc_table)
         all_spots.append(spot_table)
@@ -239,6 +378,13 @@ def run_qki_association(run_dir, out, *, miat_min, qki_min,
     ccf_curves, ccf_registration = _ccf_field_tables(ccf_records)
     ccf_curves.to_csv(destination / "qki_association_ccf_per_field.csv", index=False, lineterminator="\n")
     ccf_registration.to_csv(destination / "qki_association_ccf_registration.csv", index=False, lineterminator="\n")
+    if percentiles:
+        sens_nucleus, sens_well = _nucleolus_sensitivity_tables(
+            sensitivity_rows, float(nucleolus_params["intra_nuclear_percentile"]))
+        sens_nucleus.to_csv(destination / "qki_association_nucleolus_sensitivity_per_nucleus.csv",
+                            index=False, lineterminator="\n")
+        sens_well.to_csv(destination / "qki_association_nucleolus_sensitivity_per_well.csv",
+                         index=False, lineterminator="\n")
     columns = list(dict.fromkeys([*nucleus_table.columns, *spot_table.columns]))
     lines = ["# Single-plane QKI association columns", "",
         "- Eligible spots retain source null_candidate eligibility and exact saved pixels; miat_min affects MIAT area only.",
@@ -251,10 +397,10 @@ def run_qki_association(run_dir, out, *, miat_min, qki_min,
         "It does NOT remove association caused by MIAT puncta and QKI both avoiding or preferring the same nuclear sub-regions within that eligible region (e.g. around nucleolar exclusion zones or the nuclear periphery).",
         'A positive obs minus null means "more QKI at MIAT puncta than at random eligible nuclear positions", not molecular binding. Single-plane measurement.',
         "", "## Threshold-free additions (2026-09-24)", "",
-        "- `mean_null_rank_qki_at_miat`, `frac_spots_ge_null_q90`, `frac_spots_ge_null_q75`: each spot's footprint-mean raw QKI is ranked against its OWN placement-null draws (the same draws as above); no QKI cutoff; chance 0.5 / 0.10 / 0.25. Invariant to any monotone intensity transform, so neither the QKI offset nor the nuclear QKI level moves the chance level.",
+        "- Uniform-position percentile score (`uniform_position_percentile_qki`, `mean_uniform_position_percentile_qki`, `frac_spots_upp_ge_0p90`, `frac_spots_upp_ge_0p75`): each spot's footprint-mean raw QKI is ranked against its OWN uniform-position placement draws (the same draws as above), ties broken at random; no QKI cutoff. Chance references are finite-K: mean 0.5, P(u >= 0.9) = (K - ceil(0.9K) + 1)/(K + 1) = 21/201 at K = 200, P(u >= 0.75) = 51/201. The score is exactly uniform only if MIAT centres are exchangeable with uniform admissible positions; departures from that (e.g. MIAT preferring a sub-compartment) are part of what it measures. Coupling adds a spot-pooled well value beside the per-nucleus mean.",
         "- `pearson_r_nucleoplasm`, `spearman_rho_nucleoplasm`: over the nucleoplasm mask N (nucleoli excluded); `pearson_r_whole_nucleus_mask` is the nucleolus-inclusive comparator.",
         f"- Van Steensel CCF: shifts -20..+20 px (step 1 px) along x and y, pixel size from the manifest voxel_xy_nm; per-field curves in `qki_association_ccf_per_field.csv` (mean over nuclei of per-nucleus r(d)) and the channel-registration check in `qki_association_ccf_registration.csv`.",
-        f"- Costes randomization: b x b QKI blocks (b = round(sqrt(median footprint area of the image)), >= 3 px) permuted within N, MIAT fixed, n_costes = {int(n_costes)} draws, seed = {int(seed)} bound to (image, nucleus_id) in a stream separate from the placement null. `costes_rand_p` is per-nucleus DESCRIPTIVE, not a test across nuclei; wells remain the replicates.",
+        f"- Costes randomization (Astra round 2): b = ceil(max(PSF FWHM, min(ACF FWHM MIAT, ACF FWHM QKI))) px, PSF = 0.51 lambda_em / NA from the recorded optics, ACF = overlap-normalized mean-centered 2-D autocorrelation over in-mask pairs, radially averaged; tile phase chosen from mask geometry to maximise complete-block coverage; observed r and all {int(n_costes)} permutations on the frozen core N_core; NA (MASK_BLOCK_COVERAGE) below 10 blocks or 80% coverage; seed = {int(seed)} bound to (image, nucleus_id) in its own stream. `costes_rand_p` is per-nucleus DESCRIPTIVE, not a test across nuclei, and is excluded from coupling contrasts; wells remain the replicates.",
         "- These statistics share the placement null's limit: none removes MIAT and QKI co-preferring the same nuclear sub-compartment.",
         "", "## Column definitions", ""]
     for name in columns:
@@ -270,12 +416,30 @@ def run_qki_association(run_dir, out, *, miat_min, qki_min,
         "--seed", str(seed), "--n-costes", str(int(n_costes))]
     for condition in conditions or ():
         argv += ["--condition", str(condition)]
+    if optics is not None:
+        argv += ["--objective-na", f"{explicit_optics[0]['numerical_aperture']:g}",
+                 "--emission-nm-miat", f"{explicit_optics[0]['emission_nm_miat']:g}",
+                 "--emission-nm-qki", f"{explicit_optics[0]['emission_nm_qki']:g}"]
+    if percentiles:
+        argv += ["--nucleolus-sensitivity", ",".join(f"{v:g}" for v in percentiles)]
     command = shlex.join(argv + ["--out", str(destination)])
     extra = {"qki_assoc_command": command, "consumed_files": ", ".join(REQUIRED_FILES),
              "quantitation": "single-plane", "n_costes": int(n_costes),
              "costes_seed_stream": "sha256([seed, image_key, nucleus_id, 'costes_block_scramble'])",
              "ccf_shift_range_px": "-20..20 step 1",
-             "images_processed": len(selected_manifest)}
+             "images_processed": len(selected_manifest),
+             "upp_tiebreak_stream": "sha256([seed, image_key, nucleus_id, 'upp_tiebreak'])",
+             "psf_formula": "0.51 * max(emission_nm_miat, emission_nm_qki) / objective_na / voxel_xy_nm",
+             "costes_block_rule": "ceil(max(psf_fwhm_px, min(acf_fwhm_px_miat, acf_fwhm_px_qki))); >=10 blocks and >=0.80 coverage",
+             "nucleolus_params": (json.dumps(nucleolus_params, sort_keys=True) if nucleolus_params is not None
+                                  else "not recorded: " + nucleolus_source + "; saved nucleolus_labels used as-is"),
+             "nucleolus_params_source": nucleolus_source,
+             "nucleolus_sensitivity_percentiles": ",".join(f"{v:g}" for v in percentiles) or "none"}
+    distinct = {(v["numerical_aperture"], v["emission_nm_miat"], v["emission_nm_qki"]) for v in optics_log.values()}
+    if len(distinct) == 1:
+        na, em_m, em_q = next(iter(distinct))
+        extra.update(objective_na=na, emission_nm_miat=em_m, emission_nm_qki=em_q)
+    extra["optics_per_image"] = json.dumps(optics_log, sort_keys=True)
     if image_keys:
         extra["image_keys_filter"] = "; ".join(sorted(str(k) for k in image_keys))
     if not repro.write_command_log(destination, source / "image_manifest.csv", destination, seed,

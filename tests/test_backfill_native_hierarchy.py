@@ -135,7 +135,8 @@ def test_native_backfill_completes_and_satisfies_qki_adapter(native_run, tmp_pat
         "enabled_in_run; mapped nuclei_metrics.csv.eligible_for_sampling and sampled_in_analysis"
     )
     association = tmp_path / "qki-output"
-    run_qki_association(output, association, miat_min=50, qki_min=50, n_null=3, seed=2)
+    run_qki_association(output, association, miat_min=50, qki_min=50, n_null=3, seed=2,
+                        optics=dict(numerical_aperture=1.4, emission_nm_miat=668.0, emission_nm_qki=603.0))
     nuclei = pd.read_csv(association / "qki_association_per_nucleus.csv")
     assert set(nuclei.well) == {"A01", "A02", "B01", "B02"}
     assert set(nuclei.condition) == {"Control", "OE"}
@@ -340,7 +341,8 @@ def test_native_qki_adapter_preserves_numeric_well_identifiers(native_run, tmp_p
     output = tmp_path / "numeric-wells"
     _execute(native_run, output)
     association = tmp_path / "numeric-wells-qki"
-    run_qki_association(output, association, miat_min=50, qki_min=50, n_null=3, seed=2)
+    run_qki_association(output, association, miat_min=50, qki_min=50, n_null=3, seed=2,
+                        optics=dict(numerical_aperture=1.4, emission_nm_miat=668.0, emission_nm_qki=603.0))
     nuclei = pd.read_csv(association / "qki_association_per_nucleus.csv", dtype={"well": str})
     assert set(nuclei.well) == {"001", "002", "003", "004"}
 
@@ -451,7 +453,8 @@ def test_native_duplicate_basenames_remain_distinct_through_backfill_and_qki(nat
     assert spots.spot_uid.nunique() == len(spots) == 12
     assert spots.groupby("image_key").size().eq(3).all()
     association = tmp_path / "duplicate-basename-qki"
-    run_qki_association(output, association, miat_min=50, qki_min=50, n_null=3, seed=2)
+    run_qki_association(output, association, miat_min=50, qki_min=50, n_null=3, seed=2,
+                        optics=dict(numerical_aperture=1.4, emission_nm_miat=668.0, emission_nm_qki=603.0))
     nuclei = pd.read_csv(association / "qki_association_per_nucleus.csv")
     assert len(nuclei) == 12
     assert set(nuclei.threshold_multiplier) == {0.8, 1.0, 1.25}

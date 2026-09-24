@@ -43,7 +43,7 @@ def test_rows_with_fewer_finite_wells_get_their_own_mde(panel):
     design = panel.mde_hedges_g(n1=2, n2=2)
     contrasts = panel.contrasts_table(well, per_nucleus, design,
                                       "frac_called_coloc_runthr", "frac_called_coloc").set_index("endpoint")
-    col = "mde_hedges_g_alpha_0p05_power_0p80"
+    col = "mde_cohen_d_equal_variance"
     assert contrasts.loc["frac_called_coloc_runthr", col] == pytest.approx(5.65, abs=0.01)
     assert contrasts.loc["pearson_r_csp", col] == pytest.approx(5.65, abs=0.01)
     empty = contrasts.loc["frac_called_coloc_partner"]
@@ -67,3 +67,17 @@ def test_overlay_picks_carry_condition_and_well_for_the_field_label(panel, tmp_p
     panel._save_field_overlay(tmp_path / "f.png", rgb, [], np.array([10]), np.array([10]),
                               np.array([True]), 130.0, {}, picks[0])
     assert (tmp_path / "f.png").stat().st_size > 0
+
+
+def test_mde_column_is_named_and_disclosed_as_equal_variance_cohen_d(panel):
+    """Astra F7: the MDE is an equal-variance Cohen d planning value, while the
+    tested statistic is Welch; the column name and the README must say so."""
+    per_nucleus = _two_by_two(panel)
+    _fov, well = panel.rollup(per_nucleus)
+    panel.ARMS[:] = ["WT", "OE"]
+    contrasts = panel.contrasts_table(well, per_nucleus, float("nan"),
+                                      "frac_called_coloc_runthr", "frac_called_coloc")
+    assert "mde_cohen_d_equal_variance" in contrasts.columns
+    assert not any(c.startswith("mde_hedges") for c in contrasts.columns)
+    text = " ".join(f"{a} {b}" for a, b in panel.MDE_README_ROWS)
+    assert "equal-variance" in text and "Welch" in text and "Cohen d" in text

@@ -5,7 +5,9 @@ section (c), items 1-4. All inputs are raw single-plane intensities on one
 nucleus's nucleoplasm mask N (eligible pixels of that nucleus, nucleoli
 excluded). Nothing here pools pixels or spots across nuclei and nothing here
 is a test across nuclei: the Costes p is a per-nucleus descriptive tail
-fraction.
+fraction. Round 2 (Astra review 2026-09-24): uniform-position percentile
+score with randomized ties; Costes block size from per-channel ACF and the
+theoretical PSF, on a frozen complete-block core with a coverage gate.
 """
 from __future__ import annotations
 
@@ -17,17 +19,21 @@ from scipy import stats
 MIN_PIXELS = 100
 CCF_MAX_SHIFT_PX = 20
 CCF_FLANK_PX = (15, 20)
-COSTES_MIN_BLOCK_PX = 3
+ACF_MAX_RADIUS_PX = 20
 COSTES_MIN_BLOCKS = 10
+COSTES_MIN_COVERAGE = 0.80
 COSTES_N_ITER = 200
-RANK_CUTOFFS = (0.9, 0.75)
+PSF_LATERAL_FACTOR = 0.51
+UPP_CUTOFFS = (0.9, 0.75)
 
 
-def null_midrank(observed: np.ndarray, null_draws: np.ndarray) -> np.ndarray:
-    """Per-spot mid-rank of the observed value within its own null draws.
+def uniform_position_percentile(observed, null_draws, rng: np.random.Generator) -> np.ndarray:
+    """Per-spot uniform-position percentile score with randomized tie-breaking.
 
-    ``null_draws`` has one column per spot and one row per draw (K rows).
-    u_i = (#{d_ik < o_i} + 0.5 * #{d_ik = o_i}) / K.
+    ``null_draws`` is (K draws, n spots). R_i = #{d_ik < o_i} + J_i with J_i
+    uniform on {0, ..., #{d_ik = o_i}}; u_i = R_i / K. If the observed spot is
+    exchangeable with its K uniform-position placements, R_i is uniform on
+    {0..K} exactly, ties included (a mid-rank would pile tied spots at 0.5).
     """
     observed = np.asarray(observed, dtype=float)
     draws = np.asarray(null_draws, dtype=float)
@@ -37,17 +43,27 @@ def null_midrank(observed: np.ndarray, null_draws: np.ndarray) -> np.ndarray:
         return np.full(observed.size, np.nan)
     below = np.count_nonzero(draws < observed[None, :], axis=0)
     ties = np.count_nonzero(draws == observed[None, :], axis=0)
-    return (below + 0.5 * ties) / draws.shape[0]
+    jitter = rng.integers(0, ties + 1) if observed.size else np.zeros(0, dtype=int)
+    return (below + jitter) / draws.shape[0]
 
 
-def rank_summary(u: np.ndarray) -> dict:
+def upp_chance_ge(k: int, cutoff: float) -> float:
+    """P(u >= cutoff) under exchangeability with K draws: ranks uniform on {0..K}."""
+    k = int(k)
+    return (k - int(np.ceil(cutoff * k - 1e-9)) + 1) / (k + 1)
+
+
+def upp_summary(u: np.ndarray, k: int) -> dict:
     u = np.asarray(u, dtype=float)
-    if u.size == 0:
-        return dict(mean_null_rank_qki_at_miat=np.nan, frac_spots_ge_null_q90=np.nan,
-                    frac_spots_ge_null_q75=np.nan)
-    return dict(mean_null_rank_qki_at_miat=float(u.mean()),
-                frac_spots_ge_null_q90=float(np.mean(u >= RANK_CUTOFFS[0])),
-                frac_spots_ge_null_q75=float(np.mean(u >= RANK_CUTOFFS[1])))
+    out = dict(mean_uniform_position_percentile_qki=np.nan, frac_spots_upp_ge_0p90=np.nan,
+               frac_spots_upp_ge_0p75=np.nan, n_spots_upp=int(u.size), chance_mean_upp=0.5,
+               chance_frac_spots_upp_ge_0p90=upp_chance_ge(k, UPP_CUTOFFS[0]) if k else np.nan,
+               chance_frac_spots_upp_ge_0p75=upp_chance_ge(k, UPP_CUTOFFS[1]) if k else np.nan)
+    if u.size:
+        out.update(mean_uniform_position_percentile_qki=float(u.mean()),
+                   frac_spots_upp_ge_0p90=float(np.mean(u >= UPP_CUTOFFS[0] - 1e-12)),
+                   frac_spots_upp_ge_0p75=float(np.mean(u >= UPP_CUTOFFS[1] - 1e-12)))
+    return out
 
 
 def _pearson(a: np.ndarray, b: np.ndarray) -> float:
@@ -195,27 +211,143 @@ def nucleus_ccf(miat, qki, mask, *, pixel_size_um, max_shift: int = CCF_MAX_SHIF
     return row
 
 
-def costes_block_size(footprint_areas_px) -> int | None:
-    """round(sqrt(median footprint area)) px, at least 3 px; None without footprints."""
-    areas = np.asarray(list(footprint_areas_px), dtype=float)
-    if areas.size == 0:
+def psf_fwhm_px(emission_nm, numerical_aperture, pixel_nm) -> float:
+    """Theoretical lateral PSF FWHM, 0.51 * lambda_em / NA, in pixels. Raises
+    when any optical value is missing or invalid; there is no default."""
+    values = []
+    for name, value in (("emission wavelength (nm)", emission_nm),
+                        ("objective NA", numerical_aperture), ("pixel size (nm)", pixel_nm)):
+        try:
+            number = float(value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"PSF needs {name} from the acquisition metadata; got {value!r}") from exc
+        if not np.isfinite(number) or number <= 0:
+            raise ValueError(f"PSF needs a finite positive {name}; got {value!r}")
+        values.append(number)
+    emission, na, pixel = values
+    return PSF_LATERAL_FACTOR * emission / na / pixel
+
+
+def acf_radial(x, mask, *, max_radius: int = ACF_MAX_RADIUS_PX, min_pairs: int = MIN_PIXELS):
+    """Overlap-normalized, mean-centered 2-D autocorrelation of ``x`` over the
+    pixel pairs whose BOTH endpoints lie in ``mask``, radially averaged.
+
+    ACF(d) = sum over in-mask pairs (x_p - m)(x_{p+d} - m) / (n_pairs(d) * var),
+    m and var over the mask. Radial bin k = round(|d|); each bin is
+    pair-count weighted and kept only when it has >= ``min_pairs`` pairs.
+    Returns (radii, acf, pairs, reason).
+    """
+    from scipy.signal import correlate
+
+    mask = np.asarray(mask, dtype=bool)
+    radii = np.arange(int(max_radius) + 1)
+    acf = np.full(radii.size, np.nan)
+    pairs = np.zeros(radii.size, dtype=np.int64)
+    n = int(mask.sum())
+    if n == 0:
+        return radii, acf, pairs, "R0"
+    if n < MIN_PIXELS:
+        return radii, acf, pairs, "LOW_PIX"
+    sy, sx = _crop(mask)
+    k = mask[sy, sx]
+    v = np.asarray(x, dtype=float)[sy, sx]
+    mean = float(v[k].mean())
+    var = float(((v[k] - mean) ** 2).mean())
+    if not var > 0:
+        return radii, acf, pairs, "ZERO_VAR"
+    a = np.where(k, v - mean, 0.0)
+    num = correlate(a, a, mode="full", method="fft")
+    cnt = np.rint(correlate(k.astype(float), k.astype(float), mode="full", method="fft"))
+    cy, cx = k.shape[0] - 1, k.shape[1] - 1
+    r = int(max_radius)
+    dy, dx = np.mgrid[-r:r + 1, -r:r + 1]
+    y0, y1 = max(0, cy - r), min(num.shape[0], cy + r + 1)
+    x0, x1 = max(0, cx - r), min(num.shape[1], cx + r + 1)
+    window_num = np.zeros(dy.shape)
+    window_cnt = np.zeros(dy.shape)
+    window_num[y0 - cy + r:y1 - cy + r, x0 - cx + r:x1 - cx + r] = num[y0:y1, x0:x1]
+    window_cnt[y0 - cy + r:y1 - cy + r, x0 - cx + r:x1 - cx + r] = cnt[y0:y1, x0:x1]
+    bins = np.rint(np.hypot(dy, dx)).astype(int)
+    for radius in radii:
+        sel = (bins == radius) & (window_cnt > 0)
+        total = float(window_cnt[sel].sum())
+        pairs[radius] = int(total)
+        if total >= min_pairs:
+            acf[radius] = float(window_num[sel].sum()) / total / var
+    return radii, acf, pairs, ""
+
+
+def acf_fwhm_px(x, mask, *, max_radius: int = ACF_MAX_RADIUS_PX, min_pairs: int = MIN_PIXELS):
+    """FWHM (px) of the central ACF peak: 2 x the radius at which the radial
+    ACF first falls below 0.5, linearly interpolated. (nan, reason) when it
+    does not fall to half height inside the estimable range."""
+    radii, acf, _pairs, reason = acf_radial(x, mask, max_radius=max_radius, min_pairs=min_pairs)
+    if reason:
+        return float("nan"), reason
+    for i in range(1, radii.size):
+        if not np.isfinite(acf[i]):
+            break
+        if acf[i] < 0.5:
+            r_half = radii[i - 1] + (acf[i - 1] - 0.5) / (acf[i - 1] - acf[i]) * (radii[i] - radii[i - 1])
+            return float(2.0 * r_half), ""
+    return float("nan"), "ACF_NO_HALF"
+
+
+def costes_block_from_widths(fwhm_miat_px, fwhm_qki_px, psf_px):
+    """b = ceil(max(PSF_FWHM_px, min(FWHM_ACF_MIAT_px, FWHM_ACF_QKI_px)))."""
+    values = [float(fwhm_miat_px), float(fwhm_qki_px), float(psf_px)]
+    if not all(np.isfinite(values)):
         return None
-    return max(COSTES_MIN_BLOCK_PX, int(np.floor(np.sqrt(np.median(areas)) + 0.5)))
+    return int(np.ceil(max(values[2], min(values[0], values[1])) - 1e-9))
+
+
+def _complete_blocks(mask, block_px, oy, ox):
+    """Complete b x b blocks of ``mask`` for a grid whose origin sits (oy, ox)
+    px above/left of the mask bounding box. Returns (core mask, n blocks)."""
+    b = int(block_px)
+    sy, sx = _crop(mask)
+    k = np.pad(mask[sy, sx], ((oy, 0), (ox, 0)), constant_values=False)
+    k = np.pad(k, ((0, -k.shape[0] % b), (0, -k.shape[1] % b)), constant_values=False)
+    nby, nbx = k.shape[0] // b, k.shape[1] // b
+    full = k.reshape(nby, b, nbx, b).all(axis=(1, 3))
+    core_pad = np.repeat(np.repeat(full, b, axis=0), b, axis=1)
+    core = np.zeros(mask.shape, dtype=bool)
+    height, width = sy.stop - sy.start, sx.stop - sx.start
+    core[sy, sx] = core_pad[oy:oy + height, ox:ox + width]
+    return core, int(full.sum())
+
+
+def best_tile_phase(mask, block_px):
+    """Grid phase (oy, ox) in [0, b)^2 maximising complete-block coverage,
+    chosen from mask geometry only (ties: smallest oy, then ox). Returns
+    ((oy, ox), core mask, n blocks, coverage = core pixels / mask pixels)."""
+    mask = np.asarray(mask, dtype=bool)
+    best = None
+    for oy in range(int(block_px)):
+        for ox in range(int(block_px)):
+            core, count = _complete_blocks(mask, block_px, oy, ox)
+            if best is None or count > best[2]:
+                best = ((oy, ox), core, count)
+    phase, core, count = best
+    return phase, core, count, float(core.sum() / mask.sum())
 
 
 def costes_randomization(miat, qki, mask, block_px, n_iter, rng: np.random.Generator,
                          min_blocks: int = COSTES_MIN_BLOCKS,
-                         min_pixels: int = MIN_PIXELS) -> dict:
-    """Costes block-scramble randomization of r over the full blocks of ``mask``.
+                         min_coverage: float = COSTES_MIN_COVERAGE) -> dict:
+    """Costes block-scramble randomization on the frozen block core N_core.
 
-    The nucleus bounding box is tiled from its top-left corner into
-    ``block_px`` x ``block_px`` blocks. Only blocks lying entirely inside the
-    mask are used. QKI blocks are permuted among those positions (orientation
-    kept), MIAT stays fixed, and r is recomputed over the same pixels.
-    p = (1 + #{r_perm >= r_obs}) / (1 + n_iter): one-sided, per-nucleus,
-    descriptive.
+    The tile phase maximising complete-block coverage is chosen from the mask
+    alone; N_core (the union of complete blocks) is then frozen, and the
+    observed r and every permutation (QKI blocks permuted among N_core block
+    positions, orientation kept, MIAT fixed) use exactly N_core.
+    p = (1 + #{r_perm >= r_obs}) / (1 + n_iter); one-sided, per-nucleus,
+    descriptive. NA (MASK_BLOCK_COVERAGE) below ``min_blocks`` complete blocks
+    or ``min_coverage`` of the mask.
     """
-    out = dict(costes_rand_n_blocks=0, costes_rand_r_obs=np.nan, costes_rand_null_mean_r=np.nan,
+    out = dict(costes_tile_phase_y=np.nan, costes_tile_phase_x=np.nan, costes_rand_n_blocks=0,
+               costes_core_coverage=np.nan, costes_rand_n_draws=int(n_iter),
+               costes_rand_r_obs=np.nan, costes_rand_null_mean_r=np.nan,
                costes_rand_r_obs_minus_null_mean=np.nan, costes_rand_p=np.nan, reason="")
     mask = np.asarray(mask, dtype=bool)
     if block_px is None:
@@ -225,24 +357,26 @@ def costes_randomization(miat, qki, mask, block_px, n_iter, rng: np.random.Gener
         out["reason"] = "R0"
         return out
     b = int(block_px)
-    sy, sx = _crop(mask)
-    k = mask[sy, sx]
-    height, width = k.shape
-    ph, pw = -height % b, -width % b
-    k = np.pad(k, ((0, ph), (0, pw)), constant_values=False)
-    m = np.pad(np.asarray(miat, dtype=float)[sy, sx], ((0, ph), (0, pw)))
-    q = np.pad(np.asarray(qki, dtype=float)[sy, sx], ((0, ph), (0, pw)))
-    nby, nbx = k.shape[0] // b, k.shape[1] // b
+    (oy, ox), core, count, coverage = best_tile_phase(mask, b)
+    out.update(costes_tile_phase_y=oy, costes_tile_phase_x=ox, costes_rand_n_blocks=count,
+               costes_core_coverage=coverage)
+    if count < min_blocks or coverage < min_coverage:
+        out["reason"] = "MASK_BLOCK_COVERAGE"
+        return out
+    sy, sx = _crop(core)
+    c = core[sy, sx]
+    m = np.asarray(miat, dtype=float)[sy, sx]
+    q = np.asarray(qki, dtype=float)[sy, sx]
+    nby, nbx = c.shape[0] // b, c.shape[1] // b
+    # core bbox starts on a block boundary and spans whole blocks
+    c, m, q = c[:nby * b, :nbx * b], m[:nby * b, :nbx * b], q[:nby * b, :nbx * b]
 
     def blocks(a):
         return a.reshape(nby, b, nbx, b).transpose(0, 2, 1, 3).reshape(nby * nbx, b * b)
 
-    full = blocks(k).all(axis=1)
-    count = int(full.sum())
-    out["costes_rand_n_blocks"] = count
-    if count < min_blocks or count * b * b < min_pixels:
-        out["reason"] = "FEW_BLOCKS"
-        return out
+    full = blocks(c).all(axis=1)
+    if int(full.sum()) != count:
+        raise AssertionError("frozen core block count changed between phase search and scramble")
     mb, qb = blocks(m)[full], blocks(q)[full]
     mc, qc = mb - mb.mean(), qb - qb.mean()
     denominator = np.sqrt(float((mc * mc).sum()) * float((qc * qc).sum()))
@@ -256,3 +390,45 @@ def costes_randomization(miat, qki, mask, block_px, n_iter, rng: np.random.Gener
                costes_rand_r_obs_minus_null_mean=float(r_obs - r_perm.mean()),
                costes_rand_p=float((1 + np.count_nonzero(r_perm >= r_obs)) / (1 + int(n_iter))))
     return out
+
+
+def nucleus_costes(miat, qki, mask, *, psf_px, n_iter, rng: np.random.Generator) -> dict:
+    """ACF/PSF-sized Costes randomization for one nucleus, with every
+    parameter recorded. No PSF -> NO_PSF (never a default block)."""
+    fwhm_m, reason_m = acf_fwhm_px(miat, mask)
+    fwhm_q, reason_q = acf_fwhm_px(qki, mask)
+    psf = float(psf_px) if psf_px is not None else float("nan")
+    block = costes_block_from_widths(fwhm_m, fwhm_q, psf) if np.isfinite(psf) else None
+    row = dict(costes_psf_fwhm_px=psf, costes_acf_fwhm_px_miat=fwhm_m, costes_acf_fwhm_px_qki=fwhm_q,
+               costes_block_px=float(block) if block is not None else float("nan"))
+    result = costes_randomization(miat, qki, mask, block, n_iter, rng)
+    reason = result.pop("reason")
+    if block is None:
+        reason = "NO_PSF" if not np.isfinite(psf) else ("ACF_" + (reason_m or reason_q).removeprefix("ACF_"))
+    row.update(result)
+    row["na_reason_costes_rand"] = reason
+    return row
+
+
+def nucleoplasm_sensitivity(miat, qki, dapi, labels, pixel_size_um, params: dict,
+                            percentiles) -> "pd.DataFrame":
+    """Nucleoplasm Pearson/Spearman with the nucleolus mask re-detected from
+    DAPI at each intra-nuclear percentile (other nucleolus parameters fixed)."""
+    import pandas as pd
+    from .nucleolus import NucleolusParams, detect_nucleoli
+
+    labels = np.asarray(labels)
+    rows = []
+    for percentile in percentiles:
+        settings = NucleolusParams(**{**params, "intra_nuclear_percentile": float(percentile)})
+        nucleoli = detect_nucleoli(labels, np.asarray(dapi), pixel_size_um, settings)
+        for nucleus_id in np.unique(labels[labels > 0]):
+            nucleus = labels == nucleus_id
+            nucleolus = nucleoli == nucleus_id
+            corr = masked_correlations(miat, qki, nucleus & ~nucleolus)
+            rows.append(dict(nucleus_id=int(nucleus_id), percentile=percentile,
+                             nucleolus_area_frac=float(nucleolus.sum() / nucleus.sum()),
+                             n_pixels_nucleoplasm=corr["n_pixels"],
+                             pearson_r_nucleoplasm=corr["pearson"],
+                             spearman_rho_nucleoplasm=corr["spearman"], na_reason=corr["reason"]))
+    return pd.DataFrame(rows)

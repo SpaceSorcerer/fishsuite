@@ -1161,16 +1161,27 @@ def footprint_backfill(ctx):
               help="Costes block-scramble draws per nucleus (per-nucleus descriptive p).")
 @click.option("--condition", "conditions", multiple=True,
               help="Restrict to manifest condition(s); repeatable. Default: every image.")
+@click.option("--objective-na", type=float, default=None,
+              help="Objective NA for the Costes PSF. Default: read from each source image's OME metadata.")
+@click.option("--emission-nm-miat", type=float, default=None, help="MIAT emission wavelength (nm); see --objective-na.")
+@click.option("--emission-nm-qki", type=float, default=None, help="QKI emission wavelength (nm); see --objective-na.")
+@click.option("--nucleolus-sensitivity", default="", show_default=False,
+              help="Comma-separated DAPI intra-nuclear percentiles (e.g. 20,25,30) for the nucleoplasm-mask sensitivity.")
 @click.option("--out", required=True, type=click.Path(file_okay=False),
               help="New or empty directory outside the source run.")
-def qki_assoc(run_dir, miat_min, qki_min, sensitivity, n_null, seed, n_costes, conditions, out):
+def qki_assoc(run_dir, miat_min, qki_min, sensitivity, n_null, seed, n_costes, conditions,
+              objective_na, emission_nm_miat, emission_nm_qki, nucleolus_sensitivity, out):
     """Single-plane MIAT/QKI area occupancy with exact-footprint placement nulls."""
     from .core.qki_association_postrun import run_qki_association
     try:
         levels = tuple(float(value.strip()) for value in sensitivity.split(","))
         result = run_qki_association(run_dir, out, miat_min=miat_min, qki_min=qki_min,
             sensitivity=levels, n_null=n_null, seed=seed, n_costes=n_costes,
-            conditions=tuple(conditions) or None)
+            conditions=tuple(conditions) or None,
+            optics=(None if (objective_na, emission_nm_miat, emission_nm_qki) == (None, None, None)
+                    else dict(numerical_aperture=objective_na, emission_nm_miat=emission_nm_miat,
+                              emission_nm_qki=emission_nm_qki)),
+            nucleolus_percentiles=tuple(float(v) for v in nucleolus_sensitivity.split(",") if v.strip()))
     except (ValueError, OSError) as exc:
         raise click.ClickException(str(exc)) from exc
     click.echo(f"Single-plane QKI association: {result}")
