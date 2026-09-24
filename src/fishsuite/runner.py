@@ -670,17 +670,7 @@ def run_batch(
 
     prefix = cfg.output.prefix or ""
 
-    images = _io.discover_inputs(
-        input_dir,
-        subfolder_conditions=cfg.conditions.subfolder_conditions,
-        sec_only_folders=cfg.conditions.sec_only_folders,
-        sec_only_files=cfg.conditions.sec_only_files,
-        filename_conditions=cfg.conditions.filename_conditions,
-        strict_subfolders=cfg.conditions.strict_subfolders,
-        exclude_subfolders=cfg.conditions.exclude_subfolders,
-        strict_filenames=cfg.conditions.strict_filenames,
-        recursive_discovery=cfg.conditions.recursive_discovery,
-    )
+    images = _io.discover_from_conditions(input_dir, cfg.conditions)
     if not images:
         raise RuntimeError(f"No images discovered under {input_dir}")
 

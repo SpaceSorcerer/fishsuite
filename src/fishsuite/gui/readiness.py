@@ -97,12 +97,9 @@ def conditions_status(cfg: Dict[str, Any], *, input_dir: str) -> Status:
     try:
         conditions = ConditionsCfg.model_validate(cfg.get('conditions', {}))
         if conditions.groups and input_dir and Path(input_dir).is_dir():
-            from fishsuite.core.io import discover_inputs
+            from fishsuite.core.io import discover_from_conditions
             root = Path(input_dir)
-            images = discover_inputs(root, subfolder_conditions=conditions.subfolder_conditions,
-                sec_only_folders=conditions.sec_only_folders, sec_only_files=conditions.sec_only_files,
-                filename_conditions=conditions.filename_conditions,
-                recursive_discovery=conditions.recursive_discovery)
+            images = discover_from_conditions(root, conditions)
             subset = cfg.get('input_file_subset') or []
             if subset:
                 from fishsuite.config.hierarchy import select_inputs
