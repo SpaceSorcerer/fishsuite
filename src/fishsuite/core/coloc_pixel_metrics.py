@@ -293,12 +293,30 @@ def acf_fwhm_px(x, mask, *, max_radius: int = ACF_MAX_RADIUS_PX, min_pairs: int 
     return float("nan"), "ACF_NO_HALF"
 
 
-def costes_block_from_widths(fwhm_miat_px, fwhm_qki_px, psf_px):
-    """b = ceil(max(PSF_FWHM_px, min(FWHM_ACF_MIAT_px, FWHM_ACF_QKI_px)))."""
-    values = [float(fwhm_miat_px), float(fwhm_qki_px), float(psf_px)]
+COSTES_SCRAMBLED_CHANNEL = "qki"   # costes_randomization permutes QKI blocks; MIAT stays fixed
+# Round-3 calibration gate (tests/test_costes_calibration_2026_09_24.py): on 400
+# texture-matched independent-channel nuclei the block-scramble p rejected at
+# 8.25% for alpha 0.05 (one-sided 95% binomial limit 6.75%) and 2.75% for alpha
+# 0.01 (limit 2.0%). Not tuned further: the p is NOT_CALIBRATED, QC only.
+COSTES_P_CALIBRATION = "NOT_CALIBRATED"
+
+
+def costes_block_from_widths(fwhm_scrambled_px, psf_px):
+    """b = ceil(max(PSF_FWHM_px, FWHM_ACF of the SCRAMBLED channel)).
+
+    Round 3 rule change (2026-09-24). Round 2 used min(FWHM_MIAT, FWHM_QKI),
+    which on the UD basal data gave b ~4 px, smaller than the texture of the
+    channel actually being permuted (QKI ACF ~7.7 px). Blocks smaller than
+    the scrambled channel's autocorrelation length break its spatial
+    structure, so the permutation null is too narrow and the test is
+    anticonservative (synthetic independent channels: 12/100 at alpha 0.05;
+    texture-matched gate: 8.6% at n = 440). Only QKI is scrambled here, so
+    the block follows the QKI ACF width; the MIAT width is recorded, unused.
+    """
+    values = [float(fwhm_scrambled_px), float(psf_px)]
     if not all(np.isfinite(values)):
         return None
-    return int(np.ceil(max(values[2], min(values[0], values[1])) - 1e-9))
+    return int(np.ceil(max(values[1], values[0]) - 1e-9))
 
 
 def _complete_blocks(mask, block_px, oy, ox):
@@ -398,13 +416,13 @@ def nucleus_costes(miat, qki, mask, *, psf_px, n_iter, rng: np.random.Generator)
     fwhm_m, reason_m = acf_fwhm_px(miat, mask)
     fwhm_q, reason_q = acf_fwhm_px(qki, mask)
     psf = float(psf_px) if psf_px is not None else float("nan")
-    block = costes_block_from_widths(fwhm_m, fwhm_q, psf) if np.isfinite(psf) else None
+    block = costes_block_from_widths(fwhm_q, psf) if np.isfinite(psf) else None
     row = dict(costes_psf_fwhm_px=psf, costes_acf_fwhm_px_miat=fwhm_m, costes_acf_fwhm_px_qki=fwhm_q,
                costes_block_px=float(block) if block is not None else float("nan"))
     result = costes_randomization(miat, qki, mask, block, n_iter, rng)
     reason = result.pop("reason")
     if block is None:
-        reason = "NO_PSF" if not np.isfinite(psf) else ("ACF_" + (reason_m or reason_q).removeprefix("ACF_"))
+        reason = "NO_PSF" if not np.isfinite(psf) else ("ACF_" + reason_q.removeprefix("ACF_"))
     row.update(result)
     row["na_reason_costes_rand"] = reason
     return row
