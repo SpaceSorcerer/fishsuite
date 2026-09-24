@@ -233,6 +233,48 @@ def nucleus_z_extent(dapi_zyx, nucleus_mask, *, z_step_um, margin_um=1.0, must_i
                         z0_0based=z0, z1_0based_exclusive=z1)
 
 
+def fixed_z_window(dapi_zyx, nucleus_mask, *, dz_eff_um, window_um, must_include=()):
+    """Fixed-height render-only z window: ``window_um`` tall in effective µm.
+
+    Centred on the midpoint of the nucleus DAPI axial half-maximum run (see
+    ``nucleus_z_extent``), then shifted (never shrunk) to lie inside the stack
+    and to cover ``must_include`` planes. If the stack is shorter than the
+    window, the full stack is returned and flagged. Display only.
+    """
+    if not (np.isfinite(window_um) and window_um > 0 and np.isfinite(dz_eff_um) and dz_eff_um > 0):
+        raise ValueError('window_um and dz_eff_um must be positive')
+    _, _, info = nucleus_z_extent(dapi_zyx, nucleus_mask, z_step_um=dz_eff_um, margin_um=0.0)
+    nz = int(np.asarray(dapi_zyx).shape[0])
+    n = max(1, int(round(window_um/dz_eff_um)))
+    info = dict(info, window_um=float(window_um), dz_eff_um=float(dz_eff_um))
+    if n >= nz:
+        info.update(n_planes=nz, full_stack_shorter_than_window=True)
+        return 0, nz, info
+    mid = (info['core_first_0based'] + info['core_last_0based'])/2
+    z0 = int(round(mid - (n - 1)/2))
+    z0 = min(max(z0, 0), nz - n)
+    req = [int(v) for v in must_include]
+    if req:
+        lo, hi = min(req), max(req)
+        if hi - lo + 1 > n:
+            raise ValueError('Required section planes do not fit inside the fixed z window')
+        z0 = min(max(z0, hi - n + 1), lo)
+        z0 = min(max(z0, 0), nz - n)
+    info.update(n_planes=n, full_stack_shorter_than_window=False, z0_0based=z0, z1_0based_exclusive=z0 + n)
+    return z0, z0 + n, info
+
+
+def fixed_z_window_note(info):
+    """Footer sentence for a fixed z window."""
+    w = f"{info['window_um']:g}"
+    core = f"z {info['core_first_0based']+1}–{info['core_last_0based']+1}"
+    if info.get('full_stack_shorter_than_window'):
+        return (f'Z: full stack shown ({info["n_planes"]} planes); stack shorter than the {w} µm window '
+                f'(display only; nucleus DAPI half-max {core})')
+    return (f'Z: fixed {w} µm window (effective µm, {info["n_planes"]} planes) centred on the nucleus '
+            f'DAPI half-max midpoint ({core}), shifted to stay inside the stack; display only')
+
+
 def render_ortho_figure(stack_czyx, center_zyx, half_width_px=None, *, nucleus_mask,
                         pixel_size_um, z_step_um, display_levels,
                         line_endpoints=None, qki_min=None, miat_min=None, run_dir='',
@@ -243,7 +285,7 @@ def render_ortho_figure(stack_czyx, center_zyx, half_width_px=None, *, nucleus_m
                         profile_labels=None,
                         show_scale_bars=False, show_z_slice_labels=False,
                         show_cross_section=True, axial_scale_factor=1.0,
-                        z_range=None, z_crop_note=None):
+                        z_range=None, z_crop_note=None, axial_scale_note=None):
     """Render calibrated XY/XZ/YZ sections and the linked intensity profiles.
 
     Geometry: every image panel is drawn at one inches-per-µm scale, lateral
@@ -354,7 +396,7 @@ def render_ortho_figure(stack_czyx, center_zyx, half_width_px=None, *, nucleus_m
         'single plane analysed; orthogonal views are raw stack sections; display levels '
         'fixed and identical across all panels and arms.',
         f'Voxel {pixel_size_um:g} µm (XY) × {z_step_um:g} µm (Z step); axial scale factor '
-        f'{factor:g} (1 = nominal z, no refractive-index correction) → {dz_eff:.4g} µm per '
+        f'{factor:g} ({axial_scale_note or "1 = nominal z, no refractive-index correction"}) → {dz_eff:.4g} µm per '
         f'displayed Z slice. Sections (1-based, dotted crosshairs): XY at z {z+1}, XZ at y {y+1}, '
         f'YZ at x {x+1}. Z shown: z {z0+1}–{z1} of {stack_czyx.shape[1]} ({z_um:.2f} µm).'
         + (f' {z_crop_note}.' if z_crop_note else ''),

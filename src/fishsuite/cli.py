@@ -1219,16 +1219,21 @@ class _OrthoCommand(click.Command):
               show_default=True,
               help='Multiplies the nominal z step for display geometry (refractive-index '
                    'correction); 1.0 = nominal z. Recorded in the footer, CSV and JSON.')
-@click.option('--z-crop', type=click.Choice(['full', 'nucleus']), default='full', show_default=True,
+@click.option('--z-crop', type=click.Choice(['full', 'nucleus', 'fixed']), default='full', show_default=True,
               help='Render-only z window: full stack section, or each nucleus DAPI axial '
-                   'half-maximum extent plus --z-margin-um each side. Metrics are unaffected.')
+                   'half-maximum extent plus --z-margin-um each side, or (fixed) a --z-window-um tall window '
+                   'centred on that extent. Metrics are unaffected.')
+@click.option('--axial-scale-note', default=None,
+              help='Footer text explaining --axial-scale-factor (render-only).')
+@click.option('--z-window-um', type=click.FloatRange(min=0, min_open=True), default=None,
+              help='Height (effective, axially corrected µm) of the --z-crop fixed window.')
 @click.option('--z-margin-um', type=click.FloatRange(min=0), default=1.0, show_default=True,
               help='Margin (µm) added each side of the nucleus z extent with --z-crop nucleus.')
 @click.option('--out', type=click.Path(file_okay=False), default=None)
 @click.pass_context
 def ortho(ctx, run_dir, config, k, metric, seed, punctum, half_width_um, qki_min, miat_min,
           include_dapi, full_merge, scale_bars, z_slice_labels, cross_section,
-          axial_scale_factor, z_crop, z_margin_um, out):
+          axial_scale_factor, z_crop, z_margin_um, z_window_um, axial_scale_note, out):
     """Render median-selected nuclei with orthogonal sections and line profiles.
 
     Uses saved nucleus labels and source stacks; requires fixed manual RNA and
@@ -1248,7 +1253,8 @@ def ortho(ctx, run_dir, config, k, metric, seed, punctum, half_width_um, qki_min
                                show_z_slice_labels=z_slice_labels,
                                show_cross_section=cross_section,
                                axial_scale_factor=axial_scale_factor,
-                               z_crop=z_crop, z_margin_um=z_margin_um)
+                               z_crop=z_crop, z_margin_um=z_margin_um,
+                               z_window_um=z_window_um, axial_scale_note=axial_scale_note)
     except (ValueError, OSError, KeyError) as exc:
         raise click.ClickException(str(exc)) from exc
     click.echo(f"Wrote {len(selection)} orthogonal figures; "

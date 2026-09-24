@@ -12,7 +12,7 @@ import numpy as np
 import pandas as pd
 
 from ..core import io
-from ..core.ortho_profile import clipped_default_line, pick_punctum, render_ortho_figure, select_nuclei, nucleus_crop, nucleus_z_extent
+from ..core.ortho_profile import clipped_default_line, pick_punctum, render_ortho_figure, select_nuclei, nucleus_crop, nucleus_z_extent, fixed_z_window, fixed_z_window_note
 
 
 def _display_levels(cfg, *, include_dapi=False):
@@ -184,7 +184,8 @@ def render_run(run_dir, *, config=None, k=3, metric='nuclear_spot_count', seed=0
                punctum='brightest', half_width_um=None, qki_min=None, miat_min=None, out=None, command='',
                include_dapi=False, full_merge=None, show_scale_bars=False,
                show_z_slice_labels=False, show_cross_section=True, axial_scale_factor=1.0,
-               z_crop='full', z_margin_um=1.0):
+               z_crop='full', z_margin_um=1.0, z_window_um=None,
+               axial_scale_note=None):
     from ..config.schema import FishsuiteConfig
     import matplotlib.pyplot as plt
     import tifffile
@@ -213,8 +214,10 @@ def render_run(run_dir, *, config=None, k=3, metric='nuclear_spot_count', seed=0
     axial_scale_factor = float(axial_scale_factor)
     if not np.isfinite(axial_scale_factor) or axial_scale_factor <= 0:
         raise ValueError('axial_scale_factor must be finite and positive')
-    if z_crop not in ('full', 'nucleus'):
-        raise ValueError("z_crop must be 'full' or 'nucleus'")
+    if z_crop not in ('full', 'nucleus', 'fixed'):
+        raise ValueError("z_crop must be 'full', 'nucleus' or 'fixed'")
+    if z_crop == 'fixed' and (z_window_um is None or not np.isfinite(z_window_um) or z_window_um <= 0):
+        raise ValueError('--z-crop fixed requires a positive --z-window-um')
     if full_merge is not None:
         include_dapi = bool(full_merge)
     levels, dapi_level = _display_levels(cfg, include_dapi=include_dapi)
@@ -295,6 +298,13 @@ def render_run(run_dir, *, config=None, k=3, metric='nuclear_spot_count', seed=0
             zz0, zz1, z_info = nucleus_z_extent(stack[2], mask, z_step_um=z_step*axial_scale_factor,
                                                 margin_um=z_margin_um, must_include=keep)
             z_range = (zz0, zz1)
+        elif z_crop == 'fixed':
+            keep = [int(center[0])] + ([int(analysed_plane_z)] if analysed_plane_z is not None else [])
+            zz0, zz1, z_info = fixed_z_window(stack[2], mask, dz_eff_um=z_step*axial_scale_factor,
+                                              window_um=z_window_um, must_include=keep)
+            z_range = (zz0, zz1)
+            z_note = fixed_z_window_note(z_info)
+        if z_crop == 'nucleus':
             z_note = (f'Z cropped (display only) to the nucleus DAPI axial half-maximum extent '
                       f'(z {z_info["core_first_0based"]+1}–{z_info["core_last_0based"]+1}) '
                       f'± {z_margin_um:g} µm ({z_info["margin_planes"]} planes)')
@@ -313,7 +323,7 @@ def render_run(run_dir, *, config=None, k=3, metric='nuclear_spot_count', seed=0
                                   show_scale_bars=show_scale_bars,
                                   show_z_slice_labels=show_z_slice_labels,
                                   show_cross_section=show_cross_section,
-                                  z_range=z_range, z_crop_note=z_note)
+                                  z_range=z_range, z_crop_note=z_note, axial_scale_note=axial_scale_note)
         slug = lambda text: re.sub(r'[^A-Za-z0-9]+', '-', str(text)).strip('-')
         name = f'ortho_{slug(row[arm_col])}_{slug(Path(str(row.image)).stem)}_nuc{int(row.nucleus_id)}'
         geometry = fig._ortho_geometry
@@ -362,6 +372,8 @@ def render_run(run_dir, *, config=None, k=3, metric='nuclear_spot_count', seed=0
                          figure_height_in=geometry['figure_size_in'][1],
                          interpolation=geometry['interpolation'],
                          z_crop=z_crop, z_margin_um=(z_margin_um if z_crop == 'nucleus' else None),
+                         z_window_um=(z_window_um if z_crop == 'fixed' else None),
+                         z_full_stack_shorter_than_window=(z_info.get('full_stack_shorter_than_window') if z_info and z_crop == 'fixed' else None),
                          nucleus_dapi_halfmax_first_1based=(z_info['core_first_0based']+1 if z_info else None),
                          nucleus_dapi_halfmax_last_1based=(z_info['core_last_0based']+1 if z_info else None),
                          qki_min=qki_min, miat_min=miat_min, figure=name))
@@ -381,8 +393,9 @@ def render_run(run_dir, *, config=None, k=3, metric='nuclear_spot_count', seed=0
                   channel_labels=[channel_label_1, channel_label_2], dapi_label=dapi_label,
                   include_dapi=include_dapi, interpolation='nearest',
                   interpolation_note='pixels drawn nearest-neighbour; sections are raw voxel slices',
-                  z_crop=z_crop, z_margin_um=z_margin_um,
+                  z_crop=z_crop, z_margin_um=z_margin_um, z_window_um=z_window_um, axial_scale_note=axial_scale_note,
                   z_crop_rule=('full stack window' if z_crop == 'full' else
+                               f'fixed {z_window_um} um (effective) window centred on the nucleus DAPI half-max midpoint, shifted inside the stack; display only' if z_crop == 'fixed' else
                                'per nucleus: DAPI mean in mask, axial half-maximum run around peak, '
                                '+ ceil(margin/z step) planes each side, clipped; display only'),
                   seed=seed, k=k, metric=metric, punctum_rule=punctum, command=command)
