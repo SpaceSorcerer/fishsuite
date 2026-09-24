@@ -153,6 +153,11 @@ def test_prefixed_master_tables_and_config_overlay(synthetic_run, tmp_path, monk
     override = tmp_path / 'display.yaml'
     override.write_text('output:\n  manual_antibody_max: 300\n')
     class Figure:
+        _ortho_header = 'stub'
+        _ortho_geometry = dict(footer='stub', z_range_0based=(0, 12), z_step_effective_um=.21,
+                               n_z_total=12, z_extent_um=12*.21, crop_width_um=1.,
+                               crop_height_um=1., inches_per_um=1., figure_size_in=(1., 1.),
+                               interpolation='nearest')
         def savefig(self, *args, **kwargs):
             pass
     monkeypatch.setattr(ortho, 'render_ortho_figure', lambda *args, **kwargs: Figure())
@@ -269,9 +274,44 @@ def test_user_minima_only_and_auto_crop_provenance(synthetic_run,monkeypatch):
         result = CliRunner().invoke(cli,['ortho','--run-dir',str(run),'--k','1',*options])
         assert result.exit_code == 0,result.output
     assert not any('analysis' in label for label in captured[0])
-    assert 'QKI analysis min (user)' in captured[1]
-    assert 'MIAT analysis min (user)' in captured[1]
+    # Legend names are the configured channel labels (schema defaults here),
+    # the same names the panel titles use (2026-09-24 label-consistency fix).
+    assert 'Protein analysis min (user)' in captured[1]
+    assert 'RNA1 analysis min (user)' in captured[1]
     row = pd.read_csv(run/'ortho'/'ortho_selection.csv').iloc[0]
     assert row.half_width_um == pytest.approx(19*.13/2+1.5)
     assert row.half_width_used_um == pytest.approx(row.half_width_px*.13)
     assert row.qki_min == 42 and row.miat_min == 21
+
+
+@pytest.mark.parametrize('factor', [None, .85])
+def test_axial_scale_factor_recorded_in_csv_json_and_figure(synthetic_run, factor):
+    run, _ = synthetic_run
+    out = run / 'figures'
+    args = ['ortho', '--run-dir', str(run), '--out', str(out), '--k', '1', '--half-width-um', '2']
+    if factor is not None:
+        args += ['--axial-scale-factor', str(factor)]
+    result = CliRunner().invoke(cli, args)
+    assert result.exit_code == 0, result.output
+    expected = 1.0 if factor is None else factor
+    row = pd.read_csv(out / 'ortho_selection.csv').iloc[0]
+    assert row.axial_scale_factor == expected
+    assert row.z_step_effective_um == pytest.approx(.21*expected)
+    assert row.z_range_first_1based >= 1 and row.z_range_last_1based <= 12
+    n_shown = row.z_range_last_1based - row.z_range_first_1based + 1
+    assert row.xz_panel_height_um == pytest.approx(n_shown*.21*expected)
+    assert row.interpolation == 'nearest'
+    assert row.channel_label_1 == 'RNA1' and row.channel_label_2 == 'Protein'
+    params = json.loads((out / 'ortho_render_params.json').read_text(encoding='utf-8'))
+    assert params['axial_scale_factor'] == expected
+    assert params['display_levels'] == {'RNA1': [0.0, 100.0], 'Protein': [0.0, 200.0]}
+    assert params['interpolation'] == 'nearest'
+    svg = next(out.glob('*.svg')).read_text(encoding='utf-8')
+    assert f'axial scale factor {expected:g}' in svg
+
+
+def test_axial_scale_factor_rejects_nonpositive(synthetic_run):
+    run, _ = synthetic_run
+    result = CliRunner().invoke(cli, ['ortho', '--run-dir', str(run), '--k', '1',
+                                      '--axial-scale-factor', '0'])
+    assert result.exit_code != 0

@@ -281,20 +281,21 @@ def test_fixed_xy_width_and_orthogonal_layout_independent_of_stack_depth(nz,mini
           pixel_size_um=.13,z_step_um=.21,display_levels=((0,100),(0,100)),
           qki_min=minimum,miat_min=minimum,analysed_plane_z=nz//2)
     fig.canvas.draw()
-    np.testing.assert_allclose(fig.get_size_inches(),[11,6.5])
+    # 2026-09-24: figure size is computed from physical extents (was a fixed
+    # 11 x 6.5 in, which clipped YZ / collided XZ with the footer on deep stacks).
+    width, height = fig.get_size_inches()
+    np.testing.assert_allclose((width, height), fig._ortho_geometry['figure_size_in'])
     axes = {ax.get_label():ax for ax in fig.axes}
     xy,xz,raw,normal = [axes[key].get_position() for key in ('xy','xz','raw','normalised')]
-    assert xy.width*11 == pytest.approx(2.3)
-    assert xy.height*6.5 == pytest.approx(2.3)
+    assert xy.width*width == pytest.approx(2.3)
+    assert xy.height*height == pytest.approx(2.3)
     assert xz.x0 == pytest.approx(xy.x0)
     assert xz.width == pytest.approx(xy.width)
-    assert xz.height*6.5 == pytest.approx(2.3*nz*.21/(97*.13))
-    assert 0 < (xy.y0-xz.y1)*6.5 < .6
+    assert xz.height*height == pytest.approx(2.3*nz*.21/(97*.13))
+    assert 0 < (xy.y0-xz.y1)*height < .6
     assert raw.x0 == pytest.approx(axes['xy_miat'].get_position().x0)
     assert raw.x1 == pytest.approx(axes['xy_qki'].get_position().x1)
     assert normal.x0 == pytest.approx(axes['yz'].get_position().x0)
-    grid = axes['raw'].get_subplotspec().get_gridspec()
-    assert grid.hspace <= .25
     legend = axes['raw'].get_legend()
     assert legend._ncols == len(legend.get_texts())
     assert legend.get_frame().get_alpha() == pytest.approx(.6)

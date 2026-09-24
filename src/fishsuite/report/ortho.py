@@ -183,7 +183,7 @@ def _spot_center(spots, nucleus_id, rule, stack, *, analysed_plane_z=None):
 def render_run(run_dir, *, config=None, k=3, metric='nuclear_spot_count', seed=0,
                punctum='brightest', half_width_um=None, qki_min=None, miat_min=None, out=None, command='',
                include_dapi=False, full_merge=None, show_scale_bars=False,
-               show_z_slice_labels=False, show_cross_section=True):
+               show_z_slice_labels=False, show_cross_section=True, axial_scale_factor=1.0):
     from ..config.schema import FishsuiteConfig
     import matplotlib.pyplot as plt
     import tifffile
@@ -209,6 +209,9 @@ def render_run(run_dir, *, config=None, k=3, metric='nuclear_spot_count', seed=0
             resolved[key] = ({**resolved.get(key, {}), **value}
                              if isinstance(value, dict) else value)
     cfg = FishsuiteConfig.model_validate(resolved)
+    axial_scale_factor = float(axial_scale_factor)
+    if not np.isfinite(axial_scale_factor) or axial_scale_factor <= 0:
+        raise ValueError('axial_scale_factor must be finite and positive')
     if full_merge is not None:
         include_dapi = bool(full_merge)
     levels, dapi_level = _display_levels(cfg, include_dapi=include_dapi)
@@ -294,20 +297,21 @@ def render_run(run_dir, *, config=None, k=3, metric='nuclear_spot_count', seed=0
                                   metric=metric, metric_value=float(row[metric]), arm_median=float(row.arm_median),
                                   include_dapi=include_dapi, dapi_display_level=dapi_level,
                                   channel_labels=(channel_label_1, channel_label_2), dapi_label=dapi_label,
-                                  profile_labels=((channel_label_1, channel_label_2)
-                                                  if (include_dapi or show_scale_bars or show_z_slice_labels)
-                                                  else None),
+                                  axial_scale_factor=axial_scale_factor,
                                   show_scale_bars=show_scale_bars,
                                   show_z_slice_labels=show_z_slice_labels,
                                   show_cross_section=show_cross_section)
         slug = lambda text: re.sub(r'[^A-Za-z0-9]+', '-', str(text)).strip('-')
         name = f'ortho_{slug(row[arm_col])}_{slug(Path(str(row.image)).stem)}_nuc{int(row.nucleus_id)}'
+        geometry = fig._ortho_geometry
+        description = f"{fig._ortho_header} || {geometry['footer']}"
         try:
-            fig.savefig(out / f'{name}.png', dpi=600)
+            fig.savefig(out / f'{name}.png', dpi=600, metadata={'Description': description})
             with plt.rc_context({'svg.fonttype': 'none'}):
-                fig.savefig(out / f'{name}.svg')
+                fig.savefig(out / f'{name}.svg', metadata={'Description': description})
         finally:
             plt.close(fig)
+        z_first, z_last = geometry['z_range_0based'][0]+1, geometry['z_range_0based'][1]
         rows.append(dict(arm=row[arm_col], image=row.image, nucleus_id=row.nucleus_id,
                          metric=metric, metric_value=row[metric], arm_median=row.arm_median,
                          punctum_rule=punctum, seed=seed, k=k, half_width_um=used_half_um,
@@ -331,7 +335,34 @@ def render_run(run_dir, *, config=None, k=3, metric='nuclear_spot_count', seed=0
                          include_dapi=include_dapi, show_scale_bars=show_scale_bars,
                          show_z_slice_labels=show_z_slice_labels,
                          show_cross_section=show_cross_section,
+                         channel_label_1=channel_label_1, channel_label_2=channel_label_2,
+                         dapi_label=dapi_label,
+                         axial_scale_factor=axial_scale_factor,
+                         z_step_effective_um=geometry['z_step_effective_um'],
+                         z_range_first_1based=z_first, z_range_last_1based=z_last,
+                         n_z_total=geometry['n_z_total'],
+                         xz_panel_height_um=geometry['z_extent_um'],
+                         crop_width_um=geometry['crop_width_um'],
+                         crop_height_um=geometry['crop_height_um'],
+                         inches_per_um=geometry['inches_per_um'],
+                         figure_width_in=geometry['figure_size_in'][0],
+                         figure_height_in=geometry['figure_size_in'][1],
+                         interpolation=geometry['interpolation'],
                          qki_min=qki_min, miat_min=miat_min, figure=name))
     result = pd.DataFrame(rows)
     result.to_csv(out / 'ortho_selection.csv', index=False)
+    display = {channel_label_1: list(levels[0]), channel_label_2: list(levels[1])}
+    if dapi_level is not None:
+        display[dapi_label] = list(dapi_level)
+    params = dict(axial_scale_factor=axial_scale_factor,
+                  axial_scale_factor_note='multiplies the nominal z step; 1.0 = nominal z '
+                                          '(no refractive-index correction)',
+                  display_levels=display,
+                  display_levels_source='config output.manual_*_min/max (run_config.json '
+                                        'config_resolved, overlaid by --config if given)',
+                  channel_labels=[channel_label_1, channel_label_2], dapi_label=dapi_label,
+                  include_dapi=include_dapi, interpolation='nearest',
+                  interpolation_note='pixels drawn nearest-neighbour; sections are raw voxel slices',
+                  seed=seed, k=k, metric=metric, punctum_rule=punctum, command=command)
+    (out / 'ortho_render_params.json').write_text(json.dumps(params, indent=2), encoding='utf-8')
     return result

@@ -1193,15 +1193,21 @@ class _OrthoCommand(click.Command):
 @click.option('--full-merge', is_flag=True, default=False,
               help='Alias for --include-dapi; render the full DAPI/RNA/protein merge.')
 @click.option('--scale-bars/--no-scale-bars', default=False,
-              help='Add physically calibrated scale bars to XY, XZ and YZ panels.')
+              help='Also add lateral scale bars to the single-channel XY panels '
+                   '(XY, XZ and YZ always carry lateral and axial bars).')
 @click.option('--z-slice-labels/--no-z-slice-labels', default=False,
               help='Annotate the absolute analyzed z-slice on XY, XZ and YZ panels.')
 @click.option('--cross-section/--no-cross-section', default=True,
               help='Show the measured XY line that feeds the linked profiles.')
+@click.option('--axial-scale-factor', type=click.FloatRange(min=0, min_open=True), default=1.0,
+              show_default=True,
+              help='Multiplies the nominal z step for display geometry (refractive-index '
+                   'correction); 1.0 = nominal z. Recorded in the footer, CSV and JSON.')
 @click.option('--out', type=click.Path(file_okay=False), default=None)
 @click.pass_context
 def ortho(ctx, run_dir, config, k, metric, seed, punctum, half_width_um, qki_min, miat_min,
-          include_dapi, full_merge, scale_bars, z_slice_labels, cross_section, out):
+          include_dapi, full_merge, scale_bars, z_slice_labels, cross_section,
+          axial_scale_factor, out):
     """Render median-selected nuclei with orthogonal sections and line profiles.
 
     Uses saved nucleus labels and source stacks; requires fixed manual RNA and
@@ -1219,7 +1225,8 @@ def ortho(ctx, run_dir, config, k, metric, seed, punctum, half_width_um, qki_min
                                full_merge=(include_dapi or full_merge),
                                show_scale_bars=scale_bars,
                                show_z_slice_labels=z_slice_labels,
-                               show_cross_section=cross_section)
+                               show_cross_section=cross_section,
+                               axial_scale_factor=axial_scale_factor)
     except (ValueError, OSError, KeyError) as exc:
         raise click.ClickException(str(exc)) from exc
     click.echo(f"Wrote {len(selection)} orthogonal figures; "
