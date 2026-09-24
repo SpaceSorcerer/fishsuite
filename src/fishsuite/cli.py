@@ -1167,21 +1167,34 @@ def footprint_backfill(ctx):
 @click.option("--emission-nm-qki", type=float, default=None, help="QKI emission wavelength (nm); see --objective-na.")
 @click.option("--nucleolus-sensitivity", default="", show_default=False,
               help="Comma-separated DAPI intra-nuclear percentiles (e.g. 20,25,30) for the nucleoplasm-mask sensitivity.")
+@click.option("--texture-null", is_flag=True, default=False,
+              help="SENSITIVITY ONLY: add the DAPI x radial texture-matched placement-null percentile score.")
+@click.option("--texture-dapi-bins", default=5, show_default=True, type=click.IntRange(min=1))
+@click.option("--texture-radial-bins", default=5, show_default=True, type=click.IntRange(min=1))
+@click.option("--texture-min-positions", default=20, show_default=True, type=click.IntRange(min=1),
+              help="Admissible positions required per stratum (one merge with the adjacent radial bin).")
+@click.option("--rotation-upp", is_flag=True, default=False,
+              help="SENSITIVITY ONLY: add the percentile score against the existing KEEP-N rotation null.")
 @click.option("--out", required=True, type=click.Path(file_okay=False),
               help="New or empty directory outside the source run.")
 def qki_assoc(run_dir, miat_min, qki_min, sensitivity, n_null, seed, n_costes, conditions,
-              objective_na, emission_nm_miat, emission_nm_qki, nucleolus_sensitivity, out):
+              objective_na, emission_nm_miat, emission_nm_qki, nucleolus_sensitivity, texture_null,
+              texture_dapi_bins, texture_radial_bins, texture_min_positions, rotation_upp, out):
     """Single-plane MIAT/QKI area occupancy with exact-footprint placement nulls."""
     from .core.qki_association_postrun import run_qki_association
+    from .core.texture_null import TextureNullParams
     try:
         levels = tuple(float(value.strip()) for value in sensitivity.split(","))
+        texture = (TextureNullParams(texture_dapi_bins, texture_radial_bins, texture_min_positions)
+                   if texture_null else None)
         result = run_qki_association(run_dir, out, miat_min=miat_min, qki_min=qki_min,
             sensitivity=levels, n_null=n_null, seed=seed, n_costes=n_costes,
             conditions=tuple(conditions) or None,
             optics=(None if (objective_na, emission_nm_miat, emission_nm_qki) == (None, None, None)
                     else dict(numerical_aperture=objective_na, emission_nm_miat=emission_nm_miat,
                               emission_nm_qki=emission_nm_qki)),
-            nucleolus_percentiles=tuple(float(v) for v in nucleolus_sensitivity.split(",") if v.strip()))
+            nucleolus_percentiles=tuple(float(v) for v in nucleolus_sensitivity.split(",") if v.strip()),
+            texture_null=texture, rotation_upp=rotation_upp)
     except (ValueError, OSError) as exc:
         raise click.ClickException(str(exc)) from exc
     click.echo(f"Single-plane QKI association: {result}")

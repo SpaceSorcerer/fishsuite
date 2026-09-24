@@ -9,6 +9,7 @@ import numpy as np
 import pandas as pd
 
 from . import coloc_pixel_metrics as _cpm
+from . import texture_null as _tn
 from .footprint_null import (
     MiatFootprint,
     exact_footprint_position_null,
@@ -79,6 +80,25 @@ DIFFERENCE_SCALE_NEW = frozenset(
 # Astra F3: parameters, randomization p-values and chance references are
 # descriptive QC. They never enter well/arm contrasts, differences or ratios.
 DESCRIPTIVE_ONLY = frozenset(_COSTES_PARAMS + ("costes_rand_p",) + _UPP_REFERENCE)
+# 2026-09-24 SENSITIVITY-ONLY nulls (Astra fig1 F1). Appended only when requested,
+# after every existing column, so default outputs are unchanged.
+_TEX_SUMMARY = ("upp_texture_matched_mean_qki", "upp_texture_matched_frac_ge_0p90",
+                "upp_texture_matched_frac_ge_0p75", "upp_texture_matched_n_spots_scored",
+                "upp_texture_matched_n_spots_na", "upp_texture_matched_n_spots_merged",
+                "upp_texture_matched_na_reason_counts", "upp_texture_matched_chance_mean",
+                "upp_texture_matched_chance_frac_ge_0p90", "upp_texture_matched_chance_frac_ge_0p75",
+                "na_reason_upp_texture_matched")
+_ROT_SUMMARY = ("upp_rotation_mean_qki", "upp_rotation_frac_ge_0p90", "upp_rotation_frac_ge_0p75",
+                "upp_rotation_n_spots_scored", "upp_rotation_n_spots_na", "upp_rotation_chance_mean",
+                "upp_rotation_chance_frac_ge_0p90", "upp_rotation_chance_frac_ge_0p75",
+                "upp_rotation_median_first_pass_retention", "na_reason_upp_rotation")
+_TEX_SPOT = ("upp_texture_matched_qki", "texture_dapi_footprint_mean", "texture_dapi_quantile",
+             "texture_dapi_bin", "texture_radial_norm", "texture_radial_quantile", "texture_radial_bin",
+             "texture_stratum_n_positions", "texture_stratum_merged", "texture_stratum_merged_radial_bin",
+             "na_reason_upp_texture_matched_spot")
+_ROT_SPOT = ("upp_rotation_qki", "na_reason_upp_rotation_spot")
+TEXTURE_NUCLEUS_COLUMNS = _TEX_SUMMARY + _ROT_SUMMARY
+TEXTURE_SPOT_COLUMNS = _TEX_SPOT + _ROT_SPOT
 
 _DEFINITIONS = {
     "threshold_multiplier": "Multiplier applied to both raw thresholds; dimensionless",
@@ -175,6 +195,49 @@ for _metric in _REASONED:
         "U0 (empty footprint union), R0 (no eligible pixels), NO_DOMAIN (zero admissible centers or unusable exact placements), "
         "or SPARSE_DOMAIN (minimum admissible-center count below 50); code"
     )
+_SENS = _tn.SENSITIVITY_LABEL
+_TEX_NULL = ("texture-matched placement null: the footprint's K placements are drawn only from its admissible "
+             "positions (same eligible, nucleolus-excluded mask rule as the uniform null) in the observed "
+             "placement's stratum of within-nucleus footprint-mean-DAPI quantile bin x normalized-radial-position "
+             "quantile bin (bins and merge gate in command.log texture_null_params)")
+_ROT_NULL = ("existing exact-footprint KEEP-N rotation null (constellation rotated about the SPOT centroid, "
+             "per-spot redraws for placements leaving the mask; keep_n_footprint_rotation_null, unchanged)")
+_DEFINITIONS.update({
+    "upp_texture_matched_qki": f"{_SENS}. Percentile score of this spot's footprint-mean raw QKI against its OWN K draws of the {_TEX_NULL}; randomized ties as uniform_position_percentile_qki; NaN with na_reason_upp_texture_matched_spot; fraction",
+    "texture_dapi_footprint_mean": f"{_SENS}. Mean raw DAPI under the observed footprint; raw intensity",
+    "texture_dapi_quantile": f"{_SENS}. Mid-rank quantile of texture_dapi_footprint_mean among the footprint-mean DAPI of all admissible positions of this footprint in this nucleus; fraction",
+    "texture_dapi_bin": f"{_SENS}. floor(texture_dapi_quantile x n_dapi_bins), 0 = dimmest; -1 when undefined; bin",
+    "texture_radial_norm": f"{_SENS}. Euclidean distance of the observed centre to the nuclear-label boundary (image edge counts as boundary) divided by the nucleus's maximum inscribed distance; 0 = edge, 1 = most interior; fraction",
+    "texture_radial_quantile": f"{_SENS}. Mid-rank quantile of texture_radial_norm among all admissible positions of this footprint; fraction",
+    "texture_radial_bin": f"{_SENS}. floor(texture_radial_quantile x n_radial_bins), 0 = most peripheral; -1 when undefined; bin",
+    "texture_stratum_n_positions": f"{_SENS}. Admissible positions in the stratum used (after any merge; for an NA spot, the merged count that failed the gate); count",
+    "texture_stratum_merged": f"{_SENS}. True when the observed stratum had fewer than min_positions admissible positions and was merged with the adjacent radial bin of the same DAPI bin (larger neighbour, ties to the lower bin); boolean",
+    "texture_stratum_merged_radial_bin": f"{_SENS}. Radial bin merged in, -1 when no merge; bin",
+    "na_reason_upp_texture_matched_spot": f"{_SENS}. Empty when scored; NO_DOMAIN (no admissible position), OBSERVED_NOT_ADMISSIBLE, SPARSE_STRATUM_AFTER_MERGE (merged stratum still below min_positions); code",
+    "upp_texture_matched_mean_qki": f"{_SENS}. Mean of upp_texture_matched_qki over this nucleus's scored spots; exchangeability reference 0.5; fraction",
+    "upp_texture_matched_frac_ge_0p90": f"{_SENS}. Fraction of scored spots with upp_texture_matched_qki >= 0.9; finite-K reference upp_texture_matched_chance_frac_ge_0p90; fraction",
+    "upp_texture_matched_frac_ge_0p75": f"{_SENS}. Fraction of scored spots with upp_texture_matched_qki >= 0.75; fraction",
+    "upp_texture_matched_n_spots_scored": f"{_SENS}. Spots with a texture-matched score; count",
+    "upp_texture_matched_n_spots_na": f"{_SENS}. Spots without a texture-matched score; count",
+    "upp_texture_matched_n_spots_merged": f"{_SENS}. Spots whose stratum was merged with the adjacent radial bin (scored or not); count",
+    "upp_texture_matched_na_reason_counts": f"{_SENS}. Spot NA reasons as REASON=count;...; empty when none; text",
+    "upp_texture_matched_chance_mean": f"{_SENS}. Exchangeability reference for the mean score (0.5); descriptive only",
+    "upp_texture_matched_chance_frac_ge_0p90": f"{_SENS}. Finite-K reference (K - ceil(0.9K) + 1)/(K + 1), K = n_null; descriptive only",
+    "upp_texture_matched_chance_frac_ge_0p75": f"{_SENS}. Finite-K reference (K - ceil(0.75K) + 1)/(K + 1); descriptive only",
+    "na_reason_upp_texture_matched": f"{_SENS}. Nucleus reason: empty when >= 1 spot scored, N0 (no spots), ALL_SPOTS_NA; code",
+    "upp_rotation_qki": f"{_SENS}. Percentile score of this spot's footprint-mean raw QKI against its own draws of the {_ROT_NULL}; randomized ties; exchangeability with the rotation draws is approximate, so 0.5 is a nominal reference; fraction",
+    "na_reason_upp_rotation_spot": f"{_SENS}. Empty when scored, else the rotation null's spot reason (e.g. insufficient_spots_for_rotation, low_first_pass_retention, insufficient_valid_null_draws); code",
+    "upp_rotation_mean_qki": f"{_SENS}. Mean of upp_rotation_qki over scored spots; nominal reference 0.5; fraction",
+    "upp_rotation_frac_ge_0p90": f"{_SENS}. Fraction of scored spots with upp_rotation_qki >= 0.9; fraction",
+    "upp_rotation_frac_ge_0p75": f"{_SENS}. Fraction of scored spots with upp_rotation_qki >= 0.75; fraction",
+    "upp_rotation_n_spots_scored": f"{_SENS}. Spots with a rotation score; count",
+    "upp_rotation_n_spots_na": f"{_SENS}. Spots without a rotation score; count",
+    "upp_rotation_chance_mean": f"{_SENS}. Nominal reference 0.5; descriptive only",
+    "upp_rotation_chance_frac_ge_0p90": f"{_SENS}. Nominal finite-K reference (K - ceil(0.9K) + 1)/(K + 1); descriptive only",
+    "upp_rotation_chance_frac_ge_0p75": f"{_SENS}. Nominal finite-K reference (K - ceil(0.75K) + 1)/(K + 1); descriptive only",
+    "upp_rotation_median_first_pass_retention": f"{_SENS}. Median over rotation draws of the fraction of spots placed in-mask on the first pass (rotation null gate 0.5); fraction",
+    "na_reason_upp_rotation": f"{_SENS}. Nucleus reason: empty when defined, N0, the rotation null's invalid_reason, or ALL_SPOTS_NA; code",
+})
 COLUMN_DEFINITIONS = {name: f"{definition}; single-plane" for name, definition in _DEFINITIONS.items()}
 
 
@@ -258,6 +321,9 @@ def association_tables(
     ccf_records: list | None = None,
     psf_fwhm_px: float | None = None,
     psf_source: str = "",
+    dapi: np.ndarray | None = None,
+    texture_null: "_tn.TextureNullParams | None" = None,
+    rotation_upp: bool = False,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Compute all requested levels using the same retained exact placements.
 
@@ -276,6 +342,11 @@ def association_tables(
     tie-breaks use their own seeded streams. ``ccf_records``, when a list,
     receives the per-nucleus CCF curves. ``psf_fwhm_px`` (from acquisition
     metadata) is required for Costes; without it Costes is NA (NO_PSF).
+
+    SENSITIVITY ONLY: ``texture_null`` (needs ``dapi``) and ``rotation_upp``
+    append texture-matched / rotation percentile-score columns after every
+    existing column, from their own seeded streams; existing values are
+    unchanged.
     """
     miat_min = _positive(miat_min, "miat_min")
     qki_min = _positive(qki_min, "qki_min")
@@ -303,6 +374,16 @@ def association_tables(
         raise ValueError("seed must be a nonnegative integer")
     if isinstance(n_costes, bool) or not isinstance(n_costes, (int, np.integer)) or n_costes <= 0:
         raise ValueError("n_costes must be a positive integer")
+    if texture_null is not None:
+        if dapi is None:
+            raise ValueError("texture_null needs the dapi plane")
+        dapi = np.asarray(dapi)
+        if dapi.shape != labels.shape or not np.isfinite(dapi[included]).all():
+            raise ValueError("dapi must match the plane shape and be finite on eligible nuclear pixels")
+    nucleus_columns = NUCLEUS_COLUMNS + (list(_TEX_SUMMARY) if texture_null is not None else []) \
+        + (list(_ROT_SUMMARY) if rotation_upp else [])
+    spot_columns = SPOT_COLUMNS + (list(_TEX_SPOT) if texture_null is not None else []) \
+        + (list(_ROT_SPOT) if rotation_upp else [])
     nucleus_rows, spot_rows = [], []
     height, width = labels.shape
     for nucleus_id in np.unique(labels[labels > 0]):
@@ -352,6 +433,23 @@ def association_tables(
         if curves is not None:
             ccf_records.extend(dict(image=image, condition=condition, well=well,
                                     nucleus_id=int(nucleus_id), **c) for c in curves)
+        spot_extra = [dict() for _ in selected]
+        if texture_null is not None:
+            tex_rows = _tn.texture_matched_spot_scores(
+                qki, dapi, labels == nucleus_id, region, selected, observed_means, n_null=n_null,
+                params=texture_null, rng=_stream_rng(seed, image, nucleus_id, "texture_matched_null"),
+                tie_rng=_stream_rng(seed, image, nucleus_id, "texture_matched_upp_tiebreak"))
+            extra.update(_tn.nucleus_texture_summary(tex_rows, n_null))
+            for target, source in zip(spot_extra, tex_rows):
+                target.update(source)
+        if rotation_upp:
+            rot_rows, rot_nucleus = _tn.rotation_spot_scores(
+                qki, region, selected, observed_means, n_null=n_null,
+                rng=_stream_rng(seed, image, nucleus_id, "rotation_null_upp"),
+                tie_rng=_stream_rng(seed, image, nucleus_id, "rotation_upp_tiebreak"))
+            extra.update(_tn.nucleus_rotation_summary(rot_rows, rot_nucleus, n_null))
+            for target, source in zip(spot_extra, rot_rows):
+                target.update(source)
         area = float(region_size * pixel_size_um ** 2)
         mean_nuclear = float(qki[region].astype(float).mean()) if region_size else float("nan")
         mean_spots = float(observed_means.mean()) if n_spots else float("nan")
@@ -413,12 +511,12 @@ def association_tables(
                     row[key], row[f"na_reason_{key}"] = value, reason
             row.update(extra)
             nucleus_rows.append(row)
-            for fp, mean, percentile in zip(selected, observed_means, percentiles):
+            for fp, mean, percentile, more in zip(selected, observed_means, percentiles, spot_extra):
                 spot_rows.append(dict(identity, spot_id=fp.spot_index, footprint_area_px=fp.area_px,
                                       footprint_mean_qki=float(mean), qki_positive=bool(mean >= qki_min * level),
-                                      uniform_position_percentile_qki=float(percentile)))
-    nuclei = pd.DataFrame(nucleus_rows, columns=NUCLEUS_COLUMNS)
-    spots = pd.DataFrame(spot_rows, columns=SPOT_COLUMNS)
+                                      uniform_position_percentile_qki=float(percentile), **more))
+    nuclei = pd.DataFrame(nucleus_rows, columns=nucleus_columns)
+    spots = pd.DataFrame(spot_rows, columns=spot_columns)
     # Preserve caller level order, with nuclei and spots deterministic within it.
     if not nuclei.empty:
         nuclei = pd.concat([nuclei[nuclei.threshold_multiplier == level] for level in levels], ignore_index=True)
