@@ -1150,8 +1150,19 @@ def primary_readme_rows(primary_col, reason):
 
 
 def contrasts_table(well, per_nucleus, mde, primary_col, secondary_col):
+    """``mde`` is the design-level MDE (all wells of both arms). A row whose
+    endpoint has fewer finite well means gets the MDE of ITS OWN well counts
+    (2026-09-24: one design value was stamped on every row, including rows
+    with zero finite wells)."""
     bio = well[~well["secondary_only"]]
     rows = []
+    _mde_cache = {}
+
+    def _row_mde(n1, n2):
+        key = (int(n1), int(n2))
+        if key not in _mde_cache:
+            _mde_cache[key] = mde_hedges_g(n1=key[0], n2=key[1])
+        return _mde_cache[key]
     for col, label in ALL_ENDPOINTS:
         a = bio.loc[bio["line"] == ARMS[1], col].to_numpy(dtype=float)
         b = bio.loc[bio["line"] == ARMS[0], col].to_numpy(dtype=float)
@@ -1185,7 +1196,7 @@ def contrasts_table(well, per_nucleus, mde, primary_col, secondary_col):
             diff_test_minus_ref=w["diff"], ci95_low=w["ci_low"], ci95_high=w["ci_high"],
             hedges_g=w["hedges_g"], t=w["t"], df=w["df"], p_welch=w["p_welch"],
             stars=stars(w["p_welch"]) if primary else "n/a (not tested)",
-            mde_hedges_g_alpha_0p05_power_0p80=mde,
+            mde_hedges_g_alpha_0p05_power_0p80=_row_mde(w["n_test"], w["n_ref"]),
             mde_note=mde_reason(w["n_test"], w["n_ref"]),
             nan_reason=nan_reason(w["n_test"], w["n_ref"], w["diff"],
                                   w["p_welch"], primary),

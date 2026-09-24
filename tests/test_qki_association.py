@@ -156,9 +156,13 @@ def test_sensitivity_level_one_matches_single_run_and_seed_bytes():
     assert single_spots.to_csv(index=False).encode() == again_spots.to_csv(index=False).encode()
     changed, changed_spots = _run(data, seed=99)
     null_columns = [c for c in single if c.startswith(("null_", "obs_minus_null_", "na_reason_null_", "na_reason_obs_minus_null_"))]
+    # 2026-09-24: the placement-null rank and the Costes scramble are seeded by design.
+    from fishsuite.core.qki_association import SEED_DEPENDENT_NEW
+    null_columns += [c for c in SEED_DEPENDENT_NEW if c in single]
     assert not changed[null_columns].equals(single[null_columns])
     pd.testing.assert_frame_equal(changed.drop(columns=null_columns), single.drop(columns=null_columns))
-    pd.testing.assert_frame_equal(changed_spots, single_spots)
+    pd.testing.assert_frame_equal(changed_spots.drop(columns="null_midrank_qki"),
+                                  single_spots.drop(columns="null_midrank_qki"))
 
 
 @pytest.mark.parametrize("name", ["miat_min", "qki_min"])
@@ -662,3 +666,42 @@ def test_generated_dictionary_explains_coverage_denominators_and_null_scope(tmp_
                    "not molecular binding", "Single-plane measurement",
                    "undefined denominator", "zero numerator", "empty reason"):
         assert phrase in text
+
+
+def test_assoc_adapter_writes_ccf_tables_costes_settings_and_condition_filter(tmp_path):
+    from fishsuite.core.qki_association_postrun import run_qki_association
+    root = _assoc_cached_run(tmp_path / 'source')
+    out = run_qki_association(root, tmp_path / 'out', miat_min=10, qki_min=10, n_null=10, n_costes=17)
+    per_field = pd.read_csv(out / 'qki_association_ccf_per_field.csv')
+    assert {'image', 'condition', 'well', 'axis', 'shift_px', 'shift_um', 'mean_r_over_nuclei',
+            'n_nuclei_finite'} <= set(per_field.columns)
+    assert sorted(per_field.shift_px.unique()) == list(range(-20, 21))
+    assert np.allclose(per_field.shift_um, per_field.shift_px * 0.1)  # voxel_xy_nm=100 in the manifest
+    registration = pd.read_csv(out / 'qki_association_ccf_registration.csv')
+    assert set(registration.axis) == {'x', 'y'}
+    assert {'peak_shift_px', 'peak_shift_um', 'r0', 'peak_r', 'n_nuclei_finite',
+            'median_nucleus_peak_shift_px'} <= set(registration.columns)
+    log = (out / 'command.log').read_text(encoding='utf-8')
+    assert 'n_costes: 17' in log and '--n-costes 17' in log
+    columns_md = (out / 'qki_association_columns.md').read_text(encoding='utf-8')
+    assert 'costes_rand_p' in columns_md and 'not a test across nuclei' in columns_md
+    kept = run_qki_association(root, tmp_path / 'kept', miat_min=10, qki_min=10, n_null=10,
+                               conditions=('test',))
+    assert (kept / 'qki_association_per_nucleus.csv').read_bytes() == (
+        run_qki_association(root, tmp_path / 'all', miat_min=10, qki_min=10, n_null=10)
+        / 'qki_association_per_nucleus.csv').read_bytes()
+    with pytest.raises(ValueError, match='no image'):
+        run_qki_association(root, tmp_path / 'none', miat_min=10, qki_min=10, n_null=10,
+                            conditions=('absent arm',))
+
+
+def test_assoc_cli_accepts_n_costes_and_condition(tmp_path):
+    from click.testing import CliRunner
+    from fishsuite.cli import cli
+    root = _assoc_cached_run(tmp_path / 'source')
+    result = CliRunner().invoke(cli, ['qki-assoc', '--run-dir', str(root), '--miat-min', '10',
+        '--qki-min', '10', '--n-null', '10', '--n-costes', '9', '--condition', 'test',
+        '--out', str(tmp_path / 'cli')])
+    assert result.exit_code == 0, result.output
+    log = (tmp_path / 'cli' / 'command.log').read_text(encoding='utf-8')
+    assert "--condition test" in log and 'n_costes: 9' in log

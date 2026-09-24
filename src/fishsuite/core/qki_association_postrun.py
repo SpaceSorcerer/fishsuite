@@ -80,8 +80,54 @@ def _restore_footprints(rows, pixels, data, eligible):
     return footprints, identifiers
 
 
+def _ccf_field_tables(records):
+    """Per-field CCF curves (mean over nuclei of per-nucleus r(d)) and the
+    per-field registration summary. Pixels are never pooled across nuclei."""
+    curve_columns = ["image", "condition", "well", "axis", "shift_px", "shift_um",
+                     "mean_r_over_nuclei", "sd_r_over_nuclei", "n_nuclei_finite", "n_nuclei"]
+    reg_columns = ["image", "condition", "well", "axis", "pixel_size_um", "peak_shift_px",
+                   "peak_shift_um", "peak_r", "r0", "r0_minus_flank", "fwhm_px",
+                   "n_nuclei_finite", "median_nucleus_peak_shift_px",
+                   "frac_nuclei_peak_at_zero", "na_reason"]
+    if not records:
+        return pd.DataFrame(columns=curve_columns), pd.DataFrame(columns=reg_columns)
+    from .coloc_pixel_metrics import ccf_summary
+    frame = pd.DataFrame(records)
+    keys = ["image", "condition", "well", "axis", "shift_px"]
+    curves = (frame.groupby(keys, sort=True)
+              .agg(shift_um=("shift_um", "first"),
+                   mean_r_over_nuclei=("r", "mean"),
+                   sd_r_over_nuclei=("r", lambda v: float(v.dropna().std(ddof=1)) if v.notna().sum() > 1 else np.nan),
+                   n_nuclei_finite=("r", "count"), n_nuclei=("nucleus_id", "nunique"))
+              .reset_index())
+    rows = []
+    for (image, condition, well, axis), group in curves.groupby(["image", "condition", "well", "axis"], sort=True):
+        group = group.sort_values("shift_px")
+        summary = ccf_summary(group.shift_px.to_numpy(), group.mean_r_over_nuclei.to_numpy())
+        nuc = frame[(frame.image == image) & (frame.axis == axis)]
+        peaks = []
+        for _, curve in nuc.groupby("nucleus_id", sort=True):
+            curve = curve.sort_values("shift_px")
+            peak = ccf_summary(curve.shift_px.to_numpy(), curve.r.to_numpy())["peak_shift_px"]
+            if np.isfinite(peak):
+                peaks.append(peak)
+        zero = group.loc[group.shift_px.eq(0)]
+        pixel = float(group.shift_um.iloc[-1] / group.shift_px.iloc[-1]) if group.shift_px.iloc[-1] else np.nan
+        rows.append(dict(image=image, condition=condition, well=well, axis=axis, pixel_size_um=pixel,
+                         peak_shift_px=summary["peak_shift_px"],
+                         peak_shift_um=summary["peak_shift_px"] * pixel if np.isfinite(summary["peak_shift_px"]) else np.nan,
+                         peak_r=summary["peak_r"], r0=summary["r0"], r0_minus_flank=summary["r0_minus_flank"],
+                         fwhm_px=summary["fwhm_px"],
+                         n_nuclei_finite=int(zero.n_nuclei_finite.iloc[0]) if len(zero) else 0,
+                         median_nucleus_peak_shift_px=float(np.median(peaks)) if peaks else np.nan,
+                         frac_nuclei_peak_at_zero=float(np.mean(np.asarray(peaks) == 0)) if peaks else np.nan,
+                         na_reason=summary["reason"] or summary["fwhm_reason"]))
+    return curves[curve_columns], pd.DataFrame(rows, columns=reg_columns)
+
+
 def run_qki_association(run_dir, out, *, miat_min, qki_min,
-                        sensitivity=(0.8, 1.0, 1.25), n_null=200, seed=0):
+                        sensitivity=(0.8, 1.0, 1.25), n_null=200, seed=0,
+                        n_costes=200, conditions=None, image_keys=None):
     from .qki_association import association_tables, COLUMN_DEFINITIONS
 
     levels = tuple(float(value) for value in sensitivity)
@@ -93,6 +139,8 @@ def run_qki_association(run_dir, out, *, miat_min, qki_min,
         raise ValueError("n_null must be a positive integer")
     if isinstance(seed, bool) or not isinstance(seed, (int, np.integer)) or seed < 0:
         raise ValueError("seed must be a nonnegative integer")
+    if isinstance(n_costes, bool) or not isinstance(n_costes, (int, np.integer)) or n_costes <= 0:
+        raise ValueError("n_costes must be a positive integer")
     if not np.isfinite(np.asarray(levels) * miat_min).all() or not np.isfinite(np.asarray(levels) * qki_min).all():
         raise ValueError("scaled thresholds must be finite")
     source, destination = Path(run_dir).resolve(), Path(out).resolve()
@@ -132,8 +180,17 @@ def run_qki_association(run_dir, out, *, miat_min, qki_min,
         spots[column] = _integer(spots[column], column)
     if not set(pixels.spot_uid).issubset(set(spots.spot_uid)):
         raise ValueError("pixel table contains spot identifiers absent from spot table")
-    all_nuclei, all_spots = [], []
-    for record in manifest.sort_values("image_key").itertuples(index=False):
+    selected_manifest = manifest
+    if conditions:
+        wanted = {str(c) for c in conditions}
+        selected_manifest = selected_manifest[selected_manifest.condition.astype(str).isin(wanted)]
+    if image_keys:
+        wanted = {str(k).strip().casefold() for k in image_keys}
+        selected_manifest = selected_manifest[selected_manifest.image_key.isin(wanted)]
+    if selected_manifest.empty:
+        raise ValueError("the condition / image filter matched no image in the manifest")
+    all_nuclei, all_spots, ccf_records = [], [], []
+    for record in selected_manifest.sort_values("image_key").itertuples(index=False):
         key = record.image_key
         image_spots = spots.loc[spots.image_key == key].sort_values("spot_id")
         image_nuclei = nuclei.loc[nuclei.image_key == key]
@@ -170,7 +227,7 @@ def run_qki_association(run_dir, out, *, miat_min, qki_min,
             data.nucleus_labels, footprints, pixel_size_um=scale, miat_min=miat_min,
             qki_min=qki_min, sensitivity=levels, n_null=n_null, seed=seed,
             eligible_mask=eligible, image=key, condition=str(getattr(record, "condition", "")),
-            well=str(getattr(record, "well", "")))
+            well=str(getattr(record, "well", "")), n_costes=int(n_costes), ccf_records=ccf_records)
         spot_table["spot_id"] = spot_table.spot_id.map(identifiers)
         all_nuclei.append(nuc_table)
         all_spots.append(spot_table)
@@ -179,6 +236,9 @@ def run_qki_association(run_dir, out, *, miat_min, qki_min,
     destination.mkdir(parents=True, exist_ok=True)
     nucleus_table.to_csv(destination / "qki_association_per_nucleus.csv", index=False, lineterminator="\n")
     spot_table.to_csv(destination / "qki_association_per_spot.csv", index=False, lineterminator="\n")
+    ccf_curves, ccf_registration = _ccf_field_tables(ccf_records)
+    ccf_curves.to_csv(destination / "qki_association_ccf_per_field.csv", index=False, lineterminator="\n")
+    ccf_registration.to_csv(destination / "qki_association_ccf_registration.csv", index=False, lineterminator="\n")
     columns = list(dict.fromkeys([*nucleus_table.columns, *spot_table.columns]))
     lines = ["# Single-plane QKI association columns", "",
         "- Eligible spots retain source null_candidate eligibility and exact saved pixels; miat_min affects MIAT area only.",
@@ -190,6 +250,12 @@ def run_qki_association(run_dir, out, *, miat_min, qki_min,
         "It places each unchanged footprint uniformly over admissible positions in the eligible nuclear region. It removes the effect of MIAT abundance/coverage and of global nuclear QKI level under this uniform-position reference.",
         "It does NOT remove association caused by MIAT puncta and QKI both avoiding or preferring the same nuclear sub-regions within that eligible region (e.g. around nucleolar exclusion zones or the nuclear periphery).",
         'A positive obs minus null means "more QKI at MIAT puncta than at random eligible nuclear positions", not molecular binding. Single-plane measurement.',
+        "", "## Threshold-free additions (2026-09-24)", "",
+        "- `mean_null_rank_qki_at_miat`, `frac_spots_ge_null_q90`, `frac_spots_ge_null_q75`: each spot's footprint-mean raw QKI is ranked against its OWN placement-null draws (the same draws as above); no QKI cutoff; chance 0.5 / 0.10 / 0.25. Invariant to any monotone intensity transform, so neither the QKI offset nor the nuclear QKI level moves the chance level.",
+        "- `pearson_r_nucleoplasm`, `spearman_rho_nucleoplasm`: over the nucleoplasm mask N (nucleoli excluded); `pearson_r_whole_nucleus_mask` is the nucleolus-inclusive comparator.",
+        f"- Van Steensel CCF: shifts -20..+20 px (step 1 px) along x and y, pixel size from the manifest voxel_xy_nm; per-field curves in `qki_association_ccf_per_field.csv` (mean over nuclei of per-nucleus r(d)) and the channel-registration check in `qki_association_ccf_registration.csv`.",
+        f"- Costes randomization: b x b QKI blocks (b = round(sqrt(median footprint area of the image)), >= 3 px) permuted within N, MIAT fixed, n_costes = {int(n_costes)} draws, seed = {int(seed)} bound to (image, nucleus_id) in a stream separate from the placement null. `costes_rand_p` is per-nucleus DESCRIPTIVE, not a test across nuclei; wells remain the replicates.",
+        "- These statistics share the placement null's limit: none removes MIAT and QKI co-preferring the same nuclear sub-compartment.",
         "", "## Column definitions", ""]
     for name in columns:
         if name not in COLUMN_DEFINITIONS:
@@ -199,11 +265,21 @@ def run_qki_association(run_dir, out, *, miat_min, qki_min,
             definition = "Saved source spot identifier, retained without renumbering; identifier; single-plane."
         lines.append(f"- `{name}`: {definition}")
     (destination / "qki_association_columns.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
-    command = shlex.join(["fishsuite", "qki-assoc", "--run-dir", str(source), "--miat-min", str(miat_min),
+    argv = ["fishsuite", "qki-assoc", "--run-dir", str(source), "--miat-min", str(miat_min),
         "--qki-min", str(qki_min), "--sensitivity", ",".join(map(str, levels)), "--n-null", str(n_null),
-        "--seed", str(seed), "--out", str(destination)])
+        "--seed", str(seed), "--n-costes", str(int(n_costes))]
+    for condition in conditions or ():
+        argv += ["--condition", str(condition)]
+    command = shlex.join(argv + ["--out", str(destination)])
+    extra = {"qki_assoc_command": command, "consumed_files": ", ".join(REQUIRED_FILES),
+             "quantitation": "single-plane", "n_costes": int(n_costes),
+             "costes_seed_stream": "sha256([seed, image_key, nucleus_id, 'costes_block_scramble'])",
+             "ccf_shift_range_px": "-20..20 step 1",
+             "images_processed": len(selected_manifest)}
+    if image_keys:
+        extra["image_keys_filter"] = "; ".join(sorted(str(k) for k in image_keys))
     if not repro.write_command_log(destination, source / "image_manifest.csv", destination, seed,
-            extra={"qki_assoc_command": command, "consumed_files": ", ".join(REQUIRED_FILES), "quantitation": "single-plane"}):
+            extra=extra):
         raise OSError("failed to write command.log")
     if not repro.write_versions_txt(destination, seed):
         raise OSError("failed to write versions.txt")

@@ -4,7 +4,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from ..core.qki_association import COLUMN_DEFINITIONS
+from ..core.qki_association import COLUMN_DEFINITIONS, DIFFERENCE_SCALE_NEW
 
 METRICS = [
     'n_miat_spots', 'integrated_nuclear_miat', 'nuclear_area_um2',
@@ -17,7 +17,7 @@ ABUNDANCE = ['n_miat_spots', 'integrated_nuclear_miat']
 ASSOCIATION = ['obs_minus_null_frac_miat_spots_qki_pos', 'qki_at_spots_minus_nuclear']
 DIFFERENCE_SCALE_METRICS = {
     metric for metric in COLUMN_DEFINITIONS if metric.startswith('obs_minus_null_')
-} | {'qki_at_spots_minus_nuclear'}
+} | {'qki_at_spots_minus_nuclear'} | set(DIFFERENCE_SCALE_NEW)
 PERMUTATION_NOTE = '2 v 2 wells: exact permutation has 6 allocations; smallest two-sided p = 0.333'
 NON_METRIC_COLUMNS = {
     'condition', 'well', 'image', 'nucleus_id', 'measurement_plane',
@@ -106,6 +106,22 @@ def _per_well(data, metrics):
     result = result.copy()  # Per-column assignment over every metric fragments the frame.
     result['na_reason_threshold'] = np.where(absent, 'missing well at threshold multiplier', '')
     return result.reset_index().sort_values(['condition', 'well', 'threshold_multiplier']).reset_index(drop=True)
+
+
+def _per_arm(per_well, metrics):
+    """Every arm at every multiplier: equal-weight mean of its well means."""
+    rows = []
+    for (condition, level), group in per_well.groupby(['condition', 'threshold_multiplier'], sort=True):
+        present = group[group.n_nuclei.gt(0)]
+        row = dict(condition=condition, threshold_multiplier=level, n_wells=len(present),
+                   n_nuclei=int(present.n_nuclei.sum()), wells='; '.join(sorted(present.well.astype(str))))
+        for metric in metrics:
+            values = present[f'mean_{metric}']
+            finite = values.dropna()
+            row[f'n_wells_finite_{metric}'] = len(finite)
+            row[f'mean_of_well_means_{metric}'] = _arm_mean(values) if len(present) else np.nan
+        rows.append(row)
+    return pd.DataFrame(rows)
 
 
 def _ratio(numerator, denominator, label='denominator'):
@@ -240,6 +256,8 @@ def _readme(data, per_well, metrics, treated, control, seed, n_boot):
         ('ratio_reasons', 'DIFFERENCE_SCALE: ratios are undefined for all obs_minus_null_* metrics and qki_at_spots_minus_nuclear; report differences only. CONTROL_NONPOSITIVE: the control arm mean for a ratio-scale metric is <=0 or has abs(value)<1e-12. Both yield NaN, without pseudocounts. The outer ratio-of-ratios uses an exact-zero denominator guard and reports its denominator by name.'),
         ('README', 'Definitions, threshold values, replicate structure, filtering, and sheet guide.'),
         ('per_well', 'Each condition/well/threshold: nucleus counts, metric finite and excluded counts, means and medians; source na_reason_* counts retained where supplied.'),
+        ('per_arm', "Every arm (not only treated/control) at every threshold multiplier: n_wells, wells, n_nuclei, and mean_of_well_means_<metric> = equal-weight mean of the arm's well means (NaN when any well mean is missing, never silently dropped); n_wells_finite_<metric> counts wells with a finite mean. Descriptive."),
+        ('costes_rand_p_well_mean', 'mean_costes_rand_p is the well mean of per-nucleus DESCRIPTIVE Costes tail fractions; it is not a p-value for the well or the arm and carries no inference.'),
         ('contrast_sheet', 'At multiplier 1.0: every well identifier and mean, equal-weight arm mean, treated-control difference and ratio. exploratory_boot_lo/hi apply to difference only.'),
         ('ratio_of_ratios', 'Secondary descriptive values only; no significance tests.'),
         ('within_well_correlation', 'Pearson and Spearman separately per condition/well/threshold; require >=10 finite paired nuclei with N>0 and >=5 distinct values in each variable; otherwise NaN with reason.'),
@@ -304,6 +322,6 @@ def summarize(df, treated, control, seed=0, n_boot=2000):
         for column in ['difference', 'ratio', 'na_reason', 'ratio_na_reason']:
             sensitivity[f'{column}_multiplier_{level:g}'] = level_contrast[column].to_numpy()
     return dict(README=_readme(data, per_well, metrics, treated, control, seed, n_boot),
-                per_well=per_well, contrast=contrast, ratio_of_ratios=_ratio_of_ratios(contrast),
+                per_well=per_well, per_arm=_per_arm(per_well, metrics), contrast=contrast, ratio_of_ratios=_ratio_of_ratios(contrast),
                 within_well_correlation=_correlations(data), sensitivity=sensitivity,
                 all_arms=per_well[~per_well.condition.isin([treated, control])].reset_index(drop=True))

@@ -299,7 +299,7 @@ def test_report_artifacts(tmp_path):
     for name in ('coupling_summary.xlsx', 'command.log', 'versions.txt', 'figure_well_key.csv'):
         assert (out / name).stat().st_size > 0
     book = load_workbook(out / 'coupling_summary.xlsx', read_only=False)
-    assert book.sheetnames == ['README', 'per_well', 'contrast', 'ratio_of_ratios',
+    assert book.sheetnames == ['README', 'per_well', 'per_arm', 'contrast', 'ratio_of_ratios',
                               'within_well_correlation', 'sensitivity', 'all_arms']
     assert book['per_well'].auto_filter.ref
     assert book['per_well'].freeze_panes == 'A3'
@@ -631,3 +631,31 @@ def test_allcols_workbook_expands_without_expanding_every_numeric_plot(tmp_path,
     expected.add('precision_funnel')
     assert set(stems) == expected
     assert len(stems) == len(expected)
+
+
+def test_per_arm_is_equal_weight_mean_of_well_means_for_every_arm():
+    df = toy_table()
+    extra = df[df.condition.eq('control')].copy()
+    extra['condition'] = 'third arm'
+    extra['well'] = extra.well.str.replace('C', 'X')
+    extra['image'] = extra.well + '.tif'
+    result = summary(pd.concat([df, extra], ignore_index=True))
+    per_arm = result['per_arm'].set_index(['condition', 'threshold_multiplier'])
+    assert set(per_arm.index.get_level_values(0)) == {'control', 'treated', 'third arm'}
+    row = per_arm.loc[('treated', 1.0)]
+    assert row.n_wells == 2
+    assert row.n_nuclei == 10
+    assert row.mean_of_well_means_n_miat_spots == 12       # wells 8 and 16
+    assert row.n_wells_finite_n_miat_spots == 2
+    assert row.wells == 'T1; T2'
+    assert per_arm.loc[('third arm', 1.0)].mean_of_well_means_n_miat_spots == 4
+
+
+@pytest.mark.parametrize('metric', ['pearson_r_nucleoplasm', 'ccf_peak_shift_um_x',
+                                    'costes_rand_r_obs_minus_null_mean'])
+def test_signed_new_coloc_metrics_are_difference_scale(metric):
+    df = toy_table()
+    df[metric] = np.where(df.condition.eq('control'), .1, .3)
+    row = summary(df)['contrast'].set_index('metric').loc[metric]
+    assert row.difference == pytest.approx(.2)
+    assert pd.isna(row.ratio) and row.ratio_na_reason == 'DIFFERENCE_SCALE'

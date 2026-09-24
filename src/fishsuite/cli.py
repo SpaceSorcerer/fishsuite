@@ -1157,15 +1157,20 @@ def footprint_backfill(ctx):
               help="Comma-separated positive multipliers; all levels are reported.")
 @click.option("--n-null", default=200, show_default=True, type=click.IntRange(min=1))
 @click.option("--seed", default=0, show_default=True, type=click.IntRange(min=0))
+@click.option("--n-costes", default=200, show_default=True, type=click.IntRange(min=1),
+              help="Costes block-scramble draws per nucleus (per-nucleus descriptive p).")
+@click.option("--condition", "conditions", multiple=True,
+              help="Restrict to manifest condition(s); repeatable. Default: every image.")
 @click.option("--out", required=True, type=click.Path(file_okay=False),
               help="New or empty directory outside the source run.")
-def qki_assoc(run_dir, miat_min, qki_min, sensitivity, n_null, seed, out):
+def qki_assoc(run_dir, miat_min, qki_min, sensitivity, n_null, seed, n_costes, conditions, out):
     """Single-plane MIAT/QKI area occupancy with exact-footprint placement nulls."""
     from .core.qki_association_postrun import run_qki_association
     try:
         levels = tuple(float(value.strip()) for value in sensitivity.split(","))
         result = run_qki_association(run_dir, out, miat_min=miat_min, qki_min=qki_min,
-            sensitivity=levels, n_null=n_null, seed=seed)
+            sensitivity=levels, n_null=n_null, seed=seed, n_costes=n_costes,
+            conditions=tuple(conditions) or None)
     except (ValueError, OSError) as exc:
         raise click.ClickException(str(exc)) from exc
     click.echo(f"Single-plane QKI association: {result}")

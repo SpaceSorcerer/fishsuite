@@ -16,7 +16,7 @@ from .coupling_stats import METRICS, prepare_data, summarize
 
 ABUNDANCE = ('n_miat_spots', 'integrated_nuclear_miat')
 ASSOCIATION = ('obs_minus_null_frac_miat_spots_qki_pos', 'qki_at_spots_minus_nuclear')
-SHEET_ORDER = ['README', 'per_well', 'contrast', 'ratio_of_ratios',
+SHEET_ORDER = ['README', 'per_well', 'per_arm', 'contrast', 'ratio_of_ratios',
                'within_well_correlation', 'sensitivity', 'all_arms']
 PERMUTATION_NOTE = '2 v 2 wells: exact permutation has 6 allocations; smallest two-sided p = 0.333'
 MARKERS = ('o', '^', 's', 'D')
