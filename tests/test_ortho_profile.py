@@ -216,6 +216,38 @@ def test_header_channels_and_explicit_analysis_minima(stack):
         plt.close(fig)
 
 
+def test_full_merge_has_dapi_calibrated_bars_and_linked_profile_line(stack):
+    mask = np.zeros((128,128), bool)
+    mask[45:85,45:85] = True
+    fig = core().render_ortho_figure(
+        stack, (20,64,64), 12, nucleus_mask=mask, pixel_size_um=.13, z_step_um=.21,
+        display_levels=((0,100),(0,100)), dapi_display_level=(0,100),
+        include_dapi=True, channel_labels=('BIN1 introns','RNASEH2B'),
+        profile_labels=('BIN1 introns','RNASEH2B'), show_scale_bars=True,
+        show_z_slice_labels=True, analysed_plane_z=17,
+        line_endpoints=((64.,52.),(64.,76.)))
+    axes = {a.get_label(): a for a in fig.axes}
+    assert {'xy_dapi','xy_miat','xy_qki','xy','xz','yz','raw','normalised'} <= set(axes)
+    assert axes['xy_dapi'].get_title() == 'XY DAPI'
+    assert 'BIN1 introns' in axes['xy'].get_title()
+    assert axes['xy'].images[0].get_array().shape[-1] == 3
+    np.testing.assert_allclose(axes['xy_miat'].images[0].get_array()[..., 2], 0)
+    assert len([line for line in axes['xy'].lines if line.get_label() == 'scale bar']) == 1
+    assert len([line for line in axes['xz'].lines if line.get_label().startswith('scale bar')]) == 2
+    assert len([line for line in axes['yz'].lines if line.get_label().startswith('scale bar')]) == 2
+    assert [t.get_text() for t in axes['xy'].texts].count('z = 18') == 1
+    assert sum(t.get_text() == 'z = 18' for ax in (axes['xz'], axes['yz']) for t in ax.texts) == 0
+    profile_lines = [line for line in axes['xy'].lines if line.get_label() == 'measured profile line']
+    assert len(profile_lines) == 1
+    np.testing.assert_array_equal(profile_lines[0].get_xdata(), [0,24])
+    assert not any(line.get_label() == 'measured profile point' for line in axes['yz'].lines)
+    assert len([line for line in axes['xz'].lines if line.get_label() == 'measured profile line']) == 1
+    np.testing.assert_array_equal(axes['raw'].lines[0].get_xdata(),
+                                  core().line_profile(stack[:,20], (64,52), (64,76),
+                                                       pixel_size_um=.13)[0])
+    plt.close(fig)
+
+
 def test_real_length_header_footer_and_panel_titles_fit(stack):
     from matplotlib.offsetbox import AnchoredOffsetbox
     fig = core().render_ortho_figure(stack,(20,64,64),24,

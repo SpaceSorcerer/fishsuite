@@ -15,7 +15,7 @@ from ..core import io
 from ..core.ortho_profile import clipped_default_line, pick_punctum, render_ortho_figure, select_nuclei, nucleus_crop
 
 
-def _display_levels(cfg):
+def _display_levels(cfg, *, include_dapi=False):
     output = cfg.output
     partner = 'rna2' if cfg.channels.analysis_mode == 'rna_rna' else 'antibody'
     levels = []
@@ -25,7 +25,14 @@ def _display_levels(cfg):
         if lo is None or hi is None or not np.isfinite([lo, hi]).all() or hi <= lo:
             raise ValueError(f'Fixed output.manual_{name}_min/max are required (finite min < max)')
         levels.append((float(lo), float(hi)))
-    return levels
+    dapi = None
+    if include_dapi:
+        lo = getattr(output, 'manual_dapi_min', None)
+        hi = getattr(output, 'manual_dapi_max', None)
+        if lo is None or hi is None or not np.isfinite([lo, hi]).all() or hi <= lo:
+            raise ValueError('Fixed output.manual_dapi_min/max are required when include_dapi/full_merge is enabled')
+        dapi = (float(lo), float(hi))
+    return levels, dapi
 
 
 def _write_provenance(out, command, seed):
@@ -174,7 +181,9 @@ def _spot_center(spots, nucleus_id, rule, stack, *, analysed_plane_z=None):
 
 
 def render_run(run_dir, *, config=None, k=3, metric='nuclear_spot_count', seed=0,
-               punctum='brightest', half_width_um=None, qki_min=None, miat_min=None, out=None, command=''):
+               punctum='brightest', half_width_um=None, qki_min=None, miat_min=None, out=None, command='',
+               include_dapi=False, full_merge=None, show_scale_bars=False,
+               show_z_slice_labels=False, show_cross_section=True):
     from ..config.schema import FishsuiteConfig
     import matplotlib.pyplot as plt
     import tifffile
@@ -200,7 +209,16 @@ def render_run(run_dir, *, config=None, k=3, metric='nuclear_spot_count', seed=0
             resolved[key] = ({**resolved.get(key, {}), **value}
                              if isinstance(value, dict) else value)
     cfg = FishsuiteConfig.model_validate(resolved)
-    levels = _display_levels(cfg)
+    if full_merge is not None:
+        include_dapi = bool(full_merge)
+    levels, dapi_level = _display_levels(cfg, include_dapi=include_dapi)
+    channel_label_1 = (getattr(cfg.channels, 'rna_label', None) or
+                       ('RNA1' if cfg.channels.analysis_mode != 'rna_rna' else 'RNA1'))
+    if cfg.channels.analysis_mode == 'rna_rna':
+        channel_label_2 = getattr(cfg.channels, 'rna2_label', None) or 'RNA2'
+    else:
+        channel_label_2 = getattr(cfg.channels, 'antibody_label', None) or 'Protein'
+    dapi_label = getattr(cfg.channels, 'dapi_label', None) or 'DAPI'
     prefix = saved.get('output', {}).get('prefix') or ''
     nuclei_path = run_dir / f'{prefix}nuclei_metrics.csv'
     spots_path = run_dir / f'{prefix}spot_metrics.csv'
@@ -273,7 +291,15 @@ def render_run(run_dir, *, config=None, k=3, metric='nuclear_spot_count', seed=0
                                   arm=str(row[arm_col]),
                                   arm_color=cfg.conditions.group_colors.get(str(row[arm_col]), '#595959'),
                                   image=Path(str(row.image)).name, nucleus_id=int(row.nucleus_id),
-                                  metric=metric, metric_value=float(row[metric]), arm_median=float(row.arm_median))
+                                  metric=metric, metric_value=float(row[metric]), arm_median=float(row.arm_median),
+                                  include_dapi=include_dapi, dapi_display_level=dapi_level,
+                                  channel_labels=(channel_label_1, channel_label_2), dapi_label=dapi_label,
+                                  profile_labels=((channel_label_1, channel_label_2)
+                                                  if (include_dapi or show_scale_bars or show_z_slice_labels)
+                                                  else None),
+                                  show_scale_bars=show_scale_bars,
+                                  show_z_slice_labels=show_z_slice_labels,
+                                  show_cross_section=show_cross_section)
         slug = lambda text: re.sub(r'[^A-Za-z0-9]+', '-', str(text)).strip('-')
         name = f'ortho_{slug(row[arm_col])}_{slug(Path(str(row.image)).stem)}_nuc{int(row.nucleus_id)}'
         try:
@@ -300,6 +326,11 @@ def render_run(run_dir, *, config=None, k=3, metric='nuclear_spot_count', seed=0
                          display_mode='manual', configured_display_mode=cfg.output.pub_contrast_mode,
                          miat_display_min=levels[0][0], miat_display_max=levels[0][1],
                          qki_display_min=levels[1][0], qki_display_max=levels[1][1],
+                         dapi_display_min=(dapi_level[0] if dapi_level is not None else None),
+                         dapi_display_max=(dapi_level[1] if dapi_level is not None else None),
+                         include_dapi=include_dapi, show_scale_bars=show_scale_bars,
+                         show_z_slice_labels=show_z_slice_labels,
+                         show_cross_section=show_cross_section,
                          qki_min=qki_min, miat_min=miat_min, figure=name))
     result = pd.DataFrame(rows)
     result.to_csv(out / 'ortho_selection.csv', index=False)

@@ -138,15 +138,47 @@ def render_ortho_figure(stack_czyx, center_zyx, half_width_px=None, *, nucleus_m
                         pixel_size_um, z_step_um, display_levels,
                         line_endpoints=None, qki_min=None, miat_min=None, run_dir='',
                         profile_width_px=3, analysed_plane_z=None, arm='', arm_color='#595959',
-                        image='', nucleus_id=None, metric='', metric_value=None, arm_median=None):
+                        image='', nucleus_id=None, metric='', metric_value=None, arm_median=None,
+                        include_dapi=False, full_merge=None, dapi_display_level=None,
+                        channel_labels=('MIAT', 'QKI'), dapi_label='DAPI',
+                        profile_labels=None,
+                        show_scale_bars=False, show_z_slice_labels=False,
+                        show_cross_section=True):
+    """Render calibrated XY/XZ/YZ sections and the linked intensity profiles.
+
+    The legacy default remains the two-channel MIAT/QKI presentation with its
+    XY scale bar.  ``include_dapi=True`` (or ``full_merge=True``) adds a DAPI
+    panel and uses DAPI+RNA1+RNA2 merges for XY/XZ/YZ.  ``show_scale_bars``
+    adds a physically calibrated bar to each of those three panels; the bar
+    length is selected independently from that panel's physical width.  The
+    z-slice label and measurement cross-section are data-linked to the same
+    full-stack z and XY line used for the raw/min-max profiles.
+    """
     import matplotlib.pyplot as plt
     from matplotlib.collections import LineCollection
     from matplotlib.offsetbox import AnchoredOffsetbox, HPacker, TextArea
     from pathlib import PureWindowsPath
     from skimage.measure import find_contours
+    if full_merge is not None:
+        include_dapi = bool(full_merge)
     levels = np.asarray(display_levels, dtype=float)
     if levels.shape != (2,2) or not np.isfinite(levels).all() or np.any(levels[:,1] <= levels[:,0]):
         raise ValueError('Provide finite increasing MIAT and QKI display levels')
+    if len(channel_labels) != 2 or any(not str(label).strip() for label in channel_labels):
+        raise ValueError('channel_labels must contain two nonempty labels')
+    if profile_labels is not None and (len(profile_labels) != 2 or
+                                       any(not str(label).strip() for label in profile_labels)):
+        raise ValueError('profile_labels must contain two nonempty labels')
+    if include_dapi:
+        if dapi_display_level is None:
+            raise ValueError('dapi_display_level is required when include_dapi/full_merge is enabled')
+        dapi_level = np.asarray(dapi_display_level, dtype=float)
+        if dapi_level.shape != (2,) or not np.isfinite(dapi_level).all() or dapi_level[1] <= dapi_level[0]:
+            raise ValueError('Provide a finite increasing dapi_display_level')
+        if not str(dapi_label).strip():
+            raise ValueError('dapi_label must be nonempty')
+    else:
+        dapi_level = None
     if not all(np.isfinite(v) and v > 0 for v in (pixel_size_um,z_step_um)):
         raise ValueError('Voxel sizes must be positive')
     if stack_czyx.shape[0] < 3 or nucleus_mask.shape != stack_czyx.shape[2:]:
@@ -171,45 +203,84 @@ def render_ortho_figure(stack_czyx, center_zyx, half_width_px=None, *, nucleus_m
         endpoints = line_endpoints
     distance,values = line_profile(stack_czyx[:,z],*endpoints,width_px=profile_width_px,
                                    pixel_size_um=pixel_size_um)
+    fig_width, fig_height = (13.5, 6.5) if include_dapi else (11, 6.5)
     with plt.rc_context({'font.family':'Arial', 'font.size':8, 'svg.fonttype':'none'}):
-        fig = plt.figure(figsize=(11,6.5))
+        fig = plt.figure(figsize=(fig_width, fig_height))
     nx, ny, nz = x1-x0, y1-y0, (z1-z0)*z_step_um/pixel_size_um
     panel_width = 2.3
-    grid = fig.add_gridspec(2,4,left=.045,right=(.045*11+panel_width*4.39)/11,
-                           bottom=.14,top=.88,wspace=.13,hspace=.20,
-                           height_ratios=(2.3,2.13))
+    if include_dapi:
+        grid = fig.add_gridspec(2,5,left=.035,right=.985,bottom=.14,top=.88,
+                                wspace=.13,hspace=.20,height_ratios=(2.3,2.13))
+    else:
+        grid = fig.add_gridspec(2,4,left=.045,right=(.045*11+panel_width*4.39)/11,
+                               bottom=.14,top=.88,wspace=.13,hspace=.20,
+                               height_ratios=(2.3,2.13))
     def image_axes(cell, width, height, label):
         position = cell.get_position(fig)
         ax = fig.add_subplot(cell,label=label)
-        ax.set_position([position.x0,position.y1-height/6.5,width/11,height/6.5])
+        ax.set_position([position.x0,position.y1-height/fig_height,width/fig_width,height/fig_height])
         return ax
     unit = panel_width/nx
     # XY width is independent of stack depth; orthogonal axes retain physical scale.
-    xy = image_axes(grid[0,2],panel_width,ny*unit,'xy')
-    miat = image_axes(grid[0,0],panel_width,ny*unit,'xy_miat')
-    qki = image_axes(grid[0,1],panel_width,ny*unit,'xy_qki')
-    yz = image_axes(grid[0,3],nz*unit,ny*unit,'yz')
-    xz = image_axes(grid[1,2],panel_width,nz*unit,'xz')
-    raw = fig.add_subplot(grid[1,:2],label='raw')
-    normal = fig.add_subplot(grid[1,3],label='normalised')
+    if include_dapi:
+        dapi = image_axes(grid[0,0], panel_width, ny*unit, 'xy_dapi')
+        miat = image_axes(grid[0,1], panel_width, ny*unit, 'xy_miat')
+        qki = image_axes(grid[0,2], panel_width, ny*unit, 'xy_qki')
+        xy = image_axes(grid[0,3], panel_width, ny*unit, 'xy')
+        yz = image_axes(grid[0,4], nz*unit, ny*unit, 'yz')
+        xz = image_axes(grid[1,3], panel_width, nz*unit, 'xz')
+        raw = fig.add_subplot(grid[1,:3], label='raw')
+        normal = fig.add_subplot(grid[1,4], label='normalised')
+    else:
+        xy = image_axes(grid[0,2],panel_width,ny*unit,'xy')
+        miat = image_axes(grid[0,0],panel_width,ny*unit,'xy_miat')
+        qki = image_axes(grid[0,1],panel_width,ny*unit,'xy_qki')
+        yz = image_axes(grid[0,3],nz*unit,ny*unit,'yz')
+        xz = image_axes(grid[1,2],panel_width,nz*unit,'xz')
+        raw = fig.add_subplot(grid[1,:2],label='raw')
+        normal = fig.add_subplot(grid[1,3],label='normalised')
     def rgb(plane, channel=None):
         a,b = [np.clip((plane[i]-lo)/(hi-lo),0,1) for i,(lo,hi) in enumerate(levels)]
+        if include_dapi:
+            d = np.clip((plane[2]-dapi_level[0])/(dapi_level[1]-dapi_level[0]),0,1)
+        else:
+            d = np.zeros_like(a)
         if channel == 0:
             b = np.zeros_like(b)
+            d = np.zeros_like(d)
         elif channel == 1:
             a = np.zeros_like(a)
-        return np.stack([np.clip(a+b,0,1),a,b],axis=-1)
-    for ax,key,cross,aspect,title,channel in (
+            d = np.zeros_like(d)
+        if channel == 2:
+            return np.stack([np.zeros_like(d),np.zeros_like(d),d],axis=-1)
+        return np.stack([np.clip(a+b,0,1),a,np.clip(b+d,0,1)],axis=-1)
+    label0, label1 = (str(channel_labels[0]), str(channel_labels[1]))
+    profile_label0, profile_label1 = ((str(profile_labels[0]), str(profile_labels[1]))
+                                      if profile_labels is not None else ('MIAT', 'QKI'))
+    if include_dapi:
+        panels = (
+            (dapi, 'xy', None, 1, f'XY {dapi_label}', 2),
+            (miat, 'xy', None, 1, f'XY {label0}', 0),
+            (qki, 'xy', None, 1, f'XY {label1}', 1),
+            (xy, 'xy', (x-x0,y-y0), 1, f'XY merge\n({dapi_label} + {label0} + {label1})', None),
+            (xz, 'xz', (x-x0,z-z0), z_step_um/pixel_size_um,
+             f'XZ merge\n({dapi_label} + {label0} + {label1})', None),
+            (yz, 'yz', (z-z0,y-y0), pixel_size_um/z_step_um,
+             f'YZ merge\n({dapi_label} + {label0} + {label1})', None),
+        )
+    else:
+        panels = (
             (xy,'xy',(x-x0,y-y0),1,'XY merge',None),
-            (miat,'xy',None,1,'XY MIAT',0), (qki,'xy',None,1,'XY QKI',1),
+            (miat,'xy',None,1,f'XY {label0}',0), (qki,'xy',None,1,f'XY {label1}',1),
             (xz,'xz',(x-x0,z-z0),z_step_um/pixel_size_um,'XZ merge',None),
-            (yz,'yz',(z-z0,y-y0),pixel_size_um/z_step_um,'YZ merge',None)):
+            (yz,'yz',(z-z0,y-y0),pixel_size_um/z_step_um,'YZ merge',None))
+    for ax,key,cross,aspect,title,channel in panels:
         plane = sections[key].transpose(0,2,1) if key == 'yz' else sections[key]
         ax.imshow(rgb(plane,channel),aspect=aspect,interpolation='nearest')
         if cross is not None:
             ax.axvline(cross[0],color='white',lw=.5,ls=':')
             ax.axhline(cross[1],color='white',lw=.5,ls=':')
-        ax.set_title(title,fontsize=9,pad=9)
+        ax.set_title(title, fontsize=(8 if include_dapi else 9), pad=9)
         ax.set_xticks([])
         ax.set_yticks([])
     if analysed_plane_z is not None:
@@ -218,32 +289,95 @@ def render_ortho_figure(stack_czyx, center_zyx, half_width_px=None, *, nucleus_m
             local_z = analysed_plane_z-z0
             xz.plot([1.01,1.04],[local_z]*2,color='#526d88',lw=1.5,label='analysed plane',
                     transform=xz.get_yaxis_transform(),clip_on=False)
-            xz.text(1.055,local_z,label,color='#526d88',fontsize=7,va='center',ha='left',rotation=90,
-                    transform=xz.get_yaxis_transform(),clip_on=False)
             yz.plot([local_z]*2,[-.005,-.02],color='#526d88',lw=1.5,
                     label='analysed plane',transform=yz.get_xaxis_transform(),clip_on=False)
-            yz.text(local_z,-.026,label,color='#526d88',fontsize=7,ha='center',va='top',
-                    transform=yz.get_xaxis_transform(),clip_on=False)
+            if not show_z_slice_labels:
+                xz.text(1.055,local_z,label,color='#526d88',fontsize=7,va='center',ha='left',rotation=90,
+                        transform=xz.get_yaxis_transform(),clip_on=False)
+                yz.text(local_z,-.026,label,color='#526d88',fontsize=7,ha='center',va='top',
+                        transform=yz.get_xaxis_transform(),clip_on=False)
         else:
-            for ax in (xz,yz):
-                ax.text(0,-.13,label+' outside crop',transform=ax.transAxes,
-                        color='#526d88',fontsize=7,va='top')
+            if not show_z_slice_labels:
+                for ax in (xz,yz):
+                    ax.text(0,-.13,label+' outside crop',transform=ax.transAxes,
+                            color='#526d88',fontsize=7,va='top')
+        if show_z_slice_labels:
+            xy.text(.96, .055, label, transform=xy.transAxes, color='#8ba6c4',
+                    fontsize=7, ha='right', va='bottom', clip_on=True)
+    elif show_z_slice_labels:
+        label = f'z = {z+1} (displayed)'
+        xy.text(.96, .055, label, transform=xy.transAxes, color='#8ba6c4',
+                fontsize=7, ha='right', va='bottom', clip_on=True)
     contours = find_contours(np.pad(nucleus_mask.astype(float),1),.5)
     xy.add_collection(LineCollection([np.column_stack((c[:,1]-1-x0,c[:,0]-1-y0)) for c in contours],
                                      colors='#8ba6c4',linewidths=.8))
-    xy.plot([p[1]-x0 for p in endpoints],[p[0]-y0 for p in endpoints],color='white',lw=.8)
+    if show_cross_section:
+        xy.plot([p[1]-x0 for p in endpoints],[p[0]-y0 for p in endpoints],color='white',lw=1.0,
+                label='measured profile line')
+        xy.scatter([p[1]-x0 for p in endpoints],[p[0]-y0 for p in endpoints],s=4,color='white',zorder=5)
+        # The same measured segment projected into XZ is shown at the
+        # analysed z plane. In YZ the x-varying segment collapses to the
+        # dotted crosshair at its measured y/z location; no marker is added.
+        xz.plot([p[1]-x0 for p in endpoints], [z-z0]*2, color='white', lw=1.0,
+                label='measured profile line')
     # Reset bounds after markers so annotations cannot expand the image extent.
-    for ax in (xy,miat,qki):
+    for ax in ((dapi,xy,miat,qki) if include_dapi else (xy,miat,qki)):
         ax.set_xlim(-.5,nx-.5)
         ax.set_ylim(ny-.5,-.5)
     xz.set_xlim(-.5,nx-.5); xz.set_ylim(z1-z0-.5,-.5)
     yz.set_xlim(-.5,z1-z0-.5); yz.set_ylim(ny-.5,-.5)
-    bar_um = scale_bar_length(nx*pixel_size_um)
-    if bar_um is not None:
-        xy.plot([.06*nx,.06*nx+bar_um/pixel_size_um],[.91*ny]*2,color='white',lw=2,label='scale bar')
-        xy.text(.06*nx,.85*ny,f'{bar_um:g} µm',color='white',fontsize=8)
+    def add_horizontal_scale_bar(ax, physical_width_um, px_per_x_um, panel_width_px,
+                                 panel_height_px, y_frac=.91, label_prefix=''):
+        bar_um = scale_bar_length(physical_width_um)
+        if bar_um is None:
+            return None
+        length_px = bar_um / px_per_x_um
+        x_start = .06 * panel_width_px
+        y_bar = y_frac * panel_height_px
+        ax.plot([x_start, x_start+length_px], [y_bar, y_bar], color='white', lw=2,
+                label='scale bar' if not label_prefix else f'scale bar {label_prefix}')
+        ax.text(x_start, (y_frac-.06)*panel_height_px, f'{bar_um:g} µm', color='white', fontsize=8)
+        return bar_um
+
+    def add_vertical_scale_bar(ax, physical_height_um, px_per_y_um, panel_width_px,
+                               panel_height_px, x_frac=.91, label_prefix=''):
+        bar_um = scale_bar_length(physical_height_um)
+        if bar_um is None:
+            return None
+        length_px = bar_um / px_per_y_um
+        x_bar = x_frac * panel_width_px
+        y_start = .91 * panel_height_px
+        ax.plot([x_bar, x_bar], [y_start, y_start-length_px], color='white', lw=2,
+                label=f'scale bar {label_prefix}')
+        ax.text((x_frac-.055)*panel_width_px, y_start-length_px/2, f'{bar_um:g} µm',
+                color='white', fontsize=8, rotation=90, ha='right', va='center')
+        return bar_um
+    # Legacy callers retain the original XY-only bar.  The enhanced mode uses
+    # each panel's own physical width, so a shallow YZ crop never receives an
+    # invalid bar longer than the displayed z extent.
+    if show_scale_bars:
+        add_horizontal_scale_bar(xy, nx*pixel_size_um, pixel_size_um, nx, ny)
+        # Orthogonal views have two physical axes: lateral (X or Y) and Z.
+        add_horizontal_scale_bar(xz, nx*pixel_size_um, pixel_size_um, nx, z1-z0,
+                                 label_prefix='lateral')
+        add_vertical_scale_bar(xz, (z1-z0)*z_step_um, z_step_um, nx, z1-z0,
+                               label_prefix='z')
+        add_horizontal_scale_bar(yz, (z1-z0)*z_step_um, z_step_um, z1-z0, ny,
+                                 label_prefix='z')
+        add_vertical_scale_bar(yz, ny*pixel_size_um, pixel_size_um, z1-z0, ny,
+                               label_prefix='lateral')
+        if include_dapi:
+            add_horizontal_scale_bar(dapi, nx*pixel_size_um, pixel_size_um, nx, ny)
+            add_horizontal_scale_bar(miat, nx*pixel_size_um, pixel_size_um, nx, ny)
+            add_horizontal_scale_bar(qki, nx*pixel_size_um, pixel_size_um, nx, ny)
+    else:
+        bar_um = scale_bar_length(nx*pixel_size_um)
+        if bar_um is not None:
+            xy.plot([.06*nx,.06*nx+bar_um/pixel_size_um],[.91*ny]*2,color='white',lw=2,label='scale bar')
+            xy.text(.06*nx,.85*ny,f'{bar_um:g} µm',color='white',fontsize=8)
     outside = []
-    for i,(name,color,user_min) in enumerate((('MIAT','#ffff00',miat_min),('QKI','#ff00ff',qki_min))):
+    for i,(name,color,user_min) in enumerate(((profile_label0,'#ffff00',miat_min),
+                                               (profile_label1,'#ff00ff',qki_min))):
         v = values[i]
         low,high = v.min(),v.max()
         span = high-low
@@ -329,5 +463,3 @@ def sample_profile(plane, src, dst):
     from skimage.measure import profile_line
     return profile_line(plane.astype(np.float64), src, dst, linewidth=1, order=1,
                         mode="constant", reduce_func=None).ravel()
-
-

@@ -1188,9 +1188,20 @@ class _OrthoCommand(click.Command):
               help='Crop half-width override in µm; default is nucleus bounding box + 1.5 µm.')
 @click.option('--qki-min', type=float, default=None, help='Explicit user QKI analysis minimum to annotate.')
 @click.option('--miat-min', type=float, default=None, help='Explicit user MIAT analysis minimum to annotate.')
+@click.option('--include-dapi', is_flag=True, default=False,
+              help='Add a DAPI panel and DAPI-containing XY/XZ/YZ merges.')
+@click.option('--full-merge', is_flag=True, default=False,
+              help='Alias for --include-dapi; render the full DAPI/RNA/protein merge.')
+@click.option('--scale-bars/--no-scale-bars', default=False,
+              help='Add physically calibrated scale bars to XY, XZ and YZ panels.')
+@click.option('--z-slice-labels/--no-z-slice-labels', default=False,
+              help='Annotate the absolute analyzed z-slice on XY, XZ and YZ panels.')
+@click.option('--cross-section/--no-cross-section', default=True,
+              help='Show the measured XY line that feeds the linked profiles.')
 @click.option('--out', type=click.Path(file_okay=False), default=None)
 @click.pass_context
-def ortho(ctx, run_dir, config, k, metric, seed, punctum, half_width_um, qki_min, miat_min, out):
+def ortho(ctx, run_dir, config, k, metric, seed, punctum, half_width_um, qki_min, miat_min,
+          include_dapi, full_merge, scale_bars, z_slice_labels, cross_section, out):
     """Render median-selected nuclei with orthogonal sections and line profiles.
 
     Uses saved nucleus labels and source stacks; requires fixed manual RNA and
@@ -1204,7 +1215,11 @@ def ortho(ctx, run_dir, config, k, metric, seed, punctum, half_width_um, qki_min
         selection = render_run(run_dir, config=config, k=k, metric=metric, seed=seed,
                                punctum=punctum, half_width_um=half_width_um, qki_min=qki_min,
                                miat_min=miat_min, out=out,
-                               command=command)
+                               command=command, include_dapi=(include_dapi or full_merge),
+                               full_merge=(include_dapi or full_merge),
+                               show_scale_bars=scale_bars,
+                               show_z_slice_labels=z_slice_labels,
+                               show_cross_section=cross_section)
     except (ValueError, OSError, KeyError) as exc:
         raise click.ClickException(str(exc)) from exc
     click.echo(f"Wrote {len(selection)} orthogonal figures; "
