@@ -152,6 +152,8 @@ def _descriptive_qc(data):
                                       errors='coerce').loc[values.index]
                 floor = 1.0 / (1.0 + draws)
                 row['frac_costes_rand_p_at_floor'] = float((values <= floor + 1e-12).mean()) if len(values) else np.nan
+        if 'costes_rand_p' in group:
+            row['costes_p_calibration'] = 'NOT_CALIBRATED (QC only)'
         if 'na_reason_costes_rand' in group:
             counts = group['na_reason_costes_rand'].fillna('').astype(str).value_counts()
             row['costes_na_reasons'] = '; '.join(f'{k}: {v}' for k, v in sorted(counts.items()) if k)
@@ -311,6 +313,7 @@ def _readme(data, per_well, metrics, treated, control, seed, n_boot):
         ('README', 'Definitions, threshold values, replicate structure, filtering, and sheet guide.'),
         ('per_well', 'Each condition/well/threshold: nucleus counts, metric finite and excluded counts, means and medians; source na_reason_* counts retained where supplied.'),
         ('per_arm', "Every arm (not only treated/control) at every threshold multiplier: n_wells, wells, n_nuclei, and mean_of_well_means_<metric> = equal-weight mean of the arm's well means (NaN when any well mean is missing, never silently dropped); n_wells_finite_<metric> counts wells with a finite mean. Descriptive."),
+        ('costes_p_calibration', 'costes_rand_p is NOT_CALIBRATED: on 400 texture-matched synthetic independent-channel nuclei the block-scramble test rejected 8.25% at alpha 0.05 and 2.75% at 0.01 (binomial limits 6.75% / 2.0%). Report it as QC only, never as evidence of colocalization.'),
         ('descriptive_qc', 'Astra F3: Costes p, Costes block size / count / coverage / ACF and PSF widths / draws, and the percentile-score chance references are DESCRIPTIVE QC only. They are excluded from per_well means, per_arm, contrast, ratios and sensitivity; descriptive_qc gives per-well n_finite, median, and for costes_rand_p min/q25/q75/max plus frac_costes_rand_p_at_floor (p = 1/(1+n_draws)) and the Costes NA reasons. A mean of per-nucleus randomization p-values is not a well- or arm-level p-value.'),
         ('spot_pooled_upp', 'Astra F4 sensitivity in per_well: spot_pooled_<percentile metric> pools every scored spot of the well (weights n_spots_upp), beside the per-nucleus mean that weights each nucleus equally; per_arm carries mean_of_well_spot_pooled_<metric>.'),
         ('contrast_sheet', 'At multiplier 1.0: every well identifier and mean, equal-weight arm mean, treated-control difference and ratio. exploratory_boot_lo/hi apply to difference only.'),

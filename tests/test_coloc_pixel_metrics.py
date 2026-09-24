@@ -226,12 +226,13 @@ def test_psf_fwhm_from_emission_and_na_fails_loudly_without_metadata():
             cpm.psf_fwhm_px(*bad)
 
 
-def test_block_size_rule_uses_smaller_acf_and_psf_floor():
-    # b = ceil(max(PSF, min(FWHM_MIAT, FWHM_QKI)))
-    assert cpm.costes_block_from_widths(6.2, 13.0, 1.7) == 7
-    assert cpm.costes_block_from_widths(13.0, 6.2, 1.7) == 7
-    assert cpm.costes_block_from_widths(2.1, 3.0, 4.4) == 5
-    assert cpm.costes_block_from_widths(float("nan"), 3.0, 1.7) is None
+def test_block_size_rule_uses_scrambled_channel_acf_and_psf_floor():
+    # Round 3: b = ceil(max(PSF, FWHM_ACF of the SCRAMBLED channel = QKI)); MIAT width ignored
+    assert cpm.costes_block_from_widths(13.0, 1.7) == 13
+    assert cpm.costes_block_from_widths(7.7, 1.7) == 8
+    assert cpm.costes_block_from_widths(3.0, 4.4) == 5
+    assert cpm.costes_block_from_widths(float("nan"), 1.7) is None
+    assert cpm.COSTES_SCRAMBLED_CHANNEL == "qki"
 
 
 def test_block_size_from_acf_on_two_channels_of_known_width():
@@ -241,7 +242,7 @@ def test_block_size_from_acf_on_two_channels_of_known_width():
                              rng=np.random.default_rng(0))
     assert out["costes_acf_fwhm_px_miat"] == pytest.approx(_gauss_acf_fwhm(1.5), rel=0.12)
     assert out["costes_acf_fwhm_px_qki"] == pytest.approx(_gauss_acf_fwhm(3.0), rel=0.12)
-    assert out["costes_block_px"] == math.ceil(max(1.7, out["costes_acf_fwhm_px_miat"]))
+    assert out["costes_block_px"] == math.ceil(max(1.7, out["costes_acf_fwhm_px_qki"]))
 
 
 # ------------------------------------------ tile phase + coverage gate
