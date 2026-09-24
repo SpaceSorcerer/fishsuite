@@ -746,7 +746,7 @@ def test_run_batch_validates_before_doing_any_work():
     at = src.index("check_sampling_supported(")
     assert at < src.index("output_dir.mkdir("), "runs after making output dirs"
     assert at < src.index("with Progress("), "runs after the batch pre-scan"
-    assert at < src.index("_io.discover_inputs("), "runs after image discovery"
+    assert at < src.index("_io.discover_from_conditions("), "runs after image discovery"
 
 
 def test_plan_keys_are_input_relative_so_the_draw_survives_a_move(tmp_path):

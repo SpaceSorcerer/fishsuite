@@ -1313,6 +1313,22 @@ class DiscoveredImage:
     subfolder: str
 
 
+def discover_from_conditions(input_dir: Path, conditions) -> List[DiscoveredImage]:
+    """The ONE discovery call for a ConditionsCfg; runner, GUI preview and
+    readiness must all use it so they resolve the same condition roster."""
+    return discover_inputs(
+        input_dir,
+        subfolder_conditions=conditions.subfolder_conditions,
+        sec_only_folders=conditions.sec_only_folders,
+        sec_only_files=conditions.sec_only_files,
+        filename_conditions=conditions.filename_conditions,
+        strict_subfolders=conditions.strict_subfolders,
+        exclude_subfolders=conditions.exclude_subfolders,
+        strict_filenames=conditions.strict_filenames,
+        recursive_discovery=conditions.recursive_discovery,
+    )
+
+
 def discover_inputs(
     input_dir: Path,
     *,
@@ -1394,7 +1410,10 @@ def discover_inputs(
             or any(s in name_l for s in sec_only_files)
         )
         condition = subfolder_conditions.get(subfolder, subfolder)
-        if not fname_conds and subfolder not in subfolder_conditions:
+        # A sec_only_folders entry is deliberately absent from the folder map
+        # (listing it there relabels it), so it is never an "unmapped" folder.
+        if (not fname_conds and subfolder not in subfolder_conditions
+                and subfolder not in sec_only_folders):
             if strict_subfolders and subfolder_conditions:
                 raise ValueError(
                     f"Unmapped subfolder {subfolder!r}; mapped folders: "

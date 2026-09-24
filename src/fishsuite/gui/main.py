@@ -543,7 +543,7 @@ if _QT_OK:
         def _hierarchy_roster(self, *, unassigned=False):
             from fishsuite.config.schema import ConditionsCfg
             from fishsuite.config.hierarchy import discovery_roster
-            from fishsuite.core.io import discover_inputs
+            from fishsuite.core.io import discover_from_conditions
             cfg = self._read_widgets_into_cfg()
             block = dict(cfg['conditions'])
             if unassigned:
@@ -552,10 +552,7 @@ if _QT_OK:
             root = Path(self.input_edit.text())
             if not self.input_edit.text().strip() or not root.is_dir():
                 raise ValueError('Select the input directory first')
-            images = discover_inputs(root, subfolder_conditions=conditions.subfolder_conditions,
-                sec_only_folders=conditions.sec_only_folders, sec_only_files=conditions.sec_only_files,
-                filename_conditions=conditions.filename_conditions,
-                recursive_discovery=conditions.recursive_discovery)
+            images = discover_from_conditions(root, conditions)
             subset = cfg.get('input_file_subset') or []
             if subset:
                 from fishsuite.config.hierarchy import select_inputs
