@@ -88,7 +88,7 @@ def _overlap(a, b, tol=.5):
 
 
 @pytest.mark.parametrize('include_dapi', [False, True])
-@pytest.mark.parametrize('ratio', [.2, .5, 1., 2., 3.])
+@pytest.mark.parametrize('ratio', [.2, .5, 1., 2., 3., 10.])
 def test_no_panel_clips_or_overlaps_at_any_depth_ratio(ratio, include_dapi):
     dx, half = .1, 20
     n = 2*half+1
@@ -116,6 +116,20 @@ def test_no_panel_clips_or_overlaps_at_any_depth_ratio(ratio, include_dapi):
         for lb, b in axes.items():
             if la != lb and a.get_title():
                 assert not _overlap(title, b.get_window_extent(renderer)), (la, lb)
+    # Every rendered artist (legend, anchored header, annotations) is on the page.
+    assert _inside(fig.get_tightbbox(renderer).transformed(fig.dpi_scale_trans), fig_box),         'figure content extends past the page'
+    from matplotlib.offsetbox import AnchoredOffsetbox
+    anchored = [a for a in fig.artists if isinstance(a, AnchoredOffsetbox)]
+    assert anchored
+    for artist in anchored:
+        assert _inside(artist.get_window_extent(renderer), fig_box), 'header'
+    legend = axes['raw'].get_legend()
+    assert _inside(legend.get_window_extent(renderer), axes['raw'].get_window_extent(renderer)),         'profile legend clipped by the raw-intensity panel'
+    for text in legend.get_texts():
+        assert _inside(text.get_window_extent(renderer), axes['raw'].get_window_extent(renderer))
+    # An axial bar is always drawn on both orthogonal views (A2).
+    for key in ('xz', 'yz'):
+        assert 'scale bar axial' in _bars(axes[key]), (key, ratio)
     for text in fig.texts:
         box = text.get_window_extent(renderer)
         assert _inside(box, fig_box), text.get_text()
@@ -144,6 +158,13 @@ def test_scale_bar_lengths_lateral_and_axial(factor):
     fig, axes = _render(stack, (48, 64, 64), half, dx, dz, axial_scale_factor=factor)
     inch_per_um = _inches_per_data(axes['xy'], fig)[0]/dx
     dz_eff = dz*factor
+    # Expected bar lengths derived here from the inputs, not from production
+    # metadata: 97 px crop and 97 z slices shown; nice value <= 40 % of extent.
+    def nice(extent_um):
+        return max(v for v in (.1, .2, .5, 1, 2, 5, 10, 20) if v <= .4*extent_um)
+    lateral_um, axial_um = nice(97*dx), nice(97*dz_eff)
+    independent = {'scale bar': lateral_um, 'scale bar lateral': lateral_um,
+                   'scale bar axial': axial_um}
     expected = {('xy', 'scale bar'): (0, dx), ('xz', 'scale bar lateral'): (0, dx),
                 ('xz', 'scale bar axial'): (1, dz_eff), ('yz', 'scale bar axial'): (0, dz_eff),
                 ('yz', 'scale bar lateral'): (1, dx)}
@@ -151,8 +172,8 @@ def test_scale_bar_lengths_lateral_and_axial(factor):
         line = _bars(axes[key])[name]
         data = line.get_xdata() if axis == 0 else line.get_ydata()
         length_px = abs(data[1]-data[0])
-        bar_um = line._scale_bar_um
-        assert bar_um in {1, 2, 5, 10, 20}
+        bar_um = independent[name]
+        assert line._scale_bar_um == bar_um
         assert length_px == pytest.approx(bar_um/um_per_px)
         # Measured on the page: the bar is bar_um long at the shared scale.
         pts = axes[key].transData.transform(np.column_stack([line.get_xdata(), line.get_ydata()]))
@@ -217,8 +238,10 @@ def test_display_levels_identical_across_panels_and_recorded():
     np.testing.assert_allclose(axes['xy_dapi'].images[0].get_array()[32-y0, 32-x0], [0, 0, d])
     footer = ' '.join(t.get_text() for t in fig.texts)
     assert '10–110' in footer and '30–130' in footer and '100–500' in footer
-    assert fig._ortho_geometry['display_levels'] == {'MIAT': (10., 110.), 'QKI': (30., 130.),
-                                                     'DAPI': (100., 500.)}
+    assert fig._ortho_geometry['display_levels'] == {
+        'rna1': dict(label='MIAT', min=10., max=110.),
+        'partner': dict(label='QKI', min=30., max=130.),
+        'dapi': dict(label='DAPI', min=100., max=500.)}
     plt.close(fig)
 
 
@@ -240,4 +263,35 @@ def test_crosshairs_and_footer_state_z_range_and_interpolation():
     assert 'z 3–23 of 30' in footer
     assert 'nearest-neighbour' in footer
     assert fig._ortho_geometry['interpolation'] == 'nearest'
+    plt.close(fig)
+
+
+def test_duplicate_channel_labels_keep_both_display_levels():
+    """M1: metadata is keyed by channel role, so equal labels cannot overwrite."""
+    stack = np.zeros((3, 21, 64, 64))
+    fig, axes = _render(stack, (10, 32, 32), 10, .13, .21, display_levels=((10, 110), (30, 130)),
+                        channel_labels=('probe', 'probe'))
+    levels = fig._ortho_geometry['display_levels']
+    assert levels['rna1'] == dict(label='probe', min=10., max=110.)
+    assert levels['partner'] == dict(label='probe', min=30., max=130.)
+    plt.close(fig)
+
+
+@pytest.mark.parametrize('ratio', [3., 10.])
+def test_profile_panel_fits_its_full_legend_at_deep_stacks(ratio):
+    """A1: at deep stacks the image scale shrinks; the profile legend must not clip."""
+    dx, half = .1, 20
+    stack = np.random.default_rng(2).random((3, 2*half+1, 64, 64))*100
+    fig, axes = _render(stack, (half, 32, 32), half, dx, ratio*dx, qki_min=40, miat_min=20,
+                        channel_labels=('MIAT-640', 'QKI-561'))
+    renderer = fig.canvas.get_renderer()
+    raw = axes['raw'].get_window_extent(renderer)
+    legend = axes['raw'].get_legend()
+    assert len(legend.get_texts()) == 8
+    assert _inside(legend.get_window_extent(renderer), raw)
+    assert raw.width/fig.dpi >= 3.0
+    # The wider profile panel pushes XY/XZ right; they still share their x axis.
+    xy, xz = (axes[k].get_window_extent(renderer) for k in ('xy', 'xz'))
+    assert xz.x0 == pytest.approx(xy.x0, abs=1)
+    assert not _overlap(raw, xz)
     plt.close(fig)

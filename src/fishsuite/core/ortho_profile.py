@@ -130,7 +130,8 @@ def nucleus_crop(nucleus_mask, pixel_size_um, half_width_um=None):
 
 
 def scale_bar_length(panel_width_um):
-    candidates = [v for v in (1, 2, 5, 10, 20) if v <= panel_width_um*.40]
+    # Sub-µm values keep an axial bar on shallow z windows (2026-09-24 review A2).
+    candidates = [v for v in (.1, .2, .5, 1, 2, 5, 10, 20) if v <= panel_width_um*.40]
     return max(candidates) if candidates else None
 
 
@@ -138,6 +139,7 @@ def scale_bar_length(panel_width_um):
 _XY_WIDTH_IN = 2.3
 _MAX_ORTHO_BLOCK_IN = 6.0
 _PROFILE_HEIGHT_IN = 1.7
+_MIN_RAW_PROFILE_WIDTH_IN = 3.0
 _BAR_MARGIN_IN = .08
 
 
@@ -291,7 +293,8 @@ def render_ortho_figure(stack_czyx, center_zyx, half_width_px=None, *, nucleus_m
     margin_l, margin_r, margin_t = .65, .7, .8
     gap_s, gap_o, gap_v = .3, .45, .55
     norm_w = min(max(z_in, 1.9), 2.6)
-    fig_width = (margin_l + (n_single+1)*w_in + n_single*gap_s + gap_o +
+    raw_w = max(n_single*w_in + (n_single-1)*gap_s, _MIN_RAW_PROFILE_WIDTH_IN)
+    fig_width = (margin_l + raw_w + gap_s + w_in + gap_o +
                  max(z_in, norm_w) + margin_r)
 
     short_run = '/'.join(PureWindowsPath(str(run_dir)).parts[-2:])
@@ -329,10 +332,9 @@ def render_ortho_figure(stack_czyx, center_zyx, half_width_px=None, *, nucleus_m
                              width_in/fig_width, height_in/fig_height], label=label)
 
     single_x = [margin_l + i*(w_in+gap_s) for i in range(n_single)]
-    xy_x = margin_l + n_single*(w_in+gap_s)
+    xy_x = margin_l + raw_w + gap_s
     yz_x = xy_x + w_in + gap_o
     row2_top = margin_t + h_in + gap_v
-    raw_w = n_single*w_in + (n_single-1)*gap_s
     if include_dapi:
         dapi = place('xy_dapi', single_x[0], margin_t, w_in, h_in)
         miat = place('xy_miat', single_x[1], margin_t, w_in, h_in)
@@ -475,9 +477,18 @@ def render_ortho_figure(stack_czyx, center_zyx, half_width_px=None, *, nucleus_m
         ax.set_xlabel('Distance (µm)',fontsize=8)
         ax.tick_params(labelsize=7)
     raw.set_ylabel('Intensity (a.u.)',fontsize=8)
-    legend_columns = len(raw.get_legend_handles_labels()[0])
-    raw.legend(fontsize=min(6,36/legend_columns),ncol=legend_columns,loc='upper right',
-               framealpha=.6,handlelength=1.,handletextpad=.3,columnspacing=.5,borderpad=.3)
+    n_entries = len(raw.get_legend_handles_labels()[0])
+    renderer = fig.canvas.get_renderer()
+    raw_box = raw.get_window_extent(renderer)
+    # Fewest legend rows that keep the whole legend inside the raw panel
+    # (2026-09-24 review A1: one unwrapped row clipped on deep stacks).
+    for columns in range(n_entries, 0, -1):
+        legend = raw.legend(fontsize=min(6,36/n_entries),ncol=columns,loc='upper right',
+                            framealpha=.6,handlelength=1.,handletextpad=.3,
+                            columnspacing=.5,borderpad=.3)
+        box = legend.get_window_extent(renderer)
+        if box.width <= raw_box.width - 4 and box.height <= raw_box.height - 4:
+            break
     normal.set_ylim(-.05,1.05)
     normal.yaxis.tick_right()
     normal.yaxis.set_label_position('right')
@@ -499,9 +510,12 @@ def render_ortho_figure(stack_czyx, center_zyx, half_width_px=None, *, nucleus_m
         fig.text(.25/fig_width, (.08 + .15*(len(footer_lines)-1-i))/fig_height, line,
                  fontsize=7, va='bottom')
     fig._ortho_crop_bounds = (y0,y1,x0,x1)
-    display = {label0: tuple(float(v) for v in levels[0]), label1: tuple(float(v) for v in levels[1])}
+    # Keyed by channel role so equal user labels cannot overwrite (review M1).
+    display = {'rna1': dict(label=label0, min=float(levels[0,0]), max=float(levels[0,1])),
+               'partner': dict(label=label1, min=float(levels[1,0]), max=float(levels[1,1]))}
     if include_dapi:
-        display[str(dapi_label)] = tuple(float(v) for v in dapi_level)
+        display['dapi'] = dict(label=str(dapi_label), min=float(dapi_level[0]),
+                               max=float(dapi_level[1]))
     fig._ortho_geometry = dict(
         inches_per_um=scale, figure_size_in=(fig_width, fig_height),
         pixel_size_um=float(pixel_size_um), z_step_um=float(z_step_um),

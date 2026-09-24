@@ -193,7 +193,9 @@ def test_auto_crop_contains_bbox_and_crosshair_stays_on_punctum(stack):
     plt.close(fig)
 
 
-@pytest.mark.parametrize('panel_width,expected',[(4,1),(8,2),(12.5,5),(20,5),(25,10),(40,10),(50,20),(100,20),(2,None)])
+# 2026-09-24 round 2 (A2): sub-µm candidates so shallow z windows still get an
+# axial bar; nothing fits below .25 µm.
+@pytest.mark.parametrize('panel_width,expected',[(4,1),(8,2),(12.5,5),(20,5),(25,10),(40,10),(50,20),(100,20),(2,.5),(1,.2),(.5,.2),(.3,.1),(.2,None)])
 def test_round_scale_bar(panel_width,expected):
     assert core().scale_bar_length(panel_width) == expected
 

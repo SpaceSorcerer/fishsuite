@@ -96,7 +96,10 @@ def conditions_status(cfg: Dict[str, Any], *, input_dir: str) -> Status:
     from fishsuite.config.hierarchy import discovery_roster
     try:
         conditions = ConditionsCfg.model_validate(cfg.get('conditions', {}))
-        if conditions.groups and input_dir and Path(input_dir).is_dir():
+        # The runner's preflight (discover -> subset -> non-empty -> hierarchy)
+        # runs for every preset, grouped or not; readiness mirrors it so it is
+        # never green where the runner would raise (2026-09-24 review C1).
+        if input_dir and Path(input_dir).is_dir():
             from fishsuite.core.io import discover_from_conditions
             root = Path(input_dir)
             images = discover_from_conditions(root, conditions)
@@ -107,7 +110,8 @@ def conditions_status(cfg: Dict[str, Any], *, input_dir: str) -> Status:
             if not images:
                 return 'red'
             discovery_roster(images, root, conditions)
-            return 'green'
+            if conditions.groups:
+                return 'green'
     except (ValueError, OSError):
         return 'red'
     mode = _g(cfg, "conditions", "mode", default="subfolders")

@@ -351,9 +351,11 @@ def render_run(run_dir, *, config=None, k=3, metric='nuclear_spot_count', seed=0
                          qki_min=qki_min, miat_min=miat_min, figure=name))
     result = pd.DataFrame(rows)
     result.to_csv(out / 'ortho_selection.csv', index=False)
-    display = {channel_label_1: list(levels[0]), channel_label_2: list(levels[1])}
+    # Keyed by channel role; labels stored separately (review M1).
+    display = {'rna1': dict(label=channel_label_1, min=float(levels[0][0]), max=float(levels[0][1])),
+               'partner': dict(label=channel_label_2, min=float(levels[1][0]), max=float(levels[1][1]))}
     if dapi_level is not None:
-        display[dapi_label] = list(dapi_level)
+        display['dapi'] = dict(label=dapi_label, min=float(dapi_level[0]), max=float(dapi_level[1]))
     params = dict(axial_scale_factor=axial_scale_factor,
                   axial_scale_factor_note='multiplies the nominal z step; 1.0 = nominal z '
                                           '(no refractive-index correction)',

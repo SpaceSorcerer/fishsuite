@@ -304,7 +304,8 @@ def test_axial_scale_factor_recorded_in_csv_json_and_figure(synthetic_run, facto
     assert row.channel_label_1 == 'RNA1' and row.channel_label_2 == 'Protein'
     params = json.loads((out / 'ortho_render_params.json').read_text(encoding='utf-8'))
     assert params['axial_scale_factor'] == expected
-    assert params['display_levels'] == {'RNA1': [0.0, 100.0], 'Protein': [0.0, 200.0]}
+    assert params['display_levels'] == {'rna1': dict(label='RNA1', min=0.0, max=100.0),
+                                        'partner': dict(label='Protein', min=0.0, max=200.0)}
     assert params['interpolation'] == 'nearest'
     svg = next(out.glob('*.svg')).read_text(encoding='utf-8')
     assert f'axial scale factor {expected:g}' in svg
