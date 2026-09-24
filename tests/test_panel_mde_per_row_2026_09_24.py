@@ -50,3 +50,20 @@ def test_rows_with_fewer_finite_wells_get_their_own_mde(panel):
     assert empty.n_wells_test == 0 and empty.mde_note == "TOO_FEW_WELLS"
     assert np.isnan(empty[col])
     assert (contrasts[col] > 1e-6).where(contrasts[col].notna(), True).all()
+
+
+def test_overlay_picks_carry_condition_and_well_for_the_field_label(panel, tmp_path):
+    """c80f511 regrouped overlays on well_id and dropped `condition`, so every
+    real panel run died in _save_field_overlay with KeyError: 'condition'."""
+    per_nucleus = _two_by_two(panel)
+    per_nucleus["n_rna1_nuclear_puncta"] = 3
+    per_nucleus["n_called_coloc"] = 1
+    panel.ARMS[:] = ["WT", "OE"]
+    picks = panel.overlay_picks(per_nucleus, {"primary_obs": "frac_called_coloc_runthr"}, 1)
+    assert [(p["line"], p["well_id"], p["condition"]) for p in picks] == [
+        ("WT", "n1", "g2_NoDox"), ("WT", "n2", "g2_NoDox"),
+        ("OE", "d1", "g2_Dox"), ("OE", "d2", "g2_Dox")]
+    rgb = np.zeros((60, 80, 3))
+    panel._save_field_overlay(tmp_path / "f.png", rgb, [], np.array([10]), np.array([10]),
+                              np.array([True]), 130.0, {}, picks[0])
+    assert (tmp_path / "f.png").stat().st_size > 0

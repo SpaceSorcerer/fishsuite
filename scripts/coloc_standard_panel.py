@@ -2602,14 +2602,15 @@ def build_line_profiles(run, per_nucleus, spots, ctx):
     return profiles, rows
 
 
-def build_overlays(run, per_nucleus, spots, ctx, out_dir, n_per_well):
-    """Representative field(s) per well: the field whose called fraction is
-    nearest that well's own mean. Writes full-resolution per-field overlays."""
-    from PIL import Image
-    from skimage.measure import find_contours
+def overlay_picks(per_nucleus, ctx, n_per_well):
+    """Representative fields per (arm, well): the ``n_per_well`` FOVs whose
+    primary object fraction is closest to their well mean. Each record keeps
+    ``condition`` for the field label; c80f511 regrouped on well_id and
+    dropped it, which made every real run fail in _save_field_overlay."""
     bio = per_nucleus[~per_nucleus["secondary_only"]]
     fov = (bio.groupby(["line", "well_id", "image"], as_index=False)
-           .agg(frac=(ctx["primary_obs"], "mean"),
+           .agg(condition=("condition", "first"),
+                frac=(ctx["primary_obs"], "mean"),
                 n_puncta=("n_rna1_nuclear_puncta", "sum"),
                 n_called=("n_called_coloc", "sum")))
     picks = []
@@ -2618,6 +2619,15 @@ def build_overlays(run, per_nucleus, spots, ctx, out_dir, n_per_well):
             sub = fov[(fov["line"] == ln) & (fov["well_id"] == wname)].copy()
             sub["d"] = (sub["frac"] - sub["frac"].mean()).abs()
             picks.extend(sub.sort_values("d").head(int(n_per_well)).to_dict("records"))
+    return picks
+
+
+def build_overlays(run, per_nucleus, spots, ctx, out_dir, n_per_well):
+    """Representative field(s) per well: the field whose called fraction is
+    nearest that well's own mean. Writes full-resolution per-field overlays."""
+    from PIL import Image
+    from skimage.measure import find_contours
+    picks = overlay_picks(per_nucleus, ctx, n_per_well)
     sp_nuc = spots[(spots["channel"] == "rna1") & (spots["in_nucleus"].astype(bool))]
     fields = []
     idx_rows = []
