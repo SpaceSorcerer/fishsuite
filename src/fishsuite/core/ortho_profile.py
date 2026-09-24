@@ -194,6 +194,45 @@ def _draw_scale_bar(ax, *, orientation, bar_um, um_per_data, extent_data, panel_
     return line
 
 
+def nucleus_z_extent(dapi_zyx, nucleus_mask, *, z_step_um, margin_um=1.0, must_include=()):
+    """Nucleus axial extent for a render-only z crop.
+
+    Mean DAPI inside the 2-D nucleus mask per plane, min-max normalised; the
+    contiguous run of planes >= 0.5 around the peak (axial half-maximum) is
+    padded by ceil(margin_um / z_step_um) planes each side, extended to cover
+    ``must_include`` planes, and clipped to the stack. Returns 0-based
+    half-open (z0, z1) and a record of how it was derived. Display only.
+    """
+    dapi = np.asarray(dapi_zyx, dtype=float)
+    mask = np.asarray(nucleus_mask, dtype=bool)
+    if dapi.ndim != 3 or mask.shape != dapi.shape[1:]:
+        raise ValueError('Expected ZYX DAPI stack and matching 2-D nucleus mask')
+    if not mask.any():
+        raise ValueError('Nucleus mask is empty')
+    if not (np.isfinite(z_step_um) and z_step_um > 0 and np.isfinite(margin_um) and margin_um >= 0):
+        raise ValueError('z_step_um must be positive and margin_um non-negative')
+    prof = dapi[:, mask].mean(axis=1)
+    lo, hi = float(prof.min()), float(prof.max())
+    if not hi > lo:
+        raise ValueError('DAPI axial profile is flat inside the nucleus mask')
+    norm = (prof-lo)/(hi-lo)
+    peak = int(np.argmax(prof))
+    a = b = peak
+    while a > 0 and norm[a-1] >= .5:
+        a -= 1
+    while b < len(norm)-1 and norm[b+1] >= .5:
+        b += 1
+    margin = int(math.ceil(margin_um/z_step_um - 1e-9))
+    z0, z1 = max(0, a-margin), min(len(norm), b+margin+1)
+    for zz in must_include:
+        zz = int(zz)
+        z0, z1 = min(z0, zz), max(z1, zz+1)
+    return z0, z1, dict(rule='DAPI mean in nucleus mask, axial half-maximum run around peak',
+                        peak_0based=peak, core_first_0based=a, core_last_0based=b,
+                        margin_um=float(margin_um), margin_planes=margin,
+                        z0_0based=z0, z1_0based_exclusive=z1)
+
+
 def render_ortho_figure(stack_czyx, center_zyx, half_width_px=None, *, nucleus_mask,
                         pixel_size_um, z_step_um, display_levels,
                         line_endpoints=None, qki_min=None, miat_min=None, run_dir='',
@@ -203,7 +242,8 @@ def render_ortho_figure(stack_czyx, center_zyx, half_width_px=None, *, nucleus_m
                         channel_labels=('MIAT', 'QKI'), dapi_label='DAPI',
                         profile_labels=None,
                         show_scale_bars=False, show_z_slice_labels=False,
-                        show_cross_section=True, axial_scale_factor=1.0):
+                        show_cross_section=True, axial_scale_factor=1.0,
+                        z_range=None, z_crop_note=None):
     """Render calibrated XY/XZ/YZ sections and the linked intensity profiles.
 
     Geometry: every image panel is drawn at one inches-per-µm scale, lateral
@@ -265,6 +305,11 @@ def render_ortho_figure(stack_czyx, center_zyx, half_width_px=None, *, nucleus_m
     half = auto_half if half_width_px is None else half_width_px
     (z,y,x), _ = _bounds(stack_czyx,center_zyx,half)
     _, ((z0,z1),(y0,y1),(x0,x1)) = _bounds(stack_czyx,(z,*crop_yx),half)
+    if z_range is not None:
+        rz0, rz1 = (int(v) for v in z_range)
+        if not (0 <= rz0 < rz1 <= stack_czyx.shape[1]) or not (rz0 <= z < rz1):
+            raise ValueError('z_range must be a half-open window inside the stack containing the section plane')
+        z0, z1 = rz0, rz1
     if analysed_plane_z is not None:
         if (not np.isfinite(analysed_plane_z) or int(analysed_plane_z) != analysed_plane_z
                 or not 0 <= analysed_plane_z < stack_czyx.shape[1]):
@@ -311,7 +356,8 @@ def render_ortho_figure(stack_czyx, center_zyx, half_width_px=None, *, nucleus_m
         f'Voxel {pixel_size_um:g} µm (XY) × {z_step_um:g} µm (Z step); axial scale factor '
         f'{factor:g} (1 = nominal z, no refractive-index correction) → {dz_eff:.4g} µm per '
         f'displayed Z slice. Sections (1-based, dotted crosshairs): XY at z {z+1}, XZ at y {y+1}, '
-        f'YZ at x {x+1}. Z shown: z {z0+1}–{z1} of {stack_czyx.shape[1]} ({z_um:.2f} µm).',
+        f'YZ at x {x+1}. Z shown: z {z0+1}–{z1} of {stack_czyx.shape[1]} ({z_um:.2f} µm).'
+        + (f' {z_crop_note}.' if z_crop_note else ''),
         'Display min–max: ' + '; '.join(level_text) + ' | Merge: ' + ', '.join(merge_text) +
         ' | Pixels drawn nearest-neighbour (no interpolation); all image panels at '
         f'{scale:.3f} in per µm, lateral and axial.',
