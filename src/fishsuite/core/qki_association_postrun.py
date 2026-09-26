@@ -235,7 +235,7 @@ def _nucleolus_sensitivity_tables(rows, production_percentile):
 def run_qki_association(run_dir, out, *, miat_min, qki_min,
                         sensitivity=(0.8, 1.0, 1.25), n_null=200, seed=0,
                         n_costes=200, conditions=None, image_keys=None, optics=None,
-                        nucleolus_percentiles=()):
+                        nucleolus_percentiles=(), texture_null=None, rotation_upp=False):
     from .qki_association import association_tables, COLUMN_DEFINITIONS
 
     levels = tuple(float(value) for value in sensitivity)
@@ -366,7 +366,9 @@ def run_qki_association(run_dir, out, *, miat_min, qki_min,
             qki_min=qki_min, sensitivity=levels, n_null=n_null, seed=seed,
             eligible_mask=eligible, image=key, condition=str(getattr(record, "condition", "")),
             well=str(getattr(record, "well", "")), n_costes=int(n_costes), ccf_records=ccf_records,
-            psf_fwhm_px=psf_px, psf_source=optic_source)
+            psf_fwhm_px=psf_px, psf_source=optic_source,
+            dapi=data.planes["dapi"] if texture_null is not None else None,
+            texture_null=texture_null, rotation_upp=bool(rotation_upp))
         spot_table["spot_id"] = spot_table.spot_id.map(identifiers)
         all_nuclei.append(nuc_table)
         all_spots.append(spot_table)
@@ -385,6 +387,12 @@ def run_qki_association(run_dir, out, *, miat_min, qki_min,
                             index=False, lineterminator="\n")
         sens_well.to_csv(destination / "qki_association_nucleolus_sensitivity_per_well.csv",
                          index=False, lineterminator="\n")
+    if texture_null is not None:
+        from .texture_null import sensitivity_tables
+        tex_well, tex_arm = sensitivity_tables(nucleus_table, spot_table,
+                                               level=1.0 if 1.0 in levels else levels[0])
+        tex_well.to_csv(destination / "texture_null_per_well.csv", index=False, lineterminator="\n")
+        tex_arm.to_csv(destination / "texture_null_per_arm.csv", index=False, lineterminator="\n")
     columns = list(dict.fromkeys([*nucleus_table.columns, *spot_table.columns]))
     lines = ["# Single-plane QKI association columns", "",
         "- Eligible spots retain source null_candidate eligibility and exact saved pixels; miat_min affects MIAT area only.",
@@ -402,7 +410,15 @@ def run_qki_association(run_dir, out, *, miat_min, qki_min,
         f"- Van Steensel CCF: shifts -20..+20 px (step 1 px) along x and y, pixel size from the manifest voxel_xy_nm; per-field curves in `qki_association_ccf_per_field.csv` (mean over nuclei of per-nucleus r(d)) and the channel-registration check in `qki_association_ccf_registration.csv`.",
         f"- Costes randomization (round 3): **`costes_rand_p` is NOT_CALIBRATED** (texture-matched synthetic gate failed: 8.25% false positives at alpha 0.05, 2.75% at 0.01, n = 400) and is a QC descriptor only. b = ceil(max(PSF FWHM, ACF FWHM of the scrambled channel QKI)) px (round 2 used min(MIAT, QKI), which undersized the blocks), PSF = 0.51 lambda_em / NA from the recorded optics, ACF = overlap-normalized mean-centered 2-D autocorrelation over in-mask pairs, radially averaged; tile phase chosen from mask geometry to maximise complete-block coverage; observed r and all {int(n_costes)} permutations on the frozen core N_core; NA (MASK_BLOCK_COVERAGE) below 10 blocks or 80% coverage; seed = {int(seed)} bound to (image, nucleus_id) in its own stream. `costes_rand_p` is per-nucleus DESCRIPTIVE, not a test across nuclei, and is excluded from coupling contrasts; wells remain the replicates.",
         "- These statistics share the placement null's limit: none removes MIAT and QKI co-preferring the same nuclear sub-compartment.",
-        "", "## Column definitions", ""]
+        ""]
+    if texture_null is not None or rotation_upp:
+        lines += ["## Texture-matched and rotation nulls: SENSITIVITY ONLY", "",
+            "- These columns are a sensitivity analysis for the uniform-position percentile score. They never replace the uniform-null headline.",
+            "- Texture-matched null (`upp_texture_matched_*`, `texture_*`): each footprint's K placements are drawn uniformly only from a matched subset of its admissible positions (same eligible, nucleolus-excluded rule). Covariates: footprint-mean DAPI and normalized radial position (distance to the nuclear boundary / maximum inscribed distance), each as a within-nucleus quantile over the footprint's admissible positions. Method `strata`: the observed position's fixed quantile cell (n_dapi x n_radial); a cell below the admissible-position gate is NA (SPARSE_STRATUM), never merged; the finite-K references are exact for these fixed cells under uniform placement within the cell. Method `knn`: the k nearest admissible positions in quantile space; centred on the observation, so references are nominal. It removes association explained by shared DAPI-density or radial preference only at the matching resolution; it cannot remove sharing of any other texture, and it can absorb true association if QKI enrichment itself tracks DAPI.",
+            "- Rotation null (`upp_rotation_*`): the existing exact-footprint KEEP-N rotation null (rotation about the spot-constellation centroid, per-spot redraws), unchanged; 0.5 and 21/201 are nominal references only.",
+            "- `texture_null_per_well.csv` / `texture_null_per_arm.csv`: descriptive per-well (equal-weight nuclei) and per-arm (equal-weight wells) values beside the uniform-null values. No test.",
+            ""]
+    lines += ["## Column definitions", ""]
     for name in columns:
         if name not in COLUMN_DEFINITIONS:
             raise ValueError(f"missing column definition: {name}")
@@ -422,6 +438,14 @@ def run_qki_association(run_dir, out, *, miat_min, qki_min,
                  "--emission-nm-qki", f"{explicit_optics[0]['emission_nm_qki']:g}"]
     if percentiles:
         argv += ["--nucleolus-sensitivity", ",".join(f"{v:g}" for v in percentiles)]
+    if texture_null is not None:
+        argv += ["--texture-null", "--texture-method", texture_null.method,
+                 "--texture-dapi-bins", str(texture_null.n_dapi_bins),
+                 "--texture-radial-bins", str(texture_null.n_radial_bins),
+                 "--texture-min-positions", str(texture_null.min_positions),
+                 "--texture-knn-k", str(texture_null.knn_k)]
+    if rotation_upp:
+        argv += ["--rotation-upp"]
     command = shlex.join(argv + ["--out", str(destination)])
     extra = {"qki_assoc_command": command, "consumed_files": ", ".join(REQUIRED_FILES),
              "quantitation": "single-plane", "n_costes": int(n_costes),
@@ -443,6 +467,21 @@ def run_qki_association(run_dir, out, *, miat_min, qki_min,
     extra["optics_per_image"] = json.dumps(optics_log, sort_keys=True)
     if image_keys:
         extra["image_keys_filter"] = "; ".join(sorted(str(k) for k in image_keys))
+    if texture_null is not None or rotation_upp:
+        from .texture_null import SENSITIVITY_LABEL
+        extra["sensitivity_nulls_status"] = SENSITIVITY_LABEL
+    if texture_null is not None:
+        extra["texture_null_params"] = json.dumps(dict(texture_null.as_dict(), k_draws=int(n_null)),
+                                                  sort_keys=True)
+        extra["texture_null_merge"] = "none (sparse fixed cell -> NA SPARSE_STRATUM)"
+        extra["texture_null_seed_streams"] = ("sha256([seed, image_key, nucleus_id, 'texture_matched_null']); "
+                                              "tie-breaks 'texture_matched_upp_tiebreak'")
+        extra["texture_null_covariates"] = ("footprint-mean raw DAPI at the placement; normalized radial position "
+                                            "of the placed centre = EDT to nuclear-label boundary / max EDT; both "
+                                            "as mid-rank quantiles over the footprint's admissible positions")
+    if rotation_upp:
+        extra["rotation_upp_null"] = ("keep_n_footprint_rotation_null (pivot = spot-constellation centroid), "
+                                      "seed stream 'rotation_null_upp', tie-breaks 'rotation_upp_tiebreak'")
     if not repro.write_command_log(destination, source / "image_manifest.csv", destination, seed,
             extra=extra):
         raise OSError("failed to write command.log")
