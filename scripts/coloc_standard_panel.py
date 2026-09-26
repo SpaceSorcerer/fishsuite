@@ -1164,6 +1164,14 @@ DESCRIPTIVE_NOTE = ("DESCRIPTIVE ONLY: an arm has fewer than {} wells, so no tes
                     "in coloc_standard_contrasts.csv.".format(MIN_WELLS_INFERENTIAL))
 
 
+def gate_text(inferential):
+    """Gate band stamped on every figure; alpha only when a test is drawn."""
+    return ("gate: nuclear mask only, single z plane; biological wells only "
+            "(secondary-only fields excluded); Costes per-nucleus thresholds with the run's "
+            "batch median + 2.5 MAD as fallback"
+            + (f"; alpha {ALPHA}." if inferential else "."))
+
+
 def nan_reason(n_test, n_ref, diff, p_welch, tested):
     """Why a contrast row has no number, as a leading machine-readable token.
 
@@ -1543,7 +1551,9 @@ def fig_object_fraction(well, contrasts, ctx, out_dir, manifest):
     bio = well[~well["secondary_only"]]
     variants = [
         (ctx["primary_obs"], ctx["primary_shuf"],
-         "A  " + ctx["primary_thr_label"] + chr(10) + "(PRIMARY, TESTED)"),
+         "A  " + ctx["primary_thr_label"] + chr(10)
+         + ("(PRIMARY, TESTED)" if pc["inferential"]
+            else f"(PRIMARY, descriptive: n < {MIN_WELLS_INFERENTIAL} wells per arm)")),
         (ctx["secondary_obs"], ctx["secondary_shuf"],
          "B  " + ctx["secondary_thr_label"] + chr(10) + "(sensitivity, not tested)"),
     ]
@@ -1627,8 +1637,10 @@ def fig_object_fraction(well, contrasts, ctx, out_dir, manifest):
         f"{SHUFFLE_DRAWS} draws per punctum, seed {ctx['seed']}, averaged. "
         "Rollup: nucleus -> FoV mean -> well mean, matching the run report's per_well "
         "convention. "
-        f"PANEL A uses the {ctx['primary_thr_label']} and carries the panel's ONE test; "
-        f"that choice was made {ctx['rule_why']}. "
+        f"PANEL A uses the {ctx['primary_thr_label']}"
+        + (" and carries the panel's ONE test; " if pc["inferential"]
+           else " and is the primary endpoint, shown descriptively; ")
+        + f"that choice was made {ctx['rule_why']}. "
         + ((f"Welch t on "
             f"{int(row['n_wells_ref'])} vs {int(row['n_wells_test'])} well means of the "
             f"observed fraction: p = {fmt_p(row['p_welch'])}, "
@@ -2510,9 +2522,7 @@ def main(argv=None):
             spots[(spots["channel"] == "rna1") & (spots["in_nucleus"].astype(bool))]
             .groupby(["image", "nucleus_id"])["spot_diameter_um"].median()
             if "spot_diameter_um" in spots.columns else None),
-        filt=(f"gate: nuclear mask only, single z plane; biological wells only "
-              f"(secondary-only fields excluded); Costes per-nucleus thresholds with the run's "
-              f"batch median + 2.5 MAD as fallback; alpha {ALPHA}."),
+        filt=gate_text(plotted_counts(per_well)["inferential"]),
     )
 
     print("[2/6] cytofluorograms", flush=True)

@@ -180,3 +180,43 @@ def test_three_wells_per_arm_keeps_the_test_on_the_figure(panel, monkeypatch, tm
     figs = _render_all(panel, monkeypatch, tmp_path, pn)
     body = " ".join(s for s, _ in figs["FIG_COLOC_STANDARD"]).replace("\n", " ")
     assert "p = " in body and "MDE" in body and "60 biological nuclei in 6 wells" in body
+
+
+def _texts(figs, stem):
+    return [s.replace("\n", " ") for s, _ in figs[stem]]
+
+
+def _render_with_gate(panel, monkeypatch, tmp_path, pn):
+    _fov, well = panel.rollup(pn)
+    inferential = panel.plotted_counts(well)["inferential"]
+    real_ctx = _ctx
+
+    def _gated_ctx(panel_, pn_):
+        c = real_ctx(panel_, pn_)
+        c["filt"] = panel_.gate_text(inferential)
+        return c
+
+    monkeypatch.setitem(globals(), "_ctx", _gated_ctx)
+    return _render_all(panel, monkeypatch, tmp_path, pn)
+
+
+def test_two_v_two_csp04_is_descriptive_and_gate_has_no_alpha(panel, monkeypatch, tmp_path):
+    assert "alpha" not in panel.gate_text(False)
+    figs = _render_with_gate(panel, monkeypatch, tmp_path, _subset(panel))
+    t = _texts(figs, "csp04_object_coloc_fraction")
+    assert any("(PRIMARY, descriptive: n < 3 wells per arm)" in s for s in t)
+    assert not any("TESTED" in s or "ONE test" in s for s in t)
+    for stem in figs:
+        assert not any(re.search(r"\balpha\b", s) for s in _texts(figs, stem)), stem
+
+
+def test_three_v_three_csp04_keeps_test_wording_and_alpha(panel, monkeypatch, tmp_path):
+    assert panel.gate_text(True).endswith(f"alpha {panel.ALPHA}.")
+    pn = _per_nucleus(panel, {REF: [("a", 10), ("b", 10), ("c", 10)],
+                              TEST: [("d", 10), ("e", 10), ("f", 10)]})
+    panel.ARMS[:] = [REF, TEST]
+    figs = _render_with_gate(panel, monkeypatch, tmp_path, pn)
+    t = _texts(figs, "csp04_object_coloc_fraction")
+    assert any("(PRIMARY, TESTED)" in s for s in t)
+    assert any("carries the panel's ONE test" in s for s in t)
+    assert any(f"alpha {panel.ALPHA}." in s for s in _texts(figs, "FIG_COLOC_STANDARD"))
