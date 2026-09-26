@@ -1172,20 +1172,25 @@ def footprint_backfill(ctx):
 @click.option("--texture-dapi-bins", default=5, show_default=True, type=click.IntRange(min=1))
 @click.option("--texture-radial-bins", default=5, show_default=True, type=click.IntRange(min=1))
 @click.option("--texture-min-positions", default=20, show_default=True, type=click.IntRange(min=1),
-              help="Admissible positions required per stratum (one merge with the adjacent radial bin).")
+              help="Admissible positions required in the observed fixed stratum; fewer -> NA (no merging).")
+@click.option("--texture-method", type=click.Choice(["strata", "knn"]), default="strata", show_default=True,
+              help="Fixed quantile strata, or k nearest admissible positions in quantile space.")
+@click.option("--texture-knn-k", default=200, show_default=True, type=click.IntRange(min=1))
 @click.option("--rotation-upp", is_flag=True, default=False,
               help="SENSITIVITY ONLY: add the percentile score against the existing KEEP-N rotation null.")
 @click.option("--out", required=True, type=click.Path(file_okay=False),
               help="New or empty directory outside the source run.")
 def qki_assoc(run_dir, miat_min, qki_min, sensitivity, n_null, seed, n_costes, conditions,
               objective_na, emission_nm_miat, emission_nm_qki, nucleolus_sensitivity, texture_null,
-              texture_dapi_bins, texture_radial_bins, texture_min_positions, rotation_upp, out):
+              texture_dapi_bins, texture_radial_bins, texture_min_positions, texture_method,
+              texture_knn_k, rotation_upp, out):
     """Single-plane MIAT/QKI area occupancy with exact-footprint placement nulls."""
     from .core.qki_association_postrun import run_qki_association
     from .core.texture_null import TextureNullParams
     try:
         levels = tuple(float(value.strip()) for value in sensitivity.split(","))
-        texture = (TextureNullParams(texture_dapi_bins, texture_radial_bins, texture_min_positions)
+        texture = (TextureNullParams(texture_dapi_bins, texture_radial_bins, texture_min_positions,
+                                     texture_method, texture_knn_k)
                    if texture_null else None)
         result = run_qki_association(run_dir, out, miat_min=miat_min, qki_min=qki_min,
             sensitivity=levels, n_null=n_null, seed=seed, n_costes=n_costes,

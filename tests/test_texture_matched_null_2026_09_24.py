@@ -1,29 +1,31 @@
 """Texture-matched placement null for the uniform-position percentile score (UPP).
 
-SENSITIVITY ONLY (Astra fig1 review F1). The texture-matched null draws each
-footprint's K placements only from admissible positions in the same
-within-nucleus stratum of (footprint-mean DAPI quantile) x (normalized radial
-position quantile). It must remove association that is due only to MIAT and
-QKI sharing a DAPI-defined zone, while keeping punctum-level association.
+SENSITIVITY ONLY (Astra fig1 review F1; texture-null review round 2).
 
-Tolerances: under exchangeability each spot score is uniform on {0..K}/K
-(variance (K+2)/(12K) ~= 1/12), so the pooled spot mean has SE
-sqrt(1/(12 n)); the fraction >= 0.90 is Bernoulli(21/201). Every tolerance
-below is 4 SE at the realised number of scored spots (two-sided
-P(|Z| > 4) ~= 6e-5 per assertion if spots were independent; spots in one
-nucleus share a QKI field, so 4 rather than 3 SE leaves room for that).
+Calibration (round-2 F7/F8): realistic synthetic nuclei from
+``_texture_null_sim`` (irregular masks with nucleolar holes, variable exact
+footprints, smooth nonlinear DAPI and radial fields whose boundaries do not
+align with any stratum). The calibration unit is the NUCLEUS mean score;
+nuclei are independent. For each of N_FIELDS independent fields of N_NUCLEI
+nuclei, a two-sided one-sample t test of the nucleus means against 0.5 at
+alpha 0.05 is run, and the empirical rejection rate across fields is gated.
+Under a calibrated null the rejection count is Binomial(N_FIELDS, 0.05);
+the gate is its one-sided 99.9 % upper limit. No spot-level SE is used.
 """
 from __future__ import annotations
 
 import numpy as np
 import pandas as pd
 import pytest
-from scipy import ndimage
+from scipy import stats
 
+import _texture_null_sim as sim
 from fishsuite.core.footprint_null import MiatFootprint, exact_footprint_position_null
 
 K = 200
-CHANCE_Q90 = 21 / 201
+N_FIELDS, N_NUCLEI = 40, 12
+ALPHA = 0.05
+MAX_FALSE_REJECTIONS = int(stats.binom.ppf(0.999, N_FIELDS, ALPHA))  # 7 of 40
 
 
 def _footprint(index, y, x, radius=1):
@@ -33,129 +35,74 @@ def _footprint(index, y, x, radius=1):
                          "synthetic", None, True, None, 100.0, 0.0)
 
 
-def _field(kind, *, n_rows=8, n_cols=10, tile=72, radius=30, n_spots=15, seed=0):
-    """One image of n_rows x n_cols disk nuclei with a known generative model.
-
-    shared_zone : DAPI-bright zone (x > cx + 4); QKI +300 in the zone; MIAT
-                  centres 80 % in the zone. No MIAT-QKI association beyond it.
-    coloc       : flat DAPI texture; QKI +400 under every MIAT footprint.
-    independent : DAPI-bright zone; QKI independent smooth noise; MIAT uniform.
-    """
-    rng = np.random.default_rng(seed)
-    height, width = n_rows * tile, n_cols * tile
-    labels = np.zeros((height, width), dtype=np.int32)
-    zone = np.zeros((height, width), dtype=bool)
-    yy, xx = np.mgrid[0:tile, 0:tile]
-    c = tile // 2
-    disk = (yy - c) ** 2 + (xx - c) ** 2 <= radius ** 2
-    local_zone = disk & (xx - c > 4)
-    inner = ndimage.binary_erosion(disk, structure=np.ones((3, 3), bool))
-    footprints, label = [], 0
-    for row in range(n_rows):
-        for col in range(n_cols):
-            label += 1
-            oy, ox = row * tile, col * tile
-            labels[oy:oy + tile, ox:ox + tile][disk] = label
-            if kind != "coloc":
-                zone[oy:oy + tile, ox:ox + tile] = local_zone
-            if kind == "shared_zone":
-                in_zone = np.argwhere(inner & local_zone)
-                out_zone = np.argwhere(inner & ~local_zone)
-                picks = [in_zone[rng.integers(len(in_zone))] if rng.random() < 0.8
-                         else out_zone[rng.integers(len(out_zone))] for _ in range(n_spots)]
-            else:
-                pool = np.argwhere(inner)
-                picks = [pool[rng.integers(len(pool))] for _ in range(n_spots)]
-            for y, x in picks:
-                footprints.append(_footprint(len(footprints), oy + y, ox + x))
-    noise = ndimage.gaussian_filter(rng.normal(size=(height, width)), 2.0)
-    qki = 1000.0 + 60.0 * noise / noise.std()
-    dapi = 1000.0 + 800.0 * zone + rng.normal(0.0, 30.0, size=(height, width))
-    miat = np.zeros((height, width))
-    for fp in footprints:
-        miat[fp.y_px, fp.x_px] = 100.0
-    if kind == "shared_zone":
-        qki = qki + 300.0 * zone
-    if kind == "coloc":
-        for fp in footprints:
-            qki[fp.y_px, fp.x_px] += 400.0
-    return miat, qki, labels, footprints, dapi
-
-
 def _tables(data, **kwargs):
     from fishsuite.core.qki_association import association_tables
     from fishsuite.core.texture_null import TextureNullParams
-    miat, qki, labels, footprints, dapi = data
+    miat, qki, labels, footprints, dapi, eligible = data
     options = dict(pixel_size_um=0.13, miat_min=50, qki_min=1100, sensitivity=(1.0,),
-                   n_null=K, seed=0, n_costes=5, dapi=dapi,
+                   n_null=K, seed=0, n_costes=5, dapi=dapi, eligible_mask=eligible,
                    texture_null=TextureNullParams(), rotation_upp=True)
     options.update(kwargs)
     return association_tables(miat, qki, labels, footprints, **options)
 
 
-def _pooled(spots, column):
-    values = spots[column].to_numpy(dtype=float)
-    values = values[np.isfinite(values)]
-    return values, float(values.mean()), 4.0 * np.sqrt(1.0 / (12.0 * values.size))
+def _tiled(scenario, n, seed):
+    """n realistic nuclei tiled side by side into one labelled image."""
+    rng = np.random.default_rng(seed)
+    size = sim.SIZE
+    labels = np.zeros((size, size * n), np.int32)
+    eligible = np.zeros_like(labels, bool)
+    qki = np.full(labels.shape, 1000.0)
+    dapi = np.full(labels.shape, 1000.0)
+    miat = np.zeros(labels.shape)
+    fps = []
+    for i in range(n):
+        nuc = sim.nucleus(rng, scenario)
+        sl = np.s_[:, i * size:(i + 1) * size]
+        labels[sl][nuc["mask"]] = i + 1
+        eligible[sl] = nuc["eligible"]
+        qki[sl], dapi[sl] = nuc["qki"], nuc["dapi"]
+        for fp in nuc["footprints"]:
+            shifted = MiatFootprint(len(fps), fp.center_y_px, fp.center_x_px + i * size, fp.y_px,
+                                    fp.x_px + i * size, fp.dy_px, fp.dx_px, "synthetic", None, True, None,
+                                    100.0, 0.0)
+            miat[shifted.y_px, shifted.x_px] = 100.0
+            fps.append(shifted)
+    return miat, qki, labels, fps, dapi, eligible
 
 
 @pytest.fixture(scope="module")
-def shared_zone():
-    return _tables(_field("shared_zone", seed=11))
-
-
-@pytest.fixture(scope="module")
-def coloc():
-    return _tables(_field("coloc", seed=12))
-
-
-@pytest.fixture(scope="module")
-def independent():
-    return _tables(_field("independent", seed=13))
-
-
-# --------------------------------------------------------------- acceptance (1)
-def test_shared_dapi_zone_inflates_uniform_upp_but_not_texture_matched(shared_zone):
-    nuclei, spots = shared_zone
-    uni, uni_mean, uni_tol = _pooled(spots, "uniform_position_percentile_qki")
-    tex, tex_mean, tex_tol = _pooled(spots, "upp_texture_matched_qki")
-    assert tex.size >= 0.9 * len(spots)  # the null scores almost every spot
-    assert uni_mean > 0.5 + uni_tol and uni_mean > 0.6  # confounded reference is inflated
-    assert abs(tex_mean - 0.5) < tex_tol, (tex_mean, tex_tol)
-    frac = float(np.mean(tex >= 0.9 - 1e-12))
-    assert abs(frac - CHANCE_Q90) < 4 * np.sqrt(CHANCE_Q90 * (1 - CHANCE_Q90) / tex.size)
-    well = nuclei.upp_texture_matched_mean_qki.mean()
-    assert abs(well - 0.5) < 4.0 * np.sqrt(1.0 / (12.0 * nuclei.upp_texture_matched_n_spots_scored.min())
-                                           / len(nuclei))
-
-
-# --------------------------------------------------------------- acceptance (2)
-def test_true_punctum_colocalization_in_uniform_texture_scores_near_one(coloc):
-    nuclei, spots = coloc
-    for column in ("uniform_position_percentile_qki", "upp_texture_matched_qki"):
-        values, mean, _ = _pooled(spots, column)
-        assert mean > 0.9, (column, mean)
-        assert np.mean(values >= 0.9 - 1e-12) > 0.8, column
-    assert nuclei.upp_texture_matched_mean_qki.min() > 0.8
+def calibration():
+    frames = [sim.nucleus_summaries(s, N_FIELDS, N_NUCLEI, 100 + i)
+              for i, s in enumerate(("confound", "independent", "coloc"))]
+    return sim.field_rejections(pd.concat(frames, ignore_index=True)).set_index(["scenario", "method"])
 
 
 # --------------------------------------------------------------- acceptance (3)
-def test_independent_channels_score_near_half_under_both_nulls(independent):
-    _, spots = independent
-    for column in ("uniform_position_percentile_qki", "upp_texture_matched_qki"):
-        values, mean, tol = _pooled(spots, column)
-        assert abs(mean - 0.5) < tol, (column, mean, tol)
-        frac = float(np.mean(values >= 0.9 - 1e-12))
-        assert abs(frac - CHANCE_Q90) < 4 * np.sqrt(CHANCE_Q90 * (1 - CHANCE_Q90) / values.size), column
+@pytest.mark.parametrize("method", ["uniform", "strata_5x5", "strata_8x8", "strata_10x10", "knn_k200"])
+def test_independent_channels_are_calibrated_at_the_nucleus_level(calibration, method):
+    row = calibration.loc[("independent", method)]
+    assert row.n_fields == N_FIELDS
+    assert row.rejection_rate * N_FIELDS <= MAX_FALSE_REJECTIONS, row.to_dict()
 
 
-def test_rotation_upp_reported_near_half_for_independent_and_high_for_coloc(independent, coloc):
-    _, spots = independent
-    values, mean, tol = _pooled(spots, "upp_rotation_qki")
-    assert values.size > 0.5 * len(spots)
-    assert abs(mean - 0.5) < tol, (mean, tol)
-    _, mean_coloc, _ = _pooled(coloc[1], "upp_rotation_qki")
-    assert mean_coloc > 0.9
+# --------------------------------------------------------------- acceptance (1)
+def test_shared_texture_confound_inflates_uniform_and_is_largely_removed_by_matching(calibration):
+    uniform = calibration.loc[("confound", "uniform")]
+    assert uniform.rejection_rate >= 0.9 and uniform.mean_field_bias > 0.05
+    for method in ("strata_5x5", "strata_8x8", "strata_10x10", "knn_k200"):
+        row = calibration.loc[("confound", method)]
+        # Residual confounding within cells is expected; the gate is that matching
+        # removes at least 75 % of the uniform null's bias. The rejection rate
+        # is reported, not gated (see implC round 2).
+        assert abs(row.mean_field_bias) <= 0.25 * uniform.mean_field_bias, (method, row.to_dict())
+
+
+# --------------------------------------------------------------- acceptance (2)
+@pytest.mark.parametrize("method", ["uniform", "strata_5x5", "strata_8x8", "strata_10x10", "knn_k200"])
+def test_true_punctum_colocalization_is_detected_by_every_null(calibration, method):
+    row = calibration.loc[("coloc", method)]
+    assert row.rejection_rate >= 0.9 and row.mean_field_bias > 0.1, row.to_dict()
 
 
 # --------------------------------------------------------------- acceptance (4)
@@ -163,83 +110,115 @@ def test_stratum_kept_when_it_has_enough_positions():
     from fishsuite.core.texture_null import select_stratum
     dapi_bin = np.zeros(100, int)
     radial_bin = np.repeat(np.arange(5), 20)
-    members, merged, partner, reason = select_stratum(dapi_bin, radial_bin, 45, n_radial=5, min_positions=20)
-    assert not merged and partner == -1 and reason == ""
-    assert members.sum() == 20 and members[40:60].all()
+    members, reason = select_stratum(dapi_bin, radial_bin, 45, min_positions=20)
+    assert reason == "" and members.sum() == 20 and members[40:60].all()
 
 
-def test_sparse_stratum_merges_with_the_larger_adjacent_radial_bin():
+def test_sparse_stratum_is_na_and_never_merged():
     from fishsuite.core.texture_null import select_stratum
     radial_bin = np.array([0] * 30 + [1] * 5 + [2] * 18)
     dapi_bin = np.zeros(radial_bin.size, int)
-    members, merged, partner, reason = select_stratum(dapi_bin, radial_bin, 32, n_radial=5, min_positions=20)
-    assert merged and partner == 0 and reason == ""
-    assert members.sum() == 35 and not members[35:].any()
+    members, reason = select_stratum(dapi_bin, radial_bin, 32, min_positions=20)
+    assert members is None and reason == "SPARSE_STRATUM"
 
 
-def test_merge_only_within_the_same_dapi_bin_and_edge_bin_has_one_neighbour():
+def test_one_radial_bin_sparse_stratum_is_na_not_a_crash():
     from fishsuite.core.texture_null import select_stratum
-    radial_bin = np.array([4] * 5 + [3] * 30 + [3] * 30)
-    dapi_bin = np.array([2] * 5 + [1] * 30 + [2] * 30)
-    members, merged, partner, reason = select_stratum(dapi_bin, radial_bin, 0, n_radial=5, min_positions=20)
-    assert merged and partner == 3 and reason == ""
-    assert members.sum() == 35 and members[35:].all() and not members[5:35].any()
+    members, reason = select_stratum(np.zeros(7, int), np.zeros(7, int), 3, min_positions=20)
+    assert members is None and reason == "SPARSE_STRATUM"
 
 
-def test_still_sparse_after_merge_is_na_with_reason():
-    from fishsuite.core.texture_null import select_stratum
-    radial_bin = np.array([0] * 4 + [1] * 5 + [2] * 6)
-    dapi_bin = np.zeros(radial_bin.size, int)
-    members, merged, partner, reason = select_stratum(dapi_bin, radial_bin, 6, n_radial=5, min_positions=20)
-    assert members is None and merged and partner == 2
-    assert reason == "SPARSE_STRATUM_AFTER_MERGE"
+def test_knn_takes_k_nearest_in_quantile_space_and_is_na_below_k():
+    from fishsuite.core.texture_null import select_knn
+    dq = np.array([0.1, 0.12, 0.5, 0.9, 0.11])
+    rq = np.array([0.5, 0.5, 0.5, 0.5, 0.52])
+    members, reason, dmax = select_knn(dq, rq, 0, k=3)
+    assert reason == "" and members.tolist() == [True, True, False, False, True]
+    assert dmax == pytest.approx(np.hypot(0.01, 0.02))  # farthest member: index 4
+    members, reason, _ = select_knn(dq, rq, 0, k=6)
+    assert members is None and reason == "KNN_SPARSE"
 
 
 def test_tiny_nucleus_marks_spots_na_and_records_counts():
+    from fishsuite.core.texture_null import TextureNullParams
     labels = np.zeros((20, 20), np.int32)
     labels[5:14, 5:14] = 1  # 9x9: 49 admissible centres for a 3x3 footprint
     rng = np.random.default_rng(0)
     qki, dapi = rng.normal(1000, 50, (20, 20)), rng.normal(1000, 50, (20, 20))
     fps = [_footprint(0, 8, 8), _footprint(1, 10, 11)]
-    miat = np.zeros((20, 20))
-    nuclei, spots = _tables((miat, qki, labels, fps, dapi))
+    data = (np.zeros((20, 20)), qki, labels, fps, dapi, None)
+    nuclei, spots = _tables(data)
     row = nuclei.iloc[0]
     assert np.isnan(row.upp_texture_matched_mean_qki)
     assert row.na_reason_upp_texture_matched == "ALL_SPOTS_NA"
     assert row.upp_texture_matched_n_spots_na == 2 and row.upp_texture_matched_n_spots_scored == 0
-    assert "SPARSE_STRATUM_AFTER_MERGE=2" in row.upp_texture_matched_na_reason_counts
-    assert spots.na_reason_upp_texture_matched_spot.eq("SPARSE_STRATUM_AFTER_MERGE").all()
-    assert spots.texture_stratum_merged.all()
-    # A 1x1 grid of strata with the gate at 20 scores both spots.
-    from fishsuite.core.texture_null import TextureNullParams
-    nuclei, spots = _tables((miat, qki, labels, fps, dapi),
-                            texture_null=TextureNullParams(n_dapi_bins=1, n_radial_bins=1, min_positions=20))
+    assert row.upp_texture_matched_na_reason_counts == "SPARSE_STRATUM=2"
+    assert spots.na_reason_upp_texture_matched_spot.eq("SPARSE_STRATUM").all()
+    nuclei, spots = _tables(data, texture_null=TextureNullParams(n_dapi_bins=1, n_radial_bins=1))
     assert nuclei.iloc[0].upp_texture_matched_n_spots_scored == 2
     assert spots.texture_stratum_n_positions.eq(49).all()
+    assert nuclei.iloc[0].upp_texture_matched_calibration == "EXACT_FINITE_K_FIXED_STRATA"
+    nuclei, spots = _tables(data, texture_null=TextureNullParams(method="knn", knn_k=200))
+    assert spots.na_reason_upp_texture_matched_spot.eq("KNN_SPARSE").all()
+    nuclei, spots = _tables(data, texture_null=TextureNullParams(method="knn", knn_k=30))
+    assert spots.texture_stratum_n_positions.eq(30).all()
+    assert nuclei.iloc[0].upp_texture_matched_calibration == "NOMINAL_KNN_OBSERVATION_CENTRED"
+    assert nuclei.iloc[0].upp_texture_matched_method == "knn_k30"
 
 
 def test_no_spots_gives_n0():
     labels = np.zeros((20, 20), np.int32)
     labels[2:18, 2:18] = 1
     flat = np.full((20, 20), 1000.0)
-    nuclei, spots = _tables((np.zeros((20, 20)), flat, labels, [], flat))
+    nuclei, spots = _tables((np.zeros((20, 20)), flat, labels, [], flat, None))
     assert nuclei.iloc[0].na_reason_upp_texture_matched == "N0"
     assert nuclei.iloc[0].na_reason_upp_rotation == "N0"
     assert spots.empty
 
 
-# ------------------------------------------------------------ construction
-def test_admissible_centres_match_the_existing_placement_null_domain():
+# ------------------------------------------------------------ construction (F4/F5)
+def _brute_force_admissible(fp, region, qki):
+    out = []
+    for y, x in np.argwhere(region):
+        ys, xs = y + fp.dy_px, x + fp.dx_px
+        inside = (ys >= 0) & (ys < region.shape[0]) & (xs >= 0) & (xs < region.shape[1])
+        if inside.all() and region[ys, xs].all() and np.isfinite(qki[ys, xs]).all():
+            out.append((y, x))
+    return np.asarray(out)
+
+
+def test_admissible_centre_coordinates_equal_brute_force_and_placement_null_samples():
     from fishsuite.core.texture_null import admissible_centers
-    labels = np.zeros((40, 40), np.int32)
-    labels[4:36, 6:30] = 1
-    region = labels == 1
-    region[15:20, 15:20] = False  # nucleolus-like hole
-    qki = np.random.default_rng(1).normal(1000, 50, (40, 40))
-    fp = _footprint(0, 10, 10, radius=2)
+    rng = np.random.default_rng(3)
+    nuc = sim.nucleus(rng, "independent")
+    region, qki = nuc["eligible"], nuc["qki"]
+    for fp in nuc["footprints"][:3]:
+        centers = admissible_centers(fp, region, qki)
+        assert np.array_equal(centers, _brute_force_admissible(fp, region, qki))
+        reference = exact_footprint_position_null(qki, fp, region, n_null=5, rng=rng)
+        assert centers.shape[0] == reference.valid_center_count
+
+
+def test_texture_draws_are_exactly_the_observed_fixed_cell():
+    from fishsuite.core.texture_null import (TextureNullParams, admissible_centers, footprint_means_at,
+                                             normalized_radial_map, quantile_bins, texture_matched_spot_scores)
+    rng = np.random.default_rng(4)
+    nuc = sim.nucleus(rng, "independent")
+    region, qki, dapi, mask = nuc["eligible"], nuc["qki"], nuc["dapi"], nuc["mask"]
+    fp = nuc["footprints"][0]
+    params = TextureNullParams(n_dapi_bins=3, n_radial_bins=3)
+    obs = np.asarray([qki[fp.y_px, fp.x_px].mean()])
+    row = texture_matched_spot_scores(qki, dapi, mask, region, [fp], obs, n_null=20000, params=params,
+                                      rng=rng, tie_rng=rng, return_draw_centers=True)[0]
     centers = admissible_centers(fp, region, qki)
-    reference = exact_footprint_position_null(qki, fp, region, n_null=5, rng=np.random.default_rng(0))
-    assert centers.shape[0] == reference.valid_center_count
+    _, dbin = quantile_bins(footprint_means_at(dapi, centers, fp), 3)
+    _, rbin = quantile_bins(normalized_radial_map(mask)[centers[:, 0], centers[:, 1]], 3)
+    index = np.flatnonzero((centers[:, 0] == fp.center_y_px) & (centers[:, 1] == fp.center_x_px))[0]
+    expected = centers[(dbin == dbin[index]) & (rbin == rbin[index])]
+    assert np.array_equal(row["_matched_centers"], expected)
+    drawn = {tuple(c) for c in row["_draw_centers"]}
+    assert drawn == {tuple(c) for c in expected}  # 20000 draws cover every cell position
+    assert tuple(fp.center_yx) in drawn
 
 
 def test_radial_position_is_boundary_distance_over_max_inscribed_distance():
@@ -266,42 +245,91 @@ def test_within_nucleus_quantile_bins_are_quintiles():
 
 
 # ------------------------------------------------------------ non-interference
-def test_existing_columns_are_value_identical_and_absent_by_default():
+@pytest.fixture(scope="module")
+def tiled():
+    return _tiled("confound", 3, seed=5)
+
+
+def test_existing_columns_are_value_identical_and_absent_by_default(tiled):
     from fishsuite.core.qki_association import association_tables, NUCLEUS_COLUMNS, SPOT_COLUMNS
-    data = _field("independent", n_rows=2, n_cols=2, seed=3)
-    on_nuc, on_spot = _tables(data)
-    miat, qki, labels, fps, _ = data
+    on_nuc, on_spot = _tables(tiled)
+    miat, qki, labels, fps, _, eligible = tiled
     off_nuc, off_spot = association_tables(miat, qki, labels, fps, pixel_size_um=0.13, miat_min=50,
-                                           qki_min=1100, sensitivity=(1.0,), n_null=K, seed=0, n_costes=5)
+                                           qki_min=1100, sensitivity=(1.0,), n_null=K, seed=0, n_costes=5,
+                                           eligible_mask=eligible)
     assert list(off_nuc.columns) == NUCLEUS_COLUMNS and list(off_spot.columns) == SPOT_COLUMNS
     pd.testing.assert_frame_equal(on_nuc[NUCLEUS_COLUMNS], off_nuc)
     pd.testing.assert_frame_equal(on_spot[SPOT_COLUMNS], off_spot)
     assert on_nuc.columns[len(NUCLEUS_COLUMNS):].str.contains("texture|rotation").all()
+    assert on_spot.upp_texture_matched_qki.notna().mean() > 0.9
 
 
-def test_texture_null_is_seeded_and_needs_dapi():
+def test_texture_null_is_seeded_and_needs_dapi(tiled):
     from fishsuite.core.texture_null import TextureNullParams
-    data = _field("independent", n_rows=1, n_cols=2, seed=4)
-    a, b = _tables(data)[1], _tables(data)[1]
+    a, b = _tables(tiled)[1], _tables(tiled)[1]
     pd.testing.assert_frame_equal(a, b)
-    c = _tables(data, seed=1)[1]
+    c = _tables(tiled, seed=1)[1]
     assert not np.allclose(a.upp_texture_matched_qki, c.upp_texture_matched_qki, equal_nan=True)
     with pytest.raises(ValueError, match="dapi"):
-        _tables(data, dapi=None)
+        _tables(tiled, dapi=None)
     with pytest.raises(ValueError):
         TextureNullParams(n_dapi_bins=0)
+    with pytest.raises(ValueError):
+        TextureNullParams(method="kernel")
 
 
-def test_column_definitions_label_sensitivity_only():
+def test_column_definitions_label_sensitivity_only_and_limit_exact_wording():
     from fishsuite.core.qki_association import COLUMN_DEFINITIONS, TEXTURE_NUCLEUS_COLUMNS, \
         TEXTURE_SPOT_COLUMNS
+    from fishsuite.core.texture_null import is_sensitivity_column
     for name in TEXTURE_NUCLEUS_COLUMNS + TEXTURE_SPOT_COLUMNS:
         assert "SENSITIVITY ONLY" in COLUMN_DEFINITIONS[name], name
+        assert is_sensitivity_column(name), name
+        text = COLUMN_DEFINITIONS[name].lower()
+        assert "merge" not in text.replace("unmerged", "").replace("no merg", "").replace("never merged", ""), name
+    assert "exact only for method strata" in COLUMN_DEFINITIONS["upp_texture_matched_chance_frac_ge_0p90"]
 
 
-# ------------------------------------------------------------ adapter / summary
+# ------------------------------------------------------------ coupling exclusion (F2)
+def test_no_coupling_output_contains_sensitivity_columns(tmp_path, tiled, monkeypatch):
+    import matplotlib.pyplot as plt
+    from pathlib import Path
+    from fishsuite.report import coupling
+    from fishsuite.core.texture_null import is_sensitivity_column
+    frames = []
+    for arm, wells in (("control", ("C1", "C2")), ("treated", ("T1", "T2"))):
+        for well in wells:
+            nuclei, _ = _tables(tiled, condition=arm, well=well, image=f"{well}.tif")
+            frames.append(nuclei)
+    table = pd.concat(frames, ignore_index=True)
+    assert any(is_sensitivity_column(c) for c in table.columns)
+    source = tmp_path / "assoc.csv"
+    table.to_csv(source, index=False)
+
+    def capture_save(fig, destination, stem, *args):
+        Path(destination).mkdir(parents=True, exist_ok=True)
+        plt.close(fig)
+    monkeypatch.setattr(coupling.figlib, "save", capture_save)
+    out = coupling.build_coupling(source, "treated", "control", tmp_path / "report", n_boot=10)
+    # Column-name tokens (pre-existing Costes README prose says "texture-matched synthetic").
+    TOKENS = ("upp_texture_matched", "texture_dapi", "texture_radial", "texture_stratum",
+              "texture_null_mean", "texture_match_max", "upp_rotation")
+    found = []
+    for path in out.rglob("*"):
+        if path.suffix == ".xlsx":
+            for name, sheet in pd.read_excel(path, sheet_name=None, header=None).items():
+                text = sheet.astype(str).to_numpy().ravel().tolist()
+                found += [(path.name, name, t) for t in text if any(token in t for token in TOKENS)]
+        elif path.suffix in (".csv", ".md", ".txt", ".log"):
+            text = path.read_text(encoding="utf-8", errors="ignore")
+            for token in TOKENS:
+                if token in text and not (path.name == "command.log"):
+                    found.append((path.name, token))
+    assert not found, found[:10]
+
+
+# ------------------------------------------------------------ adapter / CLI
 def test_adapter_writes_sensitivity_tables_and_logs_parameters(tmp_path):
-    import h5py
     from fishsuite.core.qki_association_postrun import run_qki_association
     from fishsuite.core.texture_null import TextureNullParams
     from test_qki_association import _assoc_cached_run, OPTICS
@@ -316,10 +344,12 @@ def test_adapter_writes_sensitivity_tables_and_logs_parameters(tmp_path):
     per_well = pd.read_csv(out / "texture_null_per_well.csv")
     per_arm = pd.read_csv(out / "texture_null_per_arm.csv")
     assert {"well_mean_upp_uniform", "well_mean_upp_texture_matched", "well_frac_ge_0p90_upp_uniform",
-            "well_frac_ge_0p90_upp_texture_matched", "texture_na_rate_spots"} <= set(per_well.columns)
+            "well_frac_ge_0p90_upp_texture_matched", "texture_na_rate_spots", "balance_matched_dapi_q",
+            "balance_uniform_dapi_q", "support_median_positions"} <= set(per_well.columns)
     assert len(per_arm) == 1
     log = (out / "command.log").read_text(encoding="utf-8")
     assert "texture_null_params" in log and "SENSITIVITY ONLY" in log and "--texture-null" in log
+    assert "texture_null_merge: none" in log
     md = (out / "qki_association_columns.md").read_text(encoding="utf-8")
     assert "SENSITIVITY ONLY" in md
     plain_log = (plain / "command.log").read_text(encoding="utf-8")
@@ -340,3 +370,25 @@ def test_cli_flags(tmp_path):
     assert result.exit_code == 0, result.output
     log = (tmp_path / "cli" / "command.log").read_text(encoding="utf-8")
     assert '"n_dapi_bins": 3' in log and '"n_radial_bins": 2' in log and '"min_positions": 1' in log
+    result = CliRunner().invoke(cli, ["qki-assoc", "--run-dir", str(root), "--miat-min", "10", "--qki-min", "10",
+        "--objective-na", "1.5", "--emission-nm-miat", "668", "--emission-nm-qki", "603", "--n-null", "10",
+        "--texture-null", "--texture-method", "knn", "--texture-knn-k", "5", "--out", str(tmp_path / "knn")])
+    assert result.exit_code == 0, result.output
+    assert '"method": "knn"' in (tmp_path / "knn" / "command.log").read_text(encoding="utf-8")
+
+
+def test_cli_one_radial_bin_sparse_stratum_is_documented_na(tmp_path):
+    from click.testing import CliRunner
+    from fishsuite.cli import cli
+    from test_qki_association import _assoc_cached_run
+    root = _assoc_cached_run(tmp_path / "source")
+    result = CliRunner().invoke(cli, ["qki-assoc", "--run-dir", str(root), "--miat-min", "10", "--qki-min", "10",
+        "--objective-na", "1.5", "--emission-nm-miat", "668", "--emission-nm-qki", "603", "--n-null", "10",
+        "--texture-null", "--texture-dapi-bins", "1", "--texture-radial-bins", "1",
+        "--texture-min-positions", "1000", "--out", str(tmp_path / "sparse")])
+    assert result.exit_code == 0, result.output
+    spots = pd.read_csv(tmp_path / "sparse" / "qki_association_per_spot.csv")
+    assert spots.na_reason_upp_texture_matched_spot.eq("SPARSE_STRATUM").all()
+    assert spots.upp_texture_matched_qki.isna().all()
+    columns_md = (tmp_path / "sparse" / "qki_association_columns.md").read_text(encoding="utf-8")
+    assert "SPARSE_STRATUM" in columns_md

@@ -43,7 +43,10 @@ def prepare_data(df: pd.DataFrame) -> pd.DataFrame:
         raise ValueError('Missing association columns: ' + ', '.join(missing))
     if df.empty:
         raise ValueError('Association table is empty')
-    data = df.copy()
+    # Astra texture-null round-2 F2: SENSITIVITY-ONLY texture-matched / rotation
+    # columns never enter any coupling summary, contrast, ratio or QC sheet.
+    from ..core.texture_null import is_sensitivity_column
+    data = df.drop(columns=[c for c in df.columns if is_sensitivity_column(c)])
     for column in ['condition', 'image']:
         if data[column].isna().any() or data[column].astype(str).str.strip().eq('').any():
             raise ValueError(f'Missing {column} identifier')

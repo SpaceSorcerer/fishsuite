@@ -84,17 +84,18 @@ DESCRIPTIVE_ONLY = frozenset(_COSTES_PARAMS + ("costes_rand_p",) + _UPP_REFERENC
 # after every existing column, so default outputs are unchanged.
 _TEX_SUMMARY = ("upp_texture_matched_mean_qki", "upp_texture_matched_frac_ge_0p90",
                 "upp_texture_matched_frac_ge_0p75", "upp_texture_matched_n_spots_scored",
-                "upp_texture_matched_n_spots_na", "upp_texture_matched_n_spots_merged",
-                "upp_texture_matched_na_reason_counts", "upp_texture_matched_chance_mean",
-                "upp_texture_matched_chance_frac_ge_0p90", "upp_texture_matched_chance_frac_ge_0p75",
-                "na_reason_upp_texture_matched")
+                "upp_texture_matched_n_spots_na", "upp_texture_matched_na_reason_counts",
+                "upp_texture_matched_chance_mean", "upp_texture_matched_chance_frac_ge_0p90",
+                "upp_texture_matched_chance_frac_ge_0p75", "upp_texture_matched_method",
+                "upp_texture_matched_calibration", "na_reason_upp_texture_matched")
 _ROT_SUMMARY = ("upp_rotation_mean_qki", "upp_rotation_frac_ge_0p90", "upp_rotation_frac_ge_0p75",
                 "upp_rotation_n_spots_scored", "upp_rotation_n_spots_na", "upp_rotation_chance_mean",
                 "upp_rotation_chance_frac_ge_0p90", "upp_rotation_chance_frac_ge_0p75",
                 "upp_rotation_median_first_pass_retention", "na_reason_upp_rotation")
 _TEX_SPOT = ("upp_texture_matched_qki", "texture_dapi_footprint_mean", "texture_dapi_quantile",
              "texture_dapi_bin", "texture_radial_norm", "texture_radial_quantile", "texture_radial_bin",
-             "texture_stratum_n_positions", "texture_stratum_merged", "texture_stratum_merged_radial_bin",
+             "texture_stratum_n_positions", "texture_null_mean_dapi_quantile",
+             "texture_null_mean_radial_quantile", "texture_match_max_distance",
              "na_reason_upp_texture_matched_spot")
 _ROT_SPOT = ("upp_rotation_qki", "na_reason_upp_rotation_spot")
 TEXTURE_NUCLEUS_COLUMNS = _TEX_SUMMARY + _ROT_SUMMARY
@@ -198,8 +199,10 @@ for _metric in _REASONED:
 _SENS = _tn.SENSITIVITY_LABEL
 _TEX_NULL = ("texture-matched placement null: the footprint's K placements are drawn only from its admissible "
              "positions (same eligible, nucleolus-excluded mask rule as the uniform null) in the observed "
-             "placement's stratum of within-nucleus footprint-mean-DAPI quantile bin x normalized-radial-position "
-             "quantile bin (bins and merge gate in command.log texture_null_params)")
+             "placement's matched set: method strata = the fixed within-nucleus cell of footprint-mean-DAPI "
+             "quantile bin x normalized-radial-position quantile bin (no merging; sparse cell = NA); method knn = the "
+             "k admissible positions nearest the observed one in (DAPI quantile, radial quantile) space "
+             "(parameters in command.log texture_null_params)")
 _ROT_NULL = ("existing exact-footprint KEEP-N rotation null (constellation rotated about the SPOT centroid, "
              "per-spot redraws for placements leaving the mask; keep_n_footprint_rotation_null, unchanged)")
 _DEFINITIONS.update({
@@ -210,19 +213,21 @@ _DEFINITIONS.update({
     "texture_radial_norm": f"{_SENS}. Euclidean distance of the observed centre to the nuclear-label boundary (image edge counts as boundary) divided by the nucleus's maximum inscribed distance; 0 = edge, 1 = most interior; fraction",
     "texture_radial_quantile": f"{_SENS}. Mid-rank quantile of texture_radial_norm among all admissible positions of this footprint; fraction",
     "texture_radial_bin": f"{_SENS}. floor(texture_radial_quantile x n_radial_bins), 0 = most peripheral; -1 when undefined; bin",
-    "texture_stratum_n_positions": f"{_SENS}. Admissible positions in the stratum used (after any merge; for an NA spot, the merged count that failed the gate); count",
-    "texture_stratum_merged": f"{_SENS}. True when the observed stratum had fewer than min_positions admissible positions and was merged with the adjacent radial bin of the same DAPI bin (larger neighbour, ties to the lower bin); boolean",
-    "texture_stratum_merged_radial_bin": f"{_SENS}. Radial bin merged in, -1 when no merge; bin",
-    "na_reason_upp_texture_matched_spot": f"{_SENS}. Empty when scored; NO_DOMAIN (no admissible position), OBSERVED_NOT_ADMISSIBLE, SPARSE_STRATUM_AFTER_MERGE (merged stratum still below min_positions); code",
+    "texture_stratum_n_positions": f"{_SENS}. Admissible positions in the matched set (strata: the observed cell; knn: k); for an NA spot the count that failed the gate; count",
+    "texture_null_mean_dapi_quantile": f"{_SENS}. Mean DAPI quantile of this spot's K texture-matched draws; texture_dapi_quantile minus this is the per-spot covariate imbalance (the uniform null's expectation is 0.5); fraction",
+    "texture_null_mean_radial_quantile": f"{_SENS}. Mean radial quantile of this spot's K texture-matched draws; fraction",
+    "texture_match_max_distance": f"{_SENS}. knn only: largest (DAPI quantile, radial quantile) Euclidean distance inside the matched set; NaN for strata; quantile units",
+    "na_reason_upp_texture_matched_spot": f"{_SENS}. Empty when scored; NO_DOMAIN (no admissible position), OBSERVED_NOT_ADMISSIBLE, SPARSE_STRATUM (strata: the observed fixed cell has fewer than min_positions admissible positions; never merged), KNN_SPARSE (knn: fewer than k admissible positions); code",
     "upp_texture_matched_mean_qki": f"{_SENS}. Mean of upp_texture_matched_qki over this nucleus's scored spots; exchangeability reference 0.5; fraction",
     "upp_texture_matched_frac_ge_0p90": f"{_SENS}. Fraction of scored spots with upp_texture_matched_qki >= 0.9; finite-K reference upp_texture_matched_chance_frac_ge_0p90; fraction",
     "upp_texture_matched_frac_ge_0p75": f"{_SENS}. Fraction of scored spots with upp_texture_matched_qki >= 0.75; fraction",
     "upp_texture_matched_n_spots_scored": f"{_SENS}. Spots with a texture-matched score; count",
     "upp_texture_matched_n_spots_na": f"{_SENS}. Spots without a texture-matched score; count",
-    "upp_texture_matched_n_spots_merged": f"{_SENS}. Spots whose stratum was merged with the adjacent radial bin (scored or not); count",
+    "upp_texture_matched_method": f"{_SENS}. Matching method label, strata_<n_dapi>x<n_radial> or knn_k<k>; text",
+    "upp_texture_matched_calibration": f"{_SENS}. EXACT_FINITE_K_FIXED_STRATA (strata: fixed cells defined before the observation, so the finite-K references are exact under uniform placement within the cell) or NOMINAL_KNN_OBSERVATION_CENTRED (knn: the matched set is centred on the observation; references nominal); text",
     "upp_texture_matched_na_reason_counts": f"{_SENS}. Spot NA reasons as REASON=count;...; empty when none; text",
     "upp_texture_matched_chance_mean": f"{_SENS}. Exchangeability reference for the mean score (0.5); descriptive only",
-    "upp_texture_matched_chance_frac_ge_0p90": f"{_SENS}. Finite-K reference (K - ceil(0.9K) + 1)/(K + 1), K = n_null; descriptive only",
+    "upp_texture_matched_chance_frac_ge_0p90": f"{_SENS}. Finite-K reference (K - ceil(0.9K) + 1)/(K + 1), K = n_null; exact only for method strata (unmerged fixed cells), nominal for knn; descriptive only",
     "upp_texture_matched_chance_frac_ge_0p75": f"{_SENS}. Finite-K reference (K - ceil(0.75K) + 1)/(K + 1); descriptive only",
     "na_reason_upp_texture_matched": f"{_SENS}. Nucleus reason: empty when >= 1 spot scored, N0 (no spots), ALL_SPOTS_NA; code",
     "upp_rotation_qki": f"{_SENS}. Percentile score of this spot's footprint-mean raw QKI against its own draws of the {_ROT_NULL}; randomized ties; exchangeability with the rotation draws is approximate, so 0.5 is a nominal reference; fraction",
@@ -439,7 +444,7 @@ def association_tables(
                 qki, dapi, labels == nucleus_id, region, selected, observed_means, n_null=n_null,
                 params=texture_null, rng=_stream_rng(seed, image, nucleus_id, "texture_matched_null"),
                 tie_rng=_stream_rng(seed, image, nucleus_id, "texture_matched_upp_tiebreak"))
-            extra.update(_tn.nucleus_texture_summary(tex_rows, n_null))
+            extra.update(_tn.nucleus_texture_summary(tex_rows, n_null, texture_null))
             for target, source in zip(spot_extra, tex_rows):
                 target.update(source)
         if rotation_upp:
