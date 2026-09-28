@@ -99,6 +99,41 @@ def native_figures(run_dir, groups_file, out):
     click.echo(f"Native condition figures: {result['out']}")
 
 
+@cli.command('fig-panels')
+@click.option('--menu', 'menu_dir', required=True, type=click.Path(exists=True, file_okay=False),
+              help='Menu dir with data/menu_per_{nucleus,punctum}.csv and data/representative_selection.json.')
+@click.option('--backfill', 'backfill_dir', required=True, type=click.Path(exists=True, file_okay=False),
+              help='Exact-footprint backfill dir with selected_planes_and_masks.h5.')
+@click.option('--run', 'run_dir', required=True, type=click.Path(exists=True, file_okay=False),
+              help='Source fishsuite run (named on the B2 footer).')
+@click.option('--out', 'out_dir', required=True, type=click.Path(file_okay=False), help='New output dir (panels/, data/, index.html).')
+@click.option('--arm', default='VPR noDox', show_default=True)
+@click.option('--raw-dir', default=None, type=click.Path(exists=True, file_okay=False),
+              help='Read raw VSI stacks from here (basename of each image key) instead of the key path.')
+@click.option('--steps', default='select,fov,linked,reps,c,d,mix,tiff,index', show_default=True)
+@click.option('--rep-field', default='14', show_default=True, help='Field for the objective second linked set.')
+@click.option('--linked', 'extra_linked', multiple=True, help='Extra linked set FIELD:NUCLEUS[:LABEL], repeatable.')
+@click.option('--native-only', is_flag=True, help='Write only <stem>_native.svg twins; data to <out>/_native_rerender_scratch.')
+@click.option('--seed', default=0, show_default=True, type=int)
+def fig_panels(menu_dir, backfill_dir, run_dir, out_dir, arm, raw_dir, steps, rep_field, extra_linked, native_only, seed):
+    """Rebuild the locked basal MIAT x QKI figure gallery (A/B/R/C/D panels). Render only: no detection or thresholds."""
+    from .figures.config import PanelRun
+    from .figures.gallery import STEPS, build_gallery
+    st = tuple(s.strip() for s in steps.split(',') if s.strip())
+    bad = [s for s in st if s not in STEPS]
+    if bad:
+        raise click.BadParameter(f"unknown steps {bad}; choose from {STEPS}", param_hint='--steps')
+    extra = []
+    for spec in extra_linked:
+        parts = spec.split(':', 2)
+        if len(parts) < 2:
+            raise click.BadParameter(f"{spec!r} is not FIELD:NUCLEUS[:LABEL]", param_hint='--linked')
+        extra.append((parts[0], int(parts[1]), parts[2] if len(parts) > 2 else ""))
+    run = PanelRun(menu_dir, backfill_dir, run_dir, out_dir, arm=arm, raw_dir=raw_dir, native_only=native_only)
+    res = build_gallery(run, steps=st, rep_field=rep_field, extra_linked=extra, seed=seed, log=click.echo)
+    click.echo(f"Figure panels: {Path(out_dir)} ({res.get('n_png', 'n/a')} PNG panels indexed)")
+
+
 @cli.command()
 def init():
     """Interactive setup wizard (Phase-3 placeholder)."""
