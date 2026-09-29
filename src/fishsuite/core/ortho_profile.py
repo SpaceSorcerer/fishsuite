@@ -577,6 +577,23 @@ def render_ortho_figure(stack_czyx, center_zyx, half_width_px=None, *, nucleus_m
         box = legend.get_window_extent(renderer)
         if box.width <= raw_box.width - 4 and box.height <= raw_box.height - 4:
             break
+    # Headroom so the legend never covers data (2026-09-28): raise the top of the raw
+    # axis until every trace and bound line sits below the legend band. Display only.
+    lo, hi = raw.get_ylim()
+    data_top = max([float(np.nanmax(values[i])) for i in (0, 1)] +
+                   [float(b) for b in np.ravel(levels)] +
+                   [float(m) for m in (miat_min, qki_min) if m is not None])
+    if data_top > lo:
+        for _ in range(8):
+            fig.canvas.draw()
+            r_ = fig.canvas.get_renderer()
+            leg_bottom = raw.transAxes.inverted().transform(
+                raw.get_legend().get_window_extent(r_).p0)[1] - 6 / raw.get_window_extent(r_).height
+            lo, hi = raw.get_ylim()
+            top_frac = (data_top - lo) / (hi - lo)
+            if top_frac <= leg_bottom or leg_bottom < .2:
+                break
+            raw.set_ylim(lo, lo + (data_top - lo) / leg_bottom * 1.02)
     normal.set_ylim(-.05,1.05)
     normal.yaxis.tick_right()
     normal.yaxis.set_label_position('right')
