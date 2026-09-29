@@ -1139,6 +1139,39 @@ def rollup(per_nucleus):
     return fov, well
 
 
+MIN_WELLS_INFERENTIAL = 3
+
+
+def plotted_counts(well):
+    """Nuclei and wells actually plotted: biological rows of the per-well table
+    whose arm is in ARMS, wells keyed on (arm, well_id). ``inferential`` is False
+    when any plotted arm has fewer than MIN_WELLS_INFERENTIAL wells; the figures
+    then draw no p, star, CI or MDE (the contrasts table keeps them)."""
+    bio = well[(~well["secondary_only"].astype(bool)) & (well["line"].isin(ARMS))]
+    per_arm = {}
+    for a in ARMS:
+        sub = bio[bio["line"] == a]
+        per_arm[a] = (int(sub["n_nuclei"].sum()), int(sub["well_id"].nunique()))
+    n_wells = int(len(bio[["line", "well_id"]].drop_duplicates()))
+    return dict(
+        n_nuclei=int(bio["n_nuclei"].sum()), n_wells=n_wells, per_arm=per_arm,
+        text=", ".join(f"{n} nuclei / {w} wells {a}" for a, (n, w) in per_arm.items()),
+        inferential=bool(per_arm) and min(w for _, w in per_arm.values()) >= MIN_WELLS_INFERENTIAL)
+
+
+DESCRIPTIVE_NOTE = ("DESCRIPTIVE ONLY: an arm has fewer than {} wells, so no test statistic, "
+                    "interval or detectable-effect value is drawn on this figure; they stay "
+                    "in coloc_standard_contrasts.csv.".format(MIN_WELLS_INFERENTIAL))
+
+
+def gate_text(inferential):
+    """Gate band stamped on every figure; alpha only when a test is drawn."""
+    return ("gate: nuclear mask only, single z plane; biological wells only "
+            "(secondary-only fields excluded); Costes per-nucleus thresholds with the run's "
+            "batch median + 2.5 MAD as fallback"
+            + (f"; alpha {ALPHA}." if inferential else "."))
+
+
 def nan_reason(n_test, n_ref, diff, p_welch, tested):
     """Why a contrast row has no number, as a leading machine-readable token.
 
@@ -1271,7 +1304,7 @@ def save(fig, out_dir, stem, manifest, description, source, gate, n, test):
     print(f"  wrote {png.name} + .svg", flush=True)
 
 
-def superplot_axes(ax, per_nucleus, well, col, label, title):
+def superplot_axes(ax, per_nucleus, well, col, label, title, show_ci=True):
     lines = list(ARMS)
     for xi, ln in enumerate(lines):
         sub = per_nucleus[(~per_nucleus["secondary_only"]) & (per_nucleus["line"] == ln)]
@@ -1297,7 +1330,7 @@ def superplot_axes(ax, per_nucleus, well, col, label, title):
         if wm.size:
             m, lo, hi, _ = mean_ci(wm)
             ax.hlines(m, xi - 0.36, xi + 0.36, color="black", linewidth=1.4, zorder=5)
-            if np.isfinite(lo):
+            if show_ci and np.isfinite(lo):
                 ax.vlines(xi + 0.42, lo, hi, color="black", linewidth=1.0, zorder=5)
                 ax.hlines([lo, hi], xi + 0.38, xi + 0.46, color="black", linewidth=1.0, zorder=5)
     ax.set_xticks(range(len(lines)))
@@ -1308,15 +1341,16 @@ def superplot_axes(ax, per_nucleus, well, col, label, title):
 
 
 def fig_pearson_manders(per_nucleus, well, ctx, out_dir, manifest):
+    pc = plotted_counts(well)
     fig, axes = plt.subplots(1, 4, figsize=(11.6, 5.8))
     for ax, (col, label) in zip(axes, CSP01_PANELS):
-        superplot_axes(ax, per_nucleus, well, col, label, label)
-    bio = per_nucleus[~per_nucleus["secondary_only"]]
-    n_nuc = len(bio)
+        superplot_axes(ax, per_nucleus, well, col, label, label, show_ci=pc["inferential"])
+    n_nuc = pc["n_nuclei"]
     hb = stamp_head(fig, "Per-nucleus pixel colocalization, "
                     f"{ctx['rna_label']} x {ctx['partner_label']}",
                     "small dots = nuclei (shaded by well); diamonds = well means; "
-                    "black bar = mean of the 3 well means with its 95% CI",
+                    + ("black bar = mean of the well means with its 95% CI"
+                       if pc["inferential"] else "black bar = mean of the well means"),
                     ctx["filt"], y=0.975)
     foot = (
         "Pixels: nuclear mask only, single z plane, the run's own autofocus plane. "
@@ -1325,8 +1359,8 @@ def fig_pearson_manders(per_nucleus, well, ctx, out_dir, manifest):
         f"{ctx['rna_label']} intensity in pixels where {ctx['partner_label']} >= its "
         f"threshold; M2 = fraction of {ctx['partner_label']} intensity where "
         f"{ctx['rna_label']} >= its threshold. "
-        f"n = {n_nuc} biological nuclei in 6 wells "
-        f"({ctx['arm_n_text']}). "
+        f"n = {n_nuc} biological nuclei in {pc['n_wells']} wells "
+        f"({pc['text']}). "
         "DESCRIPTIVE ONLY: no test is run on the pixel metrics; "
         "the panel's one tested endpoint is the object coloc fraction (csp04). "
         "THRESHOLD CHOICE: the Manders panels use the run's own batch median + 2.5 MAD "
@@ -1348,15 +1382,17 @@ def fig_pearson_manders(per_nucleus, well, ctx, out_dir, manifest):
          "coloc_standard_per_nucleus.csv / coloc_standard_per_well.csv",
          "nuclear mask, biological wells only; Manders at the run batch threshold, "
          "Pearson and Li ICQ threshold-free",
-         f"{n_nuc} nuclei, 6 wells", "none (descriptive)")
+         f"{n_nuc} nuclei, {pc['n_wells']} wells", "none (descriptive)")
 
 
 def fig_manders_threshold_sensitivity(per_nucleus, well, ctx, out_dir, manifest):
     """The same Manders M1 under three threshold conventions, so the reader can
     see that the Costes-with-fallback column is a mixture and not a measurement."""
+    pc = plotted_counts(well)
     fig, axes = plt.subplots(1, 3, figsize=(9.6, 5.4), sharey=True)
     for ax, (col, label) in zip(axes, CSP01B_PANELS):
-        superplot_axes(ax, per_nucleus, well, col, "Manders M1", label)
+        superplot_axes(ax, per_nucleus, well, col, "Manders M1", label,
+                       show_ci=pc["inferential"])
         n = int(per_nucleus.loc[~per_nucleus["secondary_only"], col].notna().sum())
         ax.text(0.5, 0.015, f"n = {n} nuclei", transform=ax.transAxes, ha="center",
                 va="bottom", fontsize=6.4, color="#444444")
@@ -1382,7 +1418,7 @@ def fig_manders_threshold_sensitivity(per_nucleus, well, ctx, out_dir, manifest)
          "Manders M1 under the run batch threshold, the Costes threshold on converged "
          "nuclei, and the Costes-with-fallback mixture.",
          "coloc_standard_per_nucleus.csv", "nuclear mask, biological wells only",
-         f"{ctx['n_bio_nuc']} nuclei, 6 wells", "none (descriptive)")
+         f"{pc['n_nuclei']} nuclei, {pc['n_wells']} wells", "none (descriptive)")
 
 
 def fig_cytofluorogram(pooled, ctx, out_dir, manifest, line, tag):
@@ -1510,11 +1546,14 @@ def fig_line_profiles(profiles, ctx, out_dir, manifest):
 
 
 def fig_object_fraction(well, contrasts, ctx, out_dir, manifest):
+    pc = plotted_counts(well)
     fig, axes = plt.subplots(1, 2, figsize=(9.8, 5.6), sharey=False)
     bio = well[~well["secondary_only"]]
     variants = [
         (ctx["primary_obs"], ctx["primary_shuf"],
-         "A  " + ctx["primary_thr_label"] + chr(10) + "(PRIMARY, TESTED)"),
+         "A  " + ctx["primary_thr_label"] + chr(10)
+         + ("(PRIMARY, TESTED)" if pc["inferential"]
+            else f"(PRIMARY, descriptive: n < {MIN_WELLS_INFERENTIAL} wells per arm)")),
         (ctx["secondary_obs"], ctx["secondary_shuf"],
          "B  " + ctx["secondary_thr_label"] + chr(10) + "(sensitivity, not tested)"),
     ]
@@ -1550,19 +1589,20 @@ def fig_object_fraction(well, contrasts, ctx, out_dir, manifest):
                     m, lo, hi, _ = mean_ci(v)
                     ax.hlines(m, x + dx - 0.10, x + dx + 0.10, color="black",
                               linewidth=1.4, zorder=4)
-                    if np.isfinite(lo):
+                    if pc["inferential"] and np.isfinite(lo):
                         ax.vlines(x + dx, lo, hi, color="black", linewidth=0.9, zorder=2)
                         ytop = max(ytop, hi)
                     ytop = max(ytop, float(v.max()))
         ybar = ytop * 1.09
         is_primary = obs_col == ctx["primary_obs"]
-        star = stars(row["p_welch"]) if is_primary else "not tested"
-        xr = float(len(ARMS) - 1)
-        ax.plot([-0.16, -0.16, xr - 0.16, xr - 0.16],
-                [ybar * 0.975, ybar, ybar, ybar * 0.975], color="black", linewidth=0.9)
-        ax.text((xr - 0.32) / 2.0, ybar * 1.012, star, ha="center", va="bottom",
-                fontsize=10 if is_primary else 7,
-                fontweight="bold" if is_primary else "normal")
+        if pc["inferential"]:
+            star = stars(row["p_welch"]) if is_primary else "not tested"
+            xr = float(len(ARMS) - 1)
+            ax.plot([-0.16, -0.16, xr - 0.16, xr - 0.16],
+                    [ybar * 0.975, ybar, ybar, ybar * 0.975], color="black", linewidth=0.9)
+            ax.text((xr - 0.32) / 2.0, ybar * 1.012, star, ha="center", va="bottom",
+                    fontsize=10 if is_primary else 7,
+                    fontweight="bold" if is_primary else "normal")
         ax.set_xticks([float(i) for i in range(len(ARMS))])
         ax.set_xticklabels(list(ARMS))
         ax.set_xlim(-0.55, len(ARMS) - 0.45)
@@ -1579,7 +1619,9 @@ def fig_object_fraction(well, contrasts, ctx, out_dir, manifest):
     hb = stamp_head(fig, "Object-based colocalization of "
                     f"{ctx['rna_label']} puncta with {ctx['partner_label']}",
                     "one diamond per well (observed) paired with its shuffle control; "
-                    "black bar = mean of 3 wells with its 95% CI", ctx["filt"], wrap=104,
+                    + ("black bar = mean of the well means with its 95% CI"
+                       if pc["inferential"] else "black bar = mean of the well means"),
+                    ctx["filt"], wrap=104,
                     y=0.975)
     foot = (
         f"CALLED COLOCALIZED: the mean {ctx['partner_label']} intensity over the punctum's "
@@ -1595,20 +1637,27 @@ def fig_object_fraction(well, contrasts, ctx, out_dir, manifest):
         f"{SHUFFLE_DRAWS} draws per punctum, seed {ctx['seed']}, averaged. "
         "Rollup: nucleus -> FoV mean -> well mean, matching the run report's per_well "
         "convention. "
-        f"PANEL A uses the {ctx['primary_thr_label']} and carries the panel's ONE test; "
-        f"that choice was made {ctx['rule_why']}. Welch t on "
-        f"{int(row['n_wells_ref'])} vs {int(row['n_wells_test'])} well means of the "
-        f"observed fraction: p = {fmt_p(row['p_welch'])}, "
-        f"Hedges g = {row['hedges_g']:.3g}, diff ({ARMS[1]} - {ARMS[0]}) = "
-        f"{row['diff_test_minus_ref']:.4g} [95% CI {row['ci95_low']:.4g}, "
-        f"{row['ci95_high']:.4g}]"
-        + (". CAUTION: " + str(row["note"]) if str(row.get("note", "")).strip()
-           and str(row.get("note", "")).strip().lower() != "nan" else ".")
-        + " No multiplicity correction is applied because only one "
-        "endpoint is tested. MDE at alpha 0.05 and 80% power (equal-variance Cohen d, planning value) = "
-        f"{row['mde_cohen_d_equal_variance']:.2f}, so anything smaller is not "
-        "detectable in this design and 'ns' here does not mean 'no difference'. "
-        f"PANEL B repeats the calculation with the {ctx['secondary_thr_label']} and is NOT "
+        f"PANEL A uses the {ctx['primary_thr_label']}"
+        + (" and carries the panel's ONE test; " if pc["inferential"]
+           else " and is the primary endpoint, shown descriptively; ")
+        + f"that choice was made {ctx['rule_why']}. "
+        + ((f"Welch t on "
+            f"{int(row['n_wells_ref'])} vs {int(row['n_wells_test'])} well means of the "
+            f"observed fraction: p = {fmt_p(row['p_welch'])}, "
+            f"Hedges g = {row['hedges_g']:.3g}, diff ({ARMS[1]} - {ARMS[0]}) = "
+            f"{row['diff_test_minus_ref']:.4g} [95% CI {row['ci95_low']:.4g}, "
+            f"{row['ci95_high']:.4g}]"
+            + (". CAUTION: " + str(row["note"]) if str(row.get("note", "")).strip()
+               and str(row.get("note", "")).strip().lower() != "nan" else ".")
+            + " No multiplicity correction is applied because only one "
+            "endpoint is tested. MDE at alpha 0.05 and 80% power (equal-variance Cohen d, "
+            f"planning value) = {row['mde_cohen_d_equal_variance']:.2f}, so anything smaller "
+            "is not detectable in this design and 'ns' here does not mean 'no difference'. ")
+           if pc["inferential"] else
+           (f"{int(row['n_wells_ref'])} vs {int(row['n_wells_test'])} well means of the "
+            f"observed fraction: Hedges g = {row['hedges_g']:.3g}, diff ({ARMS[1]} - "
+            f"{ARMS[0]}) = {row['diff_test_minus_ref']:.4g}. {DESCRIPTIVE_NOTE} "))
+        + f"PANEL B repeats the calculation with the {ctx['secondary_thr_label']} and is NOT "
         f"tested (Hedges g {row_s['hedges_g']:.3g}). Costes converged in "
         f"{ctx['costes_pct']:.1f}% of biological nuclei. Read the two together: a conclusion "
         "that holds in A but not in B is a threshold artifact, not biology. "
@@ -1617,8 +1666,9 @@ def fig_object_fraction(well, contrasts, ctx, out_dir, manifest):
         f"explained by the nucleus's overall {ctx['partner_label']} level rather than by "
         "where the puncta sit. "
         f"n = {ctx['n_bio_nuc_with_puncta']} biological nuclei carrying at least one nuclear "
-        f"{ctx['rna_label']} punctum. Stars: * p<0.05, ** p<0.01, *** p<0.001, **** p<1e-4, "
-        "ns otherwise.")
+        f"{ctx['rna_label']} punctum."
+        + (" Stars: * p<0.05, ** p<0.01, *** p<0.001, **** p<1e-4, ns otherwise."
+           if pc["inferential"] else ""))
     fig.subplots_adjust(top=hb - 0.092, bottom=foot_bottom(fig, foot, 5.2),
                         left=0.095, right=0.985, wspace=0.20)
     stamp_foot(fig, foot, size=5.2)
@@ -1628,8 +1678,10 @@ def fig_object_fraction(well, contrasts, ctx, out_dir, manifest):
          "coloc_standard_per_well.csv / coloc_standard_contrasts",
          "nuclear rna1 puncta, biological wells only; panel A Costes-with-fallback "
          "threshold, panel B the run batch threshold",
-         f"3 vs 3 wells, {ctx['n_bio_nuc_with_puncta']} nuclei",
-         f"Welch t on well means, p = {fmt_p(row['p_welch'])}")
+         f"{int(row['n_wells_ref'])} vs {int(row['n_wells_test'])} wells, "
+         f"{ctx['n_bio_nuc_with_puncta']} nuclei",
+         f"Welch t on well means, p = {fmt_p(row['p_welch'])}" if pc["inferential"]
+         else "none drawn (fewer than 3 wells in an arm); Welch t in the contrasts table only")
 
 
 def fig_overlays(fields, ctx, out_dir, manifest):
@@ -1702,6 +1754,7 @@ def fig_overlays(fields, ctx, out_dir, manifest):
 
 def fig_anchor_directions(per_nucleus, well, ctx, out_dir, manifest):
     """Both anchor directions side by side, each against its own shuffle control."""
+    pc = plotted_counts(well)
     bio = well[~well["secondary_only"]]
     panels = [
         (ctx["primary_obs"], ctx["primary_shuf"],
@@ -1738,7 +1791,7 @@ def fig_anchor_directions(per_nucleus, well, ctx, out_dir, manifest):
                     m, lo, hi, _ = mean_ci(v)
                     ax.hlines(m, x + dx - 0.10, x + dx + 0.10, color="black",
                               linewidth=1.3, zorder=4)
-                    if np.isfinite(lo):
+                    if pc["inferential"] and np.isfinite(lo):
                         ax.vlines(x + dx, lo, hi, color="black", linewidth=0.9, zorder=2)
                         ytop = max(ytop, hi)
                     ytop = max(ytop, float(v.max()))
@@ -1750,7 +1803,8 @@ def fig_anchor_directions(per_nucleus, well, ctx, out_dir, manifest):
     axes[0].set_ylabel("fraction (diamond = observed, open circle = shuffle)")
     hb = stamp_head(fig, "Colocalization measured from both anchors",
                     "each panel: one diamond per well against its own shuffle control; "
-                    "black bar = arm mean with 95% CI", ctx["filt"], wrap=118, y=0.975)
+                    + ("black bar = arm mean with 95% CI" if pc["inferential"]
+                       else "black bar = arm mean"), ctx["filt"], wrap=118, y=0.975)
     foot = (
         "A and B are footprint-based: the partner mean over each "
         f"{ctx['rna_label']} punctum's exact footprint (A) and the {ctx['rna_label']} mean "
@@ -1763,7 +1817,7 @@ def fig_anchor_directions(per_nucleus, well, ctx, out_dir, manifest):
         "channel's positions uniformly inside the same nucleus. DESCRIPTIVE: none of these "
         "four is the panel's tested endpoint; that remains panel A of csp04. Reading the "
         "two anchors together guards against a result that only exists in one direction. "
-        f"n = {ctx['n_bio_nuc']} biological nuclei.")
+        f"n = {pc['n_nuclei']} biological nuclei in {pc['n_wells']} wells.")
     fig.subplots_adjust(top=hb - 0.075, bottom=foot_bottom(fig, foot, 5.2),
                         left=0.085, right=0.985, wspace=0.28)
     stamp_foot(fig, foot, size=5.2)
@@ -1771,18 +1825,20 @@ def fig_anchor_directions(per_nucleus, well, ctx, out_dir, manifest):
          "Object colocalization from both anchor directions plus spot-to-spot pairing, "
          "each against its own shuffle control.",
          "coloc_standard_per_well.csv", "biological wells only",
-         f"{ctx['n_bio_nuc']} nuclei", "none (descriptive)")
+         f"{pc['n_nuclei']} nuclei, {pc['n_wells']} wells", "none (descriptive)")
 
 
 def fig_composite(per_nucleus, well, contrasts, pooled, fields, ctx, out_dir, manifest):
+    pc = plotted_counts(well)
     fig = plt.figure(figsize=(13.2, 8.4))
     gs = fig.add_gridspec(2, 3, left=0.055, right=0.985, hspace=0.34, wspace=0.26)
     ax = fig.add_subplot(gs[0, 0])
-    superplot_axes(ax, per_nucleus, well, "pearson_r_csp", "Pearson r", "A  Pearson r")
+    superplot_axes(ax, per_nucleus, well, "pearson_r_csp", "Pearson r", "A  Pearson r",
+                   show_ci=pc["inferential"])
     ax = fig.add_subplot(gs[0, 1])
     superplot_axes(ax, per_nucleus, well, "manders_m1_runthr", "Manders M1",
                    f"B  M1: {ctx['rna_label']} in {ctx['partner_label']}"
-                   " (run batch threshold)")
+                   " (run batch threshold)", show_ci=pc["inferential"])
     ax = fig.add_subplot(gs[0, 2])
     bio = well[~well["secondary_only"]]
     for xi, ln in enumerate(ARMS):
@@ -1802,7 +1858,8 @@ def fig_composite(per_nucleus, well, contrasts, pooled, fields, ctx, out_dir, ma
     ax.set_xticklabels(list(ARMS))
     ax.set_xlim(-0.55, len(ARMS) - 0.45)
     ax.set_ylabel("fraction called colocalized")
-    ax.set_title(f"C  object coloc (D) vs shuffle (o)   {stars(row['p_welch'])}", fontsize=8.5)
+    ax.set_title("C  object coloc (D) vs shuffle (o)"
+                 + (f"   {stars(row['p_welch'])}" if pc["inferential"] else ""), fontsize=8.5)
     for i, (ln, tag) in enumerate(zip(ARMS[:2], ("D", "E"))):
         ax = fig.add_subplot(gs[1, i])
         r, a = pooled[ln]
@@ -1829,7 +1886,8 @@ def fig_composite(per_nucleus, well, contrasts, pooled, fields, ctx, out_dir, ma
     ax.set_yticks([])
     for s in ax.spines.values():
         s.set_visible(False)
-    ax.set_title(f"F  called-coloc overlay, {f['line']} {f['well_id']} (1:1 crop)", fontsize=8.5)
+    ax.set_title(chr(10).join(["F  called-coloc overlay (1:1 crop)"] + textwrap.wrap(
+        f"{f['line']}, well {f['well_id']}", 52)), fontsize=8.5)
     ax.legend(handles=[
         Line2D([], [], marker="o", linestyle="", markersize=6, markerfacecolor="none",
                markeredgecolor=CALLED_COLOR, label="called colocalized"),
@@ -1840,11 +1898,14 @@ def fig_composite(per_nucleus, well, contrasts, pooled, fields, ctx, out_dir, ma
         "A-B: nuclear mask, single z plane; descriptive, no test, well means as diamonds. "
         "M1 here uses the run's batch median + 2.5 MAD threshold for every nucleus; the "
         "Costes-with-fallback variant is a mixture of two conventions and is shown "
-        "separately in csp01b. C: nucleus -> FoV -> well rollup; Welch t on "
-        f"well means of the OBSERVED fraction, p = {fmt_p(row['p_welch'])}, "
-        f"Hedges g = {row['hedges_g']:.3g}, MDE (equal-variance Cohen d) = "
-        f"{row['mde_cohen_d_equal_variance']:.2f} at alpha 0.05 / 80% power; the "
-        "open circles are the within-nucleus shuffle control and they sit close to the "
+        "separately in csp01b. C: nucleus -> FoV -> well rollup; "
+        + ((f"Welch t on well means of the OBSERVED fraction, p = {fmt_p(row['p_welch'])}, "
+            f"Hedges g = {row['hedges_g']:.3g}, MDE (equal-variance Cohen d) = "
+            f"{row['mde_cohen_d_equal_variance']:.2f} at alpha 0.05 / 80% power; the ")
+           if pc["inferential"] else
+           (f"Hedges g = {row['hedges_g']:.3g} on well means of the OBSERVED fraction. "
+            f"{DESCRIPTIVE_NOTE} The "))
+        + "open circles are the within-nucleus shuffle control and they sit close to the "
         "observed value. D-E: pooled nuclear pixels subsampled to at most "
         f"{CYTO_MAX_PIXELS:,}; POOLED Costes thresholds are drawn as dashed lines only "
         "where Costes converged on the pooled sample ("
@@ -1852,13 +1913,15 @@ def fig_composite(per_nucleus, well, contrasts, pooled, fields, ctx, out_dir, ma
                      for k, v in ctx["cyto"].items()))
         + "). F: circles are "
         "drawing sizes, not the exact-footprint measurement region. "
-        f"n = {ctx['n_bio_nuc']} biological nuclei in 6 wells; secondary-only fields "
+        f"n = {pc['n_nuclei']} biological nuclei in {pc['n_wells']} wells "
+        f"({pc['text']}); secondary-only fields "
         f"excluded. Costes ({ctx['costes_fit'].upper()}) converged for "
         f"{ctx['costes_pct']:.1f}% of nuclei. {ctx['filt']} seed {ctx['seed']}.")
     hb = stamp_head(fig, "Standard colocalization panel: "
                     f"{ctx['rna_label']} x {ctx['partner_label']}",
-                    "A-B per-nucleus pixel coefficients (descriptive) - C the one tested "
-                    "object endpoint - D-E pooled-pixel cytofluorograms - F what the call "
+                    "A-B per-nucleus pixel coefficients (descriptive) - C the "
+                    + ("one tested " if pc["inferential"] else "primary (descriptive here) ")
+                    + "object endpoint - D-E pooled-pixel cytofluorograms - F what the call "
                     "looks like on the image", ctx["filt"], y=0.982)
     gs.update(top=hb - 0.030, bottom=foot_bottom(fig, foot, 5.2, pad=0.075))
     stamp_foot(fig, foot, size=5.2)
@@ -1866,8 +1929,9 @@ def fig_composite(per_nucleus, well, contrasts, pooled, fields, ctx, out_dir, ma
          "Composite: pixel coefficients, the tested object endpoint, cytofluorograms and a "
          "called-coloc overlay.",
          "all coloc_standard_* tables in this folder",
-         "biological wells only", f"{ctx['n_bio_nuc']} nuclei, 6 wells",
-         f"one Welch t on well means, p = {fmt_p(row['p_welch'])}")
+         "biological wells only", f"{pc['n_nuclei']} nuclei, {pc['n_wells']} wells",
+         f"one Welch t on well means, p = {fmt_p(row['p_welch'])}" if pc["inferential"]
+         else "none drawn (fewer than 3 wells in an arm); Welch t in the contrasts table only")
 
 
 # ------------------------------------------------------------------ workbook
@@ -2458,9 +2522,7 @@ def main(argv=None):
             spots[(spots["channel"] == "rna1") & (spots["in_nucleus"].astype(bool))]
             .groupby(["image", "nucleus_id"])["spot_diameter_um"].median()
             if "spot_diameter_um" in spots.columns else None),
-        filt=(f"gate: nuclear mask only, single z plane; biological wells only "
-              f"(secondary-only fields excluded); Costes per-nucleus thresholds with the run's "
-              f"batch median + 2.5 MAD as fallback; alpha {ALPHA}."),
+        filt=gate_text(plotted_counts(per_well)["inferential"]),
     )
 
     print("[2/6] cytofluorograms", flush=True)
