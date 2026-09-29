@@ -42,3 +42,14 @@ def test_not_detected_wording():
 def test_lock_defaults_unchanged():
     assert style.LV == {"miat": (500.0, 2250.0), "qki": (1050.0, 3746.0), "dapi": (607.0, 9000.0)}
     assert style.WELL_MEAN_MARKER["marker"] == "o"
+
+
+def test_build_linked_set_new_kwargs_keep_locked_defaults():
+    import inspect
+    from fishsuite.figures import linked_set
+    sig = inspect.signature(linked_set.build_linked_set).parameters
+    assert sig["channel_labels"].default == ("MIAT-640", "QKI-561")
+    assert sig["qki_min"].default == 1050 and sig["miat_min"].default == 500
+    assert sig["arm_color"].default is None and sig["b4_floors"].default is None
+    src = inspect.getsource(linked_set.build_linked_set)
+    assert "b4_floors.get(key)" in src and "axhline(fv" in src

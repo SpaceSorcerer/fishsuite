@@ -112,9 +112,13 @@ def read_stack(run, key):
 
 
 def build_linked_set(run, field_id, nucleus_id, rep_distance, label="", mix=False, R_PX=2.0, stem_suffix=None,
-                     z_window_um=10.5, write_params=True):
+                     z_window_um=10.5, write_params=True, channel_labels=("MIAT-640", "QKI-561"), qki_min=1050,
+                     miat_min=500, arm_color=None, b4_floors=None):
     """Render B1-B4 for <arm> field <field_id>, nucleus <nucleus_id>; returns the params dict (also written as JSON).
 
+    channel_labels / qki_min / miat_min / arm_color default to the locked basal values (two-condition datasets pass
+    their own run values). b4_floors = {"miat": (value, source), "qki": (value, source)} draws each floor as a
+    horizontal line on its own B4 axis (MIAT solid-dash gold, QKI dash magenta).
     mix=True renders MIAT x QKI merges only (no DAPI) for B1/B3/B2 with suffix _merge_MIATxQKI; B4 and params are skipped.
     stem_suffix overrides the B1 stem tail (round 1 used ``_box`` without the nucleus id for field 15 nucleus 11).
     """
@@ -195,10 +199,10 @@ def build_linked_set(run, field_id, nucleus_id, rep_distance, label="", mix=Fals
     _, half, _ = nucleus_crop(mask, px)
     fig = render_ortho_figure(stack, (z0, cy, cx), half, nucleus_mask=mask, pixel_size_um=px, z_step_um=DZ,
                               display_levels=[LV["miat"], LV["qki"]], line_endpoints=(P0, P1), profile_width_px=3,
-                              analysed_plane_z=z0, qki_min=1050, miat_min=500, run_dir=str(run.run_dir), arm=run.arm, arm_color=COL,
+                              analysed_plane_z=z0, qki_min=qki_min, miat_min=miat_min, run_dir=str(run.run_dir), arm=run.arm, arm_color=arm_color or COL,
                               image=Path(G["key"]).name, nucleus_id=NID, metric="representative-rule distance",
                               metric_value=float(rep_distance), arm_median=0.0, include_dapi=not mix, dapi_display_level=LV["dapi"],
-                              channel_labels=("MIAT-640", "QKI-561"), dapi_label="DAPI", axial_scale_factor=AXIAL,
+                              channel_labels=tuple(channel_labels), dapi_label="DAPI", axial_scale_factor=AXIAL,
                               show_scale_bars=True, show_z_slice_labels=True, show_cross_section=True,
                               z_range=(zz0, zz1), z_crop_note=f"fixed {z_window_um:g} µm effective z window (display only)",
                               axial_scale_note="GLOX n≈1.333 / oil n=1.518; first-order correction")
@@ -215,13 +219,20 @@ def build_linked_set(run, field_id, nucleus_id, rep_distance, label="", mix=Fals
     fig = plt.figure(figsize=(4.2, 2.5), facecolor='white')
     ax = fig.add_axes([.13, .3, .56, .55]); ax2 = ax.twinx(); ax3 = ax.twinx()
     ax3.spines["right"].set_position(("axes", 1.33)); ax2.spines["right"].set_visible(True); ax3.spines["right"].set_visible(True)
-    ax.plot(dist, prof.miat, color=LINE_MIAT, lw=1.1, label="MIAT (640)")
-    ax2.plot(dist, prof.qki, color=LINE_QKI, lw=1.1, label="QKI (561)")
+    ax.plot(dist, prof.miat, color=LINE_MIAT, lw=1.1, label=f"MIAT ({channel_labels[0].split('-')[-1]})")
+    ax2.plot(dist, prof.qki, color=LINE_QKI, lw=1.1, label=f"QKI ({channel_labels[1].split('-')[-1]})")
     ax3.plot(dist, prof.dapi, color=LINE_DAPI, lw=.8, ls='--', label="DAPI")
     for s in on.itertuples():
         ax.axvline(s.pos_um, color='#888888', lw=.5, ls=':', zorder=0)
         ax.plot(s.pos_um, 1.02, marker='v', ms=4, transform=ax.get_xaxis_transform(), clip_on=False,
                 color='black' if s.spot_id == mk_id else '#888888')
+    for key, a_, c_ in (("miat", ax, LINE_MIAT), ("qki", ax2, LINE_QKI)):
+        if b4_floors and b4_floors.get(key) is not None:
+            fv = float(b4_floors[key][0])
+            a_.axhline(fv, color=c_, lw=.8, ls=(0, (4, 2)), zorder=1,
+                       label=f"{'MIAT' if key == 'miat' else 'QKI'} floor {fv:g}")
+            lo_, hi_ = a_.get_ylim()
+            a_.set_ylim(min(lo_, fv - .05 * (hi_ - lo_)), max(hi_, fv + .05 * (hi_ - lo_)))
     ax.set_xlabel("Distance along line (µm)"); ax.set_xlim(0, dist.max())
     ax.set_ylabel("MIAT (raw a.u.)", color='#8A7400'); ax2.set_ylabel("QKI (raw a.u.)", color=LINE_QKI)
     ax3.set_ylabel("DAPI (raw a.u.)", color=LINE_DAPI)
