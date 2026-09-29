@@ -59,7 +59,19 @@ class PanelRun:
         return json.loads((self.menu_dir / "data" / "representative_selection.json").read_text())
 
     def image_key(self, field_id) -> str:
-        return self.selection()["reps"][self.arm]["image"].replace("dox_15.vsi", f"dox_{field_id}.vsi")
+        """Image key of field ``field_id`` of ``arm``, read from the menu's per-nucleus ``image`` column.
+        Raises KeyError unless exactly one image matches (never falls back to the representative image)."""
+        nuc = pd.read_csv(self.menu_dir / "data" / "menu_per_nucleus.csv", usecols=["image", "condition", "well"])
+        nuc = nuc[nuc.condition == self.arm]
+        fld = nuc.well.str.split("_").str[-1]
+        want = str(field_id)
+        hit = fld == want
+        if not hit.any() and want.isdigit():
+            hit = fld.str.isdigit() & (fld.where(fld.str.isdigit(), "-1").astype(int) == int(want))
+        keys = sorted(set(nuc.image[hit]))
+        if len(keys) != 1:
+            raise KeyError(f"arm {self.arm!r} field {field_id!r}: {len(keys)} images in menu_per_nucleus.csv ({keys})")
+        return keys[0]
 
     def raw_path(self, key: str) -> Path:
         return Path(key) if self.raw_dir is None else self.raw_dir / Path(key).name
