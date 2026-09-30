@@ -222,10 +222,12 @@ def ratio_scatter(units: pd.DataFrame, arms, colors: dict, xl: str, yl: str, tit
 
 def micrograph(rgb8: np.ndarray, px_um: float, saver, stem: str, k: int = 1, labels=None,
                outline_color: str = '#D9D9D9', outline_lw: float = .5, scalebar_um: float = 10,
-               count_text: str | None = None, strip_px: int = 120):
+               count_text: str | None = None, strip_px: int = 120, outline_fields: bool = False):
     """Pixel-exact micrograph. rgb8 (uint8 HxWx3) is drawn at k output pixels per image pixel (integer k, so
     x-scale = y-scale and no resampling at 600 dpi). Scale bar and optional count text sit in a white strip BELOW
-    the image, so image pixels are untouched; optional nuclear outlines are vector contours of ``labels``."""
+    the image, so image pixels are untouched; optional nuclear outlines are vector contours of ``labels``.
+    Outlines are drawn only when ``labels`` holds a single nucleus (Brian 2026-09-30: never on whole fields);
+    ``outline_fields=True`` overrides for a multi-nucleus field."""
     check_luts()
     rgb8 = np.asarray(rgb8)
     if rgb8.dtype != np.uint8 or rgb8.ndim != 3:
@@ -241,7 +243,8 @@ def micrograph(rgb8: np.ndarray, px_um: float, saver, stem: str, k: int = 1, lab
     ax = fig.add_axes([0, strip_px / H, 1, h * k / H]); ax.set_axis_off()
     ax.imshow(rgb8, interpolation='nearest', extent=(0, w, h, 0))
     ax.set_xlim(0, w); ax.set_ylim(h, 0)
-    if labels is not None:
+    n_nuc = 0 if labels is None else int(np.count_nonzero(np.unique(labels)))
+    if labels is not None and (n_nuc == 1 or outline_fields):
         xs = np.arange(w) + .5; ys = np.arange(h) + .5
         for lab in np.unique(labels):
             if lab == 0:
