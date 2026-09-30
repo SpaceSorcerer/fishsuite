@@ -34,12 +34,14 @@ def plot_two_arm(nuc: pd.DataFrame, units: pd.DataFrame, arms, colors: dict, yla
                  p: float | None, footer_lines, saver, stem: str, dots: bool, seed: int = 0,
                  ylim=None, chance: float | None = None, chance_label: str = "chance",
                  sig_unit: str | None = None, focus: bool = False, focus_kind: str | None = None,
-                 focus_unit: str = "nuclei", focus_cap: float | None = None):
+                 focus_unit: str = "nuclei", focus_cap: float | None = None, dot_alpha: float | None = None):
     """nuc: columns arm, value (per nucleus; may be empty for an arm). units: columns arm, value (one row per
     biological unit, e.g. well). Returns the dict of plotted numbers.
     focus=True: y-window by the focus rule (fishsuite.figures.focus; focus_kind None | 'ratio' | 'fraction');
     out-of-window nuclei are pinned as open markers and counted in a separate note. focus=False = unchanged output.
-    focus_cap (with focus=True): a person-chosen hard top of the data band; the axis stops there, the rest is pinned."""
+    focus_cap (with focus=True): a person-chosen hard top of the data band; the axis stops there, the rest is pinned.
+    dot_alpha: per-nucleus dot fill alpha (None = .45, unchanged). Dots stay above the well means (locked rule)."""
+    _da = .45 if dot_alpha is None else float(dot_alpha)
     if focus and ylim is not None:
         raise ValueError("plot_two_arm: pass either ylim or focus=True, not both")
     if focus_cap is not None and not focus:
@@ -74,10 +76,10 @@ def plot_two_arm(nuc: pd.DataFrame, units: pd.DataFrame, arms, colors: dict, yla
         if dots and len(v) and fw is not None:
             jx = x + rng.uniform(-.18, .18, len(v))
             ins = _focus.split_pinned(v, fw)[0]
-            ax.scatter(jx[ins], v[ins], s=5, facecolor=col, alpha=.45, edgecolor='black', lw=.25, zorder=6)
+            ax.scatter(jx[ins], v[ins], s=5, facecolor=col, alpha=_da, edgecolor='black', lw=.25, zorder=6)
             _focus.draw_pinned(ax, jx, v, fw, col)
         elif dots and len(v):
-            ax.scatter(x + rng.uniform(-.18, .18, len(v)), v, s=5, facecolor=col, alpha=.45, edgecolor='black',
+            ax.scatter(x + rng.uniform(-.18, .18, len(v)), v, s=5, facecolor=col, alpha=_da, edgecolor='black',
                        lw=.25, zorder=6)
         offs = np.linspace(-.12, .12, len(u)) if len(u) > 1 else np.zeros(len(u))
         for k, mm in enumerate(u):
