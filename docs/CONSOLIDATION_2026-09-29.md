@@ -59,4 +59,4 @@ No other branch has unmerged commits (`git branch --no-merged main`). `stash@{0}
 - Flag: Brian's wording for representative nuclei is "near-mean", but the basal `selection.py` uses the closest-to-MEDIAN robust distance. The skill records both. The code was not changed.
 
 ## Push decision (Brian)
-- Local main `2b146d4` is 64 commits ahead of `origin/main` (5c03381, 2026-09-08). A push publishes all of them. Not pushed.
+- Local main (`9f7f126` after this record, which is on top of the `2b146d4` merge) is 67 commits ahead of `origin/main` (5c03381, 2026-09-08). A push publishes all of them. Not pushed.
