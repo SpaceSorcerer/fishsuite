@@ -19,15 +19,20 @@ from .style import colorize, footer, fmt_p, stars, well_mean_style, check_luts
 NOT_DETECTED = "not detected at this n"
 
 
-def sig_label(p: float | None) -> str:
+def sig_label(p: float | None, unit: str | None = None) -> str:
+    """unit (optional, e.g. 'slide-adjusted, 9 v 9 wells') is appended to the p text; default output unchanged."""
     if p is None or not np.isfinite(p):
         return ""
+    if unit:
+        return (f"{stars(p)}  p = {fmt_p(p)}\n{unit}" if p < 0.05
+                else f"{NOT_DETECTED}\np = {fmt_p(p)}; {unit}")
     return f"{stars(p)}  p = {fmt_p(p)}" if p < 0.05 else f"{NOT_DETECTED}  (p = {fmt_p(p)})"
 
 
 def plot_two_arm(nuc: pd.DataFrame, units: pd.DataFrame, arms, colors: dict, ylab: str, title: str,
                  p: float | None, footer_lines, saver, stem: str, dots: bool, seed: int = 0,
-                 ylim=None, chance: float | None = None, chance_label: str = "chance"):
+                 ylim=None, chance: float | None = None, chance_label: str = "chance",
+                 sig_unit: str | None = None):
     """nuc: columns arm, value (per nucleus; may be empty for an arm). units: columns arm, value (one row per
     biological unit, e.g. well). Returns the dict of plotted numbers."""
     rng = np.random.default_rng(seed)
@@ -65,11 +70,14 @@ def plot_two_arm(nuc: pd.DataFrame, units: pd.DataFrame, arms, colors: dict, yla
     if ylim is None:
         ylim = (0.0 if lo >= 0 else lo - .06 * span, hi + .32 * span)
     ax.set_ylim(*ylim)
-    s = sig_label(p)
+    s = sig_label(p, sig_unit)
+    R = ylim[1] - ylim[0]
+    if hi > ylim[1] - .2 * R:  # data run past a caller-supplied focus window: keep the bracket inside the axes
+        hi, span = ylim[1] - .24 * R, .8 * R
     if s:
         yb = hi + .10 * span
         ax.plot([0, 0, 1, 1], [yb - .02 * span, yb, yb, yb - .02 * span], color='black', lw=.75)
-        ax.text(.5, yb + .015 * span, s, ha='center', va='bottom', fontsize=6)
+        ax.text(.5, yb + .015 * span, s, ha='center', va='bottom', fontsize=6 if not sig_unit else 5.5, linespacing=1.1)
     ax.set_xlim(-.6, len(arms) - .4)
     ax.set_xticks(range(len(arms)))
     ax.set_xticklabels(arms, fontsize=6.5)
@@ -77,7 +85,8 @@ def plot_two_arm(nuc: pd.DataFrame, units: pd.DataFrame, arms, colors: dict, yla
         t.set_color(colors[arm])
     ax.set_ylabel(ylab, fontsize=7)
     fig.text(.5, .955, title, ha='center', va='center', fontsize=7.5, fontweight='bold')
-    footer(fig, list(footer_lines), width=64)
+    if footer_lines:
+        footer(fig, list(footer_lines), width=64)
     saver.save(fig, stem)
     out["ylim"] = [float(ylim[0]), float(ylim[1])]
     return out
@@ -142,3 +151,110 @@ def scatter_one(x, y, color: str, xl: str, yl: str, title: str, pooled: bool, fo
     return dict(panel=stem, x=xl, y=yl, unit="puncta pooled across nuclei" if pooled else "nuclei", n=int(len(x)),
                 n_nuclei=n_nuclei if pooled else int(len(x)), spearman_rho=float(rs.statistic), spearman_p=float(rs.pvalue),
                 pearson_r=float(rp.statistic), pearson_p=float(rp.pvalue))
+
+
+# ---- additions 2026-09-29 (imaging sets KD/OE): radial profile, per-unit ratio scatter, pixel-exact micrograph ----
+
+def radial_profile(prof: dict, arms, colors: dict, xlab: str, ylab: str, title: str, saver, stem: str,
+                   ylim=None, ref: float | None = 1.0):
+    """prof[arm] = dict(r=..., obs=..., lo=..., hi=..., ctrl=...), all supplied by the caller (render only).
+    Observed = solid line in the condition colour (+ CI band when lo/hi are finite); random-placement control = dashed."""
+    from matplotlib.lines import Line2D
+    fig = plt.figure(figsize=(2.6, 3.4))
+    ax = fig.add_axes([.27, .34, .58, .52])
+    allv = []
+    for arm in arms:
+        d = prof[arm]; col = colors[arm]
+        r = np.asarray(d["r"], float); o = np.asarray(d["obs"], float); c = np.asarray(d["ctrl"], float)
+        lo, hi = d.get("lo"), d.get("hi")
+        if lo is not None and hi is not None:
+            lo = np.asarray(lo, float); hi = np.asarray(hi, float)
+            if np.all(np.isfinite(lo)) and np.all(np.isfinite(hi)):
+                ax.fill_between(r, lo, hi, color=col, alpha=.18, lw=0); allv += list(lo) + list(hi)
+        ax.plot(r, o, color=col, lw=1.3, marker='o', ms=2.6, mec='black', mew=.3)
+        ax.plot(r, c, color=col, lw=1.0, ls='--')
+        allv += list(o) + list(c)
+    if ref is not None:
+        ax.axhline(ref, color='#555555', ls=':', lw=.7, zorder=0); allv.append(ref)
+    allv = np.asarray(allv, float)
+    lo_, hi_ = float(np.nanmin(allv)), float(np.nanmax(allv)); span = (hi_ - lo_) or 1.0
+    ax.set_ylim(*(ylim or (lo_ - .06 * span, hi_ + .12 * span)))
+    ax.set_xlabel(xlab, fontsize=7); ax.set_ylabel(ylab, fontsize=7)
+    h = [Line2D([], [], color=colors[a], lw=1.3) for a in arms] + [Line2D([], [], color='#555555', lw=1.0, ls='--')]
+    ax.legend(h, [a.replace("\n", " ") for a in arms] + ["random placement (dashed)"], fontsize=5.5, frameon=False,
+              loc='upper center', bbox_to_anchor=(.5, -.2), ncol=1)
+    fig.text(.5, .955, title, ha='center', va='center', fontsize=7.5, fontweight='bold')
+    saver.save(fig, stem)
+    return dict(ylim=[float(v) for v in ax.get_ylim()])
+
+
+def ratio_scatter(units: pd.DataFrame, arms, colors: dict, xl: str, yl: str, title: str, saver, stem: str,
+                  chance_slope: float | None = None, xlim=None, ylim=None):
+    """units: columns arm, x, y (one row per biological unit, e.g. well). One 'o' per unit in the condition colour,
+    a dashed least-squares line fitted across all units (descriptive; no p drawn) and an optional dotted chance line
+    y = chance_slope * x. Returns the fit."""
+    from matplotlib.lines import Line2D
+    fig = plt.figure(figsize=(2.9, 3.4)); ax = fig.add_axes([.24, .34, .68, .52])
+    x = units["x"].to_numpy(float); y = units["y"].to_numpy(float)
+    for arm in arms:
+        u = units[units.arm == arm]
+        ax.scatter(u.x, u.y, **dict(well_mean_style(arm, color=colors[arm]), s=60))
+    b, a = np.polyfit(x, y, 1)
+    r = float(np.corrcoef(x, y)[0, 1])
+    xmax = float(np.nanmax(x)) * 1.08
+    xx = np.array([0.0, xmax])
+    ax.plot(xx, a + b * xx, color='black', ls='--', lw=.9, zorder=3)
+    if chance_slope is not None:
+        ax.plot(xx, chance_slope * xx, color='#777777', ls=':', lw=.9, zorder=2)
+    ax.set_xlim(*(xlim or (0, xmax)))
+    ax.set_ylim(*(ylim or (0, max(float(np.nanmax(y)), float(a + b * xmax)) * 1.12)))
+    ax.set_xlabel(xl, fontsize=7); ax.set_ylabel(yl, fontsize=7)
+    h = [Line2D([], [], marker='o', ls='', mfc=colors[a_], mec='black', ms=6) for a_ in arms] + \
+        [Line2D([], [], color='black', ls='--', lw=.9)] + \
+        ([Line2D([], [], color='#777777', ls=':', lw=.9)] if chance_slope is not None else [])
+    lab = [a_.replace("\n", " ") for a_ in arms] + ["least-squares fit"] + (["chance"] if chance_slope is not None else [])
+    ax.legend(h, lab, fontsize=5.5, frameon=False, loc='upper center', bbox_to_anchor=(.5, -.2), ncol=2)
+    fig.text(.5, .955, title, ha='center', va='center', fontsize=7.5, fontweight='bold')
+    saver.save(fig, stem)
+    return dict(slope=float(b), intercept=float(a), pearson_r=r, r2=r * r, n_units=int(len(x)),
+                xlim=[float(v) for v in ax.get_xlim()], ylim=[float(v) for v in ax.get_ylim()])
+
+
+def micrograph(rgb8: np.ndarray, px_um: float, saver, stem: str, k: int = 1, labels=None,
+               outline_color: str = '#D9D9D9', outline_lw: float = .5, scalebar_um: float = 10,
+               count_text: str | None = None, strip_px: int = 120):
+    """Pixel-exact micrograph. rgb8 (uint8 HxWx3) is drawn at k output pixels per image pixel (integer k, so
+    x-scale = y-scale and no resampling at 600 dpi). Scale bar and optional count text sit in a white strip BELOW
+    the image, so image pixels are untouched; optional nuclear outlines are vector contours of ``labels``."""
+    check_luts()
+    rgb8 = np.asarray(rgb8)
+    if rgb8.dtype != np.uint8 or rgb8.ndim != 3:
+        raise ValueError("micrograph expects a uint8 HxWx3 array")
+    h, w = rgb8.shape[:2]; k = int(k)
+    W, H = w * k, h * k + strip_px
+    def _inch(n):  # smallest float inch size that renders to exactly n pixels at 600 dpi (guards float truncation)
+        v = n / 600
+        while int(v * 600) < n:
+            v = np.nextafter(v, np.inf)
+        return v
+    fig = plt.figure(figsize=(_inch(W), _inch(H)), dpi=600, facecolor='white')
+    ax = fig.add_axes([0, strip_px / H, 1, h * k / H]); ax.set_axis_off()
+    ax.imshow(rgb8, interpolation='nearest', extent=(0, w, h, 0))
+    ax.set_xlim(0, w); ax.set_ylim(h, 0)
+    if labels is not None:
+        xs = np.arange(w) + .5; ys = np.arange(h) + .5
+        for lab in np.unique(labels):
+            if lab == 0:
+                continue
+            ax.contour(xs, ys, (labels == lab).astype(float), levels=[.5], colors=outline_color,
+                       linewidths=outline_lw)
+    sax = fig.add_axes([0, 0, 1, strip_px / H]); sax.set_axis_off(); sax.set_xlim(0, W); sax.set_ylim(0, strip_px)
+    L = scalebar_um / px_um * k
+    sax.plot([W - 20 - L, W - 20], [strip_px * .70] * 2, color='black', lw=1.5, solid_capstyle='butt')
+    sax.text(W - 20 - L / 2, strip_px * .10, f"{scalebar_um:g} µm", ha='center', va='bottom', fontsize=5)
+    if count_text:
+        t = sax.text(20, strip_px * .45, count_text, ha='left', va='center', fontsize=5.5)
+        t.set_gid(f"{stem}__count")
+    saver.save(fig, stem)
+    return dict(stem=stem, w_px=w, h_px=h, k=k, out_w=W, out_h=H, px_um_x=px_um, px_um_y=px_um,
+                scale_x=k, scale_y=k)
