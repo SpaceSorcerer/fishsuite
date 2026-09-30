@@ -30,17 +30,18 @@ def test_micrograph_pixel_exact(tmp_path):
     rng = np.random.default_rng(0)
     img = rng.integers(0, 256, (40, 60, 3), dtype=np.uint8)
     sv = style.Saver(tmp_path)
-    g = twoarm.micrograph(img, .1, sv, "m", k=3, scalebar_um=1, count_text="12 puncta", strip_px=60)
+    g = twoarm.micrograph(img, .1, sv, "m", k=3, scalebar_um=1)
     png = np.asarray(Image.open(tmp_path / "m.png").convert("RGB"))
-    assert png.shape == (40 * 3 + 60, 60 * 3, 3)
-    assert np.array_equal(png[:120, :, :], np.repeat(np.repeat(img, 3, 0), 3, 1))
+    assert png.shape == (40 * 3, 60 * 3, 3)  # scale bar inside the image, no strip (2026-09-30)
+    up = np.repeat(np.repeat(img, 3, 0), 3, 1)
+    assert np.array_equal(png[:50], up[:50])  # untouched above the bar and its label
     assert g["scale_x"] == g["scale_y"] == 3
 
 
 def test_micrograph_pixel_exact_awkward_height(tmp_path):
     style.apply_style()
     img = np.random.default_rng(1).integers(0, 256, (1894, 16, 3), dtype=np.uint8)
-    twoarm.micrograph(img, .065, style.Saver(tmp_path), "m", k=1, scalebar_um=1, strip_px=120)
+    twoarm.micrograph(img, .065, style.Saver(tmp_path), "m", k=1, scalebar_um=0.5, strip_px=120)
     png = np.asarray(Image.open(tmp_path / "m.png").convert("RGB"))
-    assert png.shape[0] == 1894 + 120
-    assert np.array_equal(png[:1894], img)
+    assert png.shape[0] == 1894
+    assert np.array_equal(png[:1700], img[:1700])

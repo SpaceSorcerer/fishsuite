@@ -15,7 +15,7 @@ class _Saver:
 
 def _n_contours(labels, **kw):
     sv = _Saver(); rgb = np.zeros((40, 40, 3), np.uint8)
-    twoarm.micrograph(rgb, 0.065, sv, "t", labels=labels, **kw)
+    twoarm.micrograph(rgb, 0.065, sv, "t", labels=labels, scalebar_um=1, **kw)
     ax = sv.figs[0].axes[0]
     return sum(1 for c in ax.get_children() if "Contour" in type(c).__name__)
 

@@ -309,25 +309,32 @@ def ratio_scatter(units: pd.DataFrame, arms, colors: dict, xl: str, yl: str, tit
 
 def micrograph(rgb8: np.ndarray, px_um: float, saver, stem: str, k: int = 1, labels=None,
                outline_color: str = '#D9D9D9', outline_lw: float = .5, scalebar_um: float = 10,
-               count_text: str | None = None, strip_px: int = 120, outline_fields: bool = False):
+               count_text: str | None = None, strip_px: int = 0, outline_fields: bool = False,
+               bar_margin_px: int | None = None, bar_height_px: int | None = None):
     """Pixel-exact micrograph. rgb8 (uint8 HxWx3) is drawn at k output pixels per image pixel (integer k, so
-    x-scale = y-scale and no resampling at 600 dpi). Scale bar and optional count text sit in a white strip BELOW
-    the image, so image pixels are untouched; optional nuclear outlines are vector contours of ``labels``.
-    Outlines are drawn only when ``labels`` holds a single nucleus (Brian 2026-09-30: never on whole fields);
-    ``outline_fields=True`` overrides for a multi-nucleus field."""
+    x-scale = y-scale and no resampling at 600 dpi). The output is exactly (h*k, w*k): no strip, no margin.
+    Scale bar (Brian 2026-09-30): white bar INSIDE the image, bottom-right, drawn in image-pixel space with
+    length ``scalebar_um / px_um`` image pixels (rounded), label in white above it. Optional ``count_text`` is a
+    separate white text object (gid ``<stem>__count``) at the image top-left. Nuclear outlines are vector
+    contours of ``labels``, drawn only when ``labels`` holds a single nucleus (Brian 2026-09-30: never on whole
+    fields); ``outline_fields=True`` overrides for a multi-nucleus field. ``strip_px`` is accepted for backward
+    compatibility and ignored."""
+    from matplotlib.patches import Rectangle
     check_luts()
     rgb8 = np.asarray(rgb8)
     if rgb8.dtype != np.uint8 or rgb8.ndim != 3:
         raise ValueError("micrograph expects a uint8 HxWx3 array")
     h, w = rgb8.shape[:2]; k = int(k)
-    W, H = w * k, h * k + strip_px
+    W, H = w * k, h * k
     def _inch(n):  # smallest float inch size that renders to exactly n pixels at 600 dpi (guards float truncation)
         v = n / 600
         while int(v * 600) < n:
             v = np.nextafter(v, np.inf)
         return v
-    fig = plt.figure(figsize=(_inch(W), _inch(H)), dpi=600, facecolor='white')
-    ax = fig.add_axes([0, strip_px / H, 1, h * k / H]); ax.set_axis_off()
+    fw, fh = _inch(W), _inch(H)
+    fig = plt.figure(figsize=(fw, fh), dpi=600, facecolor='white')
+    # axes spans exactly W x H device pixels (the figure is W+eps x H+eps), so every image row/column maps to k whole pixels
+    ax = fig.add_axes([0, 1 - H / (fh * 600), W / (fw * 600), H / (fh * 600)]); ax.set_axis_off()
     ax.imshow(rgb8, interpolation='nearest', extent=(0, w, h, 0))
     ax.set_xlim(0, w); ax.set_ylim(h, 0)
     n_nuc = 0 if labels is None else int(np.count_nonzero(np.unique(labels)))
@@ -338,13 +345,21 @@ def micrograph(rgb8: np.ndarray, px_um: float, saver, stem: str, k: int = 1, lab
                 continue
             ax.contour(xs, ys, (labels == lab).astype(float), levels=[.5], colors=outline_color,
                        linewidths=outline_lw)
-    sax = fig.add_axes([0, 0, 1, strip_px / H]); sax.set_axis_off(); sax.set_xlim(0, W); sax.set_ylim(0, strip_px)
-    L = scalebar_um / px_um * k
-    sax.plot([W - 20 - L, W - 20], [strip_px * .70] * 2, color='black', lw=1.5, solid_capstyle='butt')
-    sax.text(W - 20 - L / 2, strip_px * .10, f"{scalebar_um:g} µm", ha='center', va='bottom', fontsize=5)
+    L = scalebar_um / px_um  # exact length in image pixels (drawn as a vector; no rounding)
+    m = int(bar_margin_px if bar_margin_px is not None else max(2, round(0.04 * min(w, h))))
+    if L + m > w:
+        raise ValueError(f"scale bar {scalebar_um} um = {L} px does not fit a {w}-px-wide image")
+    bh = int(bar_height_px if bar_height_px is not None else max(2, round(0.012 * h)))
+    x1 = w - m; x0 = x1 - L; y1 = h - m; y0 = y1 - bh
+    bar = Rectangle((x0, y0), L, bh, facecolor='white', edgecolor='none', linewidth=0, antialiased=False)
+    bar.set_gid(f"{stem}__scalebar"); ax.add_patch(bar)
+    t = ax.text(x0 + L / 2, y0 - max(1, 0.01 * h), f"{scalebar_um:g} µm", ha='center', va='bottom',
+                fontsize=5, color='white')
+    t.set_gid(f"{stem}__scalebar_label")
     if count_text:
-        t = sax.text(20, strip_px * .45, count_text, ha='left', va='center', fontsize=5.5)
+        t = ax.text(m, m, count_text, ha='left', va='top', fontsize=5.5, color='white')
         t.set_gid(f"{stem}__count")
     saver.save(fig, stem)
     return dict(stem=stem, w_px=w, h_px=h, k=k, out_w=W, out_h=H, px_um_x=px_um, px_um_y=px_um,
-                scale_x=k, scale_y=k)
+                scale_x=k, scale_y=k, bar_um=scalebar_um, bar_px=L, bar_out_px=L * k,
+                bar_xyxy_px=(x0, y0, x1, y1))
