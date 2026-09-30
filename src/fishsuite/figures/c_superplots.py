@@ -71,7 +71,7 @@ def plot_one_sample(nv, fields, key, col, chance, ylab, shape, t, dots, rng, sav
         ax.text(0, fw.bracket_y - 2 * pt, lab(t), ha='center', va='bottom', fontsize=5.8)
         if fw.kind == "fraction":
             _focus.fraction_ticks(ax)
-        _focus.draw_note(ax, fw, "nuclei")
+        _focus.draw_note(ax, fw, "nuclei", shown=dots)
     else:
         vals = v if dots or shape == "violin" else np.array(wm)
         lo, hi = min(vals.min(), chance), max(vals.max(), chance)
