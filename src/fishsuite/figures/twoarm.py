@@ -15,6 +15,7 @@ from matplotlib.patches import Circle
 from scipy.stats import pearsonr, spearmanr
 
 from .style import colorize, footer, fmt_p, stars, well_mean_style, check_luts
+from . import focus as _focus
 
 NOT_DETECTED = "not detected at this n"
 
@@ -32,14 +33,33 @@ def sig_label(p: float | None, unit: str | None = None) -> str:
 def plot_two_arm(nuc: pd.DataFrame, units: pd.DataFrame, arms, colors: dict, ylab: str, title: str,
                  p: float | None, footer_lines, saver, stem: str, dots: bool, seed: int = 0,
                  ylim=None, chance: float | None = None, chance_label: str = "chance",
-                 sig_unit: str | None = None):
+                 sig_unit: str | None = None, focus: bool = False, focus_kind: str | None = None,
+                 focus_unit: str = "nuclei", focus_cap: float | None = None):
     """nuc: columns arm, value (per nucleus; may be empty for an arm). units: columns arm, value (one row per
-    biological unit, e.g. well). Returns the dict of plotted numbers."""
+    biological unit, e.g. well). Returns the dict of plotted numbers.
+    focus=True: y-window by the focus rule (fishsuite.figures.focus; focus_kind None | 'ratio' | 'fraction');
+    out-of-window nuclei are pinned as open markers and counted in a separate note. focus=False = unchanged output.
+    focus_cap (with focus=True): a person-chosen hard top of the data band; the axis stops there, the rest is pinned."""
+    if focus and ylim is not None:
+        raise ValueError("plot_two_arm: pass either ylim or focus=True, not both")
+    if focus_cap is not None and not focus:
+        raise ValueError("plot_two_arm: focus_cap requires focus=True")
     rng = np.random.default_rng(seed)
     fig = plt.figure(figsize=(2.6, 3.4))
     ax = fig.add_axes([.27, .30, .58, .56])
     allv = []
+    allu = []
     out = {}
+    fw = None
+    if focus:
+        s_ = sig_label(p, sig_unit)
+        fs_ = 6 if not sig_unit else 5.5
+        vals = {a: nuc.loc[nuc.arm == a, "value"].to_numpy(float) for a in arms}
+        inc = [units.loc[units.arm == a, "value"].to_numpy(float) for a in arms]
+        inc = list(np.concatenate(inc)) + [np.mean(i) for i in inc if len(i)] + ([chance] if chance is not None else [])
+        fw = _focus.focus_window(vals, inc, focus_kind, _focus.axes_height_pt(ax),
+                                 _focus.text_band_pt(s_, fs_, 1.1), marker_pt=_WELL_R_PT, cap=focus_cap)
+        bodies = []
     for x, arm in enumerate(arms):
         col = colors[arm]
         v = nuc.loc[nuc.arm == arm, "value"].to_numpy(float)
@@ -49,7 +69,14 @@ def plot_two_arm(nuc: pd.DataFrame, units: pd.DataFrame, arms, colors: dict, yla
             vp = ax.violinplot([v], positions=[x], widths=.75, showextrema=False)
             for b in vp['bodies']:
                 b.set_facecolor(col); b.set_alpha(.18); b.set_edgecolor(col); b.set_linewidth(.6)
-        if dots and len(v):
+            if fw is not None:
+                bodies += vp['bodies']
+        if dots and len(v) and fw is not None:
+            jx = x + rng.uniform(-.18, .18, len(v))
+            ins = _focus.split_pinned(v, fw)[0]
+            ax.scatter(jx[ins], v[ins], s=5, facecolor=col, alpha=.45, edgecolor='black', lw=.25, zorder=6)
+            _focus.draw_pinned(ax, jx, v, fw, col)
+        elif dots and len(v):
             ax.scatter(x + rng.uniform(-.18, .18, len(v)), v, s=5, facecolor=col, alpha=.45, edgecolor='black',
                        lw=.25, zorder=6)
         offs = np.linspace(-.12, .12, len(u)) if len(u) > 1 else np.zeros(len(u))
@@ -58,6 +85,7 @@ def plot_two_arm(nuc: pd.DataFrame, units: pd.DataFrame, arms, colors: dict, yla
         if len(u):
             ax.hlines(np.mean(u), x - .3, x + .3, color='black', lw=1.2, zorder=7)
         allv += list(v if (dots or len(v)) else []) + list(u)
+        allu += list(u)
         out[arm] = dict(n_nuclei=int(len(v)), n_units=int(len(u)), mean_of_unit_means=float(np.mean(u)) if len(u) else np.nan)
     if chance is not None:
         ax.axhline(chance, color='#555555', ls='--', lw=.8, zorder=0)
@@ -67,15 +95,21 @@ def plot_two_arm(nuc: pd.DataFrame, units: pd.DataFrame, arms, colors: dict, yla
     allv = np.asarray(allv, float)
     lo, hi = float(np.nanmin(allv)), float(np.nanmax(allv))
     span = (hi - lo) or abs(hi) or 1.0
-    if ylim is None:
+    if fw is not None:
+        return _finish_focus(fig, ax, fw, bodies, arms, colors, ylab, title, p, sig_unit, footer_lines, saver, stem,
+                             out, focus_unit)
+    auto = ylim is None
+    if auto:
         ylim = (0.0 if lo >= 0 else lo - .06 * span, hi + .32 * span)
     ax.set_ylim(*ylim)
     s = sig_label(p, sig_unit)
     R = ylim[1] - ylim[0]
-    if hi > ylim[1] - .2 * R:  # data run past a caller-supplied focus window: keep the bracket inside the axes
+    guard = (not auto) and hi > ylim[1] - .2 * R
+    if guard:  # data run past a caller-supplied window: keep the bracket inside the axes
         hi, span = ylim[1] - .24 * R, .8 * R
     if s:
-        yb = hi + .10 * span
+        yb = _bracket_y(ax, hi, span, allu, s, 6 if not sig_unit else 5.5, auto, guard)
+        ylim = ax.get_ylim()
         ax.plot([0, 0, 1, 1], [yb - .02 * span, yb, yb, yb - .02 * span], color='black', lw=.75)
         ax.text(.5, yb + .015 * span, s, ha='center', va='bottom', fontsize=6 if not sig_unit else 5.5, linespacing=1.1)
     ax.set_xlim(-.6, len(arms) - .4)
@@ -89,6 +123,59 @@ def plot_two_arm(nuc: pd.DataFrame, units: pd.DataFrame, arms, colors: dict, yla
         footer(fig, list(footer_lines), width=64)
     saver.save(fig, stem)
     out["ylim"] = [float(ylim[0]), float(ylim[1])]
+    return out
+
+
+_WELL_R_PT = float(np.sqrt(well_mean_style("")["s"]) / 2 + well_mean_style("")["lw"] / 2)
+
+
+def _bracket_y(ax, hi, span, units, s, fs, auto, guard):
+    """Default-mode bracket bar y: above the data maximum (hi + 10 % of the data span) AND with its ticks clear of every
+    well-mean circle; on an automatic axis the top is raised until the text fits. Unchanged from b62484e whenever
+    neither constraint binds."""
+    yb = hi + .10 * span
+    if guard or not len(units):
+        return yb
+    umax = float(np.nanmax(units))
+    for _ in range(6):
+        y0, y1 = ax.get_ylim()
+        per_pt = (y1 - y0) / _focus.axes_height_pt(ax)
+        yb = max(hi + .10 * span, umax + (_WELL_R_PT + 1.5) * per_pt + .02 * span)
+        need = yb + .015 * span + ((s.count("\n") + 1) * fs * 1.25 + 1.0) * per_pt   # text height + 1 pt
+        if not auto or need <= y1:
+            break
+        ax.set_ylim(y0, need)
+    return yb
+
+
+def _finish_focus(fig, ax, fw, bodies, arms, colors, ylab, title, p, sig_unit, footer_lines, saver, stem, out, unit):
+    """Focus-mode tail of plot_two_arm: window, clipped violins, bracket in its own band, pinned-count note."""
+    ax.set_ylim(*fw.ylim)
+    _focus.clip_to_band(bodies, ax, fw)
+    s = sig_label(p, sig_unit)
+    pt = (fw.ylim[1] - fw.ylim[0]) / _focus.axes_height_pt(ax)
+    if s and len(arms) == 2:
+        yb = fw.bracket_y
+        ax.plot([0, 0, 1, 1], [yb - 2 * pt, yb, yb, yb - 2 * pt], color='black', lw=.75)
+        ax.text(.5, yb + 1 * pt, s, ha='center', va='bottom', fontsize=6 if not sig_unit else 5.5, linespacing=1.1)
+    if fw.kind == 'fraction':
+        _focus.fraction_ticks(ax)
+    if fw.cap is not None:
+        _focus.cap_axis(ax, fw)
+    _focus.draw_note(ax, fw, unit)
+    ax.set_xlim(-.6, len(arms) - .4)
+    ax.set_xticks(range(len(arms)))
+    ax.set_xticklabels(arms, fontsize=6.5)
+    for t, arm in zip(ax.get_xticklabels(), arms):
+        t.set_color(colors[arm])
+    ax.set_ylabel(ylab, fontsize=7)
+    fig.text(.5, .955, title, ha='center', va='center', fontsize=7.5, fontweight='bold')
+    if footer_lines:
+        footer(fig, list(footer_lines), width=64)
+    saver.save(fig, stem)
+    out["ylim"] = [float(fw.ylim[0]), float(fw.ylim[1])]
+    out["focus"] = dict(data_lo=fw.data_lo, data_hi=fw.data_hi, bracket_y=fw.bracket_y, kind=fw.kind,
+                        n_above=dict(fw.n_above), n_below=dict(fw.n_below), n_out=fw.n_out, cap=fw.cap)
     return out
 
 

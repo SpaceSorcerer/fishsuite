@@ -9,6 +9,7 @@ import matplotlib.pyplot as plt
 
 from .stats import run_tests
 from .style import COL, NULLC, FILT, footer, stars, fmt_p, well_mean_style
+from . import focus as _focus
 
 
 def lab(t):
@@ -31,15 +32,32 @@ def _tag(arm):
     return arm.replace(" ", "")
 
 
-def plot_one_sample(nv, fields, key, col, chance, ylab, shape, t, dots, rng, saver, arm="VPR noDox", suffix="_holm"):
+def plot_one_sample(nv, fields, key, col, chance, ylab, shape, t, dots, rng, saver, arm="VPR noDox", suffix="_holm",
+                    focus=False):
+    """focus=True: y-window by the focus rule (fishsuite.figures.focus); nuclei outside are pinned and counted."""
     fig, ax = base_ax()
     v = nv[col].dropna().values
     wm = [nv.loc[nv.field == f, col].mean() for f in fields]
+    fw = None
+    if focus:
+        frac = col.startswith("frac") or "UPP" in key
+        dist = {arm: v} if dots or shape == "violin" else {}
+        inc = list(wm) + [np.mean(wm), chance] + ([0.0] if shape != "violin" else [])
+        fw = _focus.focus_window(dist, inc, "fraction" if frac else None, _focus.axes_height_pt(ax),
+                                 _focus.text_band_pt(lab(t), 5.8), marker_pt=_WELL_R_PT)
+        fw.n_above, fw.n_below = ({arm: int((v > fw.data_hi).sum())}, {arm: int((v < fw.data_lo).sum())})
     if shape == "violin":
         violin(ax, 0, v, COL, .15, COL)
+        if fw is not None:
+            _focus.clip_to_band(ax.collections[-1:], ax, fw)
     else:
         ax.bar(0, np.mean(wm), width=.55, color=COL, alpha=.15, edgecolor=COL, lw=.8, zorder=1)
-    if dots:
+    if dots and fw is not None:
+        jx = rng.uniform(-.17, .17, len(v))
+        ins = _focus.split_pinned(v, fw)[0]
+        ax.scatter(jx[ins], v[ins], s=5, facecolor=COL, alpha=.45, edgecolor='black', lw=.25, zorder=6)
+        _focus.draw_pinned(ax, jx, v, fw, COL)
+    elif dots:
         ax.scatter(rng.uniform(-.17, .17, len(v)), v, s=5, facecolor=COL, alpha=.45, edgecolor='black', lw=.25, zorder=6)
     for k, mm in enumerate(wm):
         ax.scatter([(k - .5) * .2], [mm], **well_mean_style(arm, fields[k]))
@@ -47,15 +65,23 @@ def plot_one_sample(nv, fields, key, col, chance, ylab, shape, t, dots, rng, sav
     ax.axhline(chance, color='#555555', ls='--', lw=.8, zorder=0)
     ax.text(1.01, chance, f"chance\n{chance:.3g}" if chance else "0", transform=ax.get_yaxis_transform(), fontsize=5.5,
             va='center', ha='left', color='#333333', clip_on=False)
-    vals = v if dots or shape == "violin" else np.array(wm)
-    lo, hi = min(vals.min(), chance), max(vals.max(), chance)
-    span = hi - lo
-    top = hi + (.08 if dots or shape == 'violin' else .16) * span
-    ax.text(0, top, lab(t), ha='center', va='bottom', fontsize=5.8)
-    ax.set_ylim(lo - .08 * span if chance == 0 else max(0, lo - .08 * span), top + .45 * span)
-    if col.startswith("frac") or "UPP" in key:
-        ax.set_ylim(0, max(1.0, top + .45 * span) if dots else ax.get_ylim()[1])
-        ax.set_yticks([x for x in ax.get_yticks() if 0 <= x <= 1.0001])
+    if fw is not None:
+        ax.set_ylim(*fw.ylim)
+        pt = (fw.ylim[1] - fw.ylim[0]) / _focus.axes_height_pt(ax)
+        ax.text(0, fw.bracket_y - 2 * pt, lab(t), ha='center', va='bottom', fontsize=5.8)
+        if fw.kind == "fraction":
+            _focus.fraction_ticks(ax)
+        _focus.draw_note(ax, fw, "nuclei")
+    else:
+        vals = v if dots or shape == "violin" else np.array(wm)
+        lo, hi = min(vals.min(), chance), max(vals.max(), chance)
+        span = hi - lo
+        top = hi + (.08 if dots or shape == 'violin' else .16) * span
+        ax.text(0, top, lab(t), ha='center', va='bottom', fontsize=5.8)
+        ax.set_ylim(lo - .08 * span if chance == 0 else max(0, lo - .08 * span), top + .45 * span)
+        if col.startswith("frac") or "UPP" in key:
+            ax.set_ylim(0, max(1.0, top + .45 * span) if dots else ax.get_ylim()[1])
+            ax.set_yticks([x for x in ax.get_yticks() if 0 <= x <= 1.0001])
     ax.set_xlim(-.6, .6); ax.set_xticks([0]); ax.set_xticklabels([arm]); ax.set_ylabel(ylab)
     footer(fig, [f"n = nuclei; {len(fields)} wells (fields {', '.join(fields)}). Circles = well means; bar = mean of well means"
                  + ("; small dots = nuclei" if dots else "") + f"; {'violin' if shape == 'violin' else 'column'} = per-nucleus distribution. "
@@ -64,6 +90,9 @@ def plot_one_sample(nv, fields, key, col, chance, ylab, shape, t, dots, rng, sav
     stem = f"{key}{suffix}_{_tag(arm)}_{'dots' if dots else 'nodots'}"
     saver.save(fig, stem)
     return stem
+
+
+_WELL_R_PT = float(np.sqrt(well_mean_style("")["s"]) / 2 + well_mean_style("")["lw"] / 2)
 
 
 def plot_paired(nv, fields, key, col, ncol, ylab, t, dots, rng, saver, arm="VPR noDox", suffix="_holm"):
@@ -105,15 +134,21 @@ def stats_table(T, fields) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def build_c_panels(nv, fields, saver, arm="VPR noDox", seed=0, render=True):
-    """Run the six tests, Holm-adjust, render dots/nodots for each; returns the stats DataFrame."""
+def build_c_panels(nv, fields, saver, arm="VPR noDox", seed=0, render=True, focus=False):
+    """Run the six tests, Holm-adjust, render dots/nodots for each; returns the stats DataFrame.
+    focus=True renders the one-sample panels in focus mode with stems '<key>_holm_focus_...' (paired panels keep
+    their fixed 0-1.45 fraction axis and are not re-rendered)."""
     rng = np.random.default_rng(seed)
     T, one, pair = run_tests(nv, fields)
     if render:
         for key, col, chance, ylab, shape in one:
             for dots in (True, False):
-                plot_one_sample(nv, fields, key, col, chance, ylab, shape, T[key], dots, rng, saver, arm)
-        for key, col, ncol, ylab in pair:
+                if focus:
+                    plot_one_sample(nv, fields, key, col, chance, ylab, shape, T[key], dots, rng, saver, arm,
+                                    suffix="_holm_focus", focus=True)
+                else:
+                    plot_one_sample(nv, fields, key, col, chance, ylab, shape, T[key], dots, rng, saver, arm)
+        for key, col, ncol, ylab in (pair if not focus else ()):
             for dots in (True, False):
                 plot_paired(nv, fields, key, col, ncol, ylab, T[key], dots, rng, saver, arm)
     return stats_table(T, fields)
