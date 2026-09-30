@@ -111,6 +111,11 @@ def read_stack(run, key):
     return np.stack([fio.extract_channel(img, c, z_mode="3d") for c in (0, 1, 2)])  # miat, qki, dapi
 
 
+def xz_section(sub, cy):
+    """XZ section of a (channel, z, y, x) sub-stack at row cy; row i = plane i (z increases downward, as in B2)."""
+    return {"dapi": sub[2, :, cy, :], "miat": sub[0, :, cy, :], "qki": sub[1, :, cy, :]}
+
+
 def build_linked_set(run, field_id, nucleus_id, rep_distance, label="", mix=False, R_PX=2.0, stem_suffix=None,
                      z_window_um=10.5, write_params=True, channel_labels=("MIAT-640", "QKI-561"), qki_min=1050,
                      miat_min=500, arm_color=None, b4_floors=None):
@@ -147,7 +152,7 @@ def build_linked_set(run, field_id, nucleus_id, rep_distance, label="", mix=Fals
     # B1: FOV ortho with box + line
     sub = stack[:, zz0:zz1]; nzw = sub.shape[1]; H, W = stack.shape[2:]
     xy = colorize(_m({"dapi": stack[2, z0], "miat": stack[0, z0], "qki": stack[1, z0]}))
-    xz = colorize(_m({"dapi": sub[2, :, cy, :], "miat": sub[0, :, cy, :], "qki": sub[1, :, cy, :]}))[::-1]
+    xz = colorize(_m(xz_section(sub, cy)))  # row i = plane zz0 + i, drawn top-down like B2 (render_ortho_figure)
     yz = colorize(_m({"dapi": sub[2, :, :, cx].T, "miat": sub[0, :, :, cx].T, "qki": sub[1, :, :, cx].T}))
     zum = nzw * DZ * AXIAL; wum = W * px; hum = H * px; sc = 3.4 / wum; gap = .05
     fw = (wum + zum) * sc + .25 + gap; fh = (hum + zum) * sc + .6 + gap
@@ -157,7 +162,7 @@ def build_linked_set(run, field_id, nucleus_id, rep_distance, label="", mix=Fals
     axz = fig.add_axes([l, b, wum * sc / fw, zum * sc / fh])
     ayz = fig.add_axes([l + (wum * sc + gap) / fw, b + (zum * sc + gap) / fh, zum * sc / fw, hum * sc / fh])
     axy.imshow(xy, extent=[0, wum, hum, 0], interpolation='nearest')
-    axz.imshow(xz, extent=[0, wum, 0, zum], interpolation='nearest', aspect='auto')
+    axz.imshow(xz, extent=[0, wum, zum, 0], interpolation='nearest', aspect='auto')  # z increases downward
     ayz.imshow(yz, extent=[0, zum, hum, 0], interpolation='nearest', aspect='auto')
     zpos = (z0 - zz0 + .5) * DZ * AXIAL
     for a in (axy, axz, ayz):
