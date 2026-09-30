@@ -34,13 +34,16 @@ def plot_two_arm(nuc: pd.DataFrame, units: pd.DataFrame, arms, colors: dict, yla
                  p: float | None, footer_lines, saver, stem: str, dots: bool, seed: int = 0,
                  ylim=None, chance: float | None = None, chance_label: str = "chance",
                  sig_unit: str | None = None, focus: bool = False, focus_kind: str | None = None,
-                 focus_unit: str = "nuclei"):
+                 focus_unit: str = "nuclei", focus_cap: float | None = None):
     """nuc: columns arm, value (per nucleus; may be empty for an arm). units: columns arm, value (one row per
     biological unit, e.g. well). Returns the dict of plotted numbers.
     focus=True: y-window by the focus rule (fishsuite.figures.focus; focus_kind None | 'ratio' | 'fraction');
-    out-of-window nuclei are pinned as open markers and counted in a separate note. focus=False = unchanged output."""
+    out-of-window nuclei are pinned as open markers and counted in a separate note. focus=False = unchanged output.
+    focus_cap (with focus=True): a person-chosen hard top of the data band; the axis stops there, the rest is pinned."""
     if focus and ylim is not None:
         raise ValueError("plot_two_arm: pass either ylim or focus=True, not both")
+    if focus_cap is not None and not focus:
+        raise ValueError("plot_two_arm: focus_cap requires focus=True")
     rng = np.random.default_rng(seed)
     fig = plt.figure(figsize=(2.6, 3.4))
     ax = fig.add_axes([.27, .30, .58, .56])
@@ -55,7 +58,7 @@ def plot_two_arm(nuc: pd.DataFrame, units: pd.DataFrame, arms, colors: dict, yla
         inc = [units.loc[units.arm == a, "value"].to_numpy(float) for a in arms]
         inc = list(np.concatenate(inc)) + [np.mean(i) for i in inc if len(i)] + ([chance] if chance is not None else [])
         fw = _focus.focus_window(vals, inc, focus_kind, _focus.axes_height_pt(ax),
-                                 _focus.text_band_pt(s_, fs_, 1.1), marker_pt=_WELL_R_PT)
+                                 _focus.text_band_pt(s_, fs_, 1.1), marker_pt=_WELL_R_PT, cap=focus_cap)
         bodies = []
     for x, arm in enumerate(arms):
         col = colors[arm]
@@ -157,6 +160,8 @@ def _finish_focus(fig, ax, fw, bodies, arms, colors, ylab, title, p, sig_unit, f
         ax.text(.5, yb + 1 * pt, s, ha='center', va='bottom', fontsize=6 if not sig_unit else 5.5, linespacing=1.1)
     if fw.kind == 'fraction':
         _focus.fraction_ticks(ax)
+    if fw.cap is not None:
+        _focus.cap_axis(ax, fw)
     _focus.draw_note(ax, fw, unit)
     ax.set_xlim(-.6, len(arms) - .4)
     ax.set_xticks(range(len(arms)))
@@ -170,7 +175,7 @@ def _finish_focus(fig, ax, fw, bodies, arms, colors, ylab, title, p, sig_unit, f
     saver.save(fig, stem)
     out["ylim"] = [float(fw.ylim[0]), float(fw.ylim[1])]
     out["focus"] = dict(data_lo=fw.data_lo, data_hi=fw.data_hi, bracket_y=fw.bracket_y, kind=fw.kind,
-                        n_above=dict(fw.n_above), n_below=dict(fw.n_below), n_out=fw.n_out)
+                        n_above=dict(fw.n_above), n_below=dict(fw.n_below), n_out=fw.n_out, cap=fw.cap)
     return out
 
 

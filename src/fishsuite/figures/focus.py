@@ -33,6 +33,7 @@ class FocusWindow:
     bracket_y: float       # y of the bracket bar (ticks hang down from it); text sits on top
     core: tuple            # unpadded (lo, hi) of means + central 98 % + must_include
     kind: str | None = None
+    cap: float | None = None
     n_above: dict = field(default_factory=dict)
     n_below: dict = field(default_factory=dict)
 
@@ -51,10 +52,13 @@ def central_range(v, q=FOCUS_Q):
 
 
 def focus_window(values_by_arm: dict, must_include=(), kind: str | None = None, axes_height_pt: float = 100.0,
-                 reserve_pt: float = 0.0, marker_pt: float = 6.0, pad: float = FOCUS_PAD, q=FOCUS_Q) -> FocusWindow:
+                 reserve_pt: float = 0.0, marker_pt: float = 6.0, pad: float = FOCUS_PAD, q=FOCUS_Q,
+                 cap: float | None = None) -> FocusWindow:
     """values_by_arm: {arm: per-point values} (the plotted distribution). must_include: unit means, mean lines, chance.
     kind: None | 'ratio' | 'fraction'. reserve_pt: height of the bracket + text band (points); marker_pt: radius of the
-    largest marker that can sit at the data top (well-mean circle) - the bracket clears it."""
+    largest marker that can sit at the data top (well-mean circle) - the bracket clears it.
+    cap: explicit hard top of the data band chosen by a person for one panel (e.g. 2.5 for an NT-normalised metric);
+    it overrides the rule and MAY cut the central range - everything above is pinned and counted."""
     lo_c, hi_c = [], []
     for v in values_by_arm.values():
         r = central_range(v, q)
@@ -75,6 +79,10 @@ def focus_window(values_by_arm: dict, must_include=(), kind: str | None = None, 
         d_lo, d_hi = max(d_lo, 0.0), min(d_hi, 1.0)
     elif c_lo >= 0 and (not len(allv) or allv.min() >= 0):
         d_lo = max(d_lo, 0.0)
+    if cap is not None:
+        d_hi = float(cap)
+        if d_hi <= d_lo:
+            raise ValueError(f"focus_window: cap {cap} is not above the bottom of the data band {d_lo}")
     band = d_hi - d_lo
     head = marker_pt + 2.0                                  # well-mean radius + gap below the bracket ticks
     frac = min((head + reserve_pt) / max(axes_height_pt, 1.0), .6)
@@ -83,7 +91,7 @@ def focus_window(values_by_arm: dict, must_include=(), kind: str | None = None, 
     if kind == 'ratio':
         top = min(top, max(RATIO_CAP, top))                # documented cap; never binds against the rule
     bracket_y = d_hi + head * W / max(axes_height_pt, 1.0)
-    fw = FocusWindow((d_lo, top), d_lo, d_hi, bracket_y, (c_lo, c_hi), kind)
+    fw = FocusWindow((d_lo, top), d_lo, d_hi, bracket_y, (c_lo, c_hi), kind, cap)
     for arm, v in values_by_arm.items():
         v = np.asarray(v, float); v = v[np.isfinite(v)]
         fw.n_above[arm] = int((v > d_hi).sum())
@@ -128,6 +136,8 @@ def clip_to_band(artists, ax, fw: FocusWindow, x0=-10.0, x1=10.0):
 
 def pinned_note(fw: FocusWindow, unit: str = "points") -> str:
     a, b = sum(fw.n_above.values()), sum(fw.n_below.values())
+    if fw.cap is not None:
+        return f"{a} {unit} above {fw.cap:g} drawn at edge" + (f"; {b} below axis drawn at edge" if b else "")
     return f"{a} {unit} above, {b} below axis (open markers)"
 
 
@@ -137,6 +147,13 @@ def draw_note(ax, fw: FocusWindow, unit: str = "points", fontsize: float = 5.0):
                 va='bottom', color='#333333', clip_on=False)
     t.set_gid(NOTE_GID)
     return t
+
+
+def cap_axis(ax, fw: FocusWindow):
+    """Hard-cap display: the y spine and ticks stop at the cap; the bracket band floats above it."""
+    ax.spines['left'].set_bounds(fw.ylim[0], fw.cap)
+    ax.set_yticks([t for t in ax.get_yticks() if fw.ylim[0] - 1e-9 <= t <= fw.cap + 1e-9])
+    ax.set_ylim(*fw.ylim)
 
 
 def fraction_ticks(ax):

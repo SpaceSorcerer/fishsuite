@@ -148,3 +148,28 @@ def test_default_bracket_above_high_data_on_zero_based_axis(tmp_path, dots):
     assert (ax.transData.transform(units[["value"]].assign(x=0)[["x", "value"]].to_numpy())[:, 1] + r_px < yb_px).all()
     sig = [t for t in ax.texts if "p = " in t.get_text()][0]
     assert sig.get_window_extent(r).y1 <= ax.get_window_extent(r).y1 + .5
+
+
+@pytest.mark.parametrize("dots", [True, False])
+def test_focus_cap_hard_top(tmp_path, dots):
+    style.apply_style()
+    rng = np.random.default_rng(2)
+    v = {"NT": rng.lognormal(0, .7, 300), "KD": rng.lognormal(-.6, .7, 300)}
+    nuc = pd.DataFrame({"arm": np.repeat(["NT", "KD"], 300), "value": np.r_[v["NT"], v["KD"]]})
+    units = pd.DataFrame({"arm": ["NT"] * 3 + ["KD"] * 3, "value": [v["NT"][i::3].mean() for i in range(3)] + [v["KD"][i::3].mean() for i in range(3)]})
+    sv = style.Saver(tmp_path, keep_open=True, write=False)
+    out = twoarm.plot_two_arm(nuc, units, ("NT", "KD"), {"NT": "#595959", "KD": "#E69F00"}, "y", "t", 0.006, [], sv, "K",
+                              dots=dots, focus=True, focus_kind="ratio", focus_cap=2.5)
+    ax = sv.figures["K"].axes[0]
+    n_above = int((nuc.value > 2.5).sum())
+    assert out["focus"]["data_hi"] == 2.5 and sum(out["focus"]["n_above"].values()) == n_above > 0
+    assert max(ax.get_yticks()) <= 2.5 and ax.get_ylim()[1] > 2.5
+    note = [t for t in ax.texts if t.get_gid() == focus.NOTE_GID][0].get_text()
+    assert note.startswith(f"{n_above} nuclei above 2.5 drawn at edge")
+    bracket = [l for l in ax.lines if len(l.get_xdata()) == 4][0]
+    assert min(bracket.get_ydata()) > 2.5
+    pins = [c for c in ax.collections if hasattr(c, "get_sizes") and len(c.get_sizes()) and c.get_sizes()[0] == 9]
+    assert sum(len(c.get_offsets()) for c in pins) == (out["focus"]["n_out"] if dots else 0)
+    with pytest.raises(ValueError):
+        twoarm.plot_two_arm(nuc, units, ("NT", "KD"), {"NT": "#595959", "KD": "#E69F00"}, "y", "t", 0.006, [], sv, "K2",
+                            dots=dots, focus_cap=2.5)
