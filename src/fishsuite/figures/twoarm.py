@@ -244,8 +244,10 @@ def micrograph(rgb8: np.ndarray, px_um: float, saver, stem: str, k: int = 1, lab
         while int(v * 600) < n:
             v = np.nextafter(v, np.inf)
         return v
-    fig = plt.figure(figsize=(_inch(W), _inch(H)), dpi=600, facecolor='white')
-    ax = fig.add_axes([0, 0, 1, 1]); ax.set_axis_off()
+    fw, fh = _inch(W), _inch(H)
+    fig = plt.figure(figsize=(fw, fh), dpi=600, facecolor='white')
+    # axes spans exactly W x H device pixels (the figure is W+eps x H+eps), so every image row/column maps to k whole pixels
+    ax = fig.add_axes([0, 1 - H / (fh * 600), W / (fw * 600), H / (fh * 600)]); ax.set_axis_off()
     ax.imshow(rgb8, interpolation='nearest', extent=(0, w, h, 0))
     ax.set_xlim(0, w); ax.set_ylim(h, 0)
     n_nuc = 0 if labels is None else int(np.count_nonzero(np.unique(labels)))
@@ -256,7 +258,7 @@ def micrograph(rgb8: np.ndarray, px_um: float, saver, stem: str, k: int = 1, lab
                 continue
             ax.contour(xs, ys, (labels == lab).astype(float), levels=[.5], colors=outline_color,
                        linewidths=outline_lw)
-    L = int(round(scalebar_um / px_um))
+    L = scalebar_um / px_um  # exact length in image pixels (drawn as a vector; no rounding)
     m = int(bar_margin_px if bar_margin_px is not None else max(2, round(0.04 * min(w, h))))
     if L + m > w:
         raise ValueError(f"scale bar {scalebar_um} um = {L} px does not fit a {w}-px-wide image")
