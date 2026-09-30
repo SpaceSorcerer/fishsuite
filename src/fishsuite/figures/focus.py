@@ -134,16 +134,18 @@ def clip_to_band(artists, ax, fw: FocusWindow, x0=-10.0, x1=10.0):
         a.set_clip_path(Rectangle((x0, fw.data_lo), x1 - x0, fw.data_hi - fw.data_lo, transform=ax.transData))
 
 
-def pinned_note(fw: FocusWindow, unit: str = "points") -> str:
+def pinned_note(fw: FocusWindow, unit: str = "points", shown: bool = True) -> str:
+    """shown=False (points not drawn, e.g. a no-dots panel): the note says the out-of-band points are not shown."""
     a, b = sum(fw.n_above.values()), sum(fw.n_below.values())
+    how = "drawn at edge" if shown else "(not shown)"
     if fw.cap is not None:
-        return f"{a} {unit} above {fw.cap:g} drawn at edge" + (f"; {b} below axis drawn at edge" if b else "")
-    return f"{a} {unit} above, {b} below axis (open markers)"
+        return f"{a} {unit} above {fw.cap:g} {how}" + (f"; {b} below axis {how}" if b else "")
+    return f"{a} {unit} above, {b} below axis " + ("(open markers)" if shown else "(not shown)")
 
 
-def draw_note(ax, fw: FocusWindow, unit: str = "points", fontsize: float = 5.0):
+def draw_note(ax, fw: FocusWindow, unit: str = "points", fontsize: float = 5.0, shown: bool = True):
     """Separate text object (gid 'focus_pinned_note') just above the axes, left-aligned."""
-    t = ax.text(0.0, 1.015, pinned_note(fw, unit), transform=ax.transAxes, fontsize=fontsize, ha='left',
+    t = ax.text(0.0, 1.015, pinned_note(fw, unit, shown), transform=ax.transAxes, fontsize=fontsize, ha='left',
                 va='bottom', color='#333333', clip_on=False)
     t.set_gid(NOTE_GID)
     return t

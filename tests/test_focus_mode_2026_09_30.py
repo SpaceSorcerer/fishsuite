@@ -165,7 +165,7 @@ def test_focus_cap_hard_top(tmp_path, dots):
     assert out["focus"]["data_hi"] == 2.5 and sum(out["focus"]["n_above"].values()) == n_above > 0
     assert max(ax.get_yticks()) <= 2.5 and ax.get_ylim()[1] > 2.5
     note = [t for t in ax.texts if t.get_gid() == focus.NOTE_GID][0].get_text()
-    assert note.startswith(f"{n_above} nuclei above 2.5 drawn at edge")
+    assert note.startswith(f"{n_above} nuclei above 2.5 " + ("drawn at edge" if dots else "(not shown)"))
     bracket = [l for l in ax.lines if len(l.get_xdata()) == 4][0]
     assert min(bracket.get_ydata()) > 2.5
     pins = [c for c in ax.collections if hasattr(c, "get_sizes") and len(c.get_sizes()) and c.get_sizes()[0] == 9]
@@ -173,3 +173,34 @@ def test_focus_cap_hard_top(tmp_path, dots):
     with pytest.raises(ValueError):
         twoarm.plot_two_arm(nuc, units, ("NT", "KD"), {"NT": "#595959", "KD": "#E69F00"}, "y", "t", 0.006, [], sv, "K2",
                             dots=dots, focus_cap=2.5)
+
+
+@pytest.mark.parametrize("dots", [True, False])
+def test_caller_ylim_bracket_above_shown_data(tmp_path, dots):
+    """Caller-supplied ylim whose data reach the top (the C05 nodots case): bracket above every visible value."""
+    style.apply_style()
+    rng = np.random.default_rng(1)
+    nuc = pd.DataFrame({"arm": np.repeat(["NT", "KD"], 80), "value": np.r_[rng.uniform(.6, .98, 80), rng.uniform(.5, .95, 80)]})
+    units = pd.DataFrame({"arm": ["NT"] * 2 + ["KD"] * 2, "value": [.90, .92, .80, .85]})
+    sv = style.Saver(tmp_path, keep_open=True, write=False)
+    twoarm.plot_two_arm(nuc, units, ("NT", "KD"), {"NT": "#595959", "KD": "#E69F00"}, "y", "t", 0.2, [], sv, "Y",
+                        dots=dots, ylim=(0.4, 1.02))
+    ax = sv.figures["Y"].axes[0]
+    y0, y1 = ax.get_ylim()
+    ys = np.concatenate([c.get_offsets()[:, 1] for c in ax.collections if type(c).__name__ == "PathCollection"])
+    vis = ys[(ys >= y0) & (ys <= y1)]
+    bracket = [l for l in ax.lines if len(l.get_xdata()) == 4][0]
+    assert min(bracket.get_ydata()) > vis.max()
+    assert y0 == 0.4
+
+
+def test_nodots_cap_note_says_not_shown(tmp_path):
+    style.apply_style()
+    rng = np.random.default_rng(2)
+    nuc = pd.DataFrame({"arm": np.repeat(["NT", "KD"], 300), "value": rng.lognormal(0, .8, 600)})
+    units = pd.DataFrame({"arm": ["NT"] * 3 + ["KD"] * 3, "value": [1, 1.1, .9, .5, .6, .4]})
+    sv = style.Saver(tmp_path, keep_open=True, write=False)
+    out = twoarm.plot_two_arm(nuc, units, ("NT", "KD"), {"NT": "#595959", "KD": "#E69F00"}, "y", "t", 0.01, [], sv, "N",
+                              dots=False, focus=True, focus_kind="ratio", focus_cap=2.5)
+    note = [t for t in sv.figures["N"].axes[0].texts if t.get_gid() == focus.NOTE_GID][0].get_text()
+    assert note == f"{sum(out['focus']['n_above'].values())} nuclei above 2.5 (not shown)"

@@ -97,7 +97,7 @@ def plot_two_arm(nuc: pd.DataFrame, units: pd.DataFrame, arms, colors: dict, yla
     span = (hi - lo) or abs(hi) or 1.0
     if fw is not None:
         return _finish_focus(fig, ax, fw, bodies, arms, colors, ylab, title, p, sig_unit, footer_lines, saver, stem,
-                             out, focus_unit)
+                             out, focus_unit, dots)
     auto = ylim is None
     if auto:
         ylim = (0.0 if lo >= 0 else lo - .06 * span, hi + .32 * span)
@@ -105,8 +105,8 @@ def plot_two_arm(nuc: pd.DataFrame, units: pd.DataFrame, arms, colors: dict, yla
     s = sig_label(p, sig_unit)
     R = ylim[1] - ylim[0]
     guard = (not auto) and hi > ylim[1] - .2 * R
-    if guard:  # data run past a caller-supplied window: keep the bracket inside the axes
-        hi, span = ylim[1] - .24 * R, .8 * R
+    if guard:  # data at/past the top of a caller-supplied window: bracket goes above the highest VISIBLE value
+        hi, span = min(hi, ylim[1]), .8 * R
     if s:
         yb = _bracket_y(ax, hi, span, allu, s, 6 if not sig_unit else 5.5, auto, guard)
         ylim = ax.get_ylim()
@@ -131,24 +131,23 @@ _WELL_R_PT = float(np.sqrt(well_mean_style("")["s"]) / 2 + well_mean_style("")["
 
 def _bracket_y(ax, hi, span, units, s, fs, auto, guard):
     """Default-mode bracket bar y: above the data maximum (hi + 10 % of the data span) AND with its ticks clear of every
-    well-mean circle; on an automatic axis the top is raised until the text fits. Unchanged from b62484e whenever
-    neither constraint binds."""
+    well-mean circle; the axis top is raised until the text fits (automatic axes, and caller windows whose data reach
+    the top). Unchanged from b62484e whenever neither constraint binds."""
     yb = hi + .10 * span
-    if guard or not len(units):
-        return yb
-    umax = float(np.nanmax(units))
+    umax = float(np.nanmax(units)) if len(units) else hi
     for _ in range(6):
         y0, y1 = ax.get_ylim()
         per_pt = (y1 - y0) / _focus.axes_height_pt(ax)
         yb = max(hi + .10 * span, umax + (_WELL_R_PT + 1.5) * per_pt + .02 * span)
         need = yb + .015 * span + ((s.count("\n") + 1) * fs * 1.25 + 1.0) * per_pt   # text height + 1 pt
-        if not auto or need <= y1:
+        if (not auto and not guard) or need <= y1:
             break
         ax.set_ylim(y0, need)
     return yb
 
 
-def _finish_focus(fig, ax, fw, bodies, arms, colors, ylab, title, p, sig_unit, footer_lines, saver, stem, out, unit):
+def _finish_focus(fig, ax, fw, bodies, arms, colors, ylab, title, p, sig_unit, footer_lines, saver, stem, out, unit,
+                  dots=True):
     """Focus-mode tail of plot_two_arm: window, clipped violins, bracket in its own band, pinned-count note."""
     ax.set_ylim(*fw.ylim)
     _focus.clip_to_band(bodies, ax, fw)
@@ -162,7 +161,7 @@ def _finish_focus(fig, ax, fw, bodies, arms, colors, ylab, title, p, sig_unit, f
         _focus.fraction_ticks(ax)
     if fw.cap is not None:
         _focus.cap_axis(ax, fw)
-    _focus.draw_note(ax, fw, unit)
+    _focus.draw_note(ax, fw, unit, shown=dots)
     ax.set_xlim(-.6, len(arms) - .4)
     ax.set_xticks(range(len(arms)))
     ax.set_xticklabels(arms, fontsize=6.5)
