@@ -122,3 +122,29 @@ def test_one_sample_focus_fraction(tmp_path):
     assert all(0 <= y <= 1.0001 for y in ax.get_yticks())
     assert any(t_.get_gid() == focus.NOTE_GID for t_ in ax.texts)
     assert any(t_.get_text() == lab(t) for t_ in ax.texts)
+
+
+@pytest.mark.parametrize("dots", [True, False])
+def test_default_bracket_above_high_data_on_zero_based_axis(tmp_path, dots):
+    """Regression (b62484e): the caller-window guard fired on automatic zero-based axes when data sat high,
+    putting the bracket inside the data. The bracket must sit above every plotted value and clear the circles."""
+    style.apply_style()
+    rng = np.random.default_rng(0)
+    nuc = pd.DataFrame({"arm": np.repeat(["NT", "KD"], 60), "value": np.r_[rng.normal(105, 2, 60), rng.normal(101, 2, 60)]})
+    units = pd.DataFrame({"arm": ["NT"] * 3 + ["KD"] * 3, "value": [104.5, 105.2, 105.9, 100.4, 101.1, 101.8]})
+    sv = style.Saver(tmp_path, keep_open=True, write=False)
+    twoarm.plot_two_arm(nuc, units, ("NT", "KD"), {"NT": "#595959", "KD": "#E69F00"}, "y", "t", 0.004, [], sv, "H",
+                        dots=dots)
+    fig = sv.figures["H"]; ax = fig.axes[0]
+    assert ax.get_ylim()[0] == 0.0
+    bracket = [l for l in ax.lines if len(l.get_xdata()) == 4][0]
+    yb_lo = min(bracket.get_ydata())
+    shown = nuc.value.max() if dots else units.value.max()
+    assert max(bracket.get_ydata()) > max(nuc.value.max(), units.value.max())
+    assert yb_lo > shown
+    fig.canvas.draw(); r = fig.canvas.get_renderer()
+    r_px = (np.sqrt(110) / 2 + .5) * fig.dpi / 72
+    yb_px = ax.transData.transform((0, yb_lo))[1]
+    assert (ax.transData.transform(units[["value"]].assign(x=0)[["x", "value"]].to_numpy())[:, 1] + r_px < yb_px).all()
+    sig = [t for t in ax.texts if "p = " in t.get_text()][0]
+    assert sig.get_window_extent(r).y1 <= ax.get_window_extent(r).y1 + .5
