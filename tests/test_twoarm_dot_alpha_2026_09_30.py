@@ -13,7 +13,7 @@ def _dot_alphas(tmp_path, **kw):
     twoarm.plot_two_arm(nuc, units, ("A", "B"), {"A": "#595959", "B": "#E69F00"}, "y", "t", .01, [], sv, "x",
                         dots=True, seed=0, **kw)
     ax = sv.figures["x"].axes[0]
-    return [c.get_alpha() for c in ax.collections if len(c.get_offsets()) == 60], ax
+    return [c.get_alpha() for c in ax.collections if len(c.get_sizes()) and c.get_sizes()[0] == 5], ax
 
 @pytest.mark.parametrize("focus", [False, True])
 def test_default_alpha_unchanged_and_override(tmp_path, focus):
