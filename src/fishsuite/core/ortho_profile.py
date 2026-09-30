@@ -275,6 +275,9 @@ def fixed_z_window_note(info):
             f'DAPI half-max midpoint ({core}), shifted to stay inside the stack; display only')
 
 
+_OUTLINE_COLOR = '#8ba6c4'
+
+
 def render_ortho_figure(stack_czyx, center_zyx, half_width_px=None, *, nucleus_mask,
                         pixel_size_um, z_step_um, display_levels,
                         line_endpoints=None, qki_min=None, miat_min=None, run_dir='',
@@ -404,6 +407,8 @@ def render_ortho_figure(stack_czyx, center_zyx, half_width_px=None, *, nucleus_m
         ' | Pixels drawn nearest-neighbour (no interpolation); all image panels at '
         f'{scale:.3f} in per µm, lateral and axial.',
         "Profiles normalised to each channel's own min–max along this line (display only).",
+        'Nucleus outline: 2-D segmentation mask contour on XY panels; on XZ/YZ its edges at the section '
+        'row/column, drawn through the z window (the mask has no z extent).',
     ]
     wrap = max(40, int(fig_width*72/(7*.56)) - 4)
     footer_lines = [part for line in footer for part in
@@ -497,9 +502,23 @@ def render_ortho_figure(stack_czyx, center_zyx, half_width_px=None, *, nucleus_m
         label = f'z = {z+1} (displayed)'
         xy.text(.96, .055, label, transform=xy.transAxes, color='#8ba6c4',
                 fontsize=7, ha='right', va='bottom', clip_on=True)
+    # Nuclear outline on every nucleus-level panel (Brian 2026-09-30): the 2-D mask contour on each XY panel
+    # (merge and single channels); on XZ / YZ the mask is 2-D, so its edges along the section row / column are
+    # drawn as lines through the whole z window.
     contours = find_contours(np.pad(nucleus_mask.astype(float),1),.5)
-    xy.add_collection(LineCollection([np.column_stack((c[:,1]-1-x0,c[:,0]-1-y0)) for c in contours],
-                                     colors='#8ba6c4',linewidths=.8))
+    for ax in ((dapi,xy,miat,qki) if include_dapi else (xy,miat,qki)):
+        ax.add_collection(LineCollection([np.column_stack((c[:,1]-1-x0,c[:,0]-1-y0)) for c in contours],
+                                         colors=_OUTLINE_COLOR,linewidths=.8,label='nucleus outline'))
+    row = np.asarray(nucleus_mask[y, x0:x1], dtype=bool)
+    col = np.asarray(nucleus_mask[y0:y1, x], dtype=bool)
+    edges_x = [i-.5 for i in range(len(row)+1) if (i > 0 and row[i-1]) != (i < len(row) and row[i])]
+    edges_y = [i-.5 for i in range(len(col)+1) if (i > 0 and col[i-1]) != (i < len(col) and col[i])]
+    if edges_x:
+        xz.add_collection(LineCollection([[(e,-.5),(e,nzs-.5)] for e in edges_x],colors=_OUTLINE_COLOR,
+                                         linewidths=.8,label='nucleus outline'))
+    if edges_y:
+        yz.add_collection(LineCollection([[(-.5,e),(nzs-.5,e)] for e in edges_y],colors=_OUTLINE_COLOR,
+                                         linewidths=.8,label='nucleus outline'))
     if show_cross_section:
         xy.plot([p[1]-x0 for p in endpoints],[p[0]-y0 for p in endpoints],color='white',lw=1.0,
                 label='measured profile line')
