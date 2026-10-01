@@ -288,7 +288,8 @@ def render_ortho_figure(stack_czyx, center_zyx, half_width_px=None, *, nucleus_m
                         profile_labels=None,
                         show_scale_bars=False, show_z_slice_labels=False,
                         show_cross_section=True, axial_scale_factor=1.0,
-                        z_range=None, z_crop_note=None, axial_scale_note=None):
+                        z_range=None, z_crop_note=None, axial_scale_note=None,
+                        crosshairs='single', profile_line_style='dotted'):
     """Render calibrated XY/XZ/YZ sections and the linked intensity profiles.
 
     Geometry: every image panel is drawn at one inches-per-µm scale, lateral
@@ -306,6 +307,9 @@ def render_ortho_figure(stack_czyx, center_zyx, half_width_px=None, *, nucleus_m
     the merges. Channel names come from ``channel_labels`` and are used in the
     titles, profile legend and footer. LUT: channel 1 yellow, channel 2
     magenta, DAPI blue; display levels are shared by every panel.
+    ``crosshairs``: 'single' (default) = one dotted crosshair, on the XY merge
+    only; 'none' = no crosshair lines; 'all' = legacy crosshair on XY, XZ and YZ.
+    ``profile_line_style``: 'dotted' (default) or 'solid' for the measured line.
     """
     import matplotlib.pyplot as plt
     import textwrap
@@ -313,6 +317,11 @@ def render_ortho_figure(stack_czyx, center_zyx, half_width_px=None, *, nucleus_m
     from matplotlib.offsetbox import AnchoredOffsetbox, HPacker, TextArea
     from pathlib import PureWindowsPath
     from skimage.measure import find_contours
+    if crosshairs not in ('none', 'single', 'all'):
+        raise ValueError("crosshairs must be 'none', 'single' or 'all'")
+    if profile_line_style not in ('dotted', 'solid'):
+        raise ValueError("profile_line_style must be 'dotted' or 'solid'")
+    profile_ls = ':' if profile_line_style == 'dotted' else '-'
     if full_merge is not None:
         include_dapi = bool(full_merge)
     levels = np.asarray(display_levels, dtype=float)
@@ -394,21 +403,23 @@ def render_ortho_figure(stack_czyx, center_zyx, half_width_px=None, *, nucleus_m
     if include_dapi:
         level_text.append(f'{dapi_label} {dapi_level[0]:g}–{dapi_level[1]:g}')
         merge_text.append(f'{dapi_label} blue')
+    cross_note = {'none': '', 'single': '; dotted crosshair on XY merge',
+                  'all': '; dotted crosshairs'}[crosshairs]
     footer = [
         (f'{short_run} | ' if short_run else '') +
         'single plane analysed; orthogonal views are raw stack sections; display levels '
         'fixed and identical across all panels and arms.',
         f'Voxel {pixel_size_um:g} µm (XY) × {z_step_um:g} µm (Z step); axial scale factor '
         f'{factor:g} ({axial_scale_note or "1 = nominal z, no refractive-index correction"}) → {dz_eff:.4g} µm per '
-        f'displayed Z slice. Sections (1-based, dotted crosshairs): XY at z {z+1}, XZ at y {y+1}, '
+        f'displayed Z slice. Sections (1-based{cross_note}): XY at z {z+1}, XZ at y {y+1}, '
         f'YZ at x {x+1}. Z shown: z {z0+1}–{z1} of {stack_czyx.shape[1]} ({z_um:.2f} µm).'
         + (f' {z_crop_note}.' if z_crop_note else ''),
         'Display min–max: ' + '; '.join(level_text) + ' | Merge: ' + ', '.join(merge_text) +
         ' | Pixels drawn nearest-neighbour (no interpolation); all image panels at '
         f'{scale:.3f} in per µm, lateral and axial.',
         "Profiles normalised to each channel's own min–max along this line (display only).",
-        'Nucleus outline: 2-D segmentation mask contour on XY panels; on XZ/YZ its edges at the section '
-        'row/column, drawn through the z window (the mask has no z extent).',
+        'Nucleus outline: 2-D segmentation mask contour on XY panels; on XZ/YZ its x / y extent (the XY '
+        'outline projected), drawn through the z window (the mask has no z extent).',
     ]
     wrap = max(40, int(fig_width*72/(7*.56)) - 4)
     footer_lines = [part for line in footer for part in
@@ -460,11 +471,12 @@ def render_ortho_figure(stack_czyx, center_zyx, half_width_px=None, *, nucleus_m
     merge_names = ([dapi_label] if include_dapi else []) + [label0, label1]
     axial_aspect = dz_eff/pixel_size_um
     panels = [
-        (xy, 'xy', (x-x0,y-y0), 1, f'XY merge\n({" + ".join(merge_names)})', None),
+        (xy, 'xy', (x-x0,y-y0) if crosshairs != 'none' else None, 1,
+         f'XY merge\n({" + ".join(merge_names)})', None),
         (miat, 'xy', None, 1, f'XY {label0}', 0),
         (qki, 'xy', None, 1, f'XY {label1}', 1),
-        (xz, 'xz', (x-x0,z-z0), axial_aspect, 'XZ merge', None),
-        (yz, 'yz', (z-z0,y-y0), 1/axial_aspect, 'YZ merge', None),
+        (xz, 'xz', (x-x0,z-z0) if crosshairs == 'all' else None, axial_aspect, 'XZ merge', None),
+        (yz, 'yz', (z-z0,y-y0) if crosshairs == 'all' else None, 1/axial_aspect, 'YZ merge', None),
     ]
     if include_dapi:
         panels.insert(1, (dapi, 'xy', None, 1, f'XY {dapi_label}', 2))
@@ -505,14 +517,15 @@ def render_ortho_figure(stack_czyx, center_zyx, half_width_px=None, *, nucleus_m
     # Nuclear outline on every nucleus-level panel (Brian 2026-09-30): the 2-D mask contour on each XY panel
     # (merge and single channels); on XZ / YZ the mask is 2-D, so its edges along the section row / column are
     # drawn as lines through the whole z window.
+    # 2026-09-30 fix: XZ/YZ edges are the outline's x / y EXTENT (bounding box = the XY outline projected), not the
+    # 1-row chord at the section row/column, which for an off-centre punctum sat well inside the XY outline.
     contours = find_contours(np.pad(nucleus_mask.astype(float),1),.5)
     for ax in ((dapi,xy,miat,qki) if include_dapi else (xy,miat,qki)):
         ax.add_collection(LineCollection([np.column_stack((c[:,1]-1-x0,c[:,0]-1-y0)) for c in contours],
                                          colors=_OUTLINE_COLOR,linewidths=.8,label='nucleus outline'))
-    row = np.asarray(nucleus_mask[y, x0:x1], dtype=bool)
-    col = np.asarray(nucleus_mask[y0:y1, x], dtype=bool)
-    edges_x = [i-.5 for i in range(len(row)+1) if (i > 0 and row[i-1]) != (i < len(row) and row[i])]
-    edges_y = [i-.5 for i in range(len(col)+1) if (i > 0 and col[i-1]) != (i < len(col) and col[i])]
+    mys, mxs = np.nonzero(nucleus_mask)
+    edges_x = [e for e in (mxs.min()-x0-.5, mxs.max()-x0+.5) if -.5 <= e <= nx-.5]
+    edges_y = [e for e in (mys.min()-y0-.5, mys.max()-y0+.5) if -.5 <= e <= ny-.5]
     if edges_x:
         xz.add_collection(LineCollection([[(e,-.5),(e,nzs-.5)] for e in edges_x],colors=_OUTLINE_COLOR,
                                          linewidths=.8,label='nucleus outline'))
@@ -521,11 +534,11 @@ def render_ortho_figure(stack_czyx, center_zyx, half_width_px=None, *, nucleus_m
                                          linewidths=.8,label='nucleus outline'))
     if show_cross_section:
         xy.plot([p[1]-x0 for p in endpoints],[p[0]-y0 for p in endpoints],color='white',lw=1.0,
-                label='measured profile line')
+                ls=profile_ls,label='measured profile line')
         xy.scatter([p[1]-x0 for p in endpoints],[p[0]-y0 for p in endpoints],s=4,color='white',zorder=5)
         # The measured XY segment projected into XZ, drawn at the displayed XY
         # plane (z). In YZ the x-varying segment collapses to the crosshair.
-        xz.plot([p[1]-x0 for p in endpoints], [z-z0]*2, color='white', lw=1.0,
+        xz.plot([p[1]-x0 for p in endpoints], [z-z0]*2, color='white', lw=1.0, ls=profile_ls,
                 label='measured profile line')
     # Reset bounds after markers so annotations cannot expand the image extent.
     for ax in ((dapi,xy,miat,qki) if include_dapi else (xy,miat,qki)):
@@ -647,6 +660,7 @@ def render_ortho_figure(stack_czyx, center_zyx, half_width_px=None, *, nucleus_m
         crop_width_um=crop_w_um, crop_height_um=crop_h_um, z_extent_um=z_um,
         z_range_0based=(int(z0), int(z1)), n_z_total=int(stack_czyx.shape[1]),
         section_zyx_0based=(int(z), int(y), int(x)), interpolation='nearest',
+        axial_data_aspect=float(axial_aspect), crosshairs=crosshairs, profile_line_style=profile_line_style,
         channel_labels=(label0, label1), display_levels=display,
         scale_bars_um=dict(lateral=lateral_bar, lateral_y=lateral_bar_y, axial=axial_bar),
         footer=' '.join(footer))
