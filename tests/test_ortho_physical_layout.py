@@ -247,7 +247,8 @@ def test_display_levels_identical_across_panels_and_recorded():
 
 def test_crosshairs_and_footer_state_z_range_and_interpolation():
     stack = np.zeros((3, 30, 64, 64))
-    fig, axes = _render(stack, (12, 30, 34), 10, .13, .21, analysed_plane_z=12)
+    fig, axes = _render(stack, (12, 30, 34), 10, .13, .21, analysed_plane_z=12,
+                         crosshairs='all')
     y0, y1, x0, x1 = fig._ortho_crop_bounds
     z0, z1 = fig._ortho_geometry['z_range_0based']
     assert (z0, z1) == (2, 23)
