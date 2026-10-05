@@ -61,7 +61,7 @@ jobs:
       - name: Install light runtime dependencies
         run: |
           python -m pip install --upgrade pip
-          python -m pip install "numpy>=1.24,<2.0" "scipy>=1.10" "scikit-image>=0.22" "tifffile>=2024.1" "big-fish>=0.6" "pillow>=10.0" "roifile>=2023.8" "bioio>=3.0" "pydantic>=2.5" "click>=8.1" "rich>=13.0" "psutil>=5.9" "pyyaml>=6.0" "openpyxl>=3.1" "pandas>=2.0" "matplotlib>=3.7"
+          python -m pip install "numpy>=1.24,<2.0" "scipy>=1.10" "scikit-image>=0.22" "tifffile>=2024.1" "big-fish>=0.6" "pillow>=10.0" "roifile>=2023.8" "bioio>=3.0" "pydantic>=2.5" "click>=8.1" "rich>=13.0" "psutil>=5.9" "pyyaml>=6.0" "openpyxl>=3.1" "pandas>=2.0" "matplotlib>=3.7" "statsmodels>=0.14" "python-pptx>=1.0"
           python -m pip install "pytest>=8.0" "hypothesis>=6.0" "ruff>=0.6" "build>=1.0" "twine>=5.0"
 
       - name: Install fishsuite (editable, no deps)
@@ -126,7 +126,7 @@ jobs:
           test -x "$BIN/python" || test -x "$BIN/python.exe" || {
             echo "::error::no interpreter at $BIN"; ls -la "$VENV"; exit 1; }
           "$BIN/python" -m pip install --upgrade pip
-          "$BIN/python" -m pip install "numpy>=1.24,<2.0" "scipy>=1.10" "scikit-image>=0.22" "tifffile>=2024.1" "big-fish>=0.6" "pillow>=10.0" "roifile>=2023.8" "bioio>=3.0" "pydantic>=2.5" "click>=8.1" "rich>=13.0" "psutil>=5.9" "pyyaml>=6.0" "openpyxl>=3.1" "pandas>=2.0" "matplotlib>=3.7"
+          "$BIN/python" -m pip install "numpy>=1.24,<2.0" "scipy>=1.10" "scikit-image>=0.22" "tifffile>=2024.1" "big-fish>=0.6" "pillow>=10.0" "roifile>=2023.8" "bioio>=3.0" "pydantic>=2.5" "click>=8.1" "rich>=13.0" "psutil>=5.9" "pyyaml>=6.0" "openpyxl>=3.1" "pandas>=2.0" "matplotlib>=3.7" "statsmodels>=0.14"
           WHEEL=$(ls dist/*.whl)
           echo "installing $WHEEL"
           "$BIN/python" -m pip install --no-deps "$WHEEL"

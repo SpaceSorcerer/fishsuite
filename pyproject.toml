@@ -53,6 +53,8 @@ dependencies = [
     "openpyxl>=3.1",
     "pandas>=2.0",
     "matplotlib>=3.7",
+    # Required by report inference (mixed models, Tukey HSD and power/MDE).
+    "statsmodels>=0.14",
 ]
 
 [project.optional-dependencies]

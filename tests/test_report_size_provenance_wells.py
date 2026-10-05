@@ -79,12 +79,17 @@ def test_every_alternative_column_is_the_same_quantity_as_its_primary():
             ("area", "area"), ("paired_fraction", "paired_fraction"),
             ("nn_distance", "nn_distance"), ("manders", "manders"),
             ("rotation", "rotation"), ("enrichment", "enrichment")]
+    ENGINE_SPELLINGS = {
+        ("rna1_spots_per_nucleus", "rna_spot_count"),
+    }
     for e in ep.ENDPOINTS:
         for alt in e.alt_columns:
             for token, _ in STEM:
                 assert (token in e.column) == (token in alt), (
                     f"{e.name}: primary {e.column!r} and alternative {alt!r} disagree "
                     f"on {token!r}, so they are not the same measurement")
+            if (e.name, alt) in ENGINE_SPELLINGS:
+                continue
             # An alternative must differ only in the partner role name.
             assert e.column.replace("protein", "rna2") == alt or \
                    e.column.replace("_protein", "_rna2") == alt, \

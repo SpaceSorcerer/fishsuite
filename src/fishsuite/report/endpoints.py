@@ -101,6 +101,7 @@ ENDPOINTS: Tuple[Endpoint, ...] = (
     # ------------------------------------------------------------- detection
     Endpoint("rna1_spots_per_nucleus", "n_spots_rna1", "detection",
              "puncta per nucleus", "{rna1} puncta per nucleus", primary=True,
+             alt_columns=("rna_spot_count",),
              note="Total puncta detected in that nucleus, nuclear plus cytoplasmic."),
     Endpoint("rna1_nuclear_spots_per_nucleus", "nuclear_spot_count", "detection",
              "nuclear puncta per nucleus", "{rna1} nuclear puncta per nucleus"),

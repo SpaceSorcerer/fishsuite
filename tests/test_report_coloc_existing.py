@@ -1,6 +1,7 @@
 """Persisted-only panel import and frozen-cohort integration."""
 from pathlib import Path
 import json
+import os
 
 import numpy as np
 import pandas as pd
@@ -124,16 +125,26 @@ def test_cytofluorogram_exact_pixels_shared_axes_and_failed_costes(tmp_path,monk
     with pytest.raises(RuntimeError,match='Pearson differs'):
         render_cytofluorogram(selected,pixels,tmp_path,'MIAT','QKI')
 
-ROOT = Path('F:/Image Analysis Work/RNASEH2B_BIN1introns_2026_08_25')
-PANEL = ROOT / 'DELIVERY_RNASEH2B_BIN1intron_2026-09-05_v3/02_colocalization_panel/coloc_standard_panel.xlsx'
-RUN = ROOT / '13b_FULL_HARMONIZED_T36_FIXEDNUCLEAR_2026-09-05/RUN_T36_fixed_2026-09-05_0915'
-BASELINE = Path('E:/Claude/imaging-closeout_2026-09-07/A/baseline_manifest.json')
+def recorded_coloc_fixture():
+    names = ('FISHSUITE_TEST_COLOC_PANEL', 'FISHSUITE_TEST_COLOC_RUN',
+             'FISHSUITE_TEST_COLOC_BASELINE')
+    values = [os.environ.get(name) for name in names]
+    if not all(values):
+        pytest.skip('recorded colocalization fixtures require ' + ', '.join(names))
+    panel, run, baseline = map(Path, values)
+    required = [panel, panel.with_name('FIGURE_INDEX.md'), baseline,
+                *[run/name for name in ('per_image_summary.csv', 'nuclei_metrics.csv',
+                                        'run_config.json')]]
+    if not all(path.is_file() for path in required):
+        pytest.skip('one or more recorded colocalization fixture files are unavailable')
+    return panel, run, baseline
 
 
 def test_import_exact_persisted_cells_and_anchors():
     from fishsuite.report.coloc_existing import load_existing_panel
-    panel = load_existing_panel(PANEL, PANEL.with_name('FIGURE_INDEX.md'), BASELINE)
-    original = pd.read_excel(PANEL, sheet_name='per_well')
+    panel_path, _, baseline = recorded_coloc_fixture()
+    panel = load_existing_panel(panel_path, panel_path.with_name('FIGURE_INDEX.md'), baseline)
+    original = pd.read_excel(panel_path, sheet_name='per_well')
     pd.testing.assert_frame_equal(panel.tables['per_well'][original.columns], original)
     assert panel.tables['per_well']['group'].equals(original['line'])
     assert len(panel.sources) > original.size
@@ -146,22 +157,23 @@ def test_missing_stale_and_frozen_guard(tmp_path):
     from fishsuite.report.provenance import guard_output
     from fishsuite.report.aggregate import ReportInputError
     with pytest.raises(ReportInputError, match='missing'):
-        load_existing_panel(tmp_path/'missing.xlsx', tmp_path/'missing.md', BASELINE)
+        load_existing_panel(tmp_path/'missing.xlsx', tmp_path/'missing.md', tmp_path/'missing.json')
     (tmp_path/'DELIVERY_any').mkdir()
     guard_output(tmp_path/'DELIVERY_any'/'report')  # unreleased delivery folder is a valid build target
     (tmp_path/'DELIVERY_any'/'MANIFEST_SHA256.tsv').write_text('')
     with pytest.raises(ReportInputError, match='frozen'):
         guard_output(tmp_path/'DELIVERY_any'/'report')
-    m = json.loads(BASELINE.read_text())
+    panel_path, _, baseline = recorded_coloc_fixture()
+    m = json.loads(baseline.read_text())
     for row in m['named_files']:
-        if Path(row['path']) == PANEL:
+        if Path(row['path']) == panel_path:
             row['sha256'] = '0'*64
     stale = tmp_path/'stale.json'
     stale.write_text(json.dumps(m))
     with pytest.raises(ReportInputError, match='stale'):
-        load_existing_panel(PANEL, PANEL.with_name('FIGURE_INDEX.md'), stale)
+        load_existing_panel(panel_path, panel_path.with_name('FIGURE_INDEX.md'), stale)
     with pytest.raises(ReportInputError, match='stale figure index'):
-        load_existing_panel(PANEL, PANEL.with_name('FIGURE_INDEX.md'), BASELINE, '0'*64)
+        load_existing_panel(panel_path, panel_path.with_name('FIGURE_INDEX.md'), baseline, '0'*64)
 
 
 def test_hand_worked_nuclear_pairing_and_zero_anchors():
@@ -184,14 +196,15 @@ def test_report_integration_no_nulls_raw_parity(tmp_path, monkeypatch):
     def forbidden(*a, **kw):
         pytest.fail('new-null invocation')
     monkeypatch.setattr(build, 'run_coloc_standard_panel', forbidden)
-    result = build_report(RUN, tmp_path/'report', groups=['WT=WT_1,WT_2,WT_3', 'QKI-KO=KO_1,KO_2,KO_3'],
-                          reference='WT', make_figures=False, existing_coloc=PANEL,
-                          baseline_manifest=BASELINE)
+    panel_path, run, baseline_path = recorded_coloc_fixture()
+    result = build_report(run, tmp_path/'report', groups=['WT=WT_1,WT_2,WT_3', 'QKI-KO=KO_1,KO_2,KO_3'],
+                          reference='WT', make_figures=False, existing_coloc=panel_path,
+                          baseline_manifest=baseline_path)
     audit = pd.read_excel(result['xlsx'], sheet_name='Localization counts', header=1)
     unassigned = pd.read_excel(result['xlsx'], sheet_name='Localization unassigned', header=1)
     assert audit.source_nuclear_fraction.isna().sum() == 115
     assert unassigned.spot_count.sum() == 1047
-    baseline = json.loads(BASELINE.read_text())
+    baseline = json.loads(baseline_path.read_text())
     old = pd.DataFrame(baseline['baseline_contrasts']).set_index('endpoint')
     new = result['contrasts'].set_index('endpoint')
     for name in old.index:
@@ -227,7 +240,7 @@ def test_report_integration_no_nulls_raw_parity(tmp_path, monkeypatch):
     assert 'reporter commit:' in (tmp_path/'report/versions.txt').read_text()
     assert 'producing engine commit: missing from run' in (tmp_path/'report/versions.txt').read_text()
     with pytest.raises(RuntimeError, match='persisted|gates'):
-        build_report(RUN, tmp_path/'bad', existing_coloc=PANEL, baseline_manifest=BASELINE,
+        build_report(run, tmp_path/'bad', existing_coloc=panel_path, baseline_manifest=baseline_path,
                      peak_floors={'rna1':999}, make_figures=False)
 
 
@@ -273,9 +286,10 @@ def test_line_group_conflict_and_cohort_rejected():
     from fishsuite.report.endpoints import resolve
     with pytest.raises(RuntimeError,match='conflicting'):
         _groups(pd.DataFrame({'line':['WT'],'group':['QKI-KO']}))
-    data=load_run(RUN,{'WT_1':'WT','WT_2':'WT','WT_3':'WT','KO_1':'QKI-KO','KO_2':'QKI-KO','KO_3':'QKI-KO'}, {})
+    panel_path, run, baseline = recorded_coloc_fixture()
+    data=load_run(run,{'WT_1':'WT','WT_2':'WT','WT_3':'WT','KO_1':'QKI-KO','KO_2':'QKI-KO','KO_3':'QKI-KO'}, {})
     endpoints,_=resolve(data['nuclei'],data['per_image'])
-    panel=load_existing_panel(PANEL,PANEL.with_name('FIGURE_INDEX.md'),BASELINE)
+    panel=load_existing_panel(panel_path,panel_path.with_name('FIGURE_INDEX.md'),baseline)
     panel.tables['per_nucleus']=panel.tables['per_nucleus'].iloc[1:]
     with pytest.raises(RuntimeError,match='cohort mismatch'):
         integrate_panel(data,panel,endpoints)

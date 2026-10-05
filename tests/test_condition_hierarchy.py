@@ -197,7 +197,7 @@ def test_source_acquisition_and_original_condition_stem(tmp_path):
 def test_gui_metadata_assignment_preview_and_report_reload(tmp_path, monkeypatch):
     import importlib
     import yaml
-    from PySide6.QtWidgets import QApplication
+    QApplication = pytest.importorskip('PySide6.QtWidgets').QApplication
     main=importlib.import_module('fishsuite.gui.main')
     monkeypatch.setattr(main._state,'load_settings',lambda: {})
     monkeypatch.setattr(main._state,'save_settings',lambda *_: None)
