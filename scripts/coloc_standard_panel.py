@@ -118,12 +118,35 @@ def fmt_p(p):
     return f"{p:.4g}" if p >= 1e-4 else f"{p:.2e}"
 
 
-def wrap_foot(text, fig_w, size):
+def wrap_foot(text, fig_w, size, fig=None):
     width = max(60, int((fig_w - 0.40) * 72.0 / (size * 0.50)))
     out = []
     for line in str(text).splitlines():
         out.extend(textwrap.wrap(line, width) or [""])
-    return out
+    if fig is None:
+        return out
+    # The character-count width assumes Arial metrics; a wider fallback font
+    # (DejaVu Sans) can push a line past the figure edge. Re-wrap only the
+    # lines whose rendered width overflows, so Arial output is unchanged.
+    renderer = fig.canvas.get_renderer()
+    avail = fig.bbox.width * (1.0 - 2 * FOOT_X)
+
+    def fits(s):
+        t = matplotlib.text.Text(text=s, fontsize=size, figure=fig)
+        return t.get_window_extent(renderer).width <= avail
+
+    fitted = []
+    for line in out:
+        w = width
+        lines = [line]
+        while w > 20 and not all(fits(s) for s in lines):
+            w -= 1
+            lines = textwrap.wrap(line, w) or [""]
+        fitted.extend(lines)
+    return fitted
+
+
+FOOT_X = 0.016
 
 
 NOTE_TEXT = ""
@@ -132,8 +155,8 @@ NOTE_TEXT = ""
 def stamp_foot(fig, text, size=5.6, y=0.012):
     if NOTE_TEXT:
         text = str(text).rstrip() + " " + NOTE_TEXT
-    lines = wrap_foot(text, fig.get_figwidth(), size)
-    fig.text(0.016, y, "\n".join(lines), ha="left", va="bottom", fontsize=size,
+    lines = wrap_foot(text, fig.get_figwidth(), size, fig)
+    fig.text(FOOT_X, y, "\n".join(lines), ha="left", va="bottom", fontsize=size,
              color="#333333", linespacing=1.45)
 
 
@@ -158,7 +181,7 @@ def foot_bottom(fig, text, size, pad=0.042):
     """Figure-fraction bottom margin that leaves room for the footnote block."""
     if NOTE_TEXT:
         text = str(text).rstrip() + " " + NOTE_TEXT
-    lines = wrap_foot(text, fig.get_figwidth(), size)
+    lines = wrap_foot(text, fig.get_figwidth(), size, fig)
     return 0.012 + (len(lines) * size * 1.45) / (fig.get_figheight() * 72.0) + pad
 
 
