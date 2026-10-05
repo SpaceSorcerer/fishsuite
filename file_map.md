@@ -293,3 +293,4 @@ nuclear-column / report-layer work. Both branches were fast-forwarded into `main
 | `E:\Claude\fishsuite\docs\IMAGE_KEY_BUG_2026-09-29_audit.py` | Audit script that hashes every decoded raster in the listed figure-output folders and flags one pixel hash shared by two field labels. |
 | `E:\Claude\fishsuite\docs\IMAGE_KEY_BUG_2026-09-29_tile_hashes.csv.gz` | Full per-tile hash table written by the image_key audit script. |
 | `E:\Claude\fishsuite\docs\CONSOLIDATION_2026-09-29.md` | 2026-09-29 consolidation record: which branches were merged into main and why the others were not, the suite result, the `fishproc_dml` editable-install repoint to E:, the skill-section update and the pending push decision. |
+| `E:\Claude\fishsuite\_sync_reports\PUSH_REPORT_2026-10-04.md` | 2026-10-04/05 sync of main with origin/main: round 1 stopped on 5 conflicts; round 2 resolved them (local side, f9ee32a hunk re-applied), ran pre/post full suites, and pushed merge 3e17a79. |
