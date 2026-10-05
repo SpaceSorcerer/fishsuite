@@ -55,6 +55,9 @@ dependencies = [
     "matplotlib>=3.7",
     # Required by report inference (mixed models, Tukey HSD and power/MDE).
     "statsmodels>=0.14",
+    # Imported by core/exact_footprint_backfill.py, core/exact_footprint_figures.py,
+    # figures/config.py and figures/rep_crops.py; previously undeclared.
+    "h5py>=3.0",
 ]
 
 [project.optional-dependencies]
@@ -181,3 +184,11 @@ select = [
     "F821", "F822", "F823",           # undefined name / undefined __all__ / used-before-assign
     "F901",                           # raise NotImplemented (should be NotImplementedError)
 ]
+
+[tool.ruff.lint.per-file-ignores]
+# These modules import a pytest fixture from another test module and request it
+# as a test argument; F811 reads that argument as a redefinition. Scoped to
+# these files only so F811 still gates everywhere else.
+"tests/test_backfill_native_eligibility.py" = ["F811"]
+"tests/test_backfill_native_zrange.py" = ["F811"]
+"tests/test_provenance_review_2026_09_17.py" = ["F811"]

@@ -276,7 +276,6 @@ def test_no_admissible_center_marks_placement_null_no_domain():
     assert row.na_reason_null_mean_frac_miat_footprint_area_qki_pos == "NO_DOMAIN"
     assert np.isnan(row.null_mean_frac_miat_spots_qki_pos)
 import numpy as np
-import pandas as pd
 import pytest
 
 

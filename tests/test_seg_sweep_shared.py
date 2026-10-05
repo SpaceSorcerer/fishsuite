@@ -140,6 +140,10 @@ def test_rna_only_preserves_dapi_lock_and_rna_window(monkeypatch, z_mode):
 
 @pytest.mark.parametrize("mode", [rna_only, rna_rna])
 def test_run_and_sweep_preserve_real_area_and_border_filters(tmp_path, monkeypatch, mode):
+    from test_nucleus_sampling import _reader_probe_failure
+    reason = _reader_probe_failure()
+    if reason:
+        pytest.skip(reason)
     import pandas as pd
     import tifffile
     from click.testing import CliRunner

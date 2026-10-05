@@ -12,9 +12,13 @@ theoretical PSF, on a frozen complete-block core with a coverage gate.
 from __future__ import annotations
 
 from collections.abc import Sequence
+from typing import TYPE_CHECKING
 
 import numpy as np
 from scipy import stats
+
+if TYPE_CHECKING:
+    import pandas as pd
 
 MIN_PIXELS = 100
 CCF_MAX_SHIFT_PX = 20

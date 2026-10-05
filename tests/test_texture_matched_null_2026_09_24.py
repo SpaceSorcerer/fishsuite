@@ -318,7 +318,8 @@ def test_no_coupling_output_contains_sensitivity_columns(tmp_path, tiled, monkey
     for path in out.rglob("*"):
         if path.suffix == ".xlsx":
             for name, sheet in pd.read_excel(path, sheet_name=None, header=None).items():
-                text = sheet.astype(str).to_numpy().ravel().tolist()
+                # str() per cell: under pandas 3, astype(str) leaves NaN as float.
+                text = [str(v) for v in sheet.to_numpy().ravel()]
                 found += [(path.name, name, t) for t in text if any(token in t for token in TOKENS)]
         elif path.suffix in (".csv", ".md", ".txt", ".log"):
             text = path.read_text(encoding="utf-8", errors="ignore")
