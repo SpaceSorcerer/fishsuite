@@ -145,3 +145,31 @@ Not edited (no commit/push happened; editing it would dirty the tracked tree). P
   - the 1 failure, `test_report_localization::test_recorded_reconciliation_baseline_parity_and_proposal`, is a known baseline failure, unchanged vs e28ad11 and skipif-guarded on CI.
 - Other CI steps, run locally: ruff check passed, the absolute-path gate was OK, build and twine passed, and the wheel ships exactly the 6 portable presets.
 - What local Windows could not reproduce: #7 and the footer failure, because the F: style dir and Arial are present locally.
+
+---
+
+# Round 4 — footer overflow fix (2026-10-05)
+
+**Verdict: CI GREEN, 4/4 light test jobs plus both deps-resolve jobs, run 37359751221 at `8bf745d`. Windows/Arial output is identical before and after the change.**
+
+## Unwatched run at 3d6bf4f (report-only commit)
+- Run 37355971962: the same single failure as 9382aa8.
+- ubuntu-latest py3.10: `test_every_text_lies_inside_the_figure` failed (1 failed, 1751 passed, 47 skipped). The other 3 test jobs passed.
+
+## Change (`scripts/coloc_standard_panel.py`, commit 8bf745d)
+- `wrap_foot(text, fig_w, size, fig=None)` still wraps by character count first. With `fig` given, it measures each wrapped line with the figure renderer, using a `matplotlib.text.Text` at the footer font size and the figure's rcParams font.
+- It re-wraps a line, with a character width lowered one step at a time, **only if** the line is wider than `fig.bbox.width * (1 - 2 * FOOT_X)`, where `FOOT_X = 0.016` is the existing footer x-offset, used as a symmetric margin.
+- `stamp_foot` and `foot_bottom` both pass `fig`, so the bottom margin is computed from the same line count that is drawn. `stamp_foot` now uses `FOOT_X` in place of the literal `0.016`, which has the same value.
+
+## Proof
+| Check | Result |
+|---|---|
+| Windows (Arial), fishproc_dml: rendered all 5 footer-test figures (FIG_COLOC_STANDARD, csp01, csp01b, csp04, csp06) before vs after; PNG at 150 dpi compared by `np.array_equal`, SVG (`svg.hashsalt` fixed, no Date) compared byte for byte | **10/10 IDENTICAL**. The harness is deterministic: two renders before the change were also identical. |
+| CI emulation in `E:\Claude\_ci_repro_fishsuite`: matplotlib pinned to 3.10.9 (the version on the CI ubuntu py3.10 job), and a pytest plugin that drops Arial and Helvetica from `fontManager.ttflist` so text falls back to DejaVu Sans | Before (HEAD 3d6bf4f in a temporary worktree): 1 failed, 7 passed, the CI failure reproduced. After: 8 passed. After, with Arial present: 8 passed. |
+| ruff check, absolute-path gate | pass |
+| CI run 37359751221 (8bf745d) | success: ubuntu py3.10/3.12 and windows py3.10/3.12 tests, deps-resolve py3.10/3.12; heavy skipped (schedule only) |
+
+## Housekeeping
+- The temporary worktree `E:\Claude\_wt_fishsuite_footer` was removed with `git worktree remove --force`, which was needed because tests left artifacts in it.
+- The repro venv `E:\Claude\_ci_repro_fishsuite` was left in place for archiving. **matplotlib in it is now 3.10.9** (it was 3.11.2 from the workflow install).
+- Scratch harness: `footer_render.py` and `footer_compare.py` in the session scratchpad. They are not committed and no repo file was added, so `file_map.md` is unchanged.
