@@ -29,6 +29,10 @@ _LOCKED_STYLE_DIR = (
     r"F:\RNA-SEQ-ANALYSIS\MIAT-KD-RNAseq\committee_june_figures"
     r"\_REBUILD_v49_2026-06-12\_style"
 )
+_needs_locked_style = pytest.mark.skipif(
+    not (Path(_LOCKED_STYLE_DIR) / "fig_style.py").is_file(),
+    reason="locked MIAT/QKI style module (machine-local) is not present",
+)
 
 
 @pytest.fixture(autouse=True)
@@ -201,6 +205,7 @@ def test_build_endpoint_source_data_excludes_controls_and_unsampled_nuclei() -> 
     assert len(source.loc[source["tier"].eq("nucleus")]) == 8
 
 
+@_needs_locked_style
 def test_build_correlation_source_data_preserves_three_level_hierarchy(
     tmp_path: Path,
 ) -> None:
@@ -346,6 +351,7 @@ def test_build_correlation_source_data_preserves_three_level_hierarchy(
     assert str(package.png_path.resolve()) in linked["files"]["png"]
 
 
+@_needs_locked_style
 def test_render_writes_vector_raster_sources_and_refuses_overwrite(
     tmp_path: Path,
 ) -> None:
