@@ -219,24 +219,6 @@ def _power_two_sided(d: float, alpha: float, n1: int, n2: int) -> float:
     return _power_noncentral_t(d * math.sqrt(n1 * n2 / (n1 + n2)), df, alpha)
 
 
-def welch_design(n1: int, n2: int, sd1: float, sd2: float) -> tuple[float, float]:
-    """(Welch-Satterthwaite df, k) for per-arm SDs; the Welch noncentrality of a difference of d pooled SDs
-    is d * k, k = pooled SD / sqrt(sd1^2/n1 + sd2^2/n2). (nan, nan) when undefined."""
-    v1, v2 = float(sd1) ** 2 / n1, float(sd2) ** 2 / n2
-    sp2 = ((n1 - 1) * float(sd1) ** 2 + (n2 - 1) * float(sd2) ** 2) / (n1 + n2 - 2)
-    if not (np.isfinite(v1) and np.isfinite(v2)) or v1 + v2 <= 0 or sp2 <= 0:
-        return float("nan"), float("nan")
-    df = (v1 + v2) ** 2 / (v1 ** 2 / (n1 - 1) + v2 ** 2 / (n2 - 1))
-    return float(df), float(math.sqrt(sp2 / (v1 + v2)))
-
-
-def _power_welch(d: float, alpha: float, n1: int, n2: int, sd1: float, sd2: float) -> float:
-    """Two-sided Welch power: noncentral t with Welch-Satterthwaite df from the per-arm SDs (the
-    usual approximation; at 3 v 3 wells it still overstates the power of the realised Welch test)."""
-    df, k = welch_design(n1, n2, sd1, sd2)
-    return _power_noncentral_t(d * k, df, alpha) if np.isfinite(df) else float("nan")
-
-
 def _power_noncentral_t(ncp: float, df: float, alpha: float) -> float:
     """P(|T| > t_{1-alpha/2, df}) for T noncentral t(df, ncp), df may be fractional; quadrature as above."""
     from scipy import integrate, stats
@@ -253,43 +235,77 @@ def _power_noncentral_t(ncp: float, df: float, alpha: float) -> float:
     return float(up + lo)
 
 
+MDE_SIM_REPS = 20_000
+MDE_SIM_SEED = 20261010
+
+
+def welch_power_simulated(diff: float, alpha: float, n1: int, n2: int, sd1: float, sd2: float,
+                          reps: int = MDE_SIM_REPS, seed: int = MDE_SIM_SEED) -> float:
+    """Monte Carlo power of the two-sided Welch test for a true difference ``diff`` (raw units):
+    ``reps`` normal samples of n1 and n2 with SDs sd1, sd2, the same draws (seeded) at every ``diff``."""
+    return float(np.mean(_welch_rejects(diff, *_welch_draws(alpha, n1, n2, sd1, sd2, reps, seed))))
+
+
+def _welch_draws(alpha, n1, n2, sd1, sd2, reps, seed):
+    from scipy import stats
+
+    rng = np.random.default_rng(seed)
+    a = rng.standard_normal((reps, n1)) * float(sd1)
+    b = rng.standard_normal((reps, n2)) * float(sd2)
+    v1, v2 = a.var(axis=1, ddof=1) / n1, b.var(axis=1, ddof=1) / n2
+    se = np.sqrt(v1 + v2)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        df = (v1 + v2) ** 2 / (v1 ** 2 / (n1 - 1) + v2 ** 2 / (n2 - 1))
+    return a.mean(axis=1) - b.mean(axis=1), se, stats.t.ppf(1 - alpha / 2, df)
+
+
+def _welch_rejects(diff, noise, se, crit):
+    # The shift moves only the mean difference; each draw's SE and Welch df do not depend on it.
+    return np.abs(diff + noise) > crit * se
+
+
 def mde_hedges_g(alpha: float, power: float = 0.80, n1: int = 3, n2: int = 3,
-                 sd1: float | None = None, sd2: float | None = None) -> float:
-    """Smallest Hedges g detectable at ``power``, two-sided, at significance ``alpha``.
+                 sd1: float | None = None, sd2: float | None = None,
+                 reps: int = MDE_SIM_REPS, seed: int = MDE_SIM_SEED) -> float:
+    """Smallest standardized difference at which the two-sided Welch test reaches ``power`` at ``alpha``.
 
-    With per-arm SDs (``sd1``, ``sd2``, the observed well SDs) the power is the Welch test's: noncentral
-    t with Welch-Satterthwaite df, effect in pooled-SD units so it compares with ``hedges_g``. This makes
-    the MDE depend on the observed SDs. Without SDs, the equal-variance Student t (df = n1 + n2 - 2).
-    Given but non-finite or all-zero SDs give NaN.
-
-    Returned as the POPULATION standardized difference delta, the scale Hedges g
-    estimates. Hedges j corrects an estimator's bias and does not scale the effect
-    a design can detect: multiplying by j understated the MDE by j = 1 - 3/(4(n1+n2) - 9),
-    0.571x at 2 v 2, 0.80x at 3 v 3, 0.870x at 4 v 4 (fixed 2026-10-10, as in
-    scripts/coloc_standard_panel.py on 2026-09-17).
+    Simulation-based (2026-10-10): the Welch test is run by Monte Carlo (``reps`` draws, fixed ``seed``,
+    the same draws at every candidate difference) on normal arms with the per-arm SDs ``sd1``, ``sd2``
+    (the observed well SDs; equal SDs when both are None), and the smallest |difference| with simulated
+    power >= ``power`` is found by bisection. This makes the MDE depend on the observed SDs (post-hoc).
+    Returned in pooled-SD units, the scale ``hedges_g`` estimates; no Hedges j (j corrects an estimator
+    and understated the MDE by 0.571x/0.80x/0.870x at 2/3/4 per arm). It replaces the noncentral-t
+    approximation, which overstated the realised Welch power at 2-3 wells per arm.
+    NaN below 2 per arm, for an invalid alpha, or for non-finite / all-zero SDs.
     """
     if min(int(n1), int(n2)) < 2:
         return float("nan")
     if not np.isfinite(alpha) or alpha <= 0 or alpha >= 1:
         return float("nan")
     if sd1 is None and sd2 is None:
-        def pw(d):
-            return _power_two_sided(d, alpha, n1, n2)
-    elif not np.isfinite(welch_design(n1, n2, sd1, sd2)[0]):
+        sd1 = sd2 = 1.0
+    sd1, sd2 = float(sd1), float(sd2)
+    sp2 = ((n1 - 1) * sd1 ** 2 + (n2 - 1) * sd2 ** 2) / (n1 + n2 - 2)
+    if not (np.isfinite(sd1) and np.isfinite(sd2)) or sd1 < 0 or sd2 < 0 or sp2 <= 0:
         return float("nan")
-    else:
-        def pw(d):
-            return _power_welch(d, alpha, n1, n2, sd1, sd2)
-    lo, hi = 0.0, 1.0
-    while pw(hi) < power and hi < 1e3:
+    draws = _welch_draws(alpha, int(n1), int(n2), sd1, sd2, int(reps), seed)
+
+    def pw(diff):
+        return float(np.mean(_welch_rejects(diff, *draws)))
+
+    sp = math.sqrt(sp2)
+    lo, hi = 0.0, sp
+    while pw(hi) < power:
         hi *= 2
-    for _ in range(80):
+        if hi > 1e6 * sp:
+            return float("nan")
+    for _ in range(60):
         mid = (lo + hi) / 2
         if pw(mid) < power:
             lo = mid
         else:
             hi = mid
-    return float((lo + hi) / 2)
+    return float(hi / sp)
 
 
 def stars(p) -> str:

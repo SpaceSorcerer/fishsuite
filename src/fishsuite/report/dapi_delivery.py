@@ -11,18 +11,17 @@ from .provenance import guard_output, sha256
 from .dapi_mask import COUNT, FRACTION, CLASSES
 
 
-def _welch_power_monte_carlo(g, alpha, a, b, draws=400_000, seed=20261010):
-    """Independent check of the MDE: Monte Carlo of T = (Z + ncp) / sqrt(V / df), Z ~ N(0,1), V ~ chi2(df),
-    Welch-Satterthwaite df and ncp from the observed well SDs of a and b (no stats.py helper, no nct)."""
-    from scipy.stats import t as student_t
+def _welch_power_monte_carlo(g, alpha, a, b, reps=20_000, seed=7):
+    """Independent check of the MDE: realised two-sided Welch test (scipy ttest_ind) on fresh normal draws
+    with the observed well SDs of a and b and a difference of g pooled SDs; seed differs from stats.py."""
+    from scipy.stats import ttest_ind
     n1, n2 = len(a), len(b)
-    s1, s2 = np.var(a, ddof=1), np.var(b, ddof=1)
-    v1, v2 = s1/n1, s2/n2
-    df = (v1+v2)**2/(v1**2/(n1-1)+v2**2/(n2-1))
-    sp = math.sqrt(((n1-1)*s1+(n2-1)*s2)/(n1+n2-2))
+    s1, s2 = float(np.std(a, ddof=1)), float(np.std(b, ddof=1))
+    sp = math.sqrt(((n1-1)*s1**2+(n2-1)*s2**2)/(n1+n2-2))
     rng = np.random.default_rng(seed)
-    t = (rng.standard_normal(draws) + g*sp/math.sqrt(v1+v2))/np.sqrt(rng.chisquare(df, draws)/df)
-    return float(np.mean(np.abs(t) > student_t.ppf(1-alpha/2, df)))
+    x = rng.normal(g*sp, s1, (reps, n1))
+    y = rng.normal(0.0, s2, (reps, n2))
+    return float(np.mean(ttest_ind(x, y, axis=1, equal_var=False).pvalue < alpha))
 
 
 def validate_report(out):
@@ -67,7 +66,7 @@ def validate_report(out):
         wm = well.loc[well.endpoint.eq(c.endpoint)].set_index(['group','well_id']).well_mean_of_field_values
         power = _welch_power_monte_carlo(c.mde_hedges_g_at_family_alpha, .05/c.holm_family_size,
                                          wm.loc[c.test_group].to_numpy(), wm.loc[c.reference_group].to_numpy())
-        assert abs(power-.8) < .003, (c.endpoint,power)
+        assert abs(power-.8) < .02, (c.endpoint,power)
     for name in ['rna1_nuclear_spot_fraction','rna1_cyto_spots_per_nucleus']:
         c = contrasts.loc[contrasts.endpoint.eq(name)].iloc[0]
         assert not c.in_holm_family and c.excluded_from_holm == 'legacy_mask_only'
