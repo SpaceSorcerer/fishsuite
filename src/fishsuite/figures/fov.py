@@ -7,15 +7,16 @@ from pathlib import Path
 import numpy as np
 import matplotlib.pyplot as plt
 
-from .style import PX_UM, colorize, display_note, footer, run_lv
+from .style import colorize, display_note, footer, run_lv, run_px
 
 LABEL = {"DAPI": "DAPI", "MIAT": "MIAT RNA-FISH", "QKI": "QKI IF", "merge": "Merge (MIAT yellow, QKI magenta, DAPI blue)",
          "merge_MIATxQKI": "MIAT x QKI merge (MIAT yellow, QKI magenta; no DAPI)"}
 CH = {"DAPI": ("dapi",), "MIAT": ("miat",), "QKI": ("qki",), "merge": ("dapi", "miat", "qki"), "merge_MIATxQKI": ("miat", "qki")}
 
 
-def build_fov(run, field_id, channels=("merge", "DAPI", "MIAT", "QKI", "merge_MIATxQKI"), px=PX_UM):
-    P = run.load_plane(run.image_key(field_id)); fld = str(field_id); tag = run.arm.replace(" ", "")
+def build_fov(run, field_id, channels=("merge", "DAPI", "MIAT", "QKI", "merge_MIATxQKI"), px=None):
+    key = run.image_key(field_id); px = px or run_px(run, key)
+    P = run.load_plane(key); fld = str(field_id); tag = run.arm.replace(" ", "")
     for chname in channels:
         img = colorize({c: P[c] for c in CH[chname]}, lv=run_lv(run))
         fig = plt.figure(figsize=(3.4, 3.75), facecolor='white')
@@ -28,13 +29,15 @@ def build_fov(run, field_id, channels=("merge", "DAPI", "MIAT", "QKI", "merge_MI
         run.saver.save(fig, f"A_FOV_{tag}_field{fld}_{chname}")
 
 
-def export_native_tiffs(run, out_dir, fields=("14", "15"), nuclei=(), zstack=True, px=PX_UM, z_step_um=0.21):
+def export_native_tiffs(run, out_dir, fields=("14", "15"), nuclei=(), zstack=True, px=None, z_step_um=0.21):
     """Raw (no display scaling) per-channel TIFFs: FOV analysed plane, and for each (field, nucleus, z0, z1) the nucleus
     crop of the analysed plane plus, if zstack, the crop of the display z window read from the raw VSI (read-only)."""
     import tifffile
     from .linked_set import read_stack
     out = Path(out_dir); out.mkdir(parents=True, exist_ok=True); rows = []
+    px_arg = px
     for fld in fields:
+        px = px_arg or run_px(run, run.image_key(fld))
         P = run.load_plane(run.image_key(fld))
         for c in ("miat", "qki", "dapi"):
             a = P[c]; fn = out / f"FOV_field{fld}_z{P['z0'] + 1}_{c.upper()}.tif"
@@ -43,7 +46,7 @@ def export_native_tiffs(run, out_dir, fields=("14", "15"), nuclei=(), zstack=Tru
             rows.append((fn.name, a.dtype.name, a.shape, int(a.min()), int(a.max())))
     stacks = {}
     for fld, nid, z0w, z1w in nuclei:
-        key = run.image_key(fld)
+        key = run.image_key(fld); px = px_arg or run_px(run, key)
         P = run.load_plane(key); m = P["nucleus_labels"] == int(nid); ys, xs = np.nonzero(m)
         pad = int(np.ceil(1.5 / px)); H, W = m.shape
         y0, y1, x0, x1 = max(ys.min() - pad, 0), min(ys.max() + pad + 1, H), max(xs.min() - pad, 0), min(xs.max() + pad + 1, W)

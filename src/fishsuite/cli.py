@@ -118,8 +118,11 @@ def native_figures(run_dir, groups_file, out):
 @click.option('--display-ranges', default=None,
               help='Per-set display ranges, raw a.u.: MIAT=lo:hi,QKI=lo:hi,DAPI=lo:hi or a preset key '
                    '(fishsuite.figures.style.DISPLAY_PRESETS). Default: the locked basal LV.')
+@click.option('--px-um', default=None, type=click.FloatRange(min=0, min_open=True),
+              help='Lateral pixel size (um) for scale bars and TIFF resolution. Default: voxel_xy_nm in the '
+                   'backfill image_manifest.csv; 0.13 with a WARNING only if neither is given.')
 def fig_panels(menu_dir, backfill_dir, run_dir, out_dir, arm, raw_dir, steps, rep_field, extra_linked, native_only, seed,
-               display_ranges):
+               display_ranges, px_um):
     """Rebuild the locked basal MIAT x QKI figure gallery (A/B/R/C/D panels). Render only: no detection or thresholds."""
     from .figures.config import PanelRun
     from .figures.gallery import STEPS, build_gallery
@@ -139,7 +142,7 @@ def fig_panels(menu_dir, backfill_dir, run_dir, out_dir, arm, raw_dir, steps, re
     except ValueError as exc:
         raise click.BadParameter(str(exc), param_hint='--display-ranges') from exc
     run = PanelRun(menu_dir, backfill_dir, run_dir, out_dir, arm=arm, raw_dir=raw_dir, native_only=native_only,
-                   display_ranges=lv)
+                   display_ranges=lv, px_um=px_um)
     res = build_gallery(run, steps=st, rep_field=rep_field, extra_linked=extra, seed=seed, log=click.echo)
     click.echo(f"Figure panels: {Path(out_dir)} ({res.get('n_png', 'n/a')} PNG panels indexed)")
 

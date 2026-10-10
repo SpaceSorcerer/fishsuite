@@ -7,12 +7,12 @@ import pandas as pd
 import matplotlib.pyplot as plt
 from matplotlib.patches import Circle
 
-from .style import PX_UM, colorize, footer, run_lv
+from .style import colorize, footer, run_lv, run_px
 
 CHANNELS = ("merge", "MIAT", "QKI", "DAPI", "merge_MIATxQKI")
 
 
-def build_rep_crops(run, picks, nv, sv, channels=CHANNELS, px=PX_UM):
+def build_rep_crops(run, picks, nv, sv, channels=CHANNELS, px=None):
     import h5py
     H5 = {}
     with h5py.File(run.h5, "r") as f:
@@ -23,7 +23,9 @@ def build_rep_crops(run, picks, nv, sv, channels=CHANNELS, px=PX_UM):
                 H5[g.attrs["image_key"]] = ({c: g[c][()] for c in ("dapi", "miat", "qki", "nucleus_labels")}
                                             | {"z0": int(g.attrs["selected_z_0based"])})
     rows = []
+    px_arg = px
     for rank, p in enumerate(picks, 1):
+        px = px_arg or run_px(run, p["image"])
         P = H5[p["image"]]; nid = int(p["nucleus_id"]); mask = P["nucleus_labels"] == nid
         ys, xs = np.nonzero(mask); pad = int(np.ceil(1.5 / px)); H, W = mask.shape
         y0, y1, x0, x1 = max(ys.min() - pad, 0), min(ys.max() + pad + 1, H), max(xs.min() - pad, 0), min(xs.max() + pad + 1, W)

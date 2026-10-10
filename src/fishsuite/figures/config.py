@@ -5,6 +5,7 @@ import json
 from dataclasses import dataclass, field
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 
 from .style import Saver
@@ -24,6 +25,7 @@ class PanelRun:
     native_only: bool = False
     scratch_dir: Path | None = None
     display_ranges: dict | None = None   # {"miat"|"qki"|"dapi": (lo, hi)}; None = style.LV
+    px_um: float | None = None   # --px-um override; else image_manifest.csv voxel_xy_nm; else style.PX_UM + WARNING
     _saver: Saver | None = field(default=None, repr=False)
 
     def __post_init__(self):
@@ -73,6 +75,31 @@ class PanelRun:
         if len(keys) != 1:
             raise KeyError(f"arm {self.arm!r} field {field_id!r}: {len(keys)} images in menu_per_nucleus.csv ({keys})")
         return keys[0]
+
+    def pixel_size_um(self, key=None) -> float | None:
+        """--px-um, else voxel_xy_nm / 1000 from the backfill image_manifest.csv (row of ``key`` by basename when
+        given, else the manifest's single value); None when the manifest records none. Raises on disagreeing values."""
+        if self.px_um is not None:
+            return float(self.px_um)
+        path = self.backfill_dir / "image_manifest.csv"
+        if not path.is_file():
+            return None
+        m = pd.read_csv(path, usecols=lambda c: c in ("image", "image_key", "voxel_xy_nm"))
+        if "voxel_xy_nm" not in m:
+            return None
+        if key is not None:
+            name = Path(str(key)).name.casefold()
+            hit = np.zeros(len(m), dtype=bool)
+            for col in ("image", "image_key"):
+                if col in m:
+                    hit |= m[col].astype(str).map(lambda v: Path(v).name.casefold() == name).to_numpy()
+            m = m[hit] if hit.any() else m
+        values = set(pd.to_numeric(m.voxel_xy_nm, errors="coerce").dropna())
+        if not values:
+            return None
+        if len(values) > 1:
+            raise ValueError(f"image_manifest.csv records several voxel_xy_nm {sorted(values)} for {key!r}; pass --px-um")
+        return values.pop() / 1000.0
 
     def raw_path(self, key: str) -> Path:
         return Path(key) if self.raw_dir is None else self.raw_dir / Path(key).name

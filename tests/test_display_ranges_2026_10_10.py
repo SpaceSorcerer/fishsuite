@@ -86,16 +86,24 @@ def test_bad_display_ranges_are_refused(bad):
         style.parse_display_ranges(bad)
 
 
+def test_default_render_unchanged_for_a_run_whose_pixel_size_is_0p13():
+    if not _recording_environment():
+        pytest.skip("digest recorded on eb4dcca in the fishproc env (win32, matplotlib 3.10.9, Arial)")
+    assert _merge_digest(pixel_size_um=lambda key=None: 0.13) == MAIN_EB4DCCA_MERGE_RGBA_SHA256
+
+
 def test_cli_passes_display_ranges_to_panelrun(monkeypatch, tmp_path):
     from click.testing import CliRunner
     from fishsuite import cli
     from fishsuite.figures import gallery
     seen = {}
-    monkeypatch.setattr(gallery, "build_gallery", lambda run, **kw: seen.setdefault("lv", run.display_ranges) and {})
+    monkeypatch.setattr(gallery, "build_gallery",
+                        lambda run, **kw: seen.update(lv=run.display_ranges, px=run.px_um) or {})
     args = ["fig-panels", "--menu", str(tmp_path), "--backfill", str(tmp_path), "--run", str(tmp_path),
             "--out", str(tmp_path / "o"), "--display-ranges", "MIAT=250:1700,QKI=420:3000,DAPI=600:5000"]
     res = CliRunner().invoke(cli.cli, args)
     assert res.exit_code == 0, res.output
-    assert seen["lv"]["qki"] == (420.0, 3000.0)
+    assert seen["lv"]["qki"] == (420.0, 3000.0) and seen["px"] is None
+    assert CliRunner().invoke(cli.cli, args + ["--px-um", "0.065"]).exit_code == 0 and seen["px"] == 0.065
     res = CliRunner().invoke(cli.cli, args[:-1] + ["MIAT=1:0"])
     assert res.exit_code == 2 and "--display-ranges" in res.output

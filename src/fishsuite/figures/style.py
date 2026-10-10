@@ -6,6 +6,7 @@ locked defaults: MIAT yellow, QKI magenta, DAPI blue (never green). rcParams are
 """
 from __future__ import annotations
 
+import logging
 import textwrap
 from pathlib import Path
 
@@ -56,6 +57,17 @@ def parse_display_ranges(spec):
 
 def run_lv(run) -> dict:
     return getattr(run, "display_ranges", None) or LV
+
+
+def run_px(run, key=None) -> float:
+    """Pixel size (um) of image ``key`` from the run (``--px-um`` or its image manifest); PX_UM only as a logged fallback."""
+    resolve = getattr(run, "pixel_size_um", None)
+    px = resolve(key) if callable(resolve) else None
+    if px is None:
+        logging.getLogger(__name__).warning(
+            "pixel size not given by the run or --px-um; falling back to PX_UM = %g um (scale bars assume it)", PX_UM)
+        return PX_UM
+    return float(px)
 
 
 def display_note(lv) -> str:
