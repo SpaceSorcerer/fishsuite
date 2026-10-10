@@ -23,6 +23,7 @@ class PanelRun:
     raw_dir: Path | None = None
     native_only: bool = False
     scratch_dir: Path | None = None
+    display_ranges: dict | None = None   # {"miat"|"qki"|"dapi": (lo, hi)}; None = style.LV
     _saver: Saver | None = field(default=None, repr=False)
 
     def __post_init__(self):

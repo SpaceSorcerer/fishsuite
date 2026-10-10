@@ -32,6 +32,36 @@ WELL_MEAN_MARKER = dict(s=110, marker='o', edgecolor='black', lw=1.0, zorder=5)
 
 _FORBIDDEN_RGB = {(0, 1, 0), (0.0, 1.0, 0.0)}
 
+DISPLAY_PRESETS = {"fig1_v2": LV}   # per-set display ranges, raw a.u.; LV stays the default
+
+
+def parse_display_ranges(spec):
+    """None/'' -> None (LV); a DISPLAY_PRESETS key; or 'MIAT=lo:hi,QKI=lo:hi,DAPI=lo:hi' naming all three."""
+    if not spec:
+        return None
+    if spec in DISPLAY_PRESETS:
+        return dict(DISPLAY_PRESETS[spec])
+    out = {}
+    for item in spec.split(","):
+        ch, _, rng = item.partition("=")
+        lo, _, hi = rng.partition(":")
+        try:
+            out[ch.strip().lower()] = (float(lo), float(hi))
+        except ValueError as exc:
+            raise ValueError(f"display range {item!r} is not CHANNEL=lo:hi") from exc
+    if set(out) != set(LV) or not all(np.isfinite(v).all() and v[0] < v[1] for v in out.values()):
+        raise ValueError(f"display ranges must give finite lo < hi for exactly {sorted(LV)}; got {spec!r}")
+    return out
+
+
+def run_lv(run) -> dict:
+    return getattr(run, "display_ranges", None) or LV
+
+
+def display_note(lv) -> str:
+    return "Display: " + ", ".join(f"{c.upper()} {lv[c][0]:g}-{lv[c][1]:g}"
+                                   for c in ("miat", "qki", "dapi")) + " raw a.u."
+
 
 def apply_style() -> None:
     plt.rcParams.update(RCPARAMS)

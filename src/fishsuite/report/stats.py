@@ -232,9 +232,14 @@ def _power_two_sided(d: float, alpha: float, n1: int, n2: int) -> float:
 def mde_hedges_g(alpha: float, power: float = 0.80, n1: int = 3, n2: int = 3) -> float:
     """Smallest Hedges g detectable at ``power``, two-sided, at significance ``alpha``.
 
-    Returned in Hedges g units so it is directly comparable with the observed
-    effect size printed next to it.
+    Returned as the POPULATION standardized difference delta, the scale Hedges g
+    estimates. Hedges j corrects an estimator's bias and does not scale the effect
+    a design can detect: multiplying by j understated the MDE by j = 1 - 3/(4(n1+n2) - 9),
+    0.571x at 2 v 2, 0.80x at 3 v 3, 0.870x at 4 v 4 (fixed 2026-10-10, as in
+    scripts/coloc_standard_panel.py on 2026-09-17).
     """
+    if min(int(n1), int(n2)) < 2:
+        return float("nan")
     if not np.isfinite(alpha) or alpha <= 0 or alpha >= 1:
         return float("nan")
     lo, hi = 0.0, 1.0
@@ -246,8 +251,7 @@ def mde_hedges_g(alpha: float, power: float = 0.80, n1: int = 3, n2: int = 3) ->
             lo = mid
         else:
             hi = mid
-    j = 1.0 - 3.0 / (4.0 * (n1 + n2) - 9.0)
-    return float((lo + hi) / 2 * j)
+    return float((lo + hi) / 2)
 
 
 def stars(p) -> str:

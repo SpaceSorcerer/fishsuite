@@ -7,7 +7,7 @@ from pathlib import Path
 import numpy as np
 import matplotlib.pyplot as plt
 
-from .style import PX_UM, colorize, footer
+from .style import PX_UM, colorize, display_note, footer, run_lv
 
 LABEL = {"DAPI": "DAPI", "MIAT": "MIAT RNA-FISH", "QKI": "QKI IF", "merge": "Merge (MIAT yellow, QKI magenta, DAPI blue)",
          "merge_MIATxQKI": "MIAT x QKI merge (MIAT yellow, QKI magenta; no DAPI)"}
@@ -17,14 +17,14 @@ CH = {"DAPI": ("dapi",), "MIAT": ("miat",), "QKI": ("qki",), "merge": ("dapi", "
 def build_fov(run, field_id, channels=("merge", "DAPI", "MIAT", "QKI", "merge_MIATxQKI"), px=PX_UM):
     P = run.load_plane(run.image_key(field_id)); fld = str(field_id); tag = run.arm.replace(" ", "")
     for chname in channels:
-        img = colorize({c: P[c] for c in CH[chname]})
+        img = colorize({c: P[c] for c in CH[chname]}, lv=run_lv(run))
         fig = plt.figure(figsize=(3.4, 3.75), facecolor='white')
         ax = fig.add_axes([.02, .1, .96, .83]); ax.imshow(img, interpolation='nearest'); ax.set_axis_off()
         h, w = img.shape[:2]; L = 20 / px; x1 = w * .96; y = h * .95
         ax.plot([x1 - L, x1], [y, y], color='white', lw=2, solid_capstyle='butt')
         ax.text(x1 - L / 2, y - h * .025, "20 µm", color='white', ha='center', va='bottom', fontsize=6)
         fig.text(.5, .965, f"{run.arm}, field {fld}: {LABEL[chname]}", ha='center', fontsize=7)
-        footer(fig, [f"H9 hESC; analysed plane z = {P['z0'] + 1} (1-based). Display: MIAT 500-2250, QKI 1050-3746, DAPI 607-9000 raw a.u."])
+        footer(fig, [f"H9 hESC; analysed plane z = {P['z0'] + 1} (1-based). {display_note(run_lv(run))}"])
         run.saver.save(fig, f"A_FOV_{tag}_field{fld}_{chname}")
 
 

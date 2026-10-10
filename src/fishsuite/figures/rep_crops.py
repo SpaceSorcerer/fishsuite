@@ -7,7 +7,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 from matplotlib.patches import Circle
 
-from .style import PX_UM, colorize, footer
+from .style import PX_UM, colorize, footer, run_lv
 
 CHANNELS = ("merge", "MIAT", "QKI", "DAPI", "merge_MIATxQKI")
 
@@ -41,7 +41,7 @@ def build_rep_crops(run, picks, nv, sv, channels=CHANNELS, px=PX_UM):
         for ch, planes in views:
             if ch not in channels:
                 continue
-            img = colorize(planes)
+            img = colorize(planes, lv=run_lv(run))
             for outl in (True, False):
                 fig = plt.figure(figsize=(2.6, 3.2), facecolor='white')
                 ax = fig.add_axes([.04, .2, .92, .72]); ax.imshow(img, interpolation='nearest'); ax.set_axis_off()

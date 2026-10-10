@@ -454,3 +454,123 @@ def nucleoplasm_sensitivity(miat, qki, dapi, labels, pixel_size_um, params: dict
                              pearson_r_nucleoplasm=corr["pearson"],
                              spearman_rho_nucleoplasm=corr["spearman"], na_reason=corr["reason"]))
     return pd.DataFrame(rows)
+
+
+# 2026-10-10 shared-floor metrics: one fixed absolute floor per channel, passed in by the
+# caller and shared by every image of a set; nothing below estimates a threshold from the data.
+OBJECT_CONNECTIVITY = 8
+LOCAL_WINDOW_PX = 5
+LOCAL_MIN_PIXELS = 9
+
+
+def _floor(value, name):
+    value = float(value)
+    if not np.isfinite(value):
+        raise ValueError(f"{name} must be a finite absolute intensity passed in by the caller")
+    return value
+
+
+def manders_shared_floor(miat, qki, mask, *, miat_floor, qki_floor) -> dict:
+    """Thresholded Manders M1/M2 over ``mask`` with fixed floors (replaces per-image median + 2.5 MAD).
+
+    M1 = sum MIAT over pixels with MIAT > miat_floor AND QKI > qki_floor / sum MIAT over pixels with
+    MIAT > miat_floor; M2 symmetric. The numerator keeps the channel's own floor (Coloc 2 tM1 form) so
+    M1, M2 lie in [0, 1]; without it pixels below the MIAT floor enter the numerator only.
+    """
+    mf, qf = _floor(miat_floor, "miat_floor"), _floor(qki_floor, "qki_floor")
+    mask = np.asarray(mask, dtype=bool)
+    m = np.asarray(miat, dtype=float)[mask]
+    q = np.asarray(qki, dtype=float)[mask]
+    mp, qp = m > mf, q > qf
+    out = dict(manders_m1_shared_floor=np.nan, manders_m2_shared_floor=np.nan,
+               n_pixels_miat_above_floor=int(mp.sum()), n_pixels_qki_above_floor=int(qp.sum()),
+               na_reason_manders_m1_shared_floor="", na_reason_manders_m2_shared_floor="")
+    for key, a, own, other in (("m1", m, mp, qp), ("m2", q, qp, mp)):
+        den = float(a[own].sum())
+        if m.size == 0:
+            out[f"na_reason_manders_{key}_shared_floor"] = "R0"
+        elif not own.any() or den <= 0:
+            out[f"na_reason_manders_{key}_shared_floor"] = "NONE_ABOVE_FLOOR"
+        else:
+            out[f"manders_{key}_shared_floor"] = float(a[own & other].sum()) / den
+    return out
+
+
+def above_floor_pearson_icq(miat, qki, mask, *, miat_floor, qki_floor, min_pixels: int = MIN_PIXELS) -> dict:
+    """Pearson r and Li's ICQ over the pixels of ``mask`` where BOTH channels exceed their floors.
+
+    ICQ = #{(m - mean m)(q - mean q) > 0} / n - 0.5, means over the same pixel set (Li et al. 2004).
+    """
+    mf, qf = _floor(miat_floor, "miat_floor"), _floor(qki_floor, "qki_floor")
+    m = np.asarray(miat, dtype=float)
+    q = np.asarray(qki, dtype=float)
+    sel = np.asarray(mask, dtype=bool) & (m > mf) & (q > qf)
+    m, q = m[sel], q[sel]
+    out = dict(pearson_r_above_floor=np.nan, li_icq_above_floor=np.nan,
+               n_pixels_both_above_floor=int(m.size), na_reason_above_floor="")
+    if m.size < min_pixels:
+        out["na_reason_above_floor"] = "R0" if m.size == 0 else "LOW_PIX"
+    elif np.ptp(m) == 0 or np.ptp(q) == 0:
+        out["na_reason_above_floor"] = "ZERO_VAR"
+    else:
+        out["pearson_r_above_floor"] = _pearson(m, q)
+        out["li_icq_above_floor"] = float(np.mean((m - m.mean()) * (q - q.mean()) > 0) - 0.5)
+    return out
+
+
+def object_coloc(qki, mask, centres, footprints, *, qki_floor, pixel_um) -> dict:
+    """MIAT spot vs QKI-above-floor object colocalization inside ``mask``.
+
+    QKI objects = connected components (8-connectivity) of (QKI > qki_floor) & mask. ``centres`` is
+    (n, 2) spot centroids (y, x) in px; ``footprints`` holds one (y_px, x_px) integer pair per spot.
+    Returns the fraction of spots whose footprint touches any object and the median distance (um)
+    from spot centroids to the nearest object centroid.
+    """
+    from scipy import ndimage
+    from scipy.spatial import cKDTree
+
+    qf = _floor(qki_floor, "qki_floor")
+    px = _check_pixel_size(pixel_um)
+    mask = np.asarray(mask, dtype=bool)
+    comp, n_obj = ndimage.label((np.asarray(qki, dtype=float) > qf) & mask,
+                                structure=np.ones((3, 3), dtype=int))
+    centres = np.asarray(centres, dtype=float).reshape(-1, 2)
+    out = dict(n_qki_objects=int(n_obj), n_spots_object=int(len(centres)),
+               frac_miat_spots_on_qki_object=np.nan, median_nn_dist_um_miat_to_qki_object=np.nan,
+               na_reason_object_coloc="")
+    if len(centres) == 0:
+        out["na_reason_object_coloc"] = "NO_SPOTS"
+        return out
+    out["frac_miat_spots_on_qki_object"] = float(np.mean(
+        [bool((comp[np.asarray(y, int), np.asarray(x, int)] > 0).any()) for y, x in footprints]))
+    if n_obj == 0:
+        out["na_reason_object_coloc"] = "NO_QKI_OBJECTS"
+        return out
+    objects = np.asarray(ndimage.center_of_mass(np.ones(comp.shape), comp, np.arange(1, n_obj + 1)))
+    out["median_nn_dist_um_miat_to_qki_object"] = float(np.median(cKDTree(objects).query(centres)[0]) * px)
+    return out
+
+
+def local_pearson_at_spots(miat, qki, mask, centres, *, window_px: int = LOCAL_WINDOW_PX,
+                           min_pixels: int = LOCAL_MIN_PIXELS) -> dict:
+    """Mean over spots of the Pearson r in a ``window_px`` square centred on each spot.
+
+    The window is clipped at the image border and restricted to ``mask``; a spot with fewer than
+    ``min_pixels`` window pixels or zero variance in either channel contributes NaN and is not averaged.
+    """
+    mask = np.asarray(mask, dtype=bool)
+    m = np.asarray(miat, dtype=float)
+    q = np.asarray(qki, dtype=float)
+    half = int(window_px) // 2
+    values = []
+    for cy, cx in np.rint(np.asarray(centres, dtype=float).reshape(-1, 2)).astype(int):
+        sl = (slice(max(cy - half, 0), cy + half + 1), slice(max(cx - half, 0), cx + half + 1))
+        k = mask[sl]
+        a, b = m[sl][k], q[sl][k]
+        values.append(_pearson(a, b) if a.size >= min_pixels else np.nan)
+    finite = np.asarray(values, dtype=float)
+    finite = finite[np.isfinite(finite)]
+    w = int(window_px)
+    return {f"mean_local_pearson_{w}x{w}": float(finite.mean()) if finite.size else np.nan,
+            "n_spots_local_pearson": int(finite.size),
+            "na_reason_local_pearson": "" if finite.size else "NO_ESTIMABLE_SPOT"}

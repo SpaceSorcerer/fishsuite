@@ -167,8 +167,7 @@ def test_mde_is_larger_at_a_stricter_alpha_and_reproduces_a_known_value():
     assert m01 > m05
     # Cross-checked against the power function this module solves: at the returned
     # effect the two-sided power is 0.80 by construction.
-    j = 1.0 - 3.0 / (4.0 * 6 - 9.0)
-    assert st._power_two_sided(m05 / j, 0.05, 3, 3) == pytest.approx(0.80, abs=1e-6)
+    assert st._power_two_sided(m05, 0.05, 3, 3) == pytest.approx(0.80, abs=1e-6)
     # More wells detect a smaller effect.
     assert st.mde_hedges_g(0.05, n1=6, n2=6) < m05
 

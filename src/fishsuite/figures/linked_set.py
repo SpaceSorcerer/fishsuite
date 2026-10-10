@@ -15,7 +15,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 from matplotlib.patches import Circle, Rectangle
 
-from .style import AXIAL, COL, LINE_DAPI, LINE_MIAT, LINE_QKI, LV, colorize, footer
+from .style import AXIAL, COL, LINE_DAPI, LINE_MIAT, LINE_QKI, colorize, footer, run_lv
 
 
 def nucleus_box(mask):
@@ -132,6 +132,7 @@ def build_linked_set(run, field_id, nucleus_id, rep_distance, label="", mix=Fals
 
     saver = run.saver
     tag = run.arm.replace(" ", "")
+    LV = run_lv(run)
     SFX = "_merge_MIATxQKI" if mix else ""
     _m = (lambda d: {k: v for k, v in d.items() if k != "dapi"}) if mix else (lambda d: d)
     FLD = str(field_id); NID = int(nucleus_id); LBL = f" ({label})" if label else ""
@@ -151,9 +152,9 @@ def build_linked_set(run, field_id, nucleus_id, rep_distance, label="", mix=Fals
 
     # B1: FOV ortho with box + line
     sub = stack[:, zz0:zz1]; nzw = sub.shape[1]; H, W = stack.shape[2:]
-    xy = colorize(_m({"dapi": stack[2, z0], "miat": stack[0, z0], "qki": stack[1, z0]}))
-    xz = colorize(_m(xz_section(sub, cy)))  # row i = plane zz0 + i, drawn top-down like B2 (render_ortho_figure)
-    yz = colorize(_m({"dapi": sub[2, :, :, cx].T, "miat": sub[0, :, :, cx].T, "qki": sub[1, :, :, cx].T}))
+    xy = colorize(_m({"dapi": stack[2, z0], "miat": stack[0, z0], "qki": stack[1, z0]}), lv=LV)
+    xz = colorize(_m(xz_section(sub, cy)), lv=LV)  # row i = plane zz0 + i, drawn top-down like B2 (render_ortho_figure)
+    yz = colorize(_m({"dapi": sub[2, :, :, cx].T, "miat": sub[0, :, :, cx].T, "qki": sub[1, :, :, cx].T}), lv=LV)
     zum = nzw * DZ * AXIAL; wum = W * px; hum = H * px; sc = 3.4 / wum; gap = .05
     fw = (wum + zum) * sc + .25 + gap; fh = (hum + zum) * sc + .6 + gap
     fig = plt.figure(figsize=(fw, fh), facecolor='white')
@@ -186,7 +187,7 @@ def build_linked_set(run, field_id, nucleus_id, rep_distance, label="", mix=Fals
     pad = int(np.ceil(1.5 / px))
     y0c, y1c = max(ys.min() - pad, 0), min(ys.max() + pad + 1, H)
     x0c, x1c = max(xs.min() - pad, 0), min(xs.max() + pad + 1, W)
-    zoom = colorize(_m({"dapi": P["dapi"][y0c:y1c, x0c:x1c], "miat": P["miat"][y0c:y1c, x0c:x1c], "qki": P["qki"][y0c:y1c, x0c:x1c]}))
+    zoom = colorize(_m({"dapi": P["dapi"][y0c:y1c, x0c:x1c], "miat": P["miat"][y0c:y1c, x0c:x1c], "qki": P["qki"][y0c:y1c, x0c:x1c]}), lv=LV)
     fig = plt.figure(figsize=(2.8, 3.15), facecolor='white')
     ax = fig.add_axes([.03, .12, .94, .8]); ax.imshow(zoom, interpolation='nearest'); ax.set_axis_off()
     ax.contour(mask[y0c:y1c, x0c:x1c], levels=[.5], colors='white', linewidths=.4)

@@ -115,7 +115,11 @@ def native_figures(run_dir, groups_file, out):
 @click.option('--linked', 'extra_linked', multiple=True, help='Extra linked set FIELD:NUCLEUS[:LABEL], repeatable.')
 @click.option('--native-only', is_flag=True, help='Write only <stem>_native.svg twins; data to <out>/_native_rerender_scratch.')
 @click.option('--seed', default=0, show_default=True, type=int)
-def fig_panels(menu_dir, backfill_dir, run_dir, out_dir, arm, raw_dir, steps, rep_field, extra_linked, native_only, seed):
+@click.option('--display-ranges', default=None,
+              help='Per-set display ranges, raw a.u.: MIAT=lo:hi,QKI=lo:hi,DAPI=lo:hi or a preset key '
+                   '(fishsuite.figures.style.DISPLAY_PRESETS). Default: the locked basal LV.')
+def fig_panels(menu_dir, backfill_dir, run_dir, out_dir, arm, raw_dir, steps, rep_field, extra_linked, native_only, seed,
+               display_ranges):
     """Rebuild the locked basal MIAT x QKI figure gallery (A/B/R/C/D panels). Render only: no detection or thresholds."""
     from .figures.config import PanelRun
     from .figures.gallery import STEPS, build_gallery
@@ -129,7 +133,13 @@ def fig_panels(menu_dir, backfill_dir, run_dir, out_dir, arm, raw_dir, steps, re
         if len(parts) < 2:
             raise click.BadParameter(f"{spec!r} is not FIELD:NUCLEUS[:LABEL]", param_hint='--linked')
         extra.append((parts[0], int(parts[1]), parts[2] if len(parts) > 2 else ""))
-    run = PanelRun(menu_dir, backfill_dir, run_dir, out_dir, arm=arm, raw_dir=raw_dir, native_only=native_only)
+    from .figures.style import parse_display_ranges
+    try:
+        lv = parse_display_ranges(display_ranges)
+    except ValueError as exc:
+        raise click.BadParameter(str(exc), param_hint='--display-ranges') from exc
+    run = PanelRun(menu_dir, backfill_dir, run_dir, out_dir, arm=arm, raw_dir=raw_dir, native_only=native_only,
+                   display_ranges=lv)
     res = build_gallery(run, steps=st, rep_field=rep_field, extra_linked=extra, seed=seed, log=click.echo)
     click.echo(f"Figure panels: {Path(out_dir)} ({res.get('n_png', 'n/a')} PNG panels indexed)")
 

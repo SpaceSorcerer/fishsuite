@@ -51,8 +51,7 @@ def validate_report(out):
     np.testing.assert_allclose(members.p_welch_holm_within_family, holm(members.p_welch.to_list()), equal_nan=True)
     from .stats import _power_two_sided
     for c in contrasts.loc[contrasts.endpoint.isin([COUNT,FRACTION])].itertuples():
-        correction = 1-3/(4*(c.n_wells_test+c.n_wells_reference)-9)
-        power = _power_two_sided(c.mde_hedges_g_at_family_alpha/correction,
+        power = _power_two_sided(c.mde_hedges_g_at_family_alpha,
                                  .05/c.holm_family_size,c.n_wells_test,c.n_wells_reference)
         assert np.isclose(power,.8,atol=1e-7), (c.endpoint,power)
     for name in ['rna1_nuclear_spot_fraction','rna1_cyto_spots_per_nucleus']:
