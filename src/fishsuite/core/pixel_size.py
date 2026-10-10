@@ -28,6 +28,12 @@ def resolve_pixel_um(*, cli=None, recorded=None, where: str = "") -> float:
     return FALLBACK_PIXEL_UM
 
 
+def warn_undeclared_voxel(where, substituted_nm: float) -> None:
+    """Log that an image declared no lateral pixel size and ``substituted_nm`` is used (value unchanged)."""
+    log.warning("%s declares no lateral pixel size; substituting %g nm/px (correct only for unbinned "
+                "100x acquisitions; areas and distances are wrong for binned data)", where, substituted_nm)
+
+
 def nm_to_um(voxel_xy_nm):
     """voxel_xy_nm / 1000, or None when the recorded value is missing, non-finite or not positive."""
     return float(voxel_xy_nm) / 1000.0 if _valid(voxel_xy_nm) else None

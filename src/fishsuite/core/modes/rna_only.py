@@ -415,6 +415,8 @@ def run_one(
     voxel_xy_nm = _safe_float(img.voxel_xy_nm)
     if not (voxel_xy_nm > 0):
         voxel_xy_nm = 65.0  # H9 100x fallback
+        from ..pixel_size import warn_undeclared_voxel
+        warn_undeclared_voxel(path, voxel_xy_nm)
     voxel_z_nm = _safe_float(img.voxel_z_nm)
     if not (voxel_z_nm > 0):
         voxel_z_nm = 230.0

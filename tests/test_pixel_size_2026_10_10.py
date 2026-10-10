@@ -137,3 +137,13 @@ def test_d1_footprint_area_scales_with_per_row_pixel_size(monkeypatch):
     nv = pd.DataFrame(dict(integrated_nuclear_miat=[1.0], n_miat_spots=[2], mean_nuclear_qki=[1.0]))
     d_scatters.build_d_round2(nv, sv, None, px_um=np.array([0.13, 0.065]))
     np.testing.assert_allclose(seen["D1_punctum_MIAT_vs_footprint_area_pooled_r2"], [10 * 0.13 ** 2, 10 * 0.065 ** 2])
+
+
+def test_undeclared_voxel_substitution_warns_without_changing_the_value(caplog):
+    from fishsuite.core.pixel_size import warn_undeclared_voxel
+    with caplog.at_level(logging.WARNING, logger="fishsuite.core.pixel_size"):
+        warn_undeclared_voxel("img.vsi", 65.0)
+    assert "img.vsi declares no lateral pixel size; substituting 65 nm/px" in caplog.text
+    for rel in ("core/modes/rna_only.py", "core/modes/rna_rna.py", "core/coloc_backfill.py"):
+        src = (SRC / rel).read_text(encoding="utf-8")
+        assert src.count("warn_undeclared_voxel(") == 1 and "65.0" in src, rel

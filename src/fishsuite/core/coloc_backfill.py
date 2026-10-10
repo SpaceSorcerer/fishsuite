@@ -945,6 +945,9 @@ def backfill_run(
 
             voxel_xy_nm = float(img.voxel_xy_nm) if img.voxel_xy_nm == img.voxel_xy_nm \
                 and img.voxel_xy_nm > 0 else 65.0
+            if not (img.voxel_xy_nm == img.voxel_xy_nm and img.voxel_xy_nm > 0):
+                from .pixel_size import warn_undeclared_voxel
+                warn_undeclared_voxel(image_name, voxel_xy_nm)
             nucleolus_labels = _build_nucleolus_labels(cfg, labels, dapi_2d, voxel_xy_nm)
 
             # MIAT (rna1) spots for this image, grouped by nucleus_id (>=1)

@@ -1468,6 +1468,8 @@ def run_one(
     voxel_xy_declared = bool(voxel_xy_nm > 0)
     if not voxel_xy_declared:
         voxel_xy_nm = 65.0
+        from ..pixel_size import warn_undeclared_voxel
+        warn_undeclared_voxel(path, voxel_xy_nm)
     voxel_z_nm = _safe_float(img.voxel_z_nm)
     if not (voxel_z_nm > 0):
         voxel_z_nm = 230.0
