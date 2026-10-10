@@ -17,7 +17,7 @@ from .d_scatters import build_d_round2
 from .fov import build_fov, export_native_tiffs
 from .linked_set import build_linked_set
 from .rep_crops import build_rep_crops
-from .style import apply_style, check_luts
+from .style import apply_style, check_luts, run_px
 
 STEPS = ("select", "fov", "linked", "reps", "c", "d", "mix", "tiff", "index")
 
@@ -102,7 +102,9 @@ def build_gallery(run: PanelRun, steps=STEPS, rep_field="14", fov_fields=None, e
     if "c" in steps:
         tables["C_holm_effect"] = build_c_panels(nv, fields, run.saver, arm=run.arm, seed=seed)
     if "d" in steps:
-        tables["D_correlations"] = pd.DataFrame(build_d_round2(nv, sv, run.saver, footer_prefix=f"{run.arm}, fields {' + '.join(fields)} combined"))
+        px_by_image = {k: run_px(run, k) for k in sv.image.unique()}
+        tables["D_correlations"] = pd.DataFrame(build_d_round2(nv, sv, run.saver, px_um=sv.image.map(px_by_image).to_numpy(),
+                                                               footer_prefix=f"{run.arm}, fields {' + '.join(fields)} combined"))
     if "mix" in steps:
         for f in fov_fields:
             build_fov(run, f, channels=("merge_MIATxQKI",))

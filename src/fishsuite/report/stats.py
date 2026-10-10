@@ -63,7 +63,9 @@ def welch(a: np.ndarray, b: np.ndarray, alpha: float = ALPHA) -> dict:
                mean_test=float(a.mean()) if n1 else np.nan,
                mean_ref=float(b.mean()) if n2 else np.nan,
                diff=np.nan, ci_low=np.nan, ci_high=np.nan, hedges_g=np.nan,
-               t=np.nan, df=np.nan, p_welch=np.nan, welch_note="")
+               t=np.nan, df=np.nan, p_welch=np.nan, welch_note="",
+               sd_wells_test=float(a.std(ddof=1)) if n1 > 1 else np.nan,
+               sd_wells_reference=float(b.std(ddof=1)) if n2 > 1 else np.nan)
     if n1 < 2 or n2 < 2:
         out["welch_note"] = "fewer than 2 wells with a finite value in one group"
         return out
@@ -211,12 +213,34 @@ def _power_two_sided(d: float, alpha: float, n1: int, n2: int) -> float:
 
     is stable and reproduces the published small-sample values.
     """
-    from scipy import integrate, stats
-
     df = n1 + n2 - 2
     if df < 1:
         return float("nan")
-    ncp = d * math.sqrt(n1 * n2 / (n1 + n2))
+    return _power_noncentral_t(d * math.sqrt(n1 * n2 / (n1 + n2)), df, alpha)
+
+
+def welch_design(n1: int, n2: int, sd1: float, sd2: float) -> tuple[float, float]:
+    """(Welch-Satterthwaite df, k) for per-arm SDs; the Welch noncentrality of a difference of d pooled SDs
+    is d * k, k = pooled SD / sqrt(sd1^2/n1 + sd2^2/n2). (nan, nan) when undefined."""
+    v1, v2 = float(sd1) ** 2 / n1, float(sd2) ** 2 / n2
+    sp2 = ((n1 - 1) * float(sd1) ** 2 + (n2 - 1) * float(sd2) ** 2) / (n1 + n2 - 2)
+    if not (np.isfinite(v1) and np.isfinite(v2)) or v1 + v2 <= 0 or sp2 <= 0:
+        return float("nan"), float("nan")
+    df = (v1 + v2) ** 2 / (v1 ** 2 / (n1 - 1) + v2 ** 2 / (n2 - 1))
+    return float(df), float(math.sqrt(sp2 / (v1 + v2)))
+
+
+def _power_welch(d: float, alpha: float, n1: int, n2: int, sd1: float, sd2: float) -> float:
+    """Two-sided Welch power: noncentral t with Welch-Satterthwaite df from the per-arm SDs (the
+    usual approximation; at 3 v 3 wells it still overstates the power of the realised Welch test)."""
+    df, k = welch_design(n1, n2, sd1, sd2)
+    return _power_noncentral_t(d * k, df, alpha) if np.isfinite(df) else float("nan")
+
+
+def _power_noncentral_t(ncp: float, df: float, alpha: float) -> float:
+    """P(|T| > t_{1-alpha/2, df}) for T noncentral t(df, ncp), df may be fractional; quadrature as above."""
+    from scipy import integrate, stats
+
     c = stats.t.ppf(1 - alpha / 2, df)
     chi2 = stats.chi2(df)
     hi = float(chi2.ppf(1 - 1e-12))
@@ -229,8 +253,14 @@ def _power_two_sided(d: float, alpha: float, n1: int, n2: int) -> float:
     return float(up + lo)
 
 
-def mde_hedges_g(alpha: float, power: float = 0.80, n1: int = 3, n2: int = 3) -> float:
+def mde_hedges_g(alpha: float, power: float = 0.80, n1: int = 3, n2: int = 3,
+                 sd1: float | None = None, sd2: float | None = None) -> float:
     """Smallest Hedges g detectable at ``power``, two-sided, at significance ``alpha``.
+
+    With per-arm SDs (``sd1``, ``sd2``, the observed well SDs) the power is the Welch test's: noncentral
+    t with Welch-Satterthwaite df, effect in pooled-SD units so it compares with ``hedges_g``. This makes
+    the MDE depend on the observed SDs. Without SDs, the equal-variance Student t (df = n1 + n2 - 2).
+    Given but non-finite or all-zero SDs give NaN.
 
     Returned as the POPULATION standardized difference delta, the scale Hedges g
     estimates. Hedges j corrects an estimator's bias and does not scale the effect
@@ -242,12 +272,20 @@ def mde_hedges_g(alpha: float, power: float = 0.80, n1: int = 3, n2: int = 3) ->
         return float("nan")
     if not np.isfinite(alpha) or alpha <= 0 or alpha >= 1:
         return float("nan")
+    if sd1 is None and sd2 is None:
+        def pw(d):
+            return _power_two_sided(d, alpha, n1, n2)
+    elif not np.isfinite(welch_design(n1, n2, sd1, sd2)[0]):
+        return float("nan")
+    else:
+        def pw(d):
+            return _power_welch(d, alpha, n1, n2, sd1, sd2)
     lo, hi = 0.0, 1.0
-    while _power_two_sided(hi, alpha, n1, n2) < power and hi < 1e3:
+    while pw(hi) < power and hi < 1e3:
         hi *= 2
     for _ in range(80):
         mid = (lo + hi) / 2
-        if _power_two_sided(mid, alpha, n1, n2) < power:
+        if pw(mid) < power:
             lo = mid
         else:
             hi = mid

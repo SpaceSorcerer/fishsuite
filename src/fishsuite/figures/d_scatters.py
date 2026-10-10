@@ -32,8 +32,11 @@ def scat(stem, x, y, xl, yl, pooled, note, saver, n_nuc_p=None, rows=None, foote
     return rows
 
 
-def build_d_round2(nv, sv, saver, px_um=0.13, footer_prefix="VPR noDox, fields 14 + 15 combined"):
-    """The four round-2 D panels (D1, D2 pooled puncta; D4, D5 per nucleus); returns the stats rows."""
+def build_d_round2(nv, sv, saver, px_um=None, footer_prefix="VPR noDox, fields 14 + 15 combined"):
+    """The four round-2 D panels (D1, D2 pooled puncta; D4, D5 per nucleus); returns the stats rows.
+    ``px_um``: scalar or one value per ``sv`` row; None falls back to PX_UM with a WARNING."""
+    from ..core.pixel_size import resolve_pixel_um
+    px_um = np.asarray(px_um, dtype=float) if px_um is not None else resolve_pixel_um(where="D1 footprint area")
     rows = []
     nn = sv.groupby(["image", "nucleus_id"]).ngroups
     kw = dict(saver=saver, rows=rows, footer_prefix=footer_prefix)

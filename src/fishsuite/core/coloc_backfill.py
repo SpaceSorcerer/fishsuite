@@ -661,7 +661,8 @@ def _build_nucleolus_labels(cfg, labels, dapi_2d, voxel_xy_nm):
             closing_radius_px=int(ncfg.closing_radius_px),
             min_border_distance_px=int(getattr(ncfg, "min_border_distance_px", 3)),
         )
-        pix_um = float(voxel_xy_nm) / 1000.0 if voxel_xy_nm else 0.13
+        from .pixel_size import nm_to_um, resolve_pixel_um
+        pix_um = resolve_pixel_um(recorded=nm_to_um(voxel_xy_nm), where="nucleolus detection")
         return detect_nucleoli(labels, dapi_2d, pixel_size_um=pix_um, params=params)
     except Exception as exc:  # noqa: BLE001
         print(f"  WARN: nucleolus recompute failed ({type(exc).__name__}: {exc}); "
@@ -959,7 +960,8 @@ def backfill_run(
                     continue
                 spots_by_nid[nid] = grp[["x_px", "y_px"]].astype(float).to_numpy()
 
-            pix_um = voxel_xy_nm / 1000.0 if voxel_xy_nm else 0.13
+            from .pixel_size import nm_to_um, resolve_pixel_um
+            pix_um = resolve_pixel_um(recorded=nm_to_um(voxel_xy_nm), where=image_name)
             radial_bins_px = [float(b) / pix_um for b in radial_bins_um if float(b) > 0]
 
             out = _compute_coloc_extras_for_image(

@@ -13,7 +13,7 @@ def cache_signature(run,frame,definitions=()):
     """Content attestations, not cache existence, govern reuse."""
     import hashlib
     from .provenance import sha256
-    return dict(version='A20-1',config=sha256(run/'run_config.json'),nuclei=sha256(run/'nuclei_metrics.csv'),
+    return dict(version='A20-2',config=sha256(run/'run_config.json'),nuclei=sha256(run/'nuclei_metrics.csv'),
                 values=hashlib.sha256(pd.util.hash_pandas_object(frame,index=True).values.tobytes()).hexdigest(),
                 endpoints=[dict(name=e.name,column=e.column,family=e.family,usability=e.usability_flag) for e in definitions])
 
@@ -109,12 +109,13 @@ def amend_rnase(sheets, run, out):
     from functools import lru_cache
     from .stats import mde_hedges_g
     @lru_cache(None)
-    def mde(alpha,n1,n2): return mde_hedges_g(alpha,n1=n1,n2=n2)
+    def mde(alpha,n1,n2,sd1,sd2): return mde_hedges_g(alpha,n1=n1,n2=n2,sd1=sd1,sd2=sd2)
     for i in c.index[c.in_holm_family]:
         n1,n2,k=int(c.at[i,'n_wells_test']),int(c.at[i,'n_wells_reference']),c.at[i,'holm_family_size']
         if min(n1,n2)>=2 and k>0:
-            c.at[i,'mde_hedges_g_alpha_0p05']=mde(.05,n1,n2)
-            c.at[i,'mde_hedges_g_at_family_alpha']=mde(.05/float(k),n1,n2)
+            sds=(float(c.at[i,'sd_wells_test']),float(c.at[i,'sd_wells_reference']))
+            c.at[i,'mde_hedges_g_alpha_0p05']=mde(.05,n1,n2,*sds)
+            c.at[i,'mde_hedges_g_at_family_alpha']=mde(.05/float(k),n1,n2,*sds)
             c.at[i,'observed_g_reaches_mde']=abs(c.at[i,'hedges_g'])>=c.at[i,'mde_hedges_g_at_family_alpha']
     sheets['Contrasts'],sheets['Per nucleus'] = c,n
     sheets['Endpoint definitions'] = pd.DataFrame([e.__dict__ for e in defs])

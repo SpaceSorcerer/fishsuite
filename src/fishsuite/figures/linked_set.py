@@ -15,7 +15,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 from matplotlib.patches import Circle, Rectangle
 
-from .style import AXIAL, COL, LINE_DAPI, LINE_MIAT, LINE_QKI, colorize, footer, run_lv
+from .style import AXIAL, COL, LINE_DAPI, LINE_MIAT, LINE_QKI, colorize, footer, run_lv, run_px
 
 
 def nucleus_box(mask):
@@ -71,8 +71,8 @@ def line_rule_text(R_PX, px):
 def linked_geometry(run, field_id, nucleus_id, R_PX=2.0, spots=None):
     """Everything B1-B4 share, computed from the h5 analysed plane + mask and the per-punctum table (no raw stack)."""
     sel = run.selection()
-    px = sel["pixel_size_um"][0]
     key = run.image_key(field_id)
+    px = run_px(run, key, recorded=sel.get("pixel_size_um", [None])[0])
     P = run.load_plane(key)
     mask = P["nucleus_labels"] == int(nucleus_id)
     spots = run.spots_all() if spots is None else spots

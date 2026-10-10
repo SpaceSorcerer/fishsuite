@@ -640,10 +640,10 @@ def build_contrasts(well: pd.DataFrame, field: pd.DataFrame,
     out["observed_g_reaches_mde"] = pd.NA
     cache: Dict[Tuple[float, int, int], float] = {}
 
-    def _mde(a: float, n1: int, n2: int) -> float:
-        key = (round(a, 12), n1, n2)
+    def _mde(a: float, n1: int, n2: int, sd1: float, sd2: float) -> float:
+        key = (round(a, 12), n1, n2, sd1, sd2)
         if key not in cache:
-            cache[key] = mde_hedges_g(a, n1=n1, n2=n2)
+            cache[key] = mde_hedges_g(a, n1=n1, n2=n2, sd1=sd1, sd2=sd2)
         return cache[key]
 
     for i in out.index:
@@ -653,11 +653,12 @@ def build_contrasts(well: pd.DataFrame, field: pd.DataFrame,
         n2 = int(out.at[i, "n_wells_reference"])
         if n1 < 2 or n2 < 2:
             continue
-        out.at[i, "mde_hedges_g_alpha_0p05"] = _mde(alpha, n1, n2)
+        sds = (float(out.at[i, "sd_wells_test"]), float(out.at[i, "sd_wells_reference"]))
+        out.at[i, "mde_hedges_g_alpha_0p05"] = _mde(alpha, n1, n2, *sds)
         k = out.at[i, "holm_family_size"]
         if not np.isfinite(k) or k < 1:
             continue
-        out.at[i, "mde_hedges_g_at_family_alpha"] = _mde(alpha / float(k), n1, n2)
+        out.at[i, "mde_hedges_g_at_family_alpha"] = _mde(alpha / float(k), n1, n2, *sds)
         g = out.at[i, "hedges_g"]
         if np.isfinite(g):
             out.at[i, "observed_g_reaches_mde"] = bool(

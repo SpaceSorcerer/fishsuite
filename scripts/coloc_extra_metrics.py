@@ -42,14 +42,13 @@ def nucleus_rows(record, data, spots, pixels, *, miat_floor, qki_floor, pixel_um
         own = spots.loc[pick]
         fps = [pixels.get(uid) for uid in own.spot_uid]
         has_fp = np.array([fp is not None for fp in fps], dtype=bool)
-        centres = np.column_stack((own.center_y_px.to_numpy(float), own.center_x_px.to_numpy(float)))[has_fp]
+        centres = np.column_stack((own.center_y_px.to_numpy(float), own.center_x_px.to_numpy(float)))
         row = dict(ident, nucleus_id=int(nid), n_pixels_nucleoplasm=int(mask.sum()),
                    n_spots_parent=int((parent == nid).sum()), n_spots_nucleoplasm=int(pick.sum()),
                    n_spots_without_footprint=int((~has_fp).sum()))
         row |= cpm.above_floor_pearson_icq(miat, qki, mask, miat_floor=miat_floor, qki_floor=qki_floor)
         row |= cpm.manders_shared_floor(miat, qki, mask, miat_floor=miat_floor, qki_floor=qki_floor)
-        row |= cpm.object_coloc(qki, mask, centres, [fp for fp in fps if fp is not None],
-                                qki_floor=qki_floor, pixel_um=pixel_um)
+        row |= cpm.object_coloc(qki, mask, centres, fps, qki_floor=qki_floor, pixel_um=pixel_um)
         row |= cpm.local_pearson_at_spots(miat, qki, mask, centres)
         rows.append(row | dict(miat_floor=miat_floor, qki_floor=qki_floor, pixel_um=pixel_um,
                                measurement_plane_z_1based=int(data.selected_z_1based)))
@@ -101,7 +100,10 @@ def main(argv=None):
                      "the parent nucleus label and off its nucleolus label in the saved masks",
         "eligibility_summary": (f"{ELIGIBILITY} n_eligible_spots total "
                                 f"{int(pd.read_csv(elig).n_eligible_spots.sum())}" if elig.is_file() else "absent"),
-        "object_rule": f"QKI objects = {cpm.OBJECT_CONNECTIVITY}-connected components of QKI > floor within N",
+        "manders_rule": "thresholded Manders (both floors): numerator needs both channels above their floors",
+        "object_rule": f"QKI objects = {cpm.OBJECT_CONNECTIVITY}-connected components of QKI > floor within N; "
+                       "overlap fraction over spots with footprint rows, nearest-object distance and local "
+                       "Pearson over every nucleoplasm spot centre",
         "local_pearson": f"{cpm.LOCAL_WINDOW_PX}x{cpm.LOCAL_WINDOW_PX} px window within N, >= {cpm.LOCAL_MIN_PIXELS} px",
         "n_nuclei": len(table)})
     ok &= repro.write_versions_txt(out, args.seed)

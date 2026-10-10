@@ -2171,7 +2171,8 @@ def run_one(
                 closing_radius_px=int(_ncfg.closing_radius_px),
                 min_border_distance_px=int(getattr(_ncfg, "min_border_distance_px", 3)),
             )
-            _pix_um = float(voxel_xy_nm) / 1000.0 if voxel_xy_nm else 0.13
+            from ..pixel_size import nm_to_um, resolve_pixel_um
+            _pix_um = resolve_pixel_um(recorded=nm_to_um(voxel_xy_nm), where="nucleolus detection")
             nucleolus_labels_precomputed = detect_nucleoli(
                 labels, dapi_2d, pixel_size_um=_pix_um, params=_np
             )
@@ -3820,7 +3821,8 @@ def run_one(
                 closing_radius_px=int(_ncfg.closing_radius_px),
                 min_border_distance_px=int(getattr(_ncfg, "min_border_distance_px", 3)),
             )
-            _pix_um = float(voxel_xy_nm) / 1000.0 if voxel_xy_nm else 0.13
+            from ..pixel_size import nm_to_um, resolve_pixel_um
+            _pix_um = resolve_pixel_um(recorded=nm_to_um(voxel_xy_nm), where="nucleolus detection")
             # Reuse the labels already detected for the partner-null exclusion
             # (computed once before the per-nucleus loop) so detection runs only
             # once per image. Same params (the precompute used the same NucleolusParams),

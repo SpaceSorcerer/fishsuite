@@ -50,7 +50,7 @@ from .output import sanitize_condition_for_filename
 # the non-decon VSI under the staging tree).
 from .coloc_backfill import _resolve_plain_vsi
 
-PIXEL_UM_DEFAULT = 0.13          # MIAT-QKI hESC 100x voxel (130 nm/px)
+from .pixel_size import FALLBACK_PIXEL_UM as PIXEL_UM_DEFAULT, nm_to_um, resolve_pixel_um  # noqa: E402
 SCALEBAR_UM_DEFAULT = 25.0       # matches the burned scalebar on the other panels
 DEFAULT_OUT_REL = ("figures", "07_coloc", "79_pipeline_walkthrough.png")
 
@@ -102,7 +102,7 @@ def render_panel_g(
     *,
     vmin: Optional[float] = None,
     vmax: Optional[float] = None,
-    pixel_um: float = PIXEL_UM_DEFAULT,
+    pixel_um: Optional[float] = None,
     scalebar_um: float = SCALEBAR_UM_DEFAULT,
     marker_color: str = "yellow",
     marker_size: float = 11.0,
@@ -119,6 +119,7 @@ def render_panel_g(
     coordinates. Returns a dict with the AxesImage, the spot PathCollection, the
     masked display array, the threshold and ``n_spots`` (for testing/inspection).
     """
+    pixel_um = resolve_pixel_um(recorded=pixel_um, where="walkthrough panel G")
     qki = np.asarray(qki_2d, dtype=np.float64)
     thr = float(threshold)
     disp = np.ma.masked_less(qki, thr)            # sub-threshold -> masked (black)
@@ -307,9 +308,8 @@ def _recompute_qki_plane(cfg, vsi_path):
     )
     qki_2d = _io.extract_channel_at_z(img, rna2_idx, z_1indexed=dapi_z)
 
-    vx = float(img.voxel_xy_nm) if (img.voxel_xy_nm == img.voxel_xy_nm
-                                    and img.voxel_xy_nm > 0) else 130.0
-    return np.asarray(qki_2d, dtype=np.float64), vx / 1000.0
+    px_um = resolve_pixel_um(recorded=nm_to_um(img.voxel_xy_nm), where=str(vsi_path))
+    return np.asarray(qki_2d, dtype=np.float64), px_um
 
 
 def _resolve_qki_threshold(row, run_dir, image_value, rc: dict) -> float:

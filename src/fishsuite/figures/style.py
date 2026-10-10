@@ -6,7 +6,6 @@ locked defaults: MIAT yellow, QKI magenta, DAPI blue (never green). rcParams are
 """
 from __future__ import annotations
 
-import logging
 import textwrap
 from pathlib import Path
 
@@ -26,7 +25,7 @@ LINE_MIAT, LINE_QKI, LINE_DAPI = '#C9A900', '#CC00CC', '#0072B2'
 LV = {"miat": (500.0, 2250.0), "qki": (1050.0, 3746.0), "dapi": (607.0, 9000.0)}
 RGB = {"miat": (1, 1, 0), "qki": (1, 0, 1), "dapi": (0.25, 0.45, 1.0)}
 AXIAL = 0.878
-PX_UM = 0.13
+from ..core.pixel_size import FALLBACK_PIXEL_UM as PX_UM, resolve_pixel_um  # noqa: E402
 FILT = "Filter: MIAT min 500 + QKI min 1050 + LoG 174; single analysed plane."
 
 WELL_MEAN_MARKER = dict(s=110, marker='o', edgecolor='black', lw=1.0, zorder=5)
@@ -59,15 +58,12 @@ def run_lv(run) -> dict:
     return getattr(run, "display_ranges", None) or LV
 
 
-def run_px(run, key=None) -> float:
-    """Pixel size (um) of image ``key`` from the run (``--px-um`` or its image manifest); PX_UM only as a logged fallback."""
+def run_px(run, key=None, recorded=None) -> float:
+    """Pixel size (um) of image ``key``: the run (``--px-um``, then its image manifest), then ``recorded``
+    (e.g. the menu selection), then PX_UM with a logged WARNING (core.pixel_size.resolve_pixel_um)."""
     resolve = getattr(run, "pixel_size_um", None)
     px = resolve(key) if callable(resolve) else None
-    if px is None:
-        logging.getLogger(__name__).warning(
-            "pixel size not given by the run or --px-um; falling back to PX_UM = %g um (scale bars assume it)", PX_UM)
-        return PX_UM
-    return float(px)
+    return resolve_pixel_um(recorded=px if px is not None else recorded, where=f"image {key}")
 
 
 def display_note(lv) -> str:

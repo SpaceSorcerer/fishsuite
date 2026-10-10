@@ -143,3 +143,26 @@ def test_script_refuses_pixel_size_that_disagrees_with_manifest(tmp_path):
     with pytest.raises(ValueError, match="disagrees with manifest"):
         _script().main(["--backfill", str(tmp_path), "--miat-floor", "500", "--qki-floor", "1000",
                         "--pixel-um", "0.065", "--out", str(tmp_path / "out")])
+
+
+def test_spot_without_footprint_still_counts_for_distance_and_local_pearson(tmp_path):
+    _mini_backfill(tmp_path)
+    pix = pd.read_csv(tmp_path / "footprint_pixels.csv.gz")
+    pix[pix.spot_uid != "s2"].to_csv(tmp_path / "footprint_pixels.csv.gz", index=False, compression="gzip")
+    out = tmp_path / "out"
+    _script().main(["--backfill", str(tmp_path), "--miat-floor", "500", "--qki-floor", "1000",
+                    "--pixel-um", "0.065", "--out", str(out)])
+    t = pd.read_csv(out / "coloc_extra_metrics.csv").set_index("nucleus_id")
+    assert t.loc[2, "n_spots_without_footprint"] == 1 and t.loc[2, "n_spots_footprint"] == 1
+    assert t.loc[2, "n_spots_object"] == 2                 # both centres enter the distance
+    assert t.loc[2, "frac_miat_spots_on_qki_object"] == 0.0  # overlap over the footprint-bearing spot only
+    assert t.loc[2, "median_nn_dist_um_miat_to_qki_object"] < np.hypot(5, 5) * 0.065  # s2 sits on the object
+    assert t.loc[2, "n_spots_local_pearson"] == 2
+
+
+def test_object_coloc_ignores_missing_footprints_for_overlap_only():
+    qki = np.zeros((20, 20)); qki[5:8, 5:8] = 1000
+    r = cpm.object_coloc(qki, np.ones((20, 20), bool), np.array([[6, 6], [15, 15]], float),
+                         [None, (np.array([15]), np.array([15]))], qki_floor=500, pixel_um=1.0)
+    assert r["n_spots_footprint"] == 1 and r["frac_miat_spots_on_qki_object"] == 0.0
+    assert r["median_nn_dist_um_miat_to_qki_object"] == pytest.approx(np.median([0, np.hypot(9, 9)]))

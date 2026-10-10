@@ -471,11 +471,12 @@ def _floor(value, name):
 
 
 def manders_shared_floor(miat, qki, mask, *, miat_floor, qki_floor) -> dict:
-    """Thresholded Manders M1/M2 over ``mask`` with fixed floors (replaces per-image median + 2.5 MAD).
+    """Thresholded Manders (both floors) M1/M2 over ``mask`` with fixed floors (replaces per-image median + 2.5 MAD).
 
     M1 = sum MIAT over pixels with MIAT > miat_floor AND QKI > qki_floor / sum MIAT over pixels with
-    MIAT > miat_floor; M2 symmetric. The numerator keeps the channel's own floor (Coloc 2 tM1 form) so
-    M1, M2 lie in [0, 1]; without it pixels below the MIAT floor enter the numerator only.
+    MIAT > miat_floor; M2 symmetric. Both floors apply to the numerator, so M1, M2 lie in [0, 1]. This
+    is not Fiji Coloc 2's tM1, which thresholds only the other channel in the numerator and divides by
+    the channel's total intensity; the two differ whenever there is sub-floor signal.
     """
     mf, qf = _floor(miat_floor, "miat_floor"), _floor(qki_floor, "qki_floor")
     mask = np.asarray(mask, dtype=bool)
@@ -522,9 +523,9 @@ def object_coloc(qki, mask, centres, footprints, *, qki_floor, pixel_um) -> dict
     """MIAT spot vs QKI-above-floor object colocalization inside ``mask``.
 
     QKI objects = connected components (8-connectivity) of (QKI > qki_floor) & mask. ``centres`` is
-    (n, 2) spot centroids (y, x) in px; ``footprints`` holds one (y_px, x_px) integer pair per spot.
-    Returns the fraction of spots whose footprint touches any object and the median distance (um)
-    from spot centroids to the nearest object centroid.
+    (n, 2) spot centroids (y, x) in px; ``footprints`` holds one (y_px, x_px) integer pair per spot, or
+    None where the footprint is unknown. Returns the fraction of spots WITH a footprint that touch any
+    object, and the median distance (um) from every spot centroid to the nearest object centroid.
     """
     from scipy import ndimage
     from scipy.spatial import cKDTree
@@ -535,14 +536,16 @@ def object_coloc(qki, mask, centres, footprints, *, qki_floor, pixel_um) -> dict
     comp, n_obj = ndimage.label((np.asarray(qki, dtype=float) > qf) & mask,
                                 structure=np.ones((3, 3), dtype=int))
     centres = np.asarray(centres, dtype=float).reshape(-1, 2)
-    out = dict(n_qki_objects=int(n_obj), n_spots_object=int(len(centres)),
+    known = [fp for fp in footprints if fp is not None]
+    out = dict(n_qki_objects=int(n_obj), n_spots_object=int(len(centres)), n_spots_footprint=len(known),
                frac_miat_spots_on_qki_object=np.nan, median_nn_dist_um_miat_to_qki_object=np.nan,
                na_reason_object_coloc="")
     if len(centres) == 0:
         out["na_reason_object_coloc"] = "NO_SPOTS"
         return out
-    out["frac_miat_spots_on_qki_object"] = float(np.mean(
-        [bool((comp[np.asarray(y, int), np.asarray(x, int)] > 0).any()) for y, x in footprints]))
+    if known:
+        out["frac_miat_spots_on_qki_object"] = float(np.mean(
+            [bool((comp[np.asarray(y, int), np.asarray(x, int)] > 0).any()) for y, x in known]))
     if n_obj == 0:
         out["na_reason_object_coloc"] = "NO_QKI_OBJECTS"
         return out

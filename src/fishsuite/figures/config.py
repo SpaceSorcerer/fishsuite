@@ -78,7 +78,7 @@ class PanelRun:
 
     def pixel_size_um(self, key=None) -> float | None:
         """--px-um, else voxel_xy_nm / 1000 from the backfill image_manifest.csv (row of ``key`` by basename when
-        given, else the manifest's single value); None when the manifest records none. Raises on disagreeing values."""
+        given, else the manifest's single value); None when the manifest records none or has no row for ``key``. Raises on disagreeing values."""
         if self.px_um is not None:
             return float(self.px_um)
         path = self.backfill_dir / "image_manifest.csv"
@@ -93,7 +93,9 @@ class PanelRun:
             for col in ("image", "image_key"):
                 if col in m:
                     hit |= m[col].astype(str).map(lambda v: Path(v).name.casefold() == name).to_numpy()
-            m = m[hit] if hit.any() else m
+            if not hit.any():
+                return None
+            m = m[hit]
         values = set(pd.to_numeric(m.voxel_xy_nm, errors="coerce").dropna())
         if not values:
             return None
