@@ -39,8 +39,13 @@ from .stats import SEED, fmt_p, stars      # noqa: E402
 def mixed_p_text(r, sep: str = " ") -> str:
     """Footer text for the mixed model; never prints a p from a fit that is not validated."""
     p = pd.to_numeric(r.get('p_mixed', r.get('sensitivity_mixed_p', np.nan)), errors="coerce")
-    if r.get('sensitivity_mixed_status', '') == 'ok' and np.isfinite(p):
+    status = str(r.get('sensitivity_mixed_status', ''))
+    if status == 'ok' and np.isfinite(p):
         return f"mixed model p{sep}{fmt_p(p)}"
+    if 'field-level' in status:
+        return "mixed model not fitted (field-level endpoint)"
+    if 'converg' in status and 'not validated' not in status:
+        return "mixed model did not converge"
     return "mixed model not validated"
 
 OKABE_ITO = {
@@ -223,7 +228,7 @@ def save(fig, out_dir: Path, stem: str, manifest: List[dict], description: str,
     out_dir.mkdir(parents=True, exist_ok=True)
     import re
     texts = [(t, t.get_text()) for t in fig.texts]
-    if setters and not any("axis:" in text for _, text in texts) and not any("mixed model p" in text or "mixed model not validated" in text for _, text in texts):
+    if setters and not any("axis:" in text for _, text in texts) and not any(re.search(r"mixed model (p|not |did not)", text) for _, text in texts):
         run_footer = next((t for t, text in texts if '; run ' in text), None)
         if run_footer is not None:
             run_footer.set_text(run_footer.get_text().replace('; run ', '; axis: focus window; run '))
@@ -871,10 +876,8 @@ def draw_replicate_simple(ax, ctx: FigureContext, endpoint: str, well: pd.DataFr
         def number(key):
             value = pd.to_numeric(r.get(key, np.nan), errors="coerce")
             return f"{value:.3g}" if np.isfinite(value) else "NA"
-        status = str(r.get('sensitivity_mixed_status', 'missing nucleus-level values'))
-        fallback = '; mixed model did not converge' if 'converg' in status and status != 'ok' else ''
         details.append(f"{mixed_p_text(r)}; "
-                       f"Welch (wells) p {fmt_p(r.get('p_welch', np.nan))}{fallback}")
+                       f"Welch (wells) p {fmt_p(r.get('p_welch', np.nan))}")
         level += 1
     set_axis("focus")
     return '; '.join(details) + '; n ' + '; '.join(counts)

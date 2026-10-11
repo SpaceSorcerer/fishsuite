@@ -43,9 +43,11 @@ def test_rows_with_fewer_finite_wells_get_their_own_mde(panel):
     design = panel.mde_hedges_g(n1=2, n2=2)
     contrasts = panel.contrasts_table(well, per_nucleus, design,
                                       "frac_called_coloc_runthr", "frac_called_coloc").set_index("endpoint")
-    col = "mde_cohen_d_equal_variance"
-    assert contrasts.loc["frac_called_coloc_runthr", col] == pytest.approx(5.65, abs=0.01)
-    assert contrasts.loc["pearson_r_csp", col] == pytest.approx(5.65, abs=0.01)
+    col = "mde_welch_sim_pooled_sd"
+    from fishsuite.report.stats import mde_hedges_g
+    shared = mde_hedges_g(0.05, n1=2, n2=2, sd1=np.std([0.1, 0.2], ddof=1), sd2=np.std([0.3, 0.5], ddof=1))
+    assert contrasts.loc["frac_called_coloc_runthr", col] == shared
+    assert contrasts.loc["pearson_r_csp", col] == shared
     empty = contrasts.loc["frac_called_coloc_partner"]
     assert empty.n_wells_test == 0 and empty.mde_note == "TOO_FEW_WELLS"
     assert np.isnan(empty[col])
@@ -69,15 +71,15 @@ def test_overlay_picks_carry_condition_and_well_for_the_field_label(panel, tmp_p
     assert (tmp_path / "f.png").stat().st_size > 0
 
 
-def test_mde_column_is_named_and_disclosed_as_equal_variance_cohen_d(panel):
-    """Astra F7: the MDE is an equal-variance Cohen d planning value, while the
-    tested statistic is Welch; the column name and the README must say so."""
+def test_mde_column_is_named_and_disclosed_as_simulated_welch(panel):
+    """Astra F7: the column name and README state the MDE's definition; since
+    2026-10-11 it is the report's simulated Welch MDE in pooled-SD units."""
     per_nucleus = _two_by_two(panel)
     _fov, well = panel.rollup(per_nucleus)
     panel.ARMS[:] = ["WT", "OE"]
     contrasts = panel.contrasts_table(well, per_nucleus, float("nan"),
                                       "frac_called_coloc_runthr", "frac_called_coloc")
-    assert "mde_cohen_d_equal_variance" in contrasts.columns
+    assert "mde_welch_sim_pooled_sd" in contrasts.columns
     assert not any(c.startswith("mde_hedges") for c in contrasts.columns)
     text = " ".join(f"{a} {b}" for a, b in panel.MDE_README_ROWS)
-    assert "equal-variance" in text and "Welch" in text and "Cohen d" in text
+    assert "Welch" in text and "pooled-SD" in text and "Monte Carlo" in text

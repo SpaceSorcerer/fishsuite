@@ -264,11 +264,14 @@ def test_run_well_ids_load_from_resolved_experiment_hierarchy(panel, tmp_path):
     assert source == "per_image_summary.csv:condition"
 
 
-@pytest.mark.parametrize("n,expected", [(2, 5.65), (3, 3.07), (5, 2.02)])
-def test_mde_is_the_effect_detectable_at_eighty_percent_power(panel, n, expected):
+@pytest.mark.parametrize("n", [2, 3, 5])
+def test_mde_is_the_effect_detectable_at_eighty_percent_power(panel, n):
+    # 2026-10-11: the panel delegates to the report's simulated Welch MDE.
+    from fishsuite.report import stats as rstats
     mde = panel.mde_hedges_g(n1=n, n2=n)
-    assert mde == pytest.approx(expected, abs=0.01)
-    assert panel._power_two_sided(mde, 0.05, n, n) == pytest.approx(0.80, abs=1e-3)
+    assert mde == rstats.mde_hedges_g(0.05, n1=n, n2=n)
+    draws = rstats._welch_draws(0.05, n, n, 1.0, 1.0, rstats.MDE_SIM_REPS, rstats.MDE_SIM_SEED)
+    assert np.mean(rstats._welch_rejects(mde, *draws)) == pytest.approx(0.80, abs=2e-3)
 
 
 def test_single_well_arms_get_nan_not_a_fake_floor(panel):
@@ -294,7 +297,7 @@ def test_nan_primary_carries_its_reason(panel):
     assert not np.isfinite(row["p_welch"])
     assert row["nan_reason"].startswith("TOO_FEW_WELLS")
     assert "n_wells_test=1" in row["nan_reason"]
-    assert np.isnan(row["mde_cohen_d_equal_variance"])
+    assert np.isnan(row["mde_welch_sim_pooled_sd"])
     assert "nan_reason" in contrasts.columns
 
 

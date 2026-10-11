@@ -7,13 +7,17 @@ from .stats import welch
 
 DESCRIPTION = "decision 2026-09-07 after data inspection; Welch on well means remains reported"
 METHODS = (['lbfgs', 'bfgs'], ['powell'], ['nm'])
+# Iteration caps bound one fit to about 10 s at about 100 nuclei (measured 2026-10-11: lbfgs ~36 ms,
+# Powell/NM ~2.2 ms per likelihood evaluation; Powell ~85 and NM ~4 evaluations per iteration).
+# statsmodels reports a fit that hits its cap as not converged, so it is never validated.
+MAXITER = {'lbfgs': 100, 'powell': 50, 'nm': 1000}
 PD_TOL = 1e-8  # all eigenvalues of symmetrised -H > PD_TOL * max(1, max|eigenvalue|)
 LLF_TIE = 1e-6  # valid fits within this REML llf of the best keep the METHODS order
 
 
 def _fit_record(model, method):
     """One optimizer; returns the fit summary and the reason it is not valid, if any."""
-    fit = model.fit(reml=True, method=method, maxiter=300 if method[0] == 'lbfgs' else 5000, disp=False)
+    fit = model.fit(reml=True, method=method, maxiter=MAXITER[method[0]], disp=False)
     rec = dict(optimizer='/'.join(method), est=float(fit.fe_params['arm']), se=float(fit.bse_fe['arm']),
                p=float(fit.pvalues['arm']), llf=float(fit.llf), min_eig=np.nan, reason='')
     try:
@@ -120,7 +124,7 @@ def scalar_sensitivities(ep, nuclei, field, test_values, ref_values, test, refer
     out.update(mixed_model(data, test, reference))
     if ep.level != 'nucleus':
         out['sensitivity_mixed_status'] = 'missing: endpoint has only field-level measurements'
-        out['sensitivity_mixed_validation'] = 'not_validated:endpoint has only field-level measurements'
+        out['sensitivity_mixed_validation'] = 'not_validated:not fitted, endpoint has only field-level measurements'
     # FOV n describes finite field values, including field-only endpoints.
     for arm in ['test','reference']:
         out[f'sensitivity_n_fovs_{arm}'] = len(fvals[arm])

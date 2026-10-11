@@ -48,9 +48,10 @@ def _statsmodels(data, optimizer):
     method = optimizer.split('/')
     with warnings.catch_warnings():
         warnings.simplefilter('ignore')
+        from fishsuite.report.sensitivities import MAXITER
         return MixedLM.from_formula('value ~ arm', data=d, groups='well', re_formula='1',
-                                    vc_formula={'fov': '0 + C(image)'}, use_sparse=True).fit(
-            reml=True, method=method, maxiter=300 if method[0] == 'lbfgs' else 5000, disp=False)
+                                    vc_formula={'fov': '0 + C(image)'}, use_sparse=method[0] == 'lbfgs').fit(
+            reml=True, method=method, maxiter=MAXITER[method[0]], disp=False)
 
 
 def test_well_posed_fit_is_validated_and_matches_statsmodels():
@@ -136,3 +137,47 @@ def test_footer_render_with_not_validated_contains_no_mixed_p(tmp_path, level):
     assert 'mixed model not validated' in foot
     assert 'mixed model p' not in foot and '1e-30' not in foot and '1.00e-30' not in foot
     assert '1.00e-30' not in drawn and 'Welch (well means)' in drawn
+
+
+@pytest.mark.parametrize('status,expected', [
+    ('missing: endpoint has only field-level measurements', 'mixed model not fitted (field-level endpoint)'),
+    ('blocked: mixed model did not converge', 'mixed model did not converge'),
+    ('blocked: mixed model not validated (lbfgs/bfgs: did not converge; powell: information matrix not positive definite)',
+     'mixed model not validated'),
+    ('blocked: fewer than two wells per arm with finite nucleus values', 'mixed model not validated')])
+def test_footer_reason_is_single_and_specific(tmp_path, status, expected):
+    import matplotlib.pyplot as plt
+    from fishsuite.report import figures as fig
+    endpoint = 'rna1_spots_per_nucleus'
+    wells = pd.DataFrame(dict(endpoint=[endpoint] * 6, group=['WT'] * 3 + ['QKI-KO'] * 3,
+                              well_id=['w1', 'w2', 'w3', 'k1', 'k2', 'k3'],
+                              well_mean_of_field_values=[1., 2., 3., 4., 5., 6.]))
+    rows = pd.DataFrame([dict(endpoint=endpoint, test_group='QKI-KO', reference_group='WT',
+                              p_mixed=np.nan, p_welch=.2, sensitivity_mixed_status=status)])
+    ctx = fig.FigureContext(tmp_path, {}, None, ['WT', 'QKI-KO'], 'WT', .05, {}, {}, plot_style='replicate-simple')
+    canvas, ax = plt.subplots()
+    try:
+        foot = fig.draw_replicate_simple(ax, ctx, endpoint, wells, pd.DataFrame(), pd.DataFrame(), rows, 'Puncta', None)
+    finally:
+        plt.close(canvas)
+    assert expected in foot
+    assert not ('not validated' in foot and 'did not converge' in foot)
+    assert 'mixed model p' not in foot
+
+
+def test_field_level_endpoint_status_from_scalar_sensitivities():
+    from types import SimpleNamespace
+    from fishsuite.report.sensitivities import scalar_sensitivities
+    field = pd.DataFrame(dict(group=['KO'] * 3 + ['WT'] * 3, field_value=[1., 2., 3., 4., 5., 6.]))
+    ep = SimpleNamespace(level='field', column='x', usability_flag=None)
+    out = scalar_sensitivities(ep, None, field, np.array([1., 2.]), np.array([3., 4.]), 'KO', 'WT')
+    assert mixed_p_text(out) == 'mixed model not fitted (field-level endpoint)'
+
+
+def test_fit_that_hits_the_iteration_cap_is_never_validated(monkeypatch):
+    from fishsuite.report import sensitivities as S
+    monkeypatch.setattr(S, 'MAXITER', {'lbfgs': 1, 'powell': 1, 'nm': 2})
+    out = S.mixed_model(_well_posed(), 'KO', 'WT')
+    assert out['sensitivity_mixed_validation'].startswith('not_validated:')
+    assert 'did not converge' in out['sensitivity_mixed_validation']
+    assert np.isnan(out['sensitivity_mixed_p'])

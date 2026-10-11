@@ -34,10 +34,11 @@ import numpy as np
 import pandas as pd
 from matplotlib.lines import Line2D
 from matplotlib.patches import Circle, Rectangle
-from scipy import integrate, stats
+from scipy import stats
 
 from fishsuite.core.ortho_profile import chord_through, sample_profile
 from fishsuite.core import io as _io
+from fishsuite.report import stats as _rstats
 from fishsuite.core import output as _out
 from fishsuite.core import thresholds as _thr
 from fishsuite.runner import (
@@ -234,25 +235,6 @@ def welch(a, b, alpha=ALPHA):
     return out
 
 
-def _power_two_sided(d, alpha, n1, n2):
-    """Power of the two-sided two-sample t test by quadrature over the chi-square
-    mixing variable. scipy ``nct`` and statsmodels ``TTestIndPower`` are
-    non-monotone in alpha at df=4 below ~0.004; this form is stable. Same
-    routine as build_report_rnaseh2b.py::_power_two_sided."""
-    df = n1 + n2 - 2
-    if df < 1:
-        return float("nan")
-    ncp = d * math.sqrt(n1 * n2 / (n1 + n2))
-    c = stats.t.ppf(1 - alpha / 2, df)
-    chi2 = stats.chi2(df)
-    hi = float(chi2.ppf(1 - 1e-12))
-    up, _ = integrate.quad(
-        lambda v: stats.norm.sf(c * math.sqrt(v / df) - ncp) * chi2.pdf(v), 0, hi, limit=400)
-    lo, _ = integrate.quad(
-        lambda v: stats.norm.cdf(-c * math.sqrt(v / df) - ncp) * chi2.pdf(v), 0, hi, limit=400)
-    return float(up + lo)
-
-
 def mde_reason(n1, n2):
     """Why no MDE can be computed for ``n1`` vs ``n2`` wells, else ""."""
     if min(int(n1), int(n2)) < 2:
@@ -260,56 +242,24 @@ def mde_reason(n1, n2):
     return ""
 
 
-def mde_hedges_g(alpha=ALPHA, power=POWER, n1=3, n2=3):
-    """Standardized mean difference detectable at ``power``, two-sided ``alpha``.
-
-    2026-09-17 review, finding 6: this returned 1.65e-24 for every row of a
-    1-vs-1 comparison. With n1 = n2 = 1 the t test has df = 0, so
-    ``_power_two_sided`` returns NaN, every ``NaN < power`` comparison is False,
-    and the bisection collapsed to 2**-79 instead of refusing - a check that
-    could not fire. n < 2 per arm now returns NaN (see :func:`mde_reason`).
-
-    The reported value is the POPULATION effect size delta, no small-sample
-    bias correction. Multiplying by Hedges' j shrank the answer by 0.57x at
-    n = 2 (5.65 -> 3.23), and 3.23 has only 43% power, not 80%: j corrects an
-    ESTIMATOR for bias and has no business scaling the true effect a design can
-    detect. The column keeps its delivered name; the README states the scale.
-    """
-    if (not np.isfinite(alpha) or alpha <= 0 or alpha >= 1
-            or mde_reason(n1, n2) or (n1 + n2 - 2) < 1):
+def mde_hedges_g(alpha=ALPHA, power=POWER, n1=3, n2=3, sd1=None, sd2=None):
+    """Delegates to ``fishsuite.report.stats.mde_hedges_g`` (simulation-based Welch MDE,
+    ce546fa) so the panel and the report share one implementation (2026-10-11).
+    Pooled-SD units; equal SDs when ``sd1``/``sd2`` are None; NaN below 2 wells per arm."""
+    if mde_reason(n1, n2):
         return float("nan")
-    lo, hi = 0.0, 1.0
-    while hi < 1e3:
-        p = _power_two_sided(hi, alpha, n1, n2)
-        if not np.isfinite(p):
-            return float("nan")
-        if p >= power:
-            break
-        hi *= 2
-    else:
-        return float("nan")
-    for _ in range(80):
-        mid = (lo + hi) / 2
-        p = _power_two_sided(mid, alpha, n1, n2)
-        if not np.isfinite(p):
-            return float("nan")
-        if p < power:
-            lo = mid
-        else:
-            hi = mid
-    return float((lo + hi) / 2)
+    return _rstats.mde_hedges_g(alpha, power, n1=int(n1), n2=int(n2), sd1=sd1, sd2=sd2)
 
 
 MDE_README_ROWS = [
-    ("mde_cohen_d_equal_variance",
-     "Planning value: the POPULATION standardized mean difference (Cohen d, pooled "
-     "SD) detectable at alpha 0.05 two-sided and 80% power for THIS row's finite "
-     "well counts, from exact noncentral Student-t power with df = n1 + n2 - 2. "
-     "ASSUMPTION: equal-variance arms (pooled SD). The tested statistic is Welch "
-     "t, which does not assume that, so the MDE is a planning approximation, not "
-     "the Welch test's exact detectable effect. No Hedges small-sample correction. "
+    ("mde_welch_sim_pooled_sd",
+     "Smallest well-mean difference, in pooled-SD units, at which the two-sided "
+     "Welch t test on well means reaches 80% power at alpha 0.05 for THIS row's "
+     "finite well counts and observed per-arm well SDs, by seeded Monte Carlo "
+     "(fishsuite.report.stats.mde_hedges_g, the same routine as the report). "
+     "Post hoc: it depends on the observed SDs. No Hedges small-sample correction. "
      "NaN = the design cannot support the test (see mde_note and nan_reason). "
-     "Renamed 2026-09-24 from mde_hedges_g_alpha_0p05_power_0p80."),
+     "Renamed 2026-10-11 from mde_cohen_d_equal_variance (equal-variance noncentral-t)."),
 ]
 
 
@@ -1235,10 +1185,11 @@ def contrasts_table(well, per_nucleus, mde, primary_col, secondary_col):
     rows = []
     _mde_cache = {}
 
-    def _row_mde(n1, n2):
-        key = (int(n1), int(n2))
+    def _row_mde(a, b):
+        sd = lambda v: float(np.std(v, ddof=1)) if len(v) >= 2 else float("nan")
+        key = (len(a), len(b), sd(a), sd(b))
         if key not in _mde_cache:
-            _mde_cache[key] = mde_hedges_g(n1=key[0], n2=key[1])
+            _mde_cache[key] = mde_hedges_g(n1=key[0], n2=key[1], sd1=key[2], sd2=key[3])
         return _mde_cache[key]
     for col, label in ALL_ENDPOINTS:
         a = bio.loc[bio["line"] == ARMS[1], col].to_numpy(dtype=float)
@@ -1273,7 +1224,7 @@ def contrasts_table(well, per_nucleus, mde, primary_col, secondary_col):
             diff_test_minus_ref=w["diff"], ci95_low=w["ci_low"], ci95_high=w["ci_high"],
             hedges_g=w["hedges_g"], t=w["t"], df=w["df"], p_welch=w["p_welch"],
             stars=stars(w["p_welch"]) if primary else "n/a (not tested)",
-            mde_cohen_d_equal_variance=_row_mde(w["n_test"], w["n_ref"]),
+            mde_welch_sim_pooled_sd=_row_mde(a, b),
             mde_note=mde_reason(w["n_test"], w["n_ref"]),
             nan_reason=nan_reason(w["n_test"], w["n_ref"], w["diff"],
                                   w["p_welch"], primary),
@@ -1673,8 +1624,8 @@ def fig_object_fraction(well, contrasts, ctx, out_dir, manifest):
             + (". CAUTION: " + str(row["note"]) if str(row.get("note", "")).strip()
                and str(row.get("note", "")).strip().lower() != "nan" else ".")
             + " No multiplicity correction is applied because only one "
-            "endpoint is tested. MDE at alpha 0.05 and 80% power (equal-variance Cohen d, "
-            f"planning value) = {row['mde_cohen_d_equal_variance']:.2f}, so anything smaller "
+            "endpoint is tested. MDE at alpha 0.05 and 80% power (simulated Welch, pooled-SD "
+            f"units) = {row['mde_welch_sim_pooled_sd']:.2f}, so anything smaller "
             "is not detectable in this design and 'ns' here does not mean 'no difference'. ")
            if pc["inferential"] else
            (f"{int(row['n_wells_ref'])} vs {int(row['n_wells_test'])} well means of the "
@@ -1923,8 +1874,8 @@ def fig_composite(per_nucleus, well, contrasts, pooled, fields, ctx, out_dir, ma
         "Costes-with-fallback variant is a mixture of two conventions and is shown "
         "separately in csp01b. C: nucleus -> FoV -> well rollup; "
         + ((f"Welch t on well means of the OBSERVED fraction, p = {fmt_p(row['p_welch'])}, "
-            f"Hedges g = {row['hedges_g']:.3g}, MDE (equal-variance Cohen d) = "
-            f"{row['mde_cohen_d_equal_variance']:.2f} at alpha 0.05 / 80% power; the ")
+            f"Hedges g = {row['hedges_g']:.3g}, MDE (simulated Welch, pooled-SD units) = "
+            f"{row['mde_welch_sim_pooled_sd']:.2f} at alpha 0.05 / 80% power; the ")
            if pc["inferential"] else
            (f"Hedges g = {row['hedges_g']:.3g} on well means of the OBSERVED fraction. "
             f"{DESCRIPTIVE_NOTE} The "))
@@ -2613,8 +2564,8 @@ def main(argv=None):
         "max_abs_li_icq_diff_vs_run": max_icq_diff,
         "max_abs_manders_m1_runthr_diff_vs_run": max_m1_diff,
         "max_abs_manders_m2_runthr_diff_vs_run": max_m2_diff,
-        "mde_cohen_d_equal_variance": mde,
-        "mde_scale": "equal-variance Cohen d (population, pooled SD) planning value; tested statistic is Welch t",
+        "mde_welch_sim_equal_sd": mde,
+        "mde_scale": "design-level simulated Welch MDE with equal arm SDs, pooled-SD units; per-row values use observed SDs",
         "mde_note": mde_reason(_n_test, _n_ref),
         "well_key_source": run.well_key_source,
         "n_wells_ref": _n_ref,
