@@ -6,17 +6,45 @@ import pandas as pd
 from .stats import welch
 
 DESCRIPTION = "decision 2026-09-07 after data inspection; Welch on well means remains reported"
+METHODS = (['lbfgs', 'bfgs'], ['powell'], ['nm'])
+PD_TOL = 1e-8  # all eigenvalues of symmetrised -H > PD_TOL * max(1, max|eigenvalue|)
+LLF_TIE = 1e-6  # valid fits within this REML llf of the best keep the METHODS order
+
+
+def _fit_record(model, method):
+    """One optimizer; returns the fit summary and the reason it is not valid, if any."""
+    fit = model.fit(reml=True, method=method, maxiter=300 if method[0] == 'lbfgs' else 5000, disp=False)
+    rec = dict(optimizer='/'.join(method), est=float(fit.fe_params['arm']), se=float(fit.bse_fe['arm']),
+               p=float(fit.pvalues['arm']), llf=float(fit.llf), min_eig=np.nan, reason='')
+    try:
+        h, _ = fit.model.hessian(fit.params_object)
+        ev = np.linalg.eigvalsh(-0.5 * (h + h.T))
+        rec['min_eig'], pd_ok = float(ev.min()), bool(ev.min() > PD_TOL * max(1.0, float(np.abs(ev).max())))
+    except Exception as exc:
+        pd_ok, rec['reason'] = False, f'information matrix not computable ({type(exc).__name__})'
+    if not fit.converged:
+        rec['reason'] = 'did not converge'
+    elif not np.isfinite([rec['est'], rec['se'], rec['p'], rec['llf']]).all() or rec['se'] <= 0:
+        rec['reason'] = 'non-finite REML log-likelihood, estimate or SE'
+    elif not (np.isfinite(np.asarray(fit.params, dtype=float)).all() and np.isfinite(np.asarray(fit.bse_fe, dtype=float)).all()):
+        rec['reason'] = 'non-finite parameters or fixed-effect SEs'
+    elif not pd_ok:
+        rec['reason'] = rec['reason'] or f"information matrix not positive definite (min eigenvalue {rec['min_eig']:.3g})"
+    return rec
 
 
 def mixed_model(data, test, reference):
     """REML arm effect, well random intercept and nested FOV variance component.
 
     P is a two-sided asymptotic Wald normal p, not a small-sample well t test.
-    Failed/nonconverged fits explicitly retain missing inference.
+    Every optimizer in METHODS is tried; the highest-REML fit that converged, is
+    finite and has a positive-definite observed information matrix is kept.
+    Anything else is 'not_validated:<reason>' with missing inference.
     """
     out = dict(sensitivity_mixed_estimate=np.nan, sensitivity_mixed_se=np.nan,
                sensitivity_mixed_p=np.nan, sensitivity_mixed_status='missing nucleus-level values',
-               sensitivity_mixed_warnings='')
+               sensitivity_mixed_warnings='', sensitivity_mixed_validation='not_validated:missing nucleus-level values',
+               sensitivity_mixed_min_eig=np.nan, sensitivity_mixed_optimizer='')
     data = data.copy()
     data['value'] = pd.to_numeric(data['value'], errors='coerce')
     data = data.loc[data.group.isin([test, reference]) & np.isfinite(data.value)].dropna(subset=['well_id','image'])
@@ -26,34 +54,47 @@ def mixed_model(data, test, reference):
                     f'sensitivity_n_fovs_{label}':len(sub[['well_id','image']].drop_duplicates()),
                     f'sensitivity_n_wells_{label}':sub.well_id.nunique(),
                     f'sensitivity_nucleus_median_{label}':float(sub.value.median()) if len(sub) else np.nan})
-    if any(out[f'sensitivity_n_wells_{label}'] < 2 for label in ['test','reference']):
-        out['sensitivity_mixed_status'] = 'blocked: fewer than two wells per arm with finite nucleus values'
+    def blocked(reason):
+        out.update(sensitivity_mixed_status=f'blocked: {reason}', sensitivity_mixed_validation=f'not_validated:{reason}')
         return out
+    if any(out[f'sensitivity_n_wells_{label}'] < 2 for label in ['test','reference']):
+        return blocked('fewer than two wells per arm with finite nucleus values')
     try:
         from statsmodels.regression.mixed_linear_model import MixedLM
     except ImportError:
-        out['sensitivity_mixed_status'] = 'blocked: statsmodels missing; installation prohibited'
-        return out
+        return blocked('statsmodels missing; installation prohibited')
     data['arm'] = data.group.eq(test).astype(float)
     data['well'] = data.groupby(['group','well_id'], sort=True).ngroup().astype(str)
     # Formula variance components are constructed separately inside each well.
-    try:
-        with warnings.catch_warnings(record=True) as caught:
-            warnings.simplefilter('always')
-            model = MixedLM.from_formula('value ~ arm', data=data, groups='well',
-                        re_formula='1', vc_formula={'fov':'0 + C(image)'}, use_sparse=True)
-            fit = model.fit(reml=True, method=['lbfgs', 'bfgs'], maxiter=300, disp=False)
-        out['sensitivity_mixed_warnings'] = '; '.join(dict.fromkeys(str(w.message) for w in caught))
-        if not fit.converged:
-            out['sensitivity_mixed_status'] = 'blocked: mixed model did not converge'
-        elif not np.isfinite([fit.fe_params['arm'], fit.bse_fe['arm'], fit.pvalues['arm']]).all() or fit.bse_fe['arm'] <= 0:
-            out['sensitivity_mixed_status'] = 'blocked: invalid mixed model covariance'
-        else:
-            out.update(sensitivity_mixed_estimate=float(fit.fe_params['arm']),
-                       sensitivity_mixed_se=float(fit.bse_fe['arm']),
-                       sensitivity_mixed_p=float(fit.pvalues['arm']), sensitivity_mixed_status='ok')
-    except Exception as exc:
-        out['sensitivity_mixed_status'] = f'blocked: {type(exc).__name__}: {exc}'
+    fits, caught_all = [], []
+    for method in METHODS:
+        try:
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter('always')
+                # Sparse Nelder-Mead hung inside scipy.sparse on zero-variance FOVs (2026-10-11);
+                # the fallback optimizers use the identical model in dense storage.
+                model = MixedLM.from_formula('value ~ arm', data=data, groups='well',
+                            re_formula='1', vc_formula={'fov':'0 + C(image)'}, use_sparse=method[0] == 'lbfgs')
+                rec = _fit_record(model, method)
+            rec['warnings'] = '; '.join(dict.fromkeys(str(w.message) for w in caught))
+        except Exception as exc:
+            rec = dict(optimizer='/'.join(method), reason=f'{type(exc).__name__}: {exc}', min_eig=np.nan, warnings='')
+        fits.append(rec)
+        caught_all.append(rec['warnings'])
+    valid = [f for f in fits if not f['reason']]
+    if not valid:
+        out['sensitivity_mixed_warnings'] = '; '.join(dict.fromkeys(w for w in caught_all if w))
+        eigs = [f['min_eig'] for f in fits if np.isfinite(f['min_eig'])]
+        out['sensitivity_mixed_min_eig'] = float(min(eigs)) if eigs else np.nan
+        reason = 'mixed model did not converge' if all(f['reason'] == 'did not converge' for f in fits) else \
+            'mixed model not validated (' + '; '.join(f"{f['optimizer']}: {f['reason']}" for f in fits) + ')'
+        return blocked(reason)
+    top = max(f['llf'] for f in valid)
+    best = next(f for f in valid if f['llf'] >= top - LLF_TIE)
+    out.update(sensitivity_mixed_estimate=best['est'], sensitivity_mixed_se=best['se'],
+               sensitivity_mixed_p=best['p'], sensitivity_mixed_status='ok',
+               sensitivity_mixed_warnings=best['warnings'], sensitivity_mixed_validation='validated',
+               sensitivity_mixed_min_eig=best['min_eig'], sensitivity_mixed_optimizer=best['optimizer'])
     return out
 
 
@@ -79,6 +120,7 @@ def scalar_sensitivities(ep, nuclei, field, test_values, ref_values, test, refer
     out.update(mixed_model(data, test, reference))
     if ep.level != 'nucleus':
         out['sensitivity_mixed_status'] = 'missing: endpoint has only field-level measurements'
+        out['sensitivity_mixed_validation'] = 'not_validated:endpoint has only field-level measurements'
     # FOV n describes finite field values, including field-only endpoints.
     for arm in ['test','reference']:
         out[f'sensitivity_n_fovs_{arm}'] = len(fvals[arm])

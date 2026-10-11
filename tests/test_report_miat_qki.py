@@ -1,4 +1,5 @@
 from pathlib import Path
+import re
 
 import numpy as np
 import pandas as pd
@@ -23,6 +24,7 @@ def test_three_well_ratio_covariance_and_complete_exact_assignments():
 from fishsuite.report import miat_qki as mq
 
 DATA = Path('F:/Image Analysis Work/MIAT_QKI_Coloc_2026_08_25/DELIVERIES/DELIVERY_MIAT_QKI_REVISED_2026-09-03/data')
+MIXED = re.compile('mixed model (p|not validated)')  # not-validated fits print no p (2026-10-11)
 COUNT = Path('F:/Image Analysis Work/MIAT_QKI_Coloc_2026_08_25/RAW_RUNS/MIAT_COUNT_2026-08-28_0020/report_2026-09-05_nuclearfraction_count_allnuclei')
 
 
@@ -125,12 +127,12 @@ def test_actual_figure_wells_and_extents(analysis, variant, tmp_path, measuremen
         assert ax._axis_group == 'ratio_'+kind+('_count' if measurement == 'spot_count' else '_intensity')
         assert any('p =' in t.get_text() for t in ax.texts)
         assert len(ax.patches) == 2
-    assert any('mixed model p' in t.get_text() and '; run ' in t.get_text() for t in fig.texts)
+    assert any(MIXED.search(t.get_text()) and '; run ' in t.get_text() for t in fig.texts)
     for ext in ('png', 'svg'):
         path = tmp_path / ('ratio_' + variant + '.' + ext)
         fig.savefig(path, dpi=72)
         assert path.is_file()
-    assert 'mixed model p' in (tmp_path / ('ratio_' + variant + '.svg')).read_text(encoding='utf-8')
+    assert MIXED.search((tmp_path / ('ratio_' + variant + '.svg')).read_text(encoding='utf-8'))
     r = analysis['Ratio intervals'].loc[lambda x:x.measurement.eq(measurement)]
     low, high = fig.axes[5].get_xlim()
     assert low < min(1, r.ci_low.min())
@@ -194,5 +196,5 @@ def test_ratio_scalars_use_registered_locked_drawer(tmp_path, monkeypatch):
         for variant in ('full', 'focus'):
             assert Path(record[variant+'_png']).is_file()
             svg = Path(record[variant+'_svg']).read_text(encoding='utf-8')
-            assert 'mixed model p' in svg and '; run ' in svg
+            assert MIXED.search(svg) and '; run ' in svg
             assert '#d67ae5' in svg.lower()
