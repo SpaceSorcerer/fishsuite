@@ -220,113 +220,24 @@ def regenerate(run: Path, groups: ConditionsCfg, out: Path | None = None):
     supplementary = out/'figures/per_well_supplementary'
     supplementary.mkdir(parents=True)
     result = _render(run,out,groups)  # copy legacy assets only after a successful render
-    if legacy.is_dir():
-        _copy_allowlisted_legacy(legacy, out)
+    _log_legacy_exclusions(legacy, out)
     return result
 
 
-# ---------------------------------------------------------------- legacy assets: fail-closed allowlist (2026-10-12)
-# Regeneration rebuilds every figure, table and workbook. From the legacy source it copies ONLY raw micrographs:
-# files under figures/per_image/ whose name ends .png/.tif/.tiff AND whose bytes are a valid PNG or TIFF, with no
-# same-stem sibling of another type (a rendered chart has SVG/PDF/CSV twins), and no embedded text naming p, Holm,
-# significance, MDE or CI. Everything else (SVG, CSV, TSV, JSON, xlsx, txt, unknown, corrupt, unclassifiable)
-# is excluded and logged in LEGACY_COPY_LOG.csv. No prefix sniffing: images are parsed completely.
-_LEGACY_ALLOWED_DIR = 'per_image'
-_LEGACY_ALLOWED_SUFFIX = {'.png': 'png', '.tif': 'tiff', '.tiff': 'tiff'}
-_INFERENCE_TEXT = __import__('re').compile(
-    r'(\bp\s*[=<>]|p-value|p value|\bp_|_p\b|holm|signific|\bmde\b|minimum detectable|\bci\b|ci_low|ci_high|'
-    r'confidence interval|mixed model|welch|mann-whitney)', __import__('re').I)
+# ---------------------------------------------------------------- legacy assets: never republished (2026-10-12)
+# A rendered statistics figure is a valid image, and no content check can tell drawn p-values from microscopy, so
+# regeneration copies NOTHING from the legacy run/figures folder, images included. Every figure in the new output
+# is rendered by _render from the run's measurement tables; legacy per-image panels (engine-rendered from the raw
+# acquisition) are omitted, not copied. Every omitted file is logged.
+LEGACY_OMISSION_REASON = ('legacy asset not republished: regeneration copies nothing from the legacy folder; '
+                          're-render from the raw acquisition if needed')
 
 
-def _png_texts(data: bytes) -> list:
-    """All tEXt/zTXt/iTXt payloads of a complete, well-formed PNG; raises on any structural defect."""
-    import struct
-    import zlib
-    if data[:8] != b'\x89PNG\r\n\x1a\n':
-        raise ValueError('not a PNG signature')
-    pos, texts, seen_end = 8, [], False
-    while pos < len(data):
-        if pos + 12 > len(data):
-            raise ValueError('truncated chunk')
-        length, kind = struct.unpack('>I4s', data[pos:pos + 8])
-        body = data[pos + 8:pos + 8 + length]
-        if len(body) != length or zlib.crc32(kind + body) & 0xffffffff != struct.unpack('>I', data[pos + 8 + length:pos + 12 + length])[0]:
-            raise ValueError('bad chunk length or CRC')
-        if kind == b'tEXt':
-            texts.append(body.decode('latin-1'))
-        elif kind == b'zTXt':
-            key, _, rest = body.partition(b'\x00')
-            texts.append(key.decode('latin-1') + ' ' + zlib.decompress(rest[1:]).decode('latin-1'))
-        elif kind == b'iTXt':
-            key, _, rest = body.partition(b'\x00')
-            flag, rest = rest[0], rest[2:]
-            _lang, _, rest = rest.partition(b'\x00')
-            _tkey, _, text = rest.partition(b'\x00')
-            texts.append(key.decode('latin-1') + ' ' + (zlib.decompress(text) if flag else text).decode('utf-8', 'replace'))
-        pos += 12 + length
-        if kind == b'IEND':
-            seen_end = True
-            break
-    if not seen_end or pos != len(data):
-        raise ValueError('missing IEND or trailing bytes')
-    return texts
-
-
-def _tiff_texts(path: Path) -> list:
-    """All text-valued tags of a valid TIFF (every page); raises when the file is not a readable TIFF."""
-    from PIL import Image
-    data = path.read_bytes()[:4]
-    if data not in (b'II*\x00', b'MM\x00*'):
-        raise ValueError('not a TIFF signature')
-    texts = []
-    with Image.open(path) as image:
-        if image.format != 'TIFF':
-            raise ValueError('not decoded as TIFF')
-        for frame in range(getattr(image, 'n_frames', 1)):
-            image.seek(frame)
-            image.load()
-            for value in image.tag_v2.values():
-                if isinstance(value, (str, bytes)):
-                    texts.append(value.decode('latin-1') if isinstance(value, bytes) else value)
-    return texts
-
-
-def _legacy_decision(path: Path, legacy: Path) -> tuple:
-    """(copy?, reason) for one legacy file under the fail-closed allowlist."""
-    rel = path.relative_to(legacy)
-    if rel.parts[0] != _LEGACY_ALLOWED_DIR:
-        return False, 'outside figures/per_image (regenerated, not copied)'
-    kind = _LEGACY_ALLOWED_SUFFIX.get(path.suffix.lower())
-    if kind is None:
-        return False, 'type not allowlisted'
-    twins = [q for q in path.parent.iterdir() if q != path and q.stem == path.stem]
-    if twins:
-        return False, 'has same-stem sibling ' + ', '.join(sorted(q.name for q in twins)) + ' (rendered figure)'
-    try:
-        texts = _png_texts(path.read_bytes()) if kind == 'png' else _tiff_texts(path)
-    except Exception as exc:
-        return False, f'not a valid {kind.upper()} ({type(exc).__name__}: {exc})'
-    hits = [t for t in texts if _INFERENCE_TEXT.search(t)]
-    if hits:
-        return False, 'embedded text names inference: ' + hits[0][:80]
-    return True, f'raw micrograph {kind.upper()}'
-
-
-def _copy_allowlisted_legacy(legacy: Path, out: Path) -> list:
-    """Copy allowlisted raw micrographs into out/figures/per_image; log every legacy file's decision."""
-    log = []
-    for path in sorted(p for p in legacy.rglob('*') if p.is_file()):
-        try:
-            copy, reason = _legacy_decision(path, legacy)
-        except Exception as exc:
-            copy, reason = False, f'unclassifiable ({type(exc).__name__})'
-        rel = path.relative_to(legacy)
-        if copy:
-            dest = out/'figures'/rel
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(path, dest)
-        reason = ''.join(c if c.isprintable() else ' ' for c in str(reason))[:200]
-        log.append(dict(legacy_file=rel.as_posix(), decision='copied' if copy else 'excluded', reason=reason))
+def _log_legacy_exclusions(legacy: Path, out: Path) -> list:
+    """Copy nothing; record every legacy file in figures/per_well_supplementary/LEGACY_COPY_LOG.csv."""
+    files = sorted(p for p in legacy.rglob('*') if p.is_file()) if legacy.is_dir() else []
+    log = [dict(legacy_file=p.relative_to(legacy).as_posix(), decision='excluded', reason=LEGACY_OMISSION_REASON)
+           for p in files]
     target = out/'figures'/'per_well_supplementary'
     target.mkdir(parents=True, exist_ok=True)
     pd.DataFrame(log, columns=['legacy_file', 'decision', 'reason']).to_csv(target/'LEGACY_COPY_LOG.csv', index=False)
