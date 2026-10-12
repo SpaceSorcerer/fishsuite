@@ -510,7 +510,8 @@ def test_mixed_headline_and_explicit_failed_fit_fallback(tmp_path):
         well_id=['w1','w2','w3','k1','k2','k3'],well_mean_of_field_values=[1,2,3,4,5,6]))
     for status,p,expected in [('ok',.001,'0.001'),('nonconverged',np.nan,'0.2')]:
         rows=pd.DataFrame([dict(endpoint=endpoint,test_group='QKI-KO',reference_group='WT',
-            p_mixed=p,p_welch=.2,sensitivity_mixed_status=status)])
+            p_mixed=p,p_welch=.2,sensitivity_mixed_status=status,
+            sensitivity_mixed_validation='validated' if status=='ok' else 'not_validated:'+status)])
         canvas,ax=plt.subplots()
         foot=fig.draw_replicate_simple(ax,context(tmp_path,plot_style='replicate-simple'),endpoint,
             wells,pd.DataFrame(),pd.DataFrame(),rows,'Puncta',None)
@@ -528,7 +529,8 @@ def test_custom_descriptive_endpoint_uses_contrast_flags(tmp_path, absolute):
     wells=pd.DataFrame(dict(endpoint=[endpoint]*6,group=['WT']*3+['QKI-KO']*3,
         well_id=['w1','w2','w3','k1','k2','k3'],well_mean_of_field_values=[1,2,3,4,5,6]))
     rows=pd.DataFrame([dict(endpoint=endpoint,test_group='QKI-KO',reference_group='WT',
-        p_mixed=.001,p_welch=.2,sensitivity_mixed_status='ok',descriptive_only=True,absolute_intensity=absolute)])
+        p_mixed=.001,p_welch=.2,sensitivity_mixed_status='ok',sensitivity_mixed_validation='validated',
+        descriptive_only=True,absolute_intensity=absolute)])
     canvas,ax=plt.subplots()
     foot=fig.draw_replicate_simple(ax,context(tmp_path,plot_style='replicate-simple'),endpoint,
         wells,pd.DataFrame(),pd.DataFrame(),rows,'Intensity',None)

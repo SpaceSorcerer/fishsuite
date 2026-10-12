@@ -24,7 +24,7 @@ def test_three_well_ratio_covariance_and_complete_exact_assignments():
 from fishsuite.report import miat_qki as mq
 
 DATA = Path('F:/Image Analysis Work/MIAT_QKI_Coloc_2026_08_25/DELIVERIES/DELIVERY_MIAT_QKI_REVISED_2026-09-03/data')
-MIXED = re.compile('mixed model (p|not |did not)')  # fits that are not validated print no p (2026-10-11)
+MIXED = re.compile(r'mixed model (p \d\.\d+(e-\d+)?|not validated|did not converge|not fitted \(field-level endpoint\))(?=[;.\s]|$)')  # exact footer phrases; a mixed p only in numeric form (2026-10-11)
 COUNT = Path('F:/Image Analysis Work/MIAT_QKI_Coloc_2026_08_25/RAW_RUNS/MIAT_COUNT_2026-08-28_0020/report_2026-09-05_nuclearfraction_count_allnuclei')
 
 

@@ -36,12 +36,21 @@ from matplotlib.patches import Rectangle   # noqa: E402
 from .stats import SEED, fmt_p, stars      # noqa: E402
 
 
+def mixed_validated(r) -> bool:
+    """A mixed p may be shown only for an explicitly validated fit with a finite p."""
+    p = pd.to_numeric(r.get('p_mixed', r.get('sensitivity_mixed_p', np.nan)), errors="coerce")
+    return r.get('sensitivity_mixed_validation', None) == 'validated' and bool(np.isfinite(p))
+
+
 def mixed_p_text(r, sep: str = " ") -> str:
     """Footer text for the mixed model; never prints a p from a fit that is not validated."""
-    p = pd.to_numeric(r.get('p_mixed', r.get('sensitivity_mixed_p', np.nan)), errors="coerce")
     status = str(r.get('sensitivity_mixed_status', ''))
-    if status == 'ok' and np.isfinite(p):
-        return f"mixed model p{sep}{fmt_p(p)}"
+    if mixed_validated(r):
+        return f"mixed model p{sep}{fmt_p(pd.to_numeric(r.get('p_mixed', r.get('sensitivity_mixed_p')), errors='coerce'))}"
+    validation = r.get('sensitivity_mixed_validation', None)
+    if validation is None or (isinstance(validation, float) and np.isnan(validation)):
+        if status == 'ok':
+            return "mixed model not validated (legacy result)"
     if 'field-level' in status:
         return "mixed model not fitted (field-level endpoint)"
     if 'converg' in status and 'not validated' not in status:
@@ -850,7 +859,7 @@ def draw_replicate_simple(ax, ctx: FigureContext, endpoint: str, well: pd.DataFr
             continue
         r = match.iloc[0]
         p = r.get('p_mixed', r.get('sensitivity_mixed_p', np.nan))
-        mixed_ok = r.get('sensitivity_mixed_status', '') == 'ok' and np.isfinite(p)
+        mixed_ok = mixed_validated(r)
         if not mixed_ok:
             p = r.get('p_welch', np.nan)
         suffix = '' if mixed_ok else '\nWelch (well means)'

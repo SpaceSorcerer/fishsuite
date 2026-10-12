@@ -13,6 +13,7 @@ import re
 import numpy as np
 import pandas as pd
 from scipy import stats
+from .stats import hedges_g
 
 POLICIES = (
     'historical_nucleoplasm_centroid_rotation',
@@ -160,7 +161,7 @@ def scalar_contrast(pairs, column):
     pooled = np.sqrt((a.var(ddof=1)+b.var(ddof=1))/2)
     return dict(mean_KD=a.mean(), mean_NT=b.mean(), n_KD=6, n_NT=6,
                 p_welch=stats.ttest_ind(a, b, equal_var=False).pvalue,
-                hedges_g=(1-3/39)*(a.mean()-b.mean())/pooled if pooled > 0 else np.nan,
+                hedges_g=hedges_g(a, b) if pooled > 0 else np.nan,
                 reason='' if pooled > 0 else 'zero pooled SD: standardized effect unavailable')
 
 

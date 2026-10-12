@@ -188,18 +188,9 @@ def foot_bottom(fig, text, size, pad=0.042):
 
 # ---------------------------------------------------------------- statistics
 def hedges_g(a, b):
-    """Bias-corrected standardized mean difference. Same formula as
-    14_REPORT_HARMONIZED_2026-09-03/build_report_rnaseh2b.py::hedges_g."""
-    n1, n2 = len(a), len(b)
-    if n1 < 2 or n2 < 2:
-        return float("nan")
-    s1, s2 = a.std(ddof=1), b.std(ddof=1)
-    sp2 = ((n1 - 1) * s1 ** 2 + (n2 - 1) * s2 ** 2) / (n1 + n2 - 2)
-    if not np.isfinite(sp2) or sp2 <= 0:
-        return float("nan")
-    d = (a.mean() - b.mean()) / math.sqrt(sp2)
-    j = 1.0 - 3.0 / (4.0 * (n1 + n2) - 9.0)
-    return float(j * d)
+    """Bias-corrected standardized mean difference; delegates to
+    fishsuite.report.stats.hedges_g (identical formula, one implementation, 2026-10-11)."""
+    return _rstats.hedges_g(np.asarray(a, dtype=float), np.asarray(b, dtype=float))
 
 
 def welch(a, b, alpha=ALPHA):

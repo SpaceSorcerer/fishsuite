@@ -1,4 +1,5 @@
 """mixed_model returns a p only from a validated fit (multi-optimizer, PD information gate)."""
+import re
 import warnings
 
 import numpy as np
@@ -72,7 +73,8 @@ def test_zero_within_variance_is_not_validated(level):
     # Before 2026-10-11 these returned status 'ok' with a finite p from a non-PD information matrix.
     out = mixed_model(_frame(level), 'KO', 'WT')
     assert out['sensitivity_mixed_validation'].startswith('not_validated:')
-    assert 'positive definite' in out['sensitivity_mixed_validation']
+    reason = {'fov': 'residual variance collapsed', 'well': 'non-positive diagonal'}[level]
+    assert reason in out['sensitivity_mixed_validation']
     assert out['sensitivity_mixed_status'] != 'ok'
     assert np.isnan(out['sensitivity_mixed_p'])
     assert np.isnan(out['sensitivity_mixed_estimate']) and np.isnan(out['sensitivity_mixed_se'])
@@ -111,7 +113,7 @@ def test_footer_text_never_prints_unvalidated_p():
     assert text == 'mixed model not validated'
     assert ' p' not in text and 'e-' not in text
     good = mixed_model(_well_posed(), 'KO', 'WT')
-    assert mixed_p_text(good).startswith('mixed model p ')
+    assert re.fullmatch(r'mixed model p \d\.\d+(e-\d+)?', mixed_p_text(good))
 
 
 @pytest.mark.parametrize('level', ['fov', 'well'])
@@ -181,3 +183,57 @@ def test_fit_that_hits_the_iteration_cap_is_never_validated(monkeypatch):
     assert out['sensitivity_mixed_validation'].startswith('not_validated:')
     assert 'did not converge' in out['sensitivity_mixed_validation']
     assert np.isnan(out['sensitivity_mixed_p'])
+
+
+@pytest.mark.parametrize('row,expected', [
+    ({'p_mixed': 1e-30, 'sensitivity_mixed_status': 'ok'}, 'mixed model not validated (legacy result)'),
+    ({'p_mixed': 1e-30, 'sensitivity_mixed_status': 'ok', 'sensitivity_mixed_validation': 'not_validated:PD failed'},
+     'mixed model not validated'),
+    ({'p_mixed': 1e-30, 'sensitivity_mixed_status': 'ok', 'sensitivity_mixed_validation': np.nan},
+     'mixed model not validated (legacy result)')])
+def test_cached_p_without_validated_marker_is_never_printed(row, expected):
+    # Codex Astra 2026-10-11 HIGH: status 'ok' alone printed 'mixed model p 1.00e-30'.
+    assert mixed_p_text(row) == expected
+    assert mixed_p_text(pd.Series(row)) == expected
+
+
+@pytest.mark.parametrize('validation', [None, 'not_validated:PD failed'])
+def test_rendered_footer_and_bracket_ignore_cached_p(tmp_path, validation):
+    import matplotlib.pyplot as plt
+    from fishsuite.report import figures as fig
+    endpoint = 'rna1_spots_per_nucleus'
+    wells = pd.DataFrame(dict(endpoint=[endpoint] * 6, group=['WT'] * 3 + ['QKI-KO'] * 3,
+                              well_id=['w1', 'w2', 'w3', 'k1', 'k2', 'k3'],
+                              well_mean_of_field_values=[1., 2., 3., 4., 5., 6.]))
+    row = dict(endpoint=endpoint, test_group='QKI-KO', reference_group='WT', p_mixed=1e-30,
+               sensitivity_mixed_p=1e-30, p_welch=.2, sensitivity_mixed_status='ok')
+    if validation:
+        row['sensitivity_mixed_validation'] = validation
+    ctx = fig.FigureContext(tmp_path, {}, None, ['WT', 'QKI-KO'], 'WT', .05, {}, {}, plot_style='replicate-simple')
+    canvas, ax = plt.subplots()
+    try:
+        foot = fig.draw_replicate_simple(ax, ctx, endpoint, wells, pd.DataFrame(), pd.DataFrame(),
+                                         pd.DataFrame([row]), 'Puncta', None)
+        drawn = ' '.join(t.get_text() for t in ax.texts)
+    finally:
+        plt.close(canvas)
+    expected = 'mixed model not validated' + (' (legacy result)' if validation is None else '')
+    assert foot.startswith(expected + '; Welch (wells) p 0.2')
+    assert '1.00e-30' not in foot + drawn and 'mixed model p' not in foot
+    assert 'Welch (well means)' in drawn
+
+
+@pytest.mark.parametrize('name', ['well_posed', 'fov', 'well', 'a12'])
+def test_validation_is_invariant_to_response_units(name):
+    from test_report_a12 import fixture
+    data = {'well_posed': _well_posed(), 'fov': _frame('fov'), 'well': _frame('well'), 'a12': fixture()}[name]
+    base = mixed_model(data, 'KO', 'WT')
+    for c in (1e3, 1e-3):
+        scaled = data.copy()
+        scaled['value'] = scaled['value'] * c
+        out = mixed_model(scaled, 'KO', 'WT')
+        assert (out['sensitivity_mixed_validation'] == 'validated') == (base['sensitivity_mixed_validation'] == 'validated')
+        if base['sensitivity_mixed_validation'] == 'validated':
+            assert out['sensitivity_mixed_estimate'] == pytest.approx(c * base['sensitivity_mixed_estimate'], rel=1e-4)
+            assert out['sensitivity_mixed_se'] == pytest.approx(c * base['sensitivity_mixed_se'], rel=1e-4)
+            assert out['sensitivity_mixed_p'] == pytest.approx(base['sensitivity_mixed_p'], rel=1e-3)

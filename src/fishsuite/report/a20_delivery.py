@@ -13,7 +13,7 @@ def cache_signature(run,frame,definitions=()):
     """Content attestations, not cache existence, govern reuse."""
     import hashlib
     from .provenance import sha256
-    return dict(version='A20-2',config=sha256(run/'run_config.json'),nuclei=sha256(run/'nuclei_metrics.csv'),
+    return dict(version='A20-3',config=sha256(run/'run_config.json'),nuclei=sha256(run/'nuclei_metrics.csv'),
                 values=hashlib.sha256(pd.util.hash_pandas_object(frame,index=True).values.tobytes()).hexdigest(),
                 endpoints=[dict(name=e.name,column=e.column,family=e.family,usability=e.usability_flag) for e in definitions])
 

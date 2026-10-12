@@ -11,7 +11,11 @@ METHODS = (['lbfgs', 'bfgs'], ['powell'], ['nm'])
 # Powell/NM ~2.2 ms per likelihood evaluation; Powell ~85 and NM ~4 evaluations per iteration).
 # statsmodels reports a fit that hits its cap as not converged, so it is never validated.
 MAXITER = {'lbfgs': 100, 'powell': 50, 'nm': 1000}
-PD_TOL = 1e-8  # all eigenvalues of symmetrised -H > PD_TOL * max(1, max|eigenvalue|)
+# Validation gate (2026-10-11), invariant to response units: I = -(H + H')/2 at the fit; every diagonal
+# element of I > 0; the smallest eigenvalue of the diagonal-standardised matrix D^-1/2 I D^-1/2 > PD_TOL;
+# and the residual variance (fit.scale) / sample variance of the analysed response > RESID_TOL.
+PD_TOL = 1e-6
+RESID_TOL = 1e-6
 LLF_TIE = 1e-6  # valid fits within this REML llf of the best keep the METHODS order
 
 
@@ -19,21 +23,31 @@ def _fit_record(model, method):
     """One optimizer; returns the fit summary and the reason it is not valid, if any."""
     fit = model.fit(reml=True, method=method, maxiter=MAXITER[method[0]], disp=False)
     rec = dict(optimizer='/'.join(method), est=float(fit.fe_params['arm']), se=float(fit.bse_fe['arm']),
-               p=float(fit.pvalues['arm']), llf=float(fit.llf), min_eig=np.nan, reason='')
+               p=float(fit.pvalues['arm']), llf=float(fit.llf), min_eig=np.nan, reason='',
+               resid_frac=float(fit.scale) / float(np.var(model.endog, ddof=1)))
+    pd_reason = ''
     try:
         h, _ = fit.model.hessian(fit.params_object)
-        ev = np.linalg.eigvalsh(-0.5 * (h + h.T))
-        rec['min_eig'], pd_ok = float(ev.min()), bool(ev.min() > PD_TOL * max(1.0, float(np.abs(ev).max())))
+        info = -0.5 * (h + h.T)
+        diag = np.diag(info)
+        if not (diag > 0).all():
+            pd_reason = 'information matrix has a non-positive diagonal element'
+        else:
+            rec['min_eig'] = float(np.linalg.eigvalsh(info / np.sqrt(np.outer(diag, diag))).min())
+            if not rec['min_eig'] > PD_TOL:
+                pd_reason = f"information matrix not positive definite (standardised min eigenvalue {rec['min_eig']:.3g})"
     except Exception as exc:
-        pd_ok, rec['reason'] = False, f'information matrix not computable ({type(exc).__name__})'
+        pd_reason = f'information matrix not computable ({type(exc).__name__})'
     if not fit.converged:
         rec['reason'] = 'did not converge'
     elif not np.isfinite([rec['est'], rec['se'], rec['p'], rec['llf']]).all() or rec['se'] <= 0:
         rec['reason'] = 'non-finite REML log-likelihood, estimate or SE'
     elif not (np.isfinite(np.asarray(fit.params, dtype=float)).all() and np.isfinite(np.asarray(fit.bse_fe, dtype=float)).all()):
         rec['reason'] = 'non-finite parameters or fixed-effect SEs'
-    elif not pd_ok:
-        rec['reason'] = rec['reason'] or f"information matrix not positive definite (min eigenvalue {rec['min_eig']:.3g})"
+    elif pd_reason:
+        rec['reason'] = pd_reason
+    elif not rec['resid_frac'] > RESID_TOL:
+        rec['reason'] = f"residual variance collapsed ({rec['resid_frac']:.3g} of the response variance)"
     return rec
 
 
@@ -42,13 +56,13 @@ def mixed_model(data, test, reference):
 
     P is a two-sided asymptotic Wald normal p, not a small-sample well t test.
     Every optimizer in METHODS is tried; the highest-REML fit that converged, is
-    finite and has a positive-definite observed information matrix is kept.
+    finite, passes the unit-invariant information gate above and has a non-collapsed residual is kept.
     Anything else is 'not_validated:<reason>' with missing inference.
     """
     out = dict(sensitivity_mixed_estimate=np.nan, sensitivity_mixed_se=np.nan,
                sensitivity_mixed_p=np.nan, sensitivity_mixed_status='missing nucleus-level values',
                sensitivity_mixed_warnings='', sensitivity_mixed_validation='not_validated:missing nucleus-level values',
-               sensitivity_mixed_min_eig=np.nan, sensitivity_mixed_optimizer='')
+               sensitivity_mixed_min_eig=np.nan, sensitivity_mixed_resid_frac=np.nan, sensitivity_mixed_optimizer='')
     data = data.copy()
     data['value'] = pd.to_numeric(data['value'], errors='coerce')
     data = data.loc[data.group.isin([test, reference]) & np.isfinite(data.value)].dropna(subset=['well_id','image'])
@@ -82,7 +96,8 @@ def mixed_model(data, test, reference):
                 rec = _fit_record(model, method)
             rec['warnings'] = '; '.join(dict.fromkeys(str(w.message) for w in caught))
         except Exception as exc:
-            rec = dict(optimizer='/'.join(method), reason=f'{type(exc).__name__}: {exc}', min_eig=np.nan, warnings='')
+            rec = dict(optimizer='/'.join(method), reason=f'{type(exc).__name__}: {exc}', min_eig=np.nan,
+                       resid_frac=np.nan, warnings='')
         fits.append(rec)
         caught_all.append(rec['warnings'])
     valid = [f for f in fits if not f['reason']]
@@ -98,7 +113,8 @@ def mixed_model(data, test, reference):
     out.update(sensitivity_mixed_estimate=best['est'], sensitivity_mixed_se=best['se'],
                sensitivity_mixed_p=best['p'], sensitivity_mixed_status='ok',
                sensitivity_mixed_warnings=best['warnings'], sensitivity_mixed_validation='validated',
-               sensitivity_mixed_min_eig=best['min_eig'], sensitivity_mixed_optimizer=best['optimizer'])
+               sensitivity_mixed_min_eig=best['min_eig'], sensitivity_mixed_resid_frac=best['resid_frac'],
+               sensitivity_mixed_optimizer=best['optimizer'])
     return out
 
 
