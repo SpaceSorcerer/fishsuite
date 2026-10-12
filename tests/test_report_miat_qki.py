@@ -24,7 +24,7 @@ def test_three_well_ratio_covariance_and_complete_exact_assignments():
 from fishsuite.report import miat_qki as mq
 
 DATA = Path('F:/Image Analysis Work/MIAT_QKI_Coloc_2026_08_25/DELIVERIES/DELIVERY_MIAT_QKI_REVISED_2026-09-03/data')
-MIXED = re.compile(r'mixed model (p \d\.\d+(e-\d+)?|not validated|did not converge|not fitted \(field-level endpoint\))(?=[;.\s]|$)')  # exact footer phrases; a mixed p only in numeric form (2026-10-11)
+MIXED = re.compile(r'mixed model (?:p(?: =)? \d+(?:\.\d+)?(?:e[-+]?\d+)?|not validated(?: \(legacy result\))?|did not converge|not fitted \(field-level endpoint\))(?=[;,<\n]|\.(?:\s|<|$)|\s*$)')  # complete footer clauses only; a mixed p only in numeric form (2026-10-11)
 COUNT = Path('F:/Image Analysis Work/MIAT_QKI_Coloc_2026_08_25/RAW_RUNS/MIAT_COUNT_2026-08-28_0020/report_2026-09-05_nuclearfraction_count_allnuclei')
 
 
@@ -198,3 +198,13 @@ def test_ratio_scalars_use_registered_locked_drawer(tmp_path, monkeypatch):
             svg = Path(record[variant+'_svg']).read_text(encoding='utf-8')
             assert MIXED.search(svg) and '; run ' in svg
             assert '#d67ae5' in svg.lower()
+
+
+@pytest.mark.parametrize('text,ok', [
+    ('mixed model p 0.0722; Welch (wells) p 0.2', True), ('a; mixed model p = 4.26e-06.', True),
+    ('mixed model not validated (legacy result); Welch', True), ('mixed model did not converge', True),
+    ('mixed model not fitted (field-level endpoint); n 3', True),
+    ('mixed model not validated nonsense', False), ('mixed model p 0.12.34', False),
+    ('mixed model p NA; Welch', False), ('mixed model p ; Welch', False)])
+def test_footer_clause_regex_accepts_only_complete_phrases(text, ok):
+    assert bool(MIXED.search(text)) is ok

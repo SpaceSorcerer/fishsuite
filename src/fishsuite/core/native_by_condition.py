@@ -100,12 +100,11 @@ def _load(run: Path, groups: ConditionsCfg):
                        descriptive_only=e.descriptive_only, absolute_intensity=e.absolute_intensity)
             row.update(welch(a,b))
             row.update(scalar_sensitivities(e,nuclei,f,a,b,group,order[0]))
-            row['p_mixed'] = row['sensitivity_mixed_p'] if row.get('sensitivity_mixed_validation')=='validated' else np.nan
-            row['p_headline'] = row['p_mixed'] if np.isfinite(row['p_mixed']) else row['p_welch']
             contrasts.append(row)
     if labels.secondary_only.any():
         order.append(agg.SEC_ONLY_GROUP)
-    return cfg, nuclei, fields, wells, pd.DataFrame(contrasts), endpoints, order
+    from fishsuite.report.sensitivities import withhold_unvalidated_mixed
+    return cfg, nuclei, fields, wells, withhold_unvalidated_mixed(pd.DataFrame(contrasts), headline=True), endpoints, order
 
 
 def _render(run: Path, out: Path, groups: ConditionsCfg):

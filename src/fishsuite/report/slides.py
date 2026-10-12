@@ -12,7 +12,8 @@ from openpyxl import load_workbook
 from openpyxl.utils import get_column_letter, coordinate_to_tuple
 
 from .aggregate import ReportInputError
-from .figures import mixed_p_text, mixed_validated
+from .sensitivities import (mixed_p_text, mixed_validated, mixed_value, headline_holm_value,
+                            withhold_unvalidated_mixed, withhold_unvalidated_rows)
 from . import figures
 from .provenance import guard_output, sha256
 
@@ -45,7 +46,7 @@ def validate_deck(workbook: Path, spec: dict) -> list:
         if sheet not in book:
             raise ReportInputError(f'missing workbook sheet: {sheet}')
         if sheet not in cache:
-            cache[sheet]=list(book[sheet].values)
+            cache[sheet]=withhold_unvalidated_rows(list(book[sheet].values))
         row,col=coordinate_to_tuple(cell)
         values=cache[sheet]
         if row>len(values) or col>len(values[row-1]):
@@ -185,7 +186,8 @@ def speaker_notes(workbook, definition, notes_trailer=None):
         means.append(f"{name}: {test} well mean {n('mean_test')}, {ref} well mean {n('mean_ref')}, difference {n('diff')} ({test} minus {ref})")
         validated = mixed_validated(row)
         tests.append(f"{name}: {mixed_p_text(row)}; Welch (wells) p {n('p_welch')}, Hedges g {n('hedges_g')}")
-        holm_text = (f"Holm p {n('p_headline_holm')}" if validated or row.get('headline_test') != 'mixed model'
+        holm_text = (f"Holm p {number(headline_holm_value(row))}"
+                     if np.isfinite(headline_holm_value(row))
                      else f"Holm p (well-level Welch) {n('p_welch_holm_within_family')}")
         adjusted.append(f"{name}: {holm_text}, MDE g {n('mde_hedges_g_at_family_alpha')} at family alpha and 80% power")
         levels.extend([str(name),
@@ -193,7 +195,7 @@ def speaker_notes(workbook, definition, notes_trailer=None):
             f"Per-FOV mean: {test} n={n('sensitivity_n_fovs_test')} FOVs, {ref} n={n('sensitivity_n_fovs_reference')} FOVs; technical-level Welch p {n('sensitivity_welch_fov_p')}.",
             f"Per-well mean: {test} n={n('n_wells_test')} wells, {ref} n={n('n_wells_reference')} wells; two-sided Welch comparison; pooled-variance Student sensitivity p {n('sensitivity_student_well_p')}.",
             f"Nucleus-level mixed model: fixed arm, random well and FOV within well; "
-            + (f"Wald p {n('sensitivity_mixed_p')}" if validated else mixed_p_text(row)) + f"; {row.get('sensitivity_mixed_status', 'missing')}."])
+            + (f"Wald p {number(mixed_value(row))}" if validated else mixed_p_text(row)) + f"; {row.get('sensitivity_mixed_status', 'missing')}."])
     if endpoints:
         notes.extend(['; '.join(means)+'.', '; '.join(tests)+'.', '; '.join(adjusted)+'. MDE is not an exclusion bound.'])
     else:
@@ -398,6 +400,9 @@ def prepare_deck(template: dict, sheets: dict, out_dir: Path, data: dict,
     Values copied to Slide values retain their exact origin cell. Speaker notes
     summarize contrasts; slide_sources.csv retains all cell-level provenance.
     """
+    contrasts = withhold_unvalidated_mixed(contrasts)
+    if 'Contrasts' in sheets:
+        sheets['Contrasts'] = withhold_unvalidated_mixed(sheets['Contrasts'])
     from . import figures as fig
     out_dir = guard_output(out_dir)
     for item in template['slides']:

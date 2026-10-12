@@ -36,26 +36,7 @@ from matplotlib.patches import Rectangle   # noqa: E402
 from .stats import SEED, fmt_p, stars      # noqa: E402
 
 
-def mixed_validated(r) -> bool:
-    """A mixed p may be shown only for an explicitly validated fit with a finite p."""
-    p = pd.to_numeric(r.get('p_mixed', r.get('sensitivity_mixed_p', np.nan)), errors="coerce")
-    return r.get('sensitivity_mixed_validation', None) == 'validated' and bool(np.isfinite(p))
-
-
-def mixed_p_text(r, sep: str = " ") -> str:
-    """Footer text for the mixed model; never prints a p from a fit that is not validated."""
-    status = str(r.get('sensitivity_mixed_status', ''))
-    if mixed_validated(r):
-        return f"mixed model p{sep}{fmt_p(pd.to_numeric(r.get('p_mixed', r.get('sensitivity_mixed_p')), errors='coerce'))}"
-    validation = r.get('sensitivity_mixed_validation', None)
-    if validation is None or (isinstance(validation, float) and np.isnan(validation)) or 'legacy' in str(validation):
-        if status == 'ok':
-            return "mixed model not validated (legacy result)"
-    if 'field-level' in status:
-        return "mixed model not fitted (field-level endpoint)"
-    if 'converg' in status and 'not validated' not in status:
-        return "mixed model did not converge"
-    return "mixed model not validated"
+from .sensitivities import mixed_p_text, mixed_validated, mixed_value  # noqa: E402,F401
 
 OKABE_ITO = {
     "black": "#000000",
@@ -858,7 +839,7 @@ def draw_replicate_simple(ax, ctx: FigureContext, endpoint: str, well: pd.DataFr
         if not len(match):
             continue
         r = match.iloc[0]
-        p = r.get('p_mixed', r.get('sensitivity_mixed_p', np.nan))
+        p = mixed_value(r)
         mixed_ok = mixed_validated(r)
         if not mixed_ok:
             p = r.get('p_welch', np.nan)

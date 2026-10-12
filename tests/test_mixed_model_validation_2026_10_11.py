@@ -237,3 +237,44 @@ def test_validation_is_invariant_to_response_units(name):
             assert out['sensitivity_mixed_estimate'] == pytest.approx(c * base['sensitivity_mixed_estimate'], rel=1e-4)
             assert out['sensitivity_mixed_se'] == pytest.approx(c * base['sensitivity_mixed_se'], rel=1e-4)
             assert out['sensitivity_mixed_p'] == pytest.approx(base['sensitivity_mixed_p'], rel=1e-3)
+
+
+def _codex_delta_frame():
+    # Codex delta review 2026-10-11: seed-14 interior data that the total-variance guard falsely rejected
+    # once 10000 was added to every KO value.
+    rng = np.random.default_rng(14)
+    rows = []
+    for arm in (0, 1):
+        for well in range(5):
+            w = rng.normal(0, 1.)
+            for fov in range(3):
+                u = rng.normal(0, .7)
+                for _ in range(8):
+                    rows.append(dict(group='KO' if arm else 'WT', well_id=f'{arm}_{well}', image=f'f{fov}',
+                                     value=arm * .5 + w + u + rng.normal(0, .5)))
+    return pd.DataFrame(rows)
+
+
+@pytest.mark.parametrize('shift', ['arm_offset', 'between_well'])
+def test_residual_guard_ignores_fixed_offsets_and_between_well_shifts(shift):
+    base = _codex_delta_frame()
+    ref = mixed_model(base, 'KO', 'WT')
+    assert ref['sensitivity_mixed_validation'] == 'validated'
+    shifted = base.copy()
+    if shift == 'arm_offset':
+        shifted['value'] += 1e4 * shifted.group.eq('KO')
+    else:
+        shifted['value'] += 1e4 * shifted.well_id.str[-1].astype(int)
+    out = mixed_model(shifted, 'KO', 'WT')
+    assert out['sensitivity_mixed_validation'] == 'validated'
+    assert out['sensitivity_mixed_resid_frac'] == pytest.approx(ref['sensitivity_mixed_resid_frac'], rel=1e-3)
+    if shift == 'arm_offset':
+        assert out['sensitivity_mixed_se'] == pytest.approx(ref['sensitivity_mixed_se'], rel=1e-4)
+
+
+def test_no_within_well_variation_is_not_validated():
+    data = pd.DataFrame([dict(group=arm, well_id=f'{arm}{w}', image=f'{arm}{w}_{f}', value=float(w) + (arm == 'KO'))
+                         for arm in ('WT', 'KO') for w in range(3) for f in range(2) for _ in range(3)])
+    out = mixed_model(data, 'KO', 'WT')
+    assert out['sensitivity_mixed_validation'].startswith('not_validated:')
+    assert np.isnan(out['sensitivity_mixed_p'])

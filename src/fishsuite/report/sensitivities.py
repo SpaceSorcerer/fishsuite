@@ -13,10 +13,22 @@ METHODS = (['lbfgs', 'bfgs'], ['powell'], ['nm'])
 MAXITER = {'lbfgs': 100, 'powell': 50, 'nm': 1000}
 # Validation gate (2026-10-11), invariant to response units: I = -(H + H')/2 at the fit; every diagonal
 # element of I > 0; the smallest eigenvalue of the diagonal-standardised matrix D^-1/2 I D^-1/2 > PD_TOL;
-# and the residual variance (fit.scale) / sample variance of the analysed response > RESID_TOL.
+# and the residual variance (fit.scale) / pooled within-well variance of the analysed response > RESID_TOL.
+# The within-well reference (y minus its well mean, df = n - wells) is unchanged by arm offsets and by
+# between-well shifts; FOV variation inside a well stays in it, so a residual that collapses to ~0
+# when values are constant inside each FOV is still caught (Codex delta review 2026-10-11).
 PD_TOL = 1e-6
 RESID_TOL = 1e-6
 LLF_TIE = 1e-6  # valid fits within this REML llf of the best keep the METHODS order
+
+
+def _within_well_variance(model):
+    """Pooled variance of the response about its well means (df = n - number of wells)."""
+    groups = [np.asarray(e, dtype=float) for e in model.endog_li]
+    df = sum(len(g) for g in groups) - len(groups)
+    if df < 1:
+        return np.nan
+    return float(sum(((g - g.mean()) ** 2).sum() for g in groups) / df)
 
 
 def _fit_record(model, method):
@@ -24,7 +36,10 @@ def _fit_record(model, method):
     fit = model.fit(reml=True, method=method, maxiter=MAXITER[method[0]], disp=False)
     rec = dict(optimizer='/'.join(method), est=float(fit.fe_params['arm']), se=float(fit.bse_fe['arm']),
                p=float(fit.pvalues['arm']), llf=float(fit.llf), min_eig=np.nan, reason='',
-               resid_frac=float(fit.scale) / float(np.var(model.endog, ddof=1)))
+               resid_frac=np.nan)
+    within = _within_well_variance(model)
+    if np.isfinite(within) and within > 0:
+        rec['resid_frac'] = float(fit.scale) / within
     pd_reason = ''
     try:
         h, _ = fit.model.hessian(fit.params_object)
@@ -46,8 +61,10 @@ def _fit_record(model, method):
         rec['reason'] = 'non-finite parameters or fixed-effect SEs'
     elif pd_reason:
         rec['reason'] = pd_reason
+    elif not (np.isfinite(within) and within > 0):
+        rec['reason'] = 'no within-well variation in the response'
     elif not rec['resid_frac'] > RESID_TOL:
-        rec['reason'] = f"residual variance collapsed ({rec['resid_frac']:.3g} of the response variance)"
+        rec['reason'] = f"residual variance collapsed ({rec['resid_frac']:.3g} of the within-well variance)"
     return rec
 
 
@@ -193,34 +210,146 @@ def outlier_sensitivity(field, contrasts, alpha=.05):
 
 
 LEGACY_VALIDATION = 'not_validated:legacy result (no validation marker; built before 70500c0)'
+# The single accessor for mixed-model inference (2026-10-11). Every other module reads or writes these
+# keys only through the functions below; tests/test_mixed_p_single_accessor_2026_10_11.py enforces it.
+MIXED_ONLY_KEYS = ('p_mixed', 'sensitivity_mixed_p', 'p_mixed_holm', 'mixed_p')
+HEADLINE_KEYS = ('p_headline', 'p_headline_holm')
+MIXED_ALIAS = 'mixed_p'
+WELCH_HEADLINE = 'Welch (well means)'
 
 
-def withhold_unvalidated_mixed(contrasts):
-    """Copy of a persisted contrasts table whose mixed inference is kept only where
-    ``sensitivity_mixed_validation == 'validated'``. A table without that column was
-    built before 70500c0 and every mixed p in it is withheld. Withheld rows fall back
-    to the well-level Welch p as headline, labelled as such, and the headline Holm
-    columns are recomputed within (family, test_group) when the table carries them."""
-    from .stats import holm
+def _validated(row) -> bool:
+    return row.get('sensitivity_mixed_validation', None) == 'validated'
+
+
+def mixed_value(row, key='p_mixed') -> float:
+    """A mixed-only quantity of one row, or NaN unless that row's fit is validated."""
+    raw = row.get(key, np.nan)
+    if key == 'p_mixed' and pd.isna(raw):
+        raw = row.get('sensitivity_mixed_p', np.nan)
+    value = pd.to_numeric(raw, errors='coerce')
+    return float(value) if _validated(row) and np.isfinite(value) else np.nan
+
+
+def mixed_validated(row) -> bool:
+    """A mixed p may be shown only for an explicitly validated fit with a finite p."""
+    return bool(np.isfinite(mixed_value(row)))
+
+
+def headline_value(row, key='p_headline') -> float:
+    """Headline p (or its Holm adjustment) of one row; NaN when it would carry unvalidated mixed inference."""
+    value = pd.to_numeric(row.get(key, np.nan), errors='coerce')
+    if not np.isfinite(value):
+        return np.nan
+    return float(value) if _validated(row) or row.get('headline_test', None) == WELCH_HEADLINE else np.nan
+
+
+def headline_holm_value(row) -> float:
+    """Holm-adjusted headline p of one row; NaN when it would carry unvalidated mixed inference."""
+    return headline_value(row, 'p_headline_holm')
+
+
+def mixed_p_text(row, sep: str = " ") -> str:
+    """Footer/notes text for the mixed model; never a p from a fit that is not validated."""
+    from .stats import fmt_p
+    status = str(row.get('sensitivity_mixed_status', ''))
+    if mixed_validated(row):
+        return f"mixed model p{sep}{fmt_p(mixed_value(row))}"
+    validation = row.get('sensitivity_mixed_validation', None)
+    if validation is None or (isinstance(validation, float) and np.isnan(validation)) or 'legacy' in str(validation):
+        if status == 'ok':
+            return "mixed model not validated (legacy result)"
+    if 'field-level' in status:
+        return "mixed model not fitted (field-level endpoint)"
+    if 'converg' in status and 'not validated' not in status:
+        return "mixed model did not converge"
+    return "mixed model not validated"
+
+
+def withhold_unvalidated_mixed(contrasts, alpha=0.05, headline=False):
+    """Produce or sanitise the mixed-model columns of a contrasts table.
+
+    Mixed-only columns keep a value only where ``sensitivity_mixed_validation == 'validated'``; a table
+    without that column was built before 70500c0 and loses all of them. ``p_mixed`` is created from
+    ``sensitivity_mixed_p`` when absent. When the table has, or ``headline`` asks for, a headline, it is the
+    validated mixed p else the well-level Welch p, labelled in ``headline_test``. Headline Holm, family
+    size, significance and the family-alpha MDE are recomputed per family; if the family cannot be
+    reconstructed, adjusted inference that a withheld row could have influenced is cleared, not kept.
+    A table carrying none of the mixed or headline keys is returned unchanged.
+    """
+    from .stats import holm, mde_hedges_g
     c = contrasts.copy()
+    if not (set(MIXED_ONLY_KEYS + HEADLINE_KEYS) & set(c.columns)):
+        return c
     if 'sensitivity_mixed_validation' not in c:
         c['sensitivity_mixed_validation'] = LEGACY_VALIDATION
     c['sensitivity_mixed_validation'] = c['sensitivity_mixed_validation'].fillna(LEGACY_VALIDATION)
     ok = c['sensitivity_mixed_validation'].eq('validated')
-    for col in ('p_mixed', 'sensitivity_mixed_p', 'p_mixed_holm'):
+    if 'p_mixed' not in c and 'sensitivity_mixed_p' in c:
+        c['p_mixed'] = c['sensitivity_mixed_p']
+    for col in MIXED_ONLY_KEYS:
         if col in c:
-            c[col] = c[col].where(ok)
-    if 'p_welch' not in c:
+            c[col] = pd.to_numeric(c[col], errors='coerce').where(ok)
+    if 'p_welch' not in c or not (headline or 'p_headline' in c):
         return c
     mixed = c['p_mixed'] if 'p_mixed' in c else pd.Series(np.nan, index=c.index)
-    c['p_headline'] = mixed.where(ok).fillna(c['p_welch'])
-    c['headline_test'] = np.where(ok & mixed.notna(), 'mixed model', 'Welch (well means)')
+    before = pd.to_numeric(c['p_headline'], errors='coerce') if 'p_headline' in c else None
+    c['p_headline'] = mixed.fillna(pd.to_numeric(c['p_welch'], errors='coerce'))
+    c['headline_test'] = np.where(mixed.notna(), 'mixed model', WELCH_HEADLINE)
+    family_cols = ['family', 'test_group'] + (['reference_group'] if 'reference_group' in c else [])
+    old_size = c['holm_family_size'].copy() if 'holm_family_size' in c else None
     if {'family', 'test_group', 'in_holm_family'} <= set(c.columns):
+        member = c['in_holm_family'].fillna(False).astype(bool)
         c['p_headline_holm'] = np.nan
-        for _, idx in c.groupby(['family', 'test_group']).groups.items():
-            member = [i for i in idx if bool(c.at[i, 'in_holm_family'])]
-            c.loc[member, 'p_headline_holm'] = holm(c.loc[member, 'p_headline'].tolist())
-        c['p_mixed_holm'] = c['p_headline_holm'].where(ok & mixed.notna())
-        if 'significant_headline_holm_0p05' in c:
-            c['significant_headline_holm_0p05'] = c.p_headline_holm.lt(.05).where(c.in_holm_family.astype(bool))
+        c['holm_family_size'] = np.nan
+        for _, idx in c.groupby(family_cols, dropna=False).groups.items():
+            ids = [i for i in idx if member.at[i]]
+            if ids:
+                c.loc[ids, 'p_headline_holm'] = holm(c.loc[ids, 'p_headline'].tolist())
+                c.loc[ids, 'holm_family_size'] = float(np.isfinite(c.loc[ids, 'p_headline'].to_numpy(float)).sum())
+        c['p_mixed_holm'] = c['p_headline_holm'].where(mixed.notna())
+        flag = (c['p_headline_holm'] < alpha).astype(object)
+        flag[~member | c['p_headline_holm'].isna()] = pd.NA
+        c['significant_headline_holm_0p05'] = flag
+    elif before is not None and not np.allclose(before.to_numpy(float), c['p_headline'].to_numpy(float), equal_nan=True):
+        for col in ('p_headline_holm', 'p_mixed_holm', 'significant_headline_holm_0p05'):
+            if col in c:
+                c[col] = np.nan
+    mde_cols = {'mde_hedges_g_at_family_alpha', 'n_wells_test', 'n_wells_reference', 'sd_wells_test', 'sd_wells_reference'}
+    if old_size is not None and mde_cols <= set(c.columns):
+        changed = ~np.isclose(pd.to_numeric(old_size, errors='coerce').to_numpy(float),
+                              c['holm_family_size'].to_numpy(float), equal_nan=True)
+        for i in c.index[changed]:
+            n1, n2, k = (pd.to_numeric(c.at[i, col], errors='coerce')
+                         for col in ('n_wells_test', 'n_wells_reference', 'holm_family_size'))
+            usable = bool(np.isfinite([n1, n2, k]).all() and min(n1, n2) >= 2 and k >= 1)
+            c.at[i, 'mde_hedges_g_at_family_alpha'] = mde_hedges_g(
+                alpha / float(k), n1=int(n1), n2=int(n2), sd1=float(c.at[i, 'sd_wells_test']),
+                sd2=float(c.at[i, 'sd_wells_reference'])) if usable else np.nan
+            if 'observed_g_reaches_mde' in c:
+                g = pd.to_numeric(c.at[i, 'hedges_g'], errors='coerce') if 'hedges_g' in c else np.nan
+                m = c.at[i, 'mde_hedges_g_at_family_alpha']
+                c.at[i, 'observed_g_reaches_mde'] = bool(abs(g) >= m) if np.isfinite([g, m]).all() else pd.NA
     return c
+
+
+def withhold_unvalidated_rows(rows):
+    """Worksheet rows (description, header, data...) with mixed inference withheld, header extended as needed."""
+    rows = [list(r) for r in rows]
+    if len(rows) < 2 or not (set(MIXED_ONLY_KEYS + HEADLINE_KEYS) & {str(h) for h in rows[1]}):
+        return rows
+    header = [str(h) for h in rows[1]]
+    frame = pd.DataFrame([r + [None] * (len(header) - len(r)) for r in rows[2:]], columns=header)
+    clean = withhold_unvalidated_mixed(frame)
+    clean = clean[header + [col for col in clean.columns if col not in header]]
+    out = [rows[0], list(clean.columns)]
+    for record in clean.itertuples(index=False, name=None):
+        out.append([None if (isinstance(v, float) and np.isnan(v)) or v is pd.NA else v for v in record])
+    return out
+
+
+def with_mixed_alias(contrasts):
+    """Contrasts with the short ``mixed_p`` alias column added, withheld exactly like ``p_mixed``."""
+    c = contrasts.copy()
+    c[MIXED_ALIAS] = c['p_mixed'] if 'p_mixed' in c else c.get('sensitivity_mixed_p', np.nan)
+    return withhold_unvalidated_mixed(c)

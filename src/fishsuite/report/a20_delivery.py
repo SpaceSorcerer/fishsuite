@@ -9,6 +9,7 @@ from . import endpoints as ep, aggregate, figures, workbook
 from .stats import holm
 
 
+from .sensitivities import withhold_unvalidated_mixed
 def cache_signature(run,frame,definitions=()):
     """Content attestations, not cache existence, govern reuse."""
     import hashlib
@@ -99,11 +100,8 @@ def amend_rnase(sheets, run, out):
     c['in_holm_family'] = ~(c.descriptive_only.fillna(False).astype(bool) | c.endpoint_absent_in_run.fillna(False).astype(bool) | c.excluded_from_holm.fillna('').astype(bool))
     for _, indexes in c.groupby(['family','test_group','reference_group']).groups.items():
         ids = [i for i in indexes if c.at[i,'in_holm_family']]
-        for dest,source in [('p_welch_holm_within_family','p_welch'),('p_headline_holm','p_headline'),('p_mixed_holm','p_headline')]:
-            c.loc[ids,dest] = holm(c.loc[ids,source].tolist())
-        c.loc[ids,'holm_family_size'] = np.isfinite(c.loc[ids,'p_headline']).sum()
-    c.loc[c.p_mixed.isna(),'p_mixed_holm'] = np.nan
-    c['significant_headline_holm_0p05'] = (c.p_headline_holm < .05).where(c.in_holm_family)
+        c.loc[ids,'p_welch_holm_within_family'] = holm(c.loc[ids,'p_welch'].tolist())
+    c = withhold_unvalidated_mixed(c, .05, headline=True)
     c['significant_holm_0p05'] = (c.p_welch_holm_within_family < .05).where(c.in_holm_family)
     c['observed_g_reaches_mde']=c.observed_g_reaches_mde.astype(object)
     from functools import lru_cache

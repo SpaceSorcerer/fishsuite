@@ -12,8 +12,8 @@ import yaml
 from PIL import Image
 from . import aggregate, endpoints, build
 from .provenance import sha256
-from .sensitivities import withhold_unvalidated_mixed
-from .figures import mixed_p_text, mixed_validated
+from .sensitivities import (withhold_unvalidated_mixed, withhold_unvalidated_rows, mixed_p_text,
+                            mixed_validated, mixed_value, with_mixed_alias, MIXED_ALIAS)
 
 DECISION = ('Mixed-model headline decision 2026-09-07 after data inspection; '
             'Welch on well means remains reported. Nucleus-level linear mixed model: '
@@ -51,7 +51,7 @@ def narrative(spec, contrasts=None):
             direction='higher' if row['diff']>0 else 'lower' if row['diff']<0 else 'unchanged'
             body=f'{label} is {direction} in KO. '
             if mixed_validated(row):
-                body+='The raw mixed-model comparison '+('detects' if row.p_mixed<.05 else 'does not detect')+' a difference; family adjustment remains in the workbook and notes.'
+                body+='The raw mixed-model comparison '+('detects' if mixed_value(row)<.05 else 'does not detect')+' a difference; family adjustment remains in the workbook and notes.'
             else:
                 body+=mixed_p_text(row).capitalize()+'; the bracket explicitly reports Welch on well means.'
         item['body']=body
@@ -119,6 +119,20 @@ def assemble(run, panel, prior, spec_path, out):
     finalize(out,prior,run,panel)
 
 
+def _withhold_book(book):
+    """Rewrite every worksheet that carries mixed-model columns with unvalidated inference withheld."""
+    for ws in book.worksheets:
+        rows=[list(r) for r in ws.iter_rows(values_only=True)]
+        clean=withhold_unvalidated_rows(rows)
+        if clean is rows or clean==rows:
+            continue
+        for r,values in enumerate(clean,1):
+            if r==1:
+                continue
+            for col,value in enumerate(values,1):
+                ws.cell(r,col).value=value
+
+
 def finalize(out,prior,run,panel):
     """Add floor comparison, amend documentation, validate deck, seal last."""
     import openpyxl
@@ -127,14 +141,13 @@ def finalize(out,prior,run,panel):
     from . import figures, slides
     from .dapi_delivery import preview_deck
     book=openpyxl.load_workbook(out/'REPORT.xlsx')
+    _withhold_book(book)
     contrasts=withhold_unvalidated_mixed(pd.read_csv(out/'contrasts.csv'))
     old=pd.read_csv(prior/'nucleus_floor_comparison.csv')
-    old=old.loc[old.floor_px.eq(16000)].copy()
-    # The prior comparison predates mixed-model validation: its mixed p is never shown.
-    old['mixed_p']=float('nan')
-    old['mixed_status']='mixed model not validated (legacy result)'
-    new=contrasts.copy().assign(floor_px=4000)
-    new['mixed_p']=new.p_mixed
+    # The prior comparison predates mixed-model validation: every mixed column in it is withheld.
+    old=withhold_unvalidated_mixed(old.loc[old.floor_px.eq(16000)].copy())
+    old['mixed_status']=[mixed_p_text(r) for _,r in old.iterrows()]
+    new=with_mixed_alias(contrasts.copy().assign(floor_px=4000))
     new['mixed_status']=[mixed_p_text(r) for _,r in new.iterrows()]
     comp=pd.concat([old,new],ignore_index=True)
     comp.to_csv(out/'nucleus_floor_comparison.csv',index=False)
@@ -151,7 +164,7 @@ def finalize(out,prior,run,panel):
             continue
         a=rows.loc[rows.floor_px.eq(16000)].iloc[0]
         b=rows.loc[rows.floor_px.eq(4000)].iloc[0]
-        for column in ['p_welch','mixed_p']:
+        for column in ['p_welch',MIXED_ALIAS]:
             if pd.notna(a[column]) and pd.notna(b[column]) and (a[column]<.05)!=(b[column]<.05):
                 changes.append(dict(endpoint=endpoint,test=column,old_p=a[column],new_p=b[column]))
     changed=pd.DataFrame(changes,columns=['endpoint','test','old_p','new_p'])
@@ -180,14 +193,14 @@ def finalize(out,prior,run,panel):
     lines=[]
     for row in focus.itertuples():
         scale=100 if row.endpoint=='nuclear_spot_fraction_dapi' else 1
-        lines.append(f'{row.endpoint}, floor {row.floor_px:g}: WT {row.mean_ref*scale:.4g}; KO {row.mean_test*scale:.4g}; '+(f'mixed p {row.mixed_p:.4g}' if pd.notna(row.mixed_p) else str(row.mixed_status))+f'; Welch (well-level) p {row.p_welch:.4g}')
+        lines.append(f'{row.endpoint}, floor {row.floor_px:g}: WT {row.mean_ref*scale:.4g}; KO {row.mean_test*scale:.4g}; '+(f'mixed p {mixed_value(row._asdict(),MIXED_ALIAS):.4g}' if mixed_validated(row._asdict()) else str(row.mixed_status))+f'; Welch (well-level) p {row.p_welch:.4g}')
     body=slide.shapes.add_textbox(Inches(.5), Inches(1.4), Inches(12), Inches(5))
     body.text_frame.text='\n\n'.join(lines)
     for para in body.text_frame.paragraphs: para.font.size=Pt(18)
     slide.notes_slide.notes_text_frame.text='Workbook: '+str(out/'REPORT.xlsx')+'\nNucleus selection and size floor\n'+DECISION+'\nSource: Nucleus floor comparison sheet.\n'+'\n'.join(lines)
     source_rows=pd.read_csv(out/'slide_sources.csv').to_dict('records')
     for index,row in focus.iterrows():
-        for column in ['endpoint','floor_px','mean_ref','mean_test','mixed_p','p_welch']:
+        for column in ['endpoint','floor_px','mean_ref','mean_test',MIXED_ALIAS,'p_welch']:
             source_rows.append(dict(slide=len(ppt.slides),workbook=str(out/'REPORT.xlsx'),
                 sheet='Nucleus floor comparison',cell=f'{openpyxl.utils.get_column_letter(comp.columns.get_loc(column)+1)}{index+3}',value=row[column]))
     pd.DataFrame(source_rows).to_csv(out/'slide_sources.csv',index=False)
@@ -271,14 +284,7 @@ def refresh(out, prior, run, panel):
     contrasts=withhold_unvalidated_mixed(sheets['Contrasts'])
     sheets['Contrasts']=contrasts
     narrative(spec, contrasts)
-    for _,idx in contrasts.groupby(['family','test_group']).groups.items():
-        member=[i for i in idx if contrasts.at[i,'in_holm_family']]
-        adj=holm(contrasts.loc[member,'p_headline'].tolist())
-        contrasts.loc[member,'p_headline_holm']=adj
-        contrasts.loc[member,'p_mixed_holm']=adj
-    contrasts.loc[contrasts.p_mixed.isna(),'p_mixed_holm']=float('nan')
     contrasts['significant_holm_0p05']=contrasts.p_welch_holm_within_family.lt(.05).where(contrasts.in_holm_family)
-    contrasts['significant_headline_holm_0p05']=contrasts.p_headline_holm.lt(.05).where(contrasts.in_holm_family)
     contrasts.to_csv(out/'contrasts.csv',index=False)
     # Family summaries use the same rebuilt headline columns.
     for family,name in [('detection','Spots per nucleus by group'),('localization','Nuclear fraction by group'),('partner','Partner at puncta by group')]:

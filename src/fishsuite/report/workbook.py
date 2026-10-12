@@ -149,6 +149,9 @@ def write(path: Path, sheets: Dict[str, pd.DataFrame],
     with pd.ExcelWriter(path, engine="openpyxl") as xl:
         for name in order:
             df = sheets.get(name)
+            if df is not None and len(df):
+                from .sensitivities import withhold_unvalidated_mixed
+                df = withhold_unvalidated_mixed(df)
             if df is None or len(df) == 0:
                 df = pd.DataFrame({"note": [f"the sheet '{name}' produced no rows"]})
             df.to_excel(xl, sheet_name=name[:31], index=False, startrow=1)
