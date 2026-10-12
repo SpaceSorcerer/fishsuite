@@ -114,3 +114,40 @@ def test_a17_json_and_dapi_sensitivity_csv_writers_stamp():
     src = inspect.getsource(rnaseh2b_analysis)
     assert src.count('**stamp)') == 3 and 'fishsuite_stats_generation=STATS_GENERATION' in src
     assert "stamp_statistics(dapi[key], f'dapi_{key}', fresh=True)" in inspect.getsource(build)
+
+
+def test_native_excludes_compressed_and_extensionless_legacy_statistics(tmp_path):
+    import gzip, json
+    from test_native_by_condition import tiny_run
+    from fishsuite.core.native_by_condition import regenerate
+    from fishsuite.config.schema import ConditionsCfg
+    run = tiny_run(tmp_path)
+    legacy = run / 'figures' / 'per_condition'
+    table = pd.DataFrame(dict(endpoint=['x'], p_mixed=[.001], sensitivity_mixed_validation=['not_validated:x']))
+    table.to_csv(legacy / 'stats.csv.gz', index=False, compression='gzip')
+    table.to_csv(legacy / 'stats.tsv.gz', index=False, sep='\t', compression='gzip')
+    table.to_csv(legacy / 'stats_noext', index=False)
+    (legacy / 'stats.json').write_text(json.dumps({'rows': [{'endpoint': 'x', 'p_mixed': .001}]}), encoding='utf-8')
+    with gzip.open(legacy / 'renamed.dat', 'wt') as handle:
+        handle.write('endpoint\tmde_hedges_g\nx\t1.2\n')
+    pd.DataFrame(dict(well=['a'], value=[1.])).to_csv(legacy / 'descriptive.csv.gz', index=False, compression='gzip')
+    out = tmp_path / 'new'
+    regenerate(run, ConditionsCfg(groups={'WT': ['a', 'b'], 'KO': ['c', 'd']}), out)
+    copied = out / 'figures/per_well_supplementary/per_condition'
+    for name in ('stats.csv.gz', 'stats.tsv.gz', 'stats_noext', 'stats.json', 'renamed.dat'):
+        assert not (copied / name).exists(), name
+    assert (copied / 'descriptive.csv.gz').exists() and (copied / 'original.png').exists()
+
+
+def test_finish_checks_full_scale_assets_before_publication(tmp_path):
+    from fishsuite.report.object_delivery import finish
+    from fishsuite.report.provenance import sha256
+    figure = tmp_path / 'fig.png'
+    figure.write_bytes(b'focus')
+    asset = dict(path=str(figure), sha256=sha256(figure), cohort=None,
+                 full_path=str(tmp_path / 'missing_full.png'), full_sha256='0' * 64)
+    spec = {'slides': [{'title': 'Figure', 'values': [], 'figures': [asset]}]}
+    out = tmp_path / 'delivery'
+    with pytest.raises(Exception, match='missing figure'):
+        finish(out, {'Contrasts': _stamped(_contrasts())}, spec, 'REPORT.xlsx', 'deck.pptx', [])
+    assert not out.exists()

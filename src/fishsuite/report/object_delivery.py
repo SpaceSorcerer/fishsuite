@@ -64,6 +64,10 @@ def finish(out,sheets,spec,book_name,deck_name,missing,fresh=()):
         proposed=json.loads(json.dumps(spec,default=str))
         proposed['workbook_sha256']=sha256(probe)
         slides.validate_deck(probe,proposed)
+        for item in proposed['slides']:  # the full-scale deck's assets too
+            for a in item.get('figures',[]):
+                if a.get('full_path'): a.update(path=a['full_path'],sha256=a.get('full_sha256'))
+        slides.validate_deck(probe,proposed)
     out=guard_output(out)
     expanded=[]
     for item in spec['slides']:
@@ -96,8 +100,13 @@ def finish(out,sheets,spec,book_name,deck_name,missing,fresh=()):
     # The final workbook is staged and validated against the final spec before it or the spec is published.
     staged=workbook.write(out/(Path(book_name).stem+'.staged.xlsx'),sheets,{},order=list(sheets),fresh=fresh)
     spec['workbook_sha256']=sha256(staged)
+    full=json.loads(json.dumps(spec))
+    for s in full['slides']:
+        for a in s['figures']:
+            if a.get('full_path'): a.update(path=a['full_path'],sha256=a['full_sha256'])
     try:
         slides.validate_deck(staged,spec)
+        slides.validate_deck(staged,full)  # full-scale assets are checked before anything is published
     except Exception:
         staged.unlink()
         raise
@@ -105,10 +114,6 @@ def finish(out,sheets,spec,book_name,deck_name,missing,fresh=()):
     (out/'deck_spec.resolved.yaml').write_text(yaml.safe_dump(spec,sort_keys=False),encoding='utf-8')
     slides.build_deck(book,spec,out/deck_name)
     focus_sources=(out/'slide_sources.csv').read_bytes()
-    full=json.loads(json.dumps(spec))
-    for s in full['slides']:
-        for a in s['figures']:
-            if a.get('full_path'): a.update(path=a['full_path'],sha256=a['full_sha256'])
     slides.build_deck(book,full,out/(Path(deck_name).stem+'_full.pptx'))
     # Focus deck source manifest remains the primary index.
     (out/'slide_sources.csv').write_bytes(focus_sources)

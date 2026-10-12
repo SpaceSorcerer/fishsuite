@@ -237,30 +237,80 @@ def regenerate(run: Path, groups: ConditionsCfg, out: Path | None = None):
 _P_TEXT = __import__('re').compile(r'(mixed model p|\bp\s*[=<>]\s*[0-9.]|p-value|holm|MDE|minimum detectable)', __import__('re').I)
 
 
-def _legacy_inferential(root: Path) -> set:
-    """Legacy files that carry inference (unstamped statistical tables, figures whose SVG prints a p, Holm or
-    MDE, and the raster/PDF twins of those figures); they are not republished by regeneration."""
+_IMAGE_SUFFIXES = {'.png', '.jpg', '.jpeg', '.tif', '.tiff', '.pdf', '.gif', '.bmp', '.webp'}
+
+
+def _text_head(p: Path, limit: int = 65536) -> str:
+    """First bytes of a file as text, transparently gunzipped (by content, not by name)."""
+    import gzip
+    raw = p.read_bytes()[:limit] if p.stat().st_size <= limit else open(p, 'rb').read(limit)
+    if raw[:2] == b'\x1f\x8b':
+        with gzip.open(p, 'rb') as handle:
+            raw = handle.read(limit)
+    return raw.decode('utf-8', errors='replace')
+
+
+def _carries_inference(p: Path) -> bool:
+    """Content-based: a tabular or JSON file whose header/keys name p, Holm, significance, MDE or CI values,
+    or a figure/text file that prints them. Extension chains (.csv.gz, .tsv.gz, no extension) do not matter."""
+    import json as _json
+    import zipfile
     from fishsuite.report.sensitivities import is_statistical
+    if zipfile.is_zipfile(p):
+        return True  # workbooks (xlsx) and archives are never republished by regeneration
+    text = _text_head(p)
+    stripped = text.lstrip()
+    if stripped[:1] in ('{', '['):
+        try:
+            payload = _json.loads(_text_head(p, limit=10**8))
+        except ValueError:
+            payload = None
+        keys = set()
+        def walk(node):
+            if isinstance(node, dict):
+                keys.update(map(str, node))
+                for value in node.values():
+                    walk(value)
+            elif isinstance(node, list):
+                for value in node[:1000]:
+                    walk(value)
+        walk(payload)
+        if keys and is_statistical(keys):
+            return True
+    first = text.splitlines()[0] if text else ''
+    for sep in ('\t', ',', ';'):
+        if sep in first and is_statistical([c.strip().strip('"') for c in first.split(sep)]):
+            return True
+    return bool(_P_TEXT.search(text))
+
+
+def _legacy_inferential(root: Path) -> set:
+    """Legacy files that carry inference, classified by CONTENT whatever their extension (tables, JSON and text
+    with p, Holm, significance, MDE or CI fields; figures whose SVG prints them, and the raster/PDF twins of those
+    figures). Regeneration never republishes them; unreadable files are not republished either."""
     skip, stems = set(), set()
     for p in root.rglob('*'):
         if not p.is_file():
             continue
         suffix = p.suffix.lower()
         try:
-            if suffix in ('.csv', '.tsv'):
-                head = pd.read_csv(p, nrows=0, sep='\t' if suffix == '.tsv' else ',').columns
-                if is_statistical(head):  # legacy inference is regenerated, never copied, whatever its stamp
-                    skip.add(p.resolve())
-            elif suffix == '.xlsx':
-                skip.add(p.resolve())  # engine workbooks are not regenerated outputs
-            elif suffix == '.svg' and _P_TEXT.search(p.read_text(encoding='utf-8', errors='replace')):
-                skip.add(p.resolve()); stems.add((p.parent.resolve(), p.stem))
+            if suffix in _IMAGE_SUFFIXES and not zipfile_like(p):
+                continue  # rasters are judged through their SVG twin below
+            if _carries_inference(p):
+                skip.add(p.resolve())
+                if suffix == '.svg':
+                    stems.add((p.parent.resolve(), p.stem))
         except Exception:
-            skip.add(p.resolve())  # unreadable: do not republish
+            skip.add(p.resolve())
     for p in root.rglob('*'):
         if p.is_file() and (p.parent.resolve(), p.stem) in stems:
             skip.add(p.resolve())
     return skip
+
+
+def zipfile_like(p: Path) -> bool:
+    import zipfile
+    return zipfile.is_zipfile(p)
 
 
 def finalize_native(run: Path):
