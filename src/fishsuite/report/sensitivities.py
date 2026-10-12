@@ -221,7 +221,7 @@ MIXED_ALIAS = 'mixed_p'
 WELCH_HEADLINE = 'Welch (well means)'
 MIXED_HEADLINE = 'mixed model'
 # First fishsuite commit whose outputs carry validated mixed inference under the final rules.
-MIXED_VALIDATION_COMMIT = '1afd1aa'
+MIXED_VALIDATION_COMMIT = '4614346'
 REBUILD_MESSAGE = f'legacy statistics: rebuild from the source run with fishsuite >= {MIXED_VALIDATION_COMMIT}'
 
 
