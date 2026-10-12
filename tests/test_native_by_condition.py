@@ -56,8 +56,12 @@ def test_regeneration_preserves_source_and_supplementary(tmp_path):
     before = {p.relative_to(run): p.read_bytes() for p in run.rglob('*') if p.is_file()}
     out = tmp_path/'new'
     result = regenerate(run, groups, out)
-    assert (out/'figures/per_well_supplementary/per_condition/original.png').read_bytes() == b'original'
-    assert (out/'figures/per_image/original.png').read_bytes() == b'original'
+    # 2026-10-12 fail-closed: only valid raw micrographs under figures/per_image are copied; the fixture's
+    # b'original' placeholders are not valid PNGs, so nothing is copied and every decision is logged.
+    assert not (out/'figures/per_well_supplementary/per_condition/original.png').exists()
+    assert not (out/'figures/per_image/original.png').exists()
+    log = pd.read_csv(out/'figures/per_well_supplementary/LEGACY_COPY_LOG.csv')
+    assert set(log.decision) == {'excluded'} and len(log) == 3
     assert (out/'figures/00_overview/combined_output_panel_focus.png').is_file()
     assert 'Per condition' in pd.ExcelFile(out/'analysis_summary.xlsx').sheet_names
     assert set(result['conditions'].condition) == {'WT','KO','Secondary-only'}

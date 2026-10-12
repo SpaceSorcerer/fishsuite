@@ -221,96 +221,116 @@ def regenerate(run: Path, groups: ConditionsCfg, out: Path | None = None):
     supplementary.mkdir(parents=True)
     result = _render(run,out,groups)  # copy legacy assets only after a successful render
     if legacy.is_dir():
-        skip = _legacy_inferential(legacy)
-        ignore = lambda d, names: [n for n in names if (Path(d)/n).resolve() in skip]
-        for p in legacy.iterdir():
-            if p.resolve() in skip:
-                continue
-            dest = out/'figures/per_image' if p.name=='per_image' else supplementary/p.name
-            if p.is_dir():
-                shutil.copytree(p,dest,ignore=ignore)
-            else:
-                shutil.copy2(p,dest)
+        _copy_allowlisted_legacy(legacy, out)
     return result
 
 
-_P_TEXT = __import__('re').compile(r'(mixed model p|\bp\s*[=<>]\s*[0-9.]|p-value|holm|MDE|minimum detectable)', __import__('re').I)
+# ---------------------------------------------------------------- legacy assets: fail-closed allowlist (2026-10-12)
+# Regeneration rebuilds every figure, table and workbook. From the legacy source it copies ONLY raw micrographs:
+# files under figures/per_image/ whose name ends .png/.tif/.tiff AND whose bytes are a valid PNG or TIFF, with no
+# same-stem sibling of another type (a rendered chart has SVG/PDF/CSV twins), and no embedded text naming p, Holm,
+# significance, MDE or CI. Everything else (SVG, CSV, TSV, JSON, xlsx, txt, unknown, corrupt, unclassifiable)
+# is excluded and logged in LEGACY_COPY_LOG.csv. No prefix sniffing: images are parsed completely.
+_LEGACY_ALLOWED_DIR = 'per_image'
+_LEGACY_ALLOWED_SUFFIX = {'.png': 'png', '.tif': 'tiff', '.tiff': 'tiff'}
+_INFERENCE_TEXT = __import__('re').compile(
+    r'(\bp\s*[=<>]|p-value|p value|\bp_|_p\b|holm|signific|\bmde\b|minimum detectable|\bci\b|ci_low|ci_high|'
+    r'confidence interval|mixed model|welch|mann-whitney)', __import__('re').I)
 
 
-_IMAGE_SUFFIXES = {'.png', '.jpg', '.jpeg', '.tif', '.tiff', '.pdf', '.gif', '.bmp', '.webp'}
+def _png_texts(data: bytes) -> list:
+    """All tEXt/zTXt/iTXt payloads of a complete, well-formed PNG; raises on any structural defect."""
+    import struct
+    import zlib
+    if data[:8] != b'\x89PNG\r\n\x1a\n':
+        raise ValueError('not a PNG signature')
+    pos, texts, seen_end = 8, [], False
+    while pos < len(data):
+        if pos + 12 > len(data):
+            raise ValueError('truncated chunk')
+        length, kind = struct.unpack('>I4s', data[pos:pos + 8])
+        body = data[pos + 8:pos + 8 + length]
+        if len(body) != length or zlib.crc32(kind + body) & 0xffffffff != struct.unpack('>I', data[pos + 8 + length:pos + 12 + length])[0]:
+            raise ValueError('bad chunk length or CRC')
+        if kind == b'tEXt':
+            texts.append(body.decode('latin-1'))
+        elif kind == b'zTXt':
+            key, _, rest = body.partition(b'\x00')
+            texts.append(key.decode('latin-1') + ' ' + zlib.decompress(rest[1:]).decode('latin-1'))
+        elif kind == b'iTXt':
+            key, _, rest = body.partition(b'\x00')
+            flag, rest = rest[0], rest[2:]
+            _lang, _, rest = rest.partition(b'\x00')
+            _tkey, _, text = rest.partition(b'\x00')
+            texts.append(key.decode('latin-1') + ' ' + (zlib.decompress(text) if flag else text).decode('utf-8', 'replace'))
+        pos += 12 + length
+        if kind == b'IEND':
+            seen_end = True
+            break
+    if not seen_end or pos != len(data):
+        raise ValueError('missing IEND or trailing bytes')
+    return texts
 
 
-def _text_head(p: Path, limit: int = 65536) -> str:
-    """First bytes of a file as text, transparently gunzipped (by content, not by name)."""
-    import gzip
-    raw = p.read_bytes()[:limit] if p.stat().st_size <= limit else open(p, 'rb').read(limit)
-    if raw[:2] == b'\x1f\x8b':
-        with gzip.open(p, 'rb') as handle:
-            raw = handle.read(limit)
-    return raw.decode('utf-8', errors='replace')
+def _tiff_texts(path: Path) -> list:
+    """All text-valued tags of a valid TIFF (every page); raises when the file is not a readable TIFF."""
+    from PIL import Image
+    data = path.read_bytes()[:4]
+    if data not in (b'II*\x00', b'MM\x00*'):
+        raise ValueError('not a TIFF signature')
+    texts = []
+    with Image.open(path) as image:
+        if image.format != 'TIFF':
+            raise ValueError('not decoded as TIFF')
+        for frame in range(getattr(image, 'n_frames', 1)):
+            image.seek(frame)
+            image.load()
+            for value in image.tag_v2.values():
+                if isinstance(value, (str, bytes)):
+                    texts.append(value.decode('latin-1') if isinstance(value, bytes) else value)
+    return texts
 
 
-def _carries_inference(p: Path) -> bool:
-    """Content-based: a tabular or JSON file whose header/keys name p, Holm, significance, MDE or CI values,
-    or a figure/text file that prints them. Extension chains (.csv.gz, .tsv.gz, no extension) do not matter."""
-    import json as _json
-    import zipfile
-    from fishsuite.report.sensitivities import is_statistical
-    if zipfile.is_zipfile(p):
-        return True  # workbooks (xlsx) and archives are never republished by regeneration
-    text = _text_head(p)
-    stripped = text.lstrip()
-    if stripped[:1] in ('{', '['):
+def _legacy_decision(path: Path, legacy: Path) -> tuple:
+    """(copy?, reason) for one legacy file under the fail-closed allowlist."""
+    rel = path.relative_to(legacy)
+    if rel.parts[0] != _LEGACY_ALLOWED_DIR:
+        return False, 'outside figures/per_image (regenerated, not copied)'
+    kind = _LEGACY_ALLOWED_SUFFIX.get(path.suffix.lower())
+    if kind is None:
+        return False, 'type not allowlisted'
+    twins = [q for q in path.parent.iterdir() if q != path and q.stem == path.stem]
+    if twins:
+        return False, 'has same-stem sibling ' + ', '.join(sorted(q.name for q in twins)) + ' (rendered figure)'
+    try:
+        texts = _png_texts(path.read_bytes()) if kind == 'png' else _tiff_texts(path)
+    except Exception as exc:
+        return False, f'not a valid {kind.upper()} ({type(exc).__name__}: {exc})'
+    hits = [t for t in texts if _INFERENCE_TEXT.search(t)]
+    if hits:
+        return False, 'embedded text names inference: ' + hits[0][:80]
+    return True, f'raw micrograph {kind.upper()}'
+
+
+def _copy_allowlisted_legacy(legacy: Path, out: Path) -> list:
+    """Copy allowlisted raw micrographs into out/figures/per_image; log every legacy file's decision."""
+    log = []
+    for path in sorted(p for p in legacy.rglob('*') if p.is_file()):
         try:
-            payload = _json.loads(_text_head(p, limit=10**8))
-        except ValueError:
-            payload = None
-        keys = set()
-        def walk(node):
-            if isinstance(node, dict):
-                keys.update(map(str, node))
-                for value in node.values():
-                    walk(value)
-            elif isinstance(node, list):
-                for value in node[:1000]:
-                    walk(value)
-        walk(payload)
-        if keys and is_statistical(keys):
-            return True
-    first = text.splitlines()[0] if text else ''
-    for sep in ('\t', ',', ';'):
-        if sep in first and is_statistical([c.strip().strip('"') for c in first.split(sep)]):
-            return True
-    return bool(_P_TEXT.search(text))
-
-
-def _legacy_inferential(root: Path) -> set:
-    """Legacy files that carry inference, classified by CONTENT whatever their extension (tables, JSON and text
-    with p, Holm, significance, MDE or CI fields; figures whose SVG prints them, and the raster/PDF twins of those
-    figures). Regeneration never republishes them; unreadable files are not republished either."""
-    skip, stems = set(), set()
-    for p in root.rglob('*'):
-        if not p.is_file():
-            continue
-        suffix = p.suffix.lower()
-        try:
-            if suffix in _IMAGE_SUFFIXES and not zipfile_like(p):
-                continue  # rasters are judged through their SVG twin below
-            if _carries_inference(p):
-                skip.add(p.resolve())
-                if suffix == '.svg':
-                    stems.add((p.parent.resolve(), p.stem))
-        except Exception:
-            skip.add(p.resolve())
-    for p in root.rglob('*'):
-        if p.is_file() and (p.parent.resolve(), p.stem) in stems:
-            skip.add(p.resolve())
-    return skip
-
-
-def zipfile_like(p: Path) -> bool:
-    import zipfile
-    return zipfile.is_zipfile(p)
+            copy, reason = _legacy_decision(path, legacy)
+        except Exception as exc:
+            copy, reason = False, f'unclassifiable ({type(exc).__name__})'
+        rel = path.relative_to(legacy)
+        if copy:
+            dest = out/'figures'/rel
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(path, dest)
+        reason = ''.join(c if c.isprintable() else ' ' for c in str(reason))[:200]
+        log.append(dict(legacy_file=rel.as_posix(), decision='copied' if copy else 'excluded', reason=reason))
+    target = out/'figures'/'per_well_supplementary'
+    target.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame(log, columns=['legacy_file', 'decision', 'reason']).to_csv(target/'LEGACY_COPY_LOG.csv', index=False)
+    return log
 
 
 def finalize_native(run: Path):

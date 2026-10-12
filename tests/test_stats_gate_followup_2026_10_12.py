@@ -61,7 +61,7 @@ def test_native_regeneration_never_copies_legacy_inference_even_when_stamped(tmp
     regenerate(run, ConditionsCfg(groups={'WT': ['a', 'b'], 'KO': ['c', 'd']}), out)
     copied = out / 'figures/per_well_supplementary/per_condition'
     assert not (copied / 'gen2.csv').exists() and not (copied / 'invalid.csv').exists()
-    assert (copied / 'descriptive.csv').exists()
+    assert not (copied / 'descriptive.csv').exists()  # fail-closed: no table is ever copied
 
 
 def test_finish_validates_the_whole_bundle_before_any_write(tmp_path):
@@ -136,7 +136,7 @@ def test_native_excludes_compressed_and_extensionless_legacy_statistics(tmp_path
     copied = out / 'figures/per_well_supplementary/per_condition'
     for name in ('stats.csv.gz', 'stats.tsv.gz', 'stats_noext', 'stats.json', 'renamed.dat'):
         assert not (copied / name).exists(), name
-    assert (copied / 'descriptive.csv.gz').exists() and (copied / 'original.png').exists()
+    assert not (copied / 'descriptive.csv.gz').exists() and not (copied / 'original.png').exists()
 
 
 def test_finish_checks_full_scale_assets_before_publication(tmp_path):

@@ -250,5 +250,5 @@ def test_native_regeneration_does_not_copy_inferential_legacy_assets(tmp_path):
     out = tmp_path / 'new'
     regenerate(run, ConditionsCfg(groups={'WT': ['a', 'b'], 'KO': ['c', 'd']}), out)
     copied = out / 'figures/per_well_supplementary/per_condition'
-    assert (copied / 'original.png').read_bytes() == b'original'
+    assert not (copied / 'original.png').exists()  # fail-closed: legacy charts are regenerated, never copied
     assert not (copied / 'stats.csv').exists() and not (copied / 'panel.svg').exists() and not (copied / 'panel.png').exists()
