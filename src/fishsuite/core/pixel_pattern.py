@@ -694,7 +694,7 @@ def _write_excel(df, welch, rad, swe, foci_band, xlsx: Path, *, chan_labels):
         legend.to_excel(xw, "How_to_read", index=False, startrow=len(readme) + 3)
         df.to_excel(xw, "per_nucleus", index=False)
         from fishsuite.report.sensitivities import stamp_statistics
-        stamp_statistics(welch, "nt_vs_condition_welch").to_excel(xw, "nt_vs_condition_welch", index=False)
+        stamp_statistics(welch, "nt_vs_condition_welch", fresh=True).to_excel(xw, "nt_vs_condition_welch", index=False)
         if not rad.empty:
             radt = rad.groupby(["channel", "cond2"])[DBINS].mean().reset_index()
             radt.columns = ["channel", "condition"] + [f"depthbin_{b}_edge0_center1" for b in range(10)]

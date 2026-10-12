@@ -309,7 +309,8 @@ def build_deck(workbook: Path, spec: dict, destination: Path,
         slide.notes_slide.notes_text_frame.text = notes
     destination.parent.mkdir(parents=True, exist_ok=True)
     ppt.save(destination)
-    pd.DataFrame(sources).to_csv(sources_path, index=False)
+    from .sensitivities import stamp_statistics
+    stamp_statistics(pd.DataFrame(sources), 'slide_sources', force=True, fresh=True).to_csv(sources_path, index=False)
     return destination
 
 

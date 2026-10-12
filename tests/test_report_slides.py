@@ -219,7 +219,7 @@ def test_stale_slide_value_lineage_rejected(tmp_path):
     from fishsuite.report.provenance import sha256
     sheets={'Contrasts':pd.DataFrame({'diff':[-2.]}),
             'Slide values':pd.DataFrame([dict(label='MEASURED direction',value='higher',source_sheet='Contrasts',source_cell='A3')])}
-    book=write(tmp_path/'REPORT.xlsx',sheets,order=list(sheets))
+    book=write(tmp_path/'REPORT.xlsx',sheets,order=list(sheets),fresh=True)  # tables built by this test
     with pytest.raises(RuntimeError,match='stale Slide values lineage'):
         validate_deck(book,{'schema':'resolved-deck-1','workbook_sha256':sha256(book),
                             'slides':[{'title':'Measured direction','values':[],'figures':[]}]})

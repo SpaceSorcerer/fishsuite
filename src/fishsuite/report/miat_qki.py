@@ -14,6 +14,7 @@ import numpy as np
 import pandas as pd
 from scipy import stats
 from .stats import hedges_g
+from .sensitivities import stamp_statistics
 
 POLICIES = (
     'historical_nucleoplasm_centroid_rotation',
@@ -632,7 +633,7 @@ def build(data_dir, out_dir, count_dir=None, make_figures=True):
             sources.append(dict(path=str(p), sha256=hashlib.sha256(p.read_bytes()).hexdigest()))
     sheets['Source provenance'] = pd.DataFrame(sources)
     xlsx = guard_output(out_dir/'REPORT.xlsx')
-    workbook.write(xlsx, sheets, order=list(sheets), descriptions={
+    workbook.write(xlsx, sheets, order=list(sheets), fresh=True, descriptions={
         'Multiplicity plan': 'Separate frozen historical primary gate and Holm-nine scalar registry, exploratory Holm-eight R family, and new Holm-ten scalar family. The original gate failed; q95 remains exploratory. No prespecification inferred from timestamps.',
         'Figure sources': 'Rendered MIAT/QKI count, intensity and coverage figures with SHA256 hashes and resolved NT/KD palette. Values resolve through Slide values to Ratio intervals, Ratio well values, Scalar contrasts and Coverage cells.',
         'Slide values': 'Every finite numeric reporting value with its exact worksheet cell after the description and header rows. Ratio estimates, intervals, p-values and MDEs trace to paired fixed-10 wells; COUNT cells belong only to the separate localization readout.'})
@@ -646,6 +647,6 @@ def build(data_dir, out_dir, count_dir=None, make_figures=True):
         caption += [r['measurement']+': '+policy_caption(r, LABELS[POLICIES.index(r['null_policy'])]), '']
     guard_output(out_dir/'READOUT.md').write_text('\n'.join(caption), encoding='utf-8')
     for name in ('Ratio intervals', 'Ratio well values', 'Retention sensitivity', 'Usable pool ratios', 'Scalar contrasts', 'Slide values', 'Source provenance'):
-        sheets[name].to_csv(guard_output(out_dir/(name.lower().replace(' ', '_')+'.csv')), index=False)
+        stamp_statistics(sheets[name], name, fresh=True).to_csv(guard_output(out_dir/(name.lower().replace(' ', '_')+'.csv')), index=False)
     return dict(out_dir=out_dir, xlsx=xlsx, figures=figures.to_dict('records'), group_order=['NT', 'KD'],
                 reference='NT', absent=[], sheets=sheets)

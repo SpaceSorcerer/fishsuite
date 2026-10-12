@@ -145,7 +145,7 @@ def _render(run: Path, out: Path, groups: ConditionsCfg):
     opts = dict(engine='openpyxl', mode='a', if_sheet_exists='replace') if (out == run and workbook.exists()) else dict(engine='openpyxl')
     with pd.ExcelWriter(workbook, **opts) as writer:
         for name, table in native.items():
-            stamp_statistics(table, name).to_excel(writer,sheet_name=name,index=False)
+            stamp_statistics(table, name, fresh=True).to_excel(writer,sheet_name=name,index=False)
     conditions.to_csv(out/'per_condition_summary.csv',index=False)
     fields.to_csv(out/'per_field_condition_summary.csv', index=False)
     wells.to_csv(out/'per_well_condition_summary.csv', index=False)
@@ -219,14 +219,48 @@ def regenerate(run: Path, groups: ConditionsCfg, out: Path | None = None):
     legacy = run/'figures'
     supplementary = out/'figures/per_well_supplementary'
     supplementary.mkdir(parents=True)
+    result = _render(run,out,groups)  # copy legacy assets only after a successful render
     if legacy.is_dir():
+        skip = _legacy_inferential(legacy)
+        ignore = lambda d, names: [n for n in names if (Path(d)/n).resolve() in skip]
         for p in legacy.iterdir():
+            if p.resolve() in skip:
+                continue
             dest = out/'figures/per_image' if p.name=='per_image' else supplementary/p.name
             if p.is_dir():
-                shutil.copytree(p,dest)
+                shutil.copytree(p,dest,ignore=ignore)
             else:
                 shutil.copy2(p,dest)
-    return _render(run,out,groups)
+    return result
+
+
+_P_TEXT = __import__('re').compile(r'(mixed model p|\bp\s*[=<>]\s*[0-9.]|p-value|holm|MDE|minimum detectable)', __import__('re').I)
+
+
+def _legacy_inferential(root: Path) -> set:
+    """Legacy files that carry inference (unstamped statistical tables, figures whose SVG prints a p, Holm or
+    MDE, and the raster/PDF twins of those figures); they are not republished by regeneration."""
+    from fishsuite.report.sensitivities import is_statistical, STATS_GENERATION_COLUMN
+    skip, stems = set(), set()
+    for p in root.rglob('*'):
+        if not p.is_file():
+            continue
+        suffix = p.suffix.lower()
+        try:
+            if suffix in ('.csv', '.tsv'):
+                head = pd.read_csv(p, nrows=0, sep='\t' if suffix == '.tsv' else ',').columns
+                if is_statistical(head) and STATS_GENERATION_COLUMN not in head:
+                    skip.add(p.resolve())
+            elif suffix == '.xlsx':
+                skip.add(p.resolve())  # engine workbooks are not regenerated outputs
+            elif suffix == '.svg' and _P_TEXT.search(p.read_text(encoding='utf-8', errors='replace')):
+                skip.add(p.resolve()); stems.add((p.parent.resolve(), p.stem))
+        except Exception:
+            skip.add(p.resolve())  # unreadable: do not republish
+    for p in root.rglob('*'):
+        if p.is_file() and (p.parent.resolve(), p.stem) in stems:
+            skip.add(p.resolve())
+    return skip
 
 
 def finalize_native(run: Path):

@@ -134,7 +134,7 @@ SHEET_DESCRIPTION.update({
 def write(path: Path, sheets: Dict[str, pd.DataFrame],
           strike_rows: Dict[str, Sequence[int]] | None = None,
           order: Sequence[str] | None = None,
-          descriptions: Dict[str, str] | None = None) -> Path:
+          descriptions: Dict[str, str] | None = None, fresh=()) -> Path:
     """Write the workbook. Row 1 of every sheet is its description, row 2 the header."""
     from openpyxl.styles import Alignment, Font, PatternFill
     from openpyxl.utils import get_column_letter
@@ -150,7 +150,8 @@ def write(path: Path, sheets: Dict[str, pd.DataFrame],
     for name in order:  # validate every input before any byte is written
         if sheets.get(name) is not None:
             check_writable(sheets[name], f'workbook sheet {name}')
-    sheets = {name: (stamp_statistics(df, f'workbook sheet {name}') if df is not None else None)
+    built = set(sheets) if fresh is True else set(fresh or ())
+    sheets = {name: (stamp_statistics(df, f'workbook sheet {name}', fresh=name in built) if df is not None else None)
               for name, df in sheets.items()}
     with pd.ExcelWriter(path, engine="openpyxl") as xl:
         for name in order:

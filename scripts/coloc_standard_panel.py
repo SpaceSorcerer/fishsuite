@@ -2158,13 +2158,19 @@ def write_workbook(path, ctx, per_nucleus, per_fov, per_well, contrasts,
         dynamic.append(("Run-specific caveat", ctx["note"]))
     readme = pd.DataFrame(dynamic + list(README_ROWS), columns=["item", "definition"])
     prov = pd.DataFrame(sorted(ctx["provenance"].items()), columns=["key", "value"])
+    # The provenance block carries the design MDE: it records the statistics generation that built it.
+    from fishsuite.report.sensitivities import STATS_GENERATION, STATS_COMMIT
+    prov = pd.concat([prov, pd.DataFrame([("fishsuite_stats_generation", STATS_GENERATION),
+                                          ("fishsuite_stats_commit", STATS_COMMIT)], columns=["key", "value"])],
+                     ignore_index=True)
+    stamped_contrasts = _rstats_stamp(contrasts, "contrasts", fresh=True)  # validated before any sheet is written
     with pd.ExcelWriter(path, engine="openpyxl") as xw:
         readme.to_excel(xw, sheet_name="README", index=False)
         prov.to_excel(xw, sheet_name="README", index=False, startrow=len(readme) + 3)
         per_nucleus.to_excel(xw, sheet_name="per_nucleus", index=False)
         per_fov.to_excel(xw, sheet_name="per_FOV", index=False)
         per_well.to_excel(xw, sheet_name="per_well", index=False)
-        _rstats_stamp(contrasts).to_excel(xw, sheet_name="contrasts", index=False)
+        stamped_contrasts.to_excel(xw, sheet_name="contrasts", index=False)
         cyto_summary.to_excel(xw, sheet_name="contrasts", index=False,
                               startrow=len(contrasts) + 3)
         line_profiles.to_excel(xw, sheet_name="line_profiles", index=False)
@@ -2568,7 +2574,7 @@ def main(argv=None):
     per_nucleus.to_csv(out_dir / "coloc_standard_per_nucleus.csv", index=False)
     per_fov.to_csv(out_dir / "coloc_standard_per_fov.csv", index=False)
     per_well.to_csv(out_dir / "coloc_standard_per_well.csv", index=False)
-    contrasts.to_csv(out_dir / "coloc_standard_contrasts.csv", index=False)
+    _rstats_stamp(contrasts, "coloc_standard_contrasts", fresh=True).to_csv(out_dir / "coloc_standard_contrasts.csv", index=False)
     lp = pd.DataFrame(prof_rows)
     try:
         qsheet = questions_sheet(run, per_nucleus, per_well, ctx)

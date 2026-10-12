@@ -295,6 +295,11 @@ def require_validated_mixed(table, where='table'):
             bad |= pd.to_numeric(table[key], errors='coerce').notna() & ~ok
     if 'headline_test' in table.columns:
         bad |= table['headline_test'].eq(MIXED_HEADLINE) & ~ok
+    for key in HEADLINE_KEYS:
+        if key in table.columns:
+            finite = pd.to_numeric(table[key], errors='coerce').notna()
+            welch = table['headline_test'].eq(WELCH_HEADLINE) if 'headline_test' in table.columns else False
+            bad |= finite & ~ok & ~welch  # an unlabelled or unvalidated finite headline has no provenance
     if bad.any():
         first = table.loc[bad].iloc[0]
         raise LegacyStatisticsError(f"{REBUILD_MESSAGE} ({where}: endpoint {first.get('endpoint', '?')} has a mixed p "
@@ -378,7 +383,8 @@ def add_headline_holm(table, alpha, family_cols):
 
 
 # Stored build-time decision behind each p column used in the floor comparison.
-FLOOR_FLAGS = {'p_welch': 'significant_raw_0p05', 'mixed_p': 'significant_mixed_raw_0p05'}
+FLOOR_FLAGS = {'p_welch': 'significant_raw_0p05', 'mixed_p': 'significant_mixed_raw_0p05',
+               'p_mixed': 'significant_mixed_raw_0p05'}
 
 
 def stored_flag(row, p_column):
@@ -388,6 +394,11 @@ def stored_flag(row, p_column):
         raise LegacyStatisticsError(f'{REBUILD_MESSAGE} (no stored {flag} for {row.get("endpoint", "?")})')
     value = row[flag]
     return value if isinstance(value, bool) else str(value).strip().lower() in ('true', '1')
+
+
+def stored_mixed_flag(row):
+    """The stored build-time raw significance decision for one row's mixed p."""
+    return stored_flag(row, 'p_mixed')
 
 
 def with_mixed_alias(table):
@@ -402,17 +413,26 @@ def with_mixed_alias(table):
 # statistical table with the generation and commit; every reader of persisted p, Holm, significance or MDE
 # refuses a table without a stamp >= STATS_GENERATION. A missing schema, missing columns, an absent slide
 # cache schema and every pre-stamp build (ba24827 included) all fail the same check.
-STATS_GENERATION = 2
+STATS_GENERATION = 3  # 2 was issued by 4614346..708bc60 builds, which pre-date this floor and are refused
+SUPPORTED_GENERATIONS = (STATS_GENERATION,)
 STATS_GENERATION_COLUMN = 'fishsuite_stats_generation'
 STATS_COMMIT_COLUMN = 'fishsuite_stats_commit'
 STATS_COMMIT = MIXED_VALIDATION_COMMIT
-_STAT_COLUMN = re.compile(r'(^p$|^p_|_p$|_p_|holm|^significant|mde|^ci_|_ci_|ci_low|ci_high|^ci95)', re.I)
+_STAT_TOKENS = {'p', 'pval', 'pvalue', 'holm', 'mde', 'ci', 'ci95', 'fdr', 'qvalue'}
 _SLIDE_CACHE = {'source_sheet', 'source_cell', 'value'}
+
+
+def _is_stat_name(name) -> bool:
+    """Header tokens (split on non-alphanumerics): p / p-value / Holm / MDE / CI, or a significance flag.
+    Catches report headers (p_welch, mde_..., ci_low) and engine headers ('MWU p-value', 'Mann-Whitney p')."""
+    text = str(name).lower()
+    tokens = set(re.split(r'[^a-z0-9]+', text)) - {''}
+    return bool(tokens & _STAT_TOKENS) or any(t.startswith('significan') for t in tokens) or 'p-value' in text
 
 
 def statistical_columns(columns):
     """Column names that carry p, Holm, significance, MDE or confidence-interval values."""
-    return [str(c) for c in columns if _STAT_COLUMN.search(str(c))]
+    return [str(c) for c in columns if _is_stat_name(c)]
 
 
 def is_statistical(columns) -> bool:
@@ -423,9 +443,16 @@ def is_statistical(columns) -> bool:
 def _check_stamp(table, where):
     if STATS_GENERATION_COLUMN not in table.columns:
         raise LegacyStatisticsError(f'{REBUILD_MESSAGE} ({where}: no {STATS_GENERATION_COLUMN} stamp)')
-    generation = pd.to_numeric(table[STATS_GENERATION_COLUMN], errors='coerce')
-    if len(table) and not (generation >= STATS_GENERATION).all():
-        raise LegacyStatisticsError(f'{REBUILD_MESSAGE} ({where}: {STATS_GENERATION_COLUMN} below {STATS_GENERATION})')
+    raw = table[STATS_GENERATION_COLUMN]
+    supported = raw.map(lambda v: (isinstance(v, (int, np.integer)) and not isinstance(v, bool) and v in SUPPORTED_GENERATIONS)
+                        or (isinstance(v, (float, np.floating)) and float(v).is_integer() and int(v) in SUPPORTED_GENERATIONS)
+                        or (isinstance(v, str) and v in {str(g) for g in SUPPORTED_GENERATIONS}))
+    if len(table) and not supported.all():
+        raise LegacyStatisticsError(f'{REBUILD_MESSAGE} ({where}: {STATS_GENERATION_COLUMN} not one of {SUPPORTED_GENERATIONS})')
+    commit = table[STATS_COMMIT_COLUMN] if STATS_COMMIT_COLUMN in table.columns else None
+    if len(table) and (commit is None or not commit.map(lambda v: isinstance(v, str) and v.strip() == v and len(v) >= 7).all()):
+        # The commit records which code built the table (provenance); it is required, not ancestry-checked.
+        raise LegacyStatisticsError(f'{REBUILD_MESSAGE} ({where}: missing or malformed {STATS_COMMIT_COLUMN})')
 
 
 def require_current_statistics(table, where='table', force=False):
@@ -443,15 +470,27 @@ def check_writable(table, where='table'):
     return table
 
 
-def stamp_statistics(table, where='table', force=False):
-    """Writer: a copy stamped with the current generation and commit when the table is statistical."""
+def stamp_statistics(table, where='table', force=False, fresh=False):
+    """Writer: stamp a statistical table built by the calling code in this process (``fresh=True``).
+
+    An already-current stamp is kept with the commit that built it. An unstamped statistical table that the
+    caller does not declare fresh has unknown provenance (e.g. read without the gate) and is refused, so a
+    writer never launders a persisted table into a current one.
+    """
     check_writable(table, where)
     if STATS_GENERATION_COLUMN in table.columns or not (force or is_statistical(table.columns)):
         return table  # an already-current stamp keeps the commit that built it
+    if not fresh:
+        raise LegacyStatisticsError(f'{REBUILD_MESSAGE} ({where}: unstamped statistical table not declared as built here)')
     out = table.copy()
     out[STATS_GENERATION_COLUMN] = STATS_GENERATION
     out[STATS_COMMIT_COLUMN] = STATS_COMMIT
     return out
+
+
+def fresh_since(sheets, loaded):
+    """Names of sheets whose table object was built or replaced after ``loaded`` (name -> object) was taken."""
+    return {name for name, table in sheets.items() if loaded.get(name) is not table}
 
 
 def unstamp(table):
@@ -460,13 +499,28 @@ def unstamp(table):
     return table.drop(columns=[c for c in (STATS_GENERATION_COLUMN, STATS_COMMIT_COLUMN) if c in table.columns])
 
 
+def _header_row(row) -> bool:
+    cells = [c for c in (row or ()) if c is not None and str(c).strip() != '']
+    return len(cells) >= 2 and all(isinstance(c, str) for c in cells)
+
+
 def require_current_rows(rows, where='sheet', force=False):
-    """Reader gate on worksheet rows (description row, header row, data rows); rows returned unchanged."""
-    rows = list(rows)
-    if len(rows) >= 2 and rows[1] is not None:
-        header = [str(h) for h in rows[1]]
-        data = [list(r)[:len(header)] + [None] * max(0, len(header) - len(r)) for r in rows[2:]]
-        require_current_statistics(pd.DataFrame(data, columns=header), where, force)
+    """Reader gate on worksheet rows; rows returned unchanged.
+
+    Supported layouts: header in row 1 (plain table) or in row 2 (description row, then header). A header row
+    is a row of two or more text cells. Each candidate header's block (to the first blank row) is gated.
+    """
+    rows = [list(r) if r is not None else [] for r in rows]
+    for index in (0, 1):
+        if index >= len(rows) or not _header_row(rows[index]):
+            continue
+        header = [str(h) if h is not None else f'_col{j}' for j, h in enumerate(rows[index])]
+        block = []
+        for r in rows[index + 1:]:
+            if not any(v is not None and str(v).strip() != '' for v in r):
+                break
+            block.append(r[:len(header)] + [None] * max(0, len(header) - len(r)))
+        require_current_statistics(pd.DataFrame(block, columns=header), f'{where} (header row {index + 1})', force)
     return rows
 
 

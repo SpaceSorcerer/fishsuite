@@ -122,12 +122,12 @@ def build_gallery(run: PanelRun, steps=STEPS, rep_field="14", fov_fields=None, e
         pd.DataFrame(rows, columns=["file", "dtype", "shape", "min", "max"]).to_csv(run.out_dir / "native_tiff" / "manifest.csv", index=False)
     from fishsuite.report.sensitivities import stamp_statistics
     for name, df in tables.items():
-        stamp_statistics(df, name).to_csv(data / f"{name}.csv", index=False)
+        stamp_statistics(df, name, fresh=True).to_csv(data / f"{name}.csv", index=False)
     if tables and not run.native_only:
         with pd.ExcelWriter(run.out_dir / "stats.xlsx") as xw:
             for name, df in tables.items():
                 from fishsuite.report.sensitivities import stamp_statistics
-                stamp_statistics(df, name).to_excel(xw, sheet_name=name[:31], index=False)
+                stamp_statistics(df, name, fresh=True).to_excel(xw, sheet_name=name[:31], index=False)
     if "index" in steps and not run.native_only:
         out["n_png"] = write_index(run.out_dir, f"Basal MIAT x QKI figure panels: {run.arm}")
     out["tables"] = tables

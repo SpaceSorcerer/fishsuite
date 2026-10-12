@@ -95,12 +95,12 @@ def write_tables(out,sheets,spec,captured):
                 endpoint=meta.get('endpoint',stem.removeprefix('FIG_'))
                 name=sheet_name(endpoint,slide,number,used)
                 if values.empty and meta['kind']!='image': missing.append(name+': no numeric source')
-                values=stamp_statistics(ordered_values(values),name,force=True)
+                values=stamp_statistics(ordered_values(values),name,force=True,fresh=True)
                 values.to_excel(writer,sheet_name=name,index=False)
                 if not nuclei.empty:
                     keep=VALUE_COLUMNS+['nucleus_uid','object_id','spot_id','class','x']
                     nuclei=nuclei[[c for c in keep if c in nuclei]]
-                    stamp_statistics(ordered_values(nuclei),name+'_nuc',force=True).to_excel(writer,sheet_name=name+'_nuc',index=False)
+                    stamp_statistics(ordered_values(nuclei),name+'_nuc',force=True,fresh=True).to_excel(writer,sheet_name=name+'_nuc',index=False)
                     meta['nuclei_sheet']=name+'_nuc'
                 metadata[name]=meta
                 for table,kind in [(name,'figure')]+([(name+'_nuc','source')] if not nuclei.empty else []):
@@ -219,6 +219,10 @@ def render(path,sheet,out):
     path=Path(path).resolve();out=guard_output(Path(out));out.mkdir(parents=True,exist_ok=True)
     metadata=json.loads(path.with_suffix('.json').read_text()) if path.with_suffix('.json').exists() else {}
     with pd.ExcelFile(path) as book:
+        # Every worksheet it may consume (main, *_nuc, axis-group) is gated before any output is written.
+        for name in book.sheet_names:
+            if name != 'Sheet index':
+                require_current_statistics(pd.read_excel(book,sheet_name=name),f'DATA_FOR_FIGURES:{name}',force=True)
         if not metadata and 'Sheet index' in book.sheet_names:
             index=pd.read_excel(book,sheet_name='Sheet index')
             metadata={row.sheet_name:json.loads(row.metadata_json) for row in index.itertuples()

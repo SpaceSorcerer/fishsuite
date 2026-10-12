@@ -258,8 +258,9 @@ def build_analysis(run_dir, output_dir, correction_csv, acquisition_method=None)
               dict(title='RNASEH2B around nuclear BIN1 puncta', figures=[figures[6]['key']], body=figures[6]['caption']),
               dict(title='BIN1 to nearest RNASEH2B punctum', figures=[figures[7]['key']], body=figures[7]['caption']),
               dict(title='Secondary-only controls', figures=[f['key'] for f in figures[8:]], body='; '.join(f['caption'] for f in figures[8:]))]
+    from .sensitivities import stamp_statistics
     for name, table in tables.items():
-        table.to_csv(out/'data'/(name.replace(' ', '_')+'.csv'), index=False)
+        stamp_statistics(table, name, fresh=True).to_csv(out/'data'/(name.replace(' ', '_')+'.csv'), index=False)
     summary = dict(ratio=result, spearman=spearman.to_dict('records'), ratio_line=ratio_line)
     (out/'A17_RESULTS.json').write_text(json.dumps(summary, indent=2), encoding='utf-8')
     (out/'A17_ANALYSIS_FIGURES.json').write_text(json.dumps(figures, indent=2), encoding='utf-8')

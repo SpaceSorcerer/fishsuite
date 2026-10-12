@@ -758,10 +758,10 @@ def build_report(run_dir: Path, out_dir: Optional[Path] = None,
                 narrative(template, contrasts)
             from .slides import prepare_deck
             # Persist fitted results before optional rendering; presentation retries need no refit.
-            _wb.write(out_dir / 'REPORT.xlsx', sheets, strike, order=list(sheets))
+            _wb.write(out_dir / 'REPORT.xlsx', sheets, strike, order=list(sheets), fresh=True)
             well.to_csv(out_dir/'per_well.csv',index=False)
             field.to_csv(out_dir/'per_field.csv',index=False)
-            stamp_statistics(contrasts,'contrasts.csv').to_csv(out_dir/'contrasts.csv',index=False)
+            stamp_statistics(contrasts,'contrasts.csv',fresh=True).to_csv(out_dir/'contrasts.csv',index=False)
             resolved_deck = prepare_deck(template,sheets,out_dir,data,persisted,ctx,well,field,contrasts,endpoints)
     if micrograph_slides == 'per-well':
         from .micrograph_slides import prepare_per_well_micrographs
@@ -783,7 +783,7 @@ def build_report(run_dir: Path, out_dir: Optional[Path] = None,
     if len(figure_index):
         sheets['FIGURE_INDEX'] = figure_index
 
-    xlsx = _wb.write(out_dir / "REPORT.xlsx", sheets, strike, order=list(sheets))
+    xlsx = _wb.write(out_dir / "REPORT.xlsx", sheets, strike, order=list(sheets), fresh=True)
     if resolved_deck is not None:
         import yaml
         from .slides import validate_deck, build_deck
@@ -792,7 +792,7 @@ def build_report(run_dir: Path, out_dir: Optional[Path] = None,
         (out_dir/'deck_spec.resolved.yaml').write_text(yaml.safe_dump(resolved_deck,sort_keys=False),encoding='utf-8')
 
     well.to_csv(_prov.guard_output(out_dir / "per_well.csv"), index=False)
-    stamp_statistics(contrasts, "contrasts.csv").to_csv(_prov.guard_output(out_dir / "contrasts.csv"), index=False)
+    stamp_statistics(contrasts, "contrasts.csv", fresh=True).to_csv(_prov.guard_output(out_dir / "contrasts.csv"), index=False)
     (out_dir / "READOUT.md").write_text(
         build_readout(run_dir, out_dir, contrasts, well, group_order_resolved, reference, sec,
                       absent, labels, alpha, caveat, primary_endpoint),

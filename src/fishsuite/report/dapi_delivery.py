@@ -124,6 +124,9 @@ def preview_deck(out, filename='Sam_RNASEH2B_BIN1.pptx'):
 def finalize(out, run, dispatch):
     out, run, dispatch = guard_output(Path(out)), Path(run), Path(dispatch)
     validate_report(out)
+    import openpyxl
+    from .sensitivities import require_current_book
+    book = require_current_book(openpyxl.load_workbook(out/'REPORT.xlsx'))  # gated before any QC write
     qc = out/'qc_cyto_calls'
     if not (qc/'summary.csv').is_file():
         from .cyto_calls import build_cyto_calls
@@ -134,10 +137,7 @@ def finalize(out, run, dispatch):
     (qc/'README.md').write_text('legacy_mask_only contact sheets from A9: these retain original cytoplasmic calls for audit. Corrected classification and endpoints are in ../dapi and ../localization.\n',encoding='utf-8')
     # Amend generated metadata in the report module and regenerate the deck's
     # workbook attestation, preserving all measurement/statistical cells.
-    import openpyxl
     import yaml
-    from .sensitivities import require_current_book
-    book = require_current_book(openpyxl.load_workbook(out/'REPORT.xlsx'))
     slide_values = book['Slide values']
     columns = {cell.value:cell.column for cell in slide_values[2]}
     for i in range(3,slide_values.max_row+1):

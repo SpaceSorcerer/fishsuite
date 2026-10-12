@@ -54,7 +54,7 @@ def test_a20_workbook_cli_renders_edited_well_values(tmp_path):
                      'value':[1,2,4,7,8,11],'SD':[999]*6,'n':[999]*6})
     from fishsuite.report.sensitivities import stamp_statistics
     # 2026-10-12: edited DATA_FOR_FIGURES values are stamped tables; the renderer computes no test from them.
-    stamp_statistics(df,force=True).to_excel(source,sheet_name='Editable',index=False)
+    stamp_statistics(df,force=True,fresh=True).to_excel(source,sheet_name='Editable',index=False)
     result=CliRunner().invoke(cli,['figure','--from-xlsx',str(source),'--sheet','Editable','--out',str(tmp_path/'render')])
     assert result.exit_code==0,result.output
     svg=(tmp_path/'render/Editable_focus.svg').read_text(encoding='utf-8')

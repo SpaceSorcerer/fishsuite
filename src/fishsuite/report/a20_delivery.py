@@ -91,7 +91,7 @@ def amend_rnase(sheets, run, out):
             c=read_stats_csv(fit_cache,'A20 added-contrasts cache',float_precision='round_trip')
         else:
             c = aggregate.build_contrasts(w,f,additions,[],['WT','QKI-KO'],'WT',ep.channel_labels(json.loads((run/'run_config.json').read_text())),nuclei=n)
-            stamp_statistics(c,'A20 added-contrasts cache').to_csv(fit_cache,index=False)
+            stamp_statistics(c,'A20 added-contrasts cache',fresh=True).to_csv(fit_cache,index=False)
             seal_cache(fit_cache,fit_signature)
         sheets['Per field'] = unstamp(pd.concat([sheets['Per field'],f],ignore_index=True))
         sheets['Per well'] = unstamp(pd.concat([sheets['Per well'],w],ignore_index=True))

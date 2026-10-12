@@ -13,7 +13,8 @@ from PIL import Image
 from . import aggregate, endpoints, build
 from .provenance import sha256
 from .sensitivities import (require_current_statistics, require_current_book, read_stats_csv, read_stats_excel,
-                            stamp_statistics, LegacyStatisticsError, REBUILD_MESSAGE, mixed_p_text,
+                            stamp_statistics, unstamp, fresh_since, stored_flag, stored_mixed_flag,
+                            LegacyStatisticsError, REBUILD_MESSAGE, mixed_p_text,
                             mixed_validated, mixed_value, with_mixed_alias, stored_flag, MIXED_ALIAS)
 
 DECISION = ('Mixed-model headline decision 2026-09-07 after data inspection; '
@@ -51,8 +52,8 @@ def narrative(spec, contrasts=None):
             row=contrasts.loc[contrasts.endpoint.eq(endpoint)].iloc[0]
             direction='higher' if row['diff']>0 else 'lower' if row['diff']<0 else 'unchanged'
             body=f'{label} is {direction} in KO. '
-            if mixed_validated(row):
-                body+='The raw mixed-model comparison '+('detects' if mixed_value(row)<.05 else 'does not detect')+' a difference; family adjustment remains in the workbook and notes.'
+            if mixed_validated(row):  # the stored build-time decision at the run's alpha; refused if absent
+                body+='The raw mixed-model comparison '+('detects' if stored_mixed_flag(row) else 'does not detect')+' a difference; family adjustment remains in the workbook and notes.'
             else:
                 body+=mixed_p_text(row).capitalize()+'; the bracket explicitly reports Welch on well means.'
         item['body']=body
@@ -146,9 +147,7 @@ def finalize(out,prior,run,panel):
     old['mixed_status']=[mixed_p_text(r) for _,r in old.iterrows()]
     new=with_mixed_alias(contrasts.copy().assign(floor_px=4000))
     new['mixed_status']=[mixed_p_text(r) for _,r in new.iterrows()]
-    comp=stamp_statistics(pd.concat([old,new],ignore_index=True),'nucleus_floor_comparison')
-    comp.to_csv(out/'nucleus_floor_comparison.csv',index=False)
-    _append_table(book,'Nucleus floor comparison','Each floor retains its own cohort. Old-floor values copied from prior comparison; new-floor values rebuilt from the same-floor panel.',comp)
+    comp=stamp_statistics(unstamp(pd.concat([old,new],ignore_index=True)),'nucleus_floor_comparison',fresh=True)
     changes=[]
     for endpoint,rows in comp.groupby('endpoint'):
         if set(rows.floor_px)!={4000,16000} or len(rows)!=2:
@@ -159,16 +158,28 @@ def finalize(out,prior,run,panel):
             # Stored build-time flags (each run's alpha); a p without its stored flag is refused.
             if pd.notna(a[column]) and pd.notna(b[column]) and stored_flag(a,column)!=stored_flag(b,column):
                 changes.append(dict(endpoint=endpoint,test=column,old_p=a[column],new_p=b[column]))
-    changed=stamp_statistics(pd.DataFrame(changes,columns=['endpoint','test','old_p','new_p']),'floor_conclusion_changes')
-    changed.to_csv(out/'floor_conclusion_changes.csv',index=False)
+    changed=stamp_statistics(pd.DataFrame(changes,columns=['endpoint','test','old_p','new_p']),'floor_conclusion_changes',fresh=True)
+    source_rows=require_current_statistics(pd.read_csv(out/'slide_sources.csv'),'slide_sources.csv',force=True)
+    # All inputs are gated and every derived table is built; the workbook is staged and validated before
+    # anything is published.
+    _append_table(book,'Nucleus floor comparison','Each floor retains its own cohort. Old-floor values copied from prior comparison; new-floor values rebuilt from the same-floor panel.',comp)
     _append_table(book,'Floor conclusion changes','Raw p threshold transitions across floors; descriptive comparison, not an equivalence test.',changed)
     for ws in book:
         if ws.title in ['Contrasts','Read me','Multiplicity plan'] or 'by group' in ws.title:
             ws.cell(1,1).value=DECISION+' Thresholds, filters, Holm, effect sizes and MDE are recorded in endpoint/provenance rows.'
-    book.save(out/'REPORT.xlsx')
-    # Workbook bytes changed: revalidate typed cells and rebuild using the new hash.
+    staged=out/'REPORT.staged.xlsx'
+    book.save(staged)
+    # Workbook bytes changed: revalidate typed cells against the staged copy, then publish.
     spec=yaml.safe_load((out/'deck_spec.resolved.yaml').read_text(encoding='utf-8'))
-    spec['workbook_sha256']=sha256(out/'REPORT.xlsx')
+    spec['workbook_sha256']=sha256(staged)
+    try:
+        slides.validate_deck(staged,spec)
+    except Exception:
+        staged.unlink()
+        raise
+    staged.replace(out/'REPORT.xlsx')
+    comp.to_csv(out/'nucleus_floor_comparison.csv',index=False)
+    changed.to_csv(out/'floor_conclusion_changes.csv',index=False)
     (out/'deck_spec.resolved.yaml').write_text(yaml.safe_dump(spec,sort_keys=False),encoding='utf-8')
     slides.build_deck(out/'REPORT.xlsx',spec,out/'Sam_RNASEH2B_BIN1.pptx')
     ppt=Presentation(out/'Sam_RNASEH2B_BIN1.pptx')
@@ -185,12 +196,12 @@ def finalize(out,prior,run,panel):
     body.text_frame.text='\n\n'.join(lines)
     for para in body.text_frame.paragraphs: para.font.size=Pt(18)
     slide.notes_slide.notes_text_frame.text='Workbook: '+str(out/'REPORT.xlsx')+'\nNucleus selection and size floor\n'+DECISION+'\nSource: Nucleus floor comparison sheet.\n'+'\n'.join(lines)
-    source_rows=pd.read_csv(out/'slide_sources.csv').to_dict('records')
+    source_rows=unstamp(source_rows).to_dict('records')
     for index,row in focus.iterrows():
         for column in ['endpoint','floor_px','mean_ref','mean_test',MIXED_ALIAS,'p_welch']:
             source_rows.append(dict(slide=len(ppt.slides),workbook=str(out/'REPORT.xlsx'),
                 sheet='Nucleus floor comparison',cell=f'{openpyxl.utils.get_column_letter(comp.columns.get_loc(column)+1)}{index+3}',value=row[column]))
-    pd.DataFrame(source_rows).to_csv(out/'slide_sources.csv',index=False)
+    stamp_statistics(pd.DataFrame(source_rows),'slide_sources',force=True,fresh=True).to_csv(out/'slide_sources.csv',index=False)
     ppt.save(out/'Sam_RNASEH2B_BIN1.pptx')
     # Both focus and full-scale deck variants share the same inference and notes.
     full=Presentation(out/'Sam_RNASEH2B_BIN1.pptx')
@@ -254,6 +265,9 @@ def refresh(out, prior, run, panel):
     from .coloc_existing import load_existing_panel, integrate_panel, render_existing
     from .stats import holm
     sheets=read_stats_excel(out/'REPORT.xlsx')
+    loaded=dict(sheets)
+    if 'significant_holm_0p05' not in sheets['Contrasts']:  # stored decision required before any output
+        raise LegacyStatisticsError(f'{REBUILD_MESSAGE} (REPORT.xlsx Contrasts: no stored significant_holm_0p05)')
     spec=yaml.safe_load((out/'data/deck_spec.yaml').read_text(encoding='utf-8'))
     data=aggregate.load_run(run,{'WT_1':'WT','WT_2':'WT','WT_3':'WT','KO_1':'QKI-KO','KO_2':'QKI-KO','KO_3':'QKI-KO'}, {})
     pn=sheets['Per nucleus']
@@ -269,8 +283,6 @@ def refresh(out, prior, run, panel):
         'detection','AU','{protein} nuclear mean, matched secondary subtracted',descriptive_only=True,
         absolute_intensity=True,source=str(out/'data/RNASEH2B_TOTAL_CORRECTED.csv')))
     contrasts=sheets['Contrasts']
-    if 'significant_holm_0p05' not in contrasts:  # read the stored decision; never recompute it here
-        raise LegacyStatisticsError(f'{REBUILD_MESSAGE} (REPORT.xlsx Contrasts: no stored significant_holm_0p05)')
     narrative(spec, contrasts)
     stamp_statistics(contrasts,'contrasts.csv').to_csv(out/'contrasts.csv',index=False)
     # Family summaries use the same rebuilt headline columns.
@@ -286,7 +298,7 @@ def refresh(out, prior, run, panel):
     resolved=slides.prepare_deck(spec,sheets,out,data,persisted,ctx,sheets['Per well'],sheets['Per field'],contrasts,eps)
     build.render_figures(out/'figures',run,data,eps,absent,sheets['Per well'],sheets['Per field'],pn,contrasts,
                          ['WT','QKI-KO'],'WT',{},ctx.channel_labels,.05,plot_style='replicate-simple')
-    workbook.write(out/'REPORT.xlsx',sheets,{},order=list(sheets))
+    workbook.write(out/'REPORT.xlsx',sheets,{},order=list(sheets),fresh=fresh_since(sheets,loaded))
     resolved['workbook_sha256']=sha256(out/'REPORT.xlsx')
     (out/'deck_spec.resolved.yaml').write_text(yaml.safe_dump(resolved,sort_keys=False),encoding='utf-8')
     slides.build_deck(out/'REPORT.xlsx',resolved,out/'Sam_RNASEH2B_BIN1.pptx')

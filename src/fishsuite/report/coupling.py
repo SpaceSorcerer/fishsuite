@@ -321,7 +321,7 @@ def build_coupling(assoc_csv, treated, control, out, config=None, seed=0, n_boot
     descriptions['contrast'] += ' ' + PERMUTATION_NOTE
     destination.mkdir(parents=True, exist_ok=True)
     well_key.to_csv(destination / 'figure_well_key.csv', index=False)
-    workbook.write(destination / 'coupling_summary.xlsx', sheets, order=SHEET_ORDER, descriptions=descriptions)
+    workbook.write(destination / 'coupling_summary.xlsx', sheets, order=SHEET_ORDER, descriptions=descriptions, fresh=True)
     # The common writer reserves README wrapping for its legacy 'Read me' name.
     # Keep its table/header formatting and make this command's README readable too.
     from openpyxl import load_workbook

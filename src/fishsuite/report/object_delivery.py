@@ -13,7 +13,7 @@ import yaml
 from openpyxl.utils import get_column_letter
 from . import figures, endpoints, slides, workbook
 from .provenance import sha256, guard_output
-from .sensitivities import read_stats_csv, read_stats_excel, check_writable
+from .sensitivities import read_stats_csv, read_stats_excel, stamp_statistics, fresh_since
 
 
 def refs(sheets, names):
@@ -50,10 +50,12 @@ def chart(ctx,out,stem,title,w,c,endpoint,unit='',scale=1):
     return out/'figures'/record['png']
 
 
-def finish(out,sheets,spec,book_name,deck_name,missing):
+def finish(out,sheets,spec,book_name,deck_name,missing,fresh=()):
     # Validate every statistical input before the first output (DATA_FOR_FIGURES, assets, workbook) is written.
+    # ``fresh`` names the sheets built in this process; any other unstamped statistical sheet is refused.
+    fresh=set(fresh)|{'A17 Figure sources','A17 Slide content'}
     for name,table in sheets.items():
-        check_writable(table,f'{book_name}: {name}')
+        stamp_statistics(table,f'{book_name}: {name}',fresh=name in fresh)
     out=guard_output(out)
     expanded=[]
     for item in spec['slides']:
@@ -83,7 +85,7 @@ def finish(out,sheets,spec,book_name,deck_name,missing):
     sheets['A17 Figure sources']=pd.DataFrame(index)
     sheets['A17 Slide content']=pd.DataFrame([dict(slide=i,title=s['title'],body=s.get('body',''))
                                             for i,s in enumerate(spec['slides'],1)])
-    book=workbook.write(out/book_name,sheets,{},order=list(sheets))
+    book=workbook.write(out/book_name,sheets,{},order=list(sheets),fresh=fresh)
     spec['workbook_sha256']=sha256(book)
     (out/'deck_spec.resolved.yaml').write_text(yaml.safe_dump(spec,sort_keys=False),encoding='utf-8')
     slides.build_deck(book,spec,out/deck_name)
@@ -113,6 +115,7 @@ def rnase(run,prior,out,a20=False):
     out.mkdir(parents=True,exist_ok=True)
     (out/'figures').mkdir(exist_ok=True)
     sheets=read_stats_excel(prior/'REPORT.xlsx')
+    loaded=dict(sheets)
     if a20:
         from .a20_delivery import amend_rnase
         definitions = amend_rnase(sheets,run,out)
@@ -235,7 +238,7 @@ def rnase(run,prior,out,a20=False):
         methods+='\nA20: '+(out/'FAMILY_AMENDMENTS.md').read_text(encoding='utf-8')
         methods+='\nManders of record uses per-channel intensity-weighted signal at or above the fixed manual display floors. The numerator requires both channels to meet their floors; each denominator contains its own above-floor signal. A coefficient with no qualifying denominator remains missing. Costes and median+2.5 MAD coefficients are sensitivity only.\n'
         (out/'METHODS.md').write_text(methods,encoding='utf-8')
-    return finish(out,sheets,spec,'REPORT.xlsx','Sam_RNASEH2B_BIN1.pptx',missing)
+    return finish(out,sheets,spec,'REPORT.xlsx','Sam_RNASEH2B_BIN1.pptx',missing,fresh=fresh_since(sheets,loaded))
 
 
 def rn_readout(contrasts,summary):
@@ -266,6 +269,7 @@ def miat(prior,out,a20=False):
     from .coloc_existing import render_simple_coloc
     out.mkdir(parents=True,exist_ok=True);(out/'figures').mkdir(exist_ok=True)
     sheets=read_stats_excel(prior/'MIAT_QKI_RESULTS_v2.xlsx')
+    loaded=dict(sheets)
     spec=dict(cohort='mixed, explicitly labelled per slide',slides=[],a20=a20)
     ctx=miat_qki._context(prior/'data',miat_qki.COLORS)
     ctx.plot_style='replicate-simple'
@@ -356,7 +360,7 @@ def miat(prior,out,a20=False):
     (out/'METHODS.md').write_text((prior/'METHODS.md').read_text(encoding='utf-8'),encoding='utf-8')
     (out/'READOUT.md').write_text((prior/'READOUT.md').read_text(encoding='utf-8'),encoding='utf-8')
     add_miat_context(sheets,spec,prior,out)
-    return finish(out,sheets,spec,'MIAT_QKI_RESULTS_v2.xlsx','MIAT_QKI_colocalization_final.pptx',missing)
+    return finish(out,sheets,spec,'MIAT_QKI_RESULTS_v2.xlsx','MIAT_QKI_colocalization_final.pptx',missing,fresh=fresh_since(sheets,loaded))
 
 
 def add_miat_context(sheets,spec,prior,out):
