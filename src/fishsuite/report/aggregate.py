@@ -20,7 +20,7 @@ import numpy as np
 import pandas as pd
 
 from . import endpoints as _ep
-from .sensitivities import withhold_unvalidated_mixed
+from .sensitivities import add_mixed_columns, add_headline_holm
 from .stats import (ALPHA, exact_permutation, holm, mde_hedges_g, tukey_two_group,
                     welch)
 
@@ -609,7 +609,7 @@ def build_contrasts(well: pd.DataFrame, field: pd.DataFrame,
         out["endpoint_absent_in_run"], "column absent from this run",
         np.where(out["excluded_from_holm"].astype(bool), out["excluded_from_holm"],
                  np.where(out["descriptive_only"], "descriptive only by design", "")))
-    out = withhold_unvalidated_mixed(out, alpha, headline=True)
+    out = add_headline_holm(add_mixed_columns(out), alpha, ["family", "test_group"])
     out["p_welch_holm_within_family"] = np.nan
     for _, idx in out.groupby(["family", "test_group"]).groups.items():
         member = [i for i in idx if out.at[i, "in_holm_family"]]

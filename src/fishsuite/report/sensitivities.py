@@ -209,17 +209,27 @@ def outlier_sensitivity(field, contrasts, alpha=.05):
     return pd.DataFrame(rows)
 
 
-LEGACY_VALIDATION = 'not_validated:legacy result (no validation marker; built before 70500c0)'
+LEGACY_VALIDATION_COLUMN = 'sensitivity_mixed_validation'
 # The single accessor for mixed-model inference (2026-10-11). Every other module reads or writes these
 # keys only through the functions below; tests/test_mixed_p_single_accessor_2026_10_11.py enforces it.
+# Consumers never recompute or substitute statistics at read time: a table, workbook or slide cache whose
+# mixed inference is not explicitly validated is refused and must be rebuilt from its source run.
 MIXED_ONLY_KEYS = ('p_mixed', 'sensitivity_mixed_p', 'p_mixed_holm', 'mixed_p')
 HEADLINE_KEYS = ('p_headline', 'p_headline_holm')
 MIXED_ALIAS = 'mixed_p'
 WELCH_HEADLINE = 'Welch (well means)'
+MIXED_HEADLINE = 'mixed model'
+# First fishsuite commit whose outputs carry validated mixed inference under the final rules.
+MIXED_VALIDATION_COMMIT = 'COMMIT_PENDING'
+REBUILD_MESSAGE = f'legacy statistics: rebuild from the source run with fishsuite >= {MIXED_VALIDATION_COMMIT}'
+
+
+class LegacyStatisticsError(ValueError):
+    """Persisted mixed-model inference without a validated marker; the consumer refuses to proceed."""
 
 
 def _validated(row) -> bool:
-    return row.get('sensitivity_mixed_validation', None) == 'validated'
+    return row.get(LEGACY_VALIDATION_COLUMN, None) == 'validated'
 
 
 def mixed_value(row, key='p_mixed') -> float:
@@ -237,7 +247,7 @@ def mixed_validated(row) -> bool:
 
 
 def headline_value(row, key='p_headline') -> float:
-    """Headline p (or its Holm adjustment) of one row; NaN when it would carry unvalidated mixed inference."""
+    """Persisted headline p (or its Holm adjustment); NaN unless validated or a build-time Welch headline."""
     value = pd.to_numeric(row.get(key, np.nan), errors='coerce')
     if not np.isfinite(value):
         return np.nan
@@ -245,7 +255,7 @@ def headline_value(row, key='p_headline') -> float:
 
 
 def headline_holm_value(row) -> float:
-    """Holm-adjusted headline p of one row; NaN when it would carry unvalidated mixed inference."""
+    """Holm-adjusted headline p of one row; NaN under the same rule as ``headline_value``."""
     return headline_value(row, 'p_headline_holm')
 
 
@@ -255,8 +265,8 @@ def mixed_p_text(row, sep: str = " ") -> str:
     status = str(row.get('sensitivity_mixed_status', ''))
     if mixed_validated(row):
         return f"mixed model p{sep}{fmt_p(mixed_value(row))}"
-    validation = row.get('sensitivity_mixed_validation', None)
-    if validation is None or (isinstance(validation, float) and np.isnan(validation)) or 'legacy' in str(validation):
+    validation = row.get(LEGACY_VALIDATION_COLUMN, None)
+    if validation is None or (isinstance(validation, float) and np.isnan(validation)):
         if status == 'ok':
             return "mixed model not validated (legacy result)"
     if 'field-level' in status:
@@ -266,90 +276,105 @@ def mixed_p_text(row, sep: str = " ") -> str:
     return "mixed model not validated"
 
 
-def withhold_unvalidated_mixed(contrasts, alpha=0.05, headline=False):
-    """Produce or sanitise the mixed-model columns of a contrasts table.
+def require_validated_mixed(table, where='table'):
+    """Return ``table`` unchanged, or raise ``LegacyStatisticsError``.
 
-    Mixed-only columns keep a value only where ``sensitivity_mixed_validation == 'validated'``; a table
-    without that column was built before 70500c0 and loses all of them. ``p_mixed`` is created from
-    ``sensitivity_mixed_p`` when absent. When the table has, or ``headline`` asks for, a headline, it is the
-    validated mixed p else the well-level Welch p, labelled in ``headline_test``. Headline Holm, family
-    size, significance and the family-alpha MDE are recomputed per family; if the family cannot be
-    reconstructed, adjusted inference that a withheld row could have influenced is cleared, not kept.
-    A table carrying none of the mixed or headline keys is returned unchanged.
+    A table carrying any mixed or headline p column must carry ``sensitivity_mixed_validation``; every row
+    with a finite mixed-only value, or a mixed-model headline, must be 'validated'. Nothing is recomputed.
     """
-    from .stats import holm, mde_hedges_g
-    c = contrasts.copy()
-    if not (set(MIXED_ONLY_KEYS + HEADLINE_KEYS) & set(c.columns)):
-        return c
-    if 'sensitivity_mixed_validation' not in c:
-        c['sensitivity_mixed_validation'] = LEGACY_VALIDATION
-    c['sensitivity_mixed_validation'] = c['sensitivity_mixed_validation'].fillna(LEGACY_VALIDATION)
-    ok = c['sensitivity_mixed_validation'].eq('validated')
-    if 'p_mixed' not in c and 'sensitivity_mixed_p' in c:
-        c['p_mixed'] = c['sensitivity_mixed_p']
-    for col in MIXED_ONLY_KEYS:
-        if col in c:
-            c[col] = pd.to_numeric(c[col], errors='coerce').where(ok)
-    if 'p_welch' not in c or not (headline or 'p_headline' in c):
-        return c
-    mixed = c['p_mixed'] if 'p_mixed' in c else pd.Series(np.nan, index=c.index)
-    before = pd.to_numeric(c['p_headline'], errors='coerce') if 'p_headline' in c else None
-    c['p_headline'] = mixed.fillna(pd.to_numeric(c['p_welch'], errors='coerce'))
-    c['headline_test'] = np.where(mixed.notna(), 'mixed model', WELCH_HEADLINE)
-    family_cols = ['family', 'test_group'] + (['reference_group'] if 'reference_group' in c else [])
-    old_size = c['holm_family_size'].copy() if 'holm_family_size' in c else None
-    if {'family', 'test_group', 'in_holm_family'} <= set(c.columns):
-        member = c['in_holm_family'].fillna(False).astype(bool)
-        c['p_headline_holm'] = np.nan
-        c['holm_family_size'] = np.nan
-        for _, idx in c.groupby(family_cols, dropna=False).groups.items():
-            ids = [i for i in idx if member.at[i]]
-            if ids:
-                c.loc[ids, 'p_headline_holm'] = holm(c.loc[ids, 'p_headline'].tolist())
-                c.loc[ids, 'holm_family_size'] = float(np.isfinite(c.loc[ids, 'p_headline'].to_numpy(float)).sum())
-        c['p_mixed_holm'] = c['p_headline_holm'].where(mixed.notna())
-        flag = (c['p_headline_holm'] < alpha).astype(object)
-        flag[~member | c['p_headline_holm'].isna()] = pd.NA
-        c['significant_headline_holm_0p05'] = flag
-    elif before is not None and not np.allclose(before.to_numpy(float), c['p_headline'].to_numpy(float), equal_nan=True):
-        for col in ('p_headline_holm', 'p_mixed_holm', 'significant_headline_holm_0p05'):
-            if col in c:
-                c[col] = np.nan
-    mde_cols = {'mde_hedges_g_at_family_alpha', 'n_wells_test', 'n_wells_reference', 'sd_wells_test', 'sd_wells_reference'}
-    if old_size is not None and mde_cols <= set(c.columns):
-        changed = ~np.isclose(pd.to_numeric(old_size, errors='coerce').to_numpy(float),
-                              c['holm_family_size'].to_numpy(float), equal_nan=True)
-        for i in c.index[changed]:
-            n1, n2, k = (pd.to_numeric(c.at[i, col], errors='coerce')
-                         for col in ('n_wells_test', 'n_wells_reference', 'holm_family_size'))
-            usable = bool(np.isfinite([n1, n2, k]).all() and min(n1, n2) >= 2 and k >= 1)
-            c.at[i, 'mde_hedges_g_at_family_alpha'] = mde_hedges_g(
-                alpha / float(k), n1=int(n1), n2=int(n2), sd1=float(c.at[i, 'sd_wells_test']),
-                sd2=float(c.at[i, 'sd_wells_reference'])) if usable else np.nan
-            if 'observed_g_reaches_mde' in c:
-                g = pd.to_numeric(c.at[i, 'hedges_g'], errors='coerce') if 'hedges_g' in c else np.nan
-                m = c.at[i, 'mde_hedges_g_at_family_alpha']
-                c.at[i, 'observed_g_reaches_mde'] = bool(abs(g) >= m) if np.isfinite([g, m]).all() else pd.NA
-    return c
+    present = [k for k in MIXED_ONLY_KEYS + HEADLINE_KEYS if k in table.columns]
+    if not present:
+        return table
+    if LEGACY_VALIDATION_COLUMN not in table.columns:
+        raise LegacyStatisticsError(f'{REBUILD_MESSAGE} ({where}: no {LEGACY_VALIDATION_COLUMN} column)')
+    ok = table[LEGACY_VALIDATION_COLUMN].eq('validated')
+    bad = pd.Series(False, index=table.index)
+    for key in MIXED_ONLY_KEYS:
+        if key in table.columns:
+            bad |= pd.to_numeric(table[key], errors='coerce').notna() & ~ok
+    if 'headline_test' in table.columns:
+        bad |= table['headline_test'].eq(MIXED_HEADLINE) & ~ok
+    if bad.any():
+        first = table.loc[bad].iloc[0]
+        raise LegacyStatisticsError(f"{REBUILD_MESSAGE} ({where}: endpoint {first.get('endpoint', '?')} has a mixed p "
+                                    f"whose fit is not validated)")
+    return table
 
 
-def withhold_unvalidated_rows(rows):
-    """Worksheet rows (description, header, data...) with mixed inference withheld, header extended as needed."""
-    rows = [list(r) for r in rows]
-    if len(rows) < 2 or not (set(MIXED_ONLY_KEYS + HEADLINE_KEYS) & {str(h) for h in rows[1]}):
-        return rows
-    header = [str(h) for h in rows[1]]
-    frame = pd.DataFrame([r + [None] * (len(header) - len(r)) for r in rows[2:]], columns=header)
-    clean = withhold_unvalidated_mixed(frame)
-    clean = clean[header + [col for col in clean.columns if col not in header]]
-    out = [rows[0], list(clean.columns)]
-    for record in clean.itertuples(index=False, name=None):
-        out.append([None if (isinstance(v, float) and np.isnan(v)) or v is pd.NA else v for v in record])
+def require_validated_rows(rows, where='sheet'):
+    """Worksheet rows (description, header, data...): refuse unvalidated mixed inference; rows unchanged."""
+    rows = list(rows)
+    if len(rows) >= 2 and rows[1] is not None:
+        header = [str(h) for h in rows[1]]
+        if set(MIXED_ONLY_KEYS + HEADLINE_KEYS) & set(header):
+            data = [list(r) + [None] * (len(header) - len(r)) for r in rows[2:]]
+            require_validated_mixed(pd.DataFrame([r[:len(header)] for r in data], columns=header), where)
+    return rows
+
+
+def require_validated_slide_cache(slide_rows, sheet_rows):
+    """Refuse a 'Slide values' cache whose mixed-derived entries do not trace to a validated source row."""
+    if len(slide_rows) < 3:
+        return
+    columns = [str(c) for c in slide_rows[1]]
+    keys = MIXED_ONLY_KEYS + HEADLINE_KEYS
+    for raw in slide_rows[2:]:
+        entry = dict(zip(columns, raw))
+        label = str(entry.get('label', ''))
+        if not any(label == k or label.endswith(': ' + k) for k in keys) or entry.get('value') is None:
+            continue
+        source = sheet_rows.get(entry.get('source_sheet'))
+        header = [str(h) for h in source[1]] if source and len(source) > 1 else []
+        if LEGACY_VALIDATION_COLUMN not in header:
+            raise LegacyStatisticsError(f'{REBUILD_MESSAGE} (Slide values: {label} has no validated source)')
+        from openpyxl.utils import coordinate_to_tuple
+        row_index, _ = coordinate_to_tuple(str(entry.get('source_cell')))
+        record = dict(zip(header, source[row_index - 1])) if row_index - 1 < len(source) else {}
+        if record.get(LEGACY_VALIDATION_COLUMN) != 'validated' and not (
+                label.endswith(HEADLINE_KEYS) and record.get('headline_test') == WELCH_HEADLINE):
+            raise LegacyStatisticsError(f'{REBUILD_MESSAGE} (Slide values: {label} traces to an unvalidated fit)')
+
+
+def add_mixed_columns(table, headline=True):
+    """Build time only, on fresh ``mixed_model`` output: ``p_mixed`` from validated fits; optionally the
+    headline (validated mixed p, else the well-level Welch p) and its ``headline_test`` label."""
+    out = table.copy()
+    if LEGACY_VALIDATION_COLUMN not in out.columns:
+        raise LegacyStatisticsError(f'{REBUILD_MESSAGE} (fresh contrasts without {LEGACY_VALIDATION_COLUMN})')
+    ok = out[LEGACY_VALIDATION_COLUMN].eq('validated')
+    out['p_mixed'] = pd.to_numeric(out['sensitivity_mixed_p'], errors='coerce').where(ok)
+    if headline:
+        out['p_headline'] = out['p_mixed'].fillna(out['p_welch'])
+        out['headline_test'] = np.where(out['p_mixed'].notna(), MIXED_HEADLINE, WELCH_HEADLINE)
     return out
 
 
-def with_mixed_alias(contrasts):
-    """Contrasts with the short ``mixed_p`` alias column added, withheld exactly like ``p_mixed``."""
-    c = contrasts.copy()
-    c[MIXED_ALIAS] = c['p_mixed'] if 'p_mixed' in c else c.get('sensitivity_mixed_p', np.nan)
-    return withhold_unvalidated_mixed(c)
+def add_headline_holm(table, alpha, family_cols):
+    """Build time only: Holm over each declared family's headline p (members = ``in_holm_family``), the
+    finite-p family size, the mixed-only Holm column and the headline significance flag."""
+    from .stats import holm
+    out = require_validated_mixed(table, 'headline Holm input').copy()
+    member = out['in_holm_family'].fillna(False).astype(bool)
+    out['p_headline_holm'] = np.nan
+    out['p_mixed_holm'] = np.nan
+    out['holm_family_size'] = np.nan
+    for _, idx in out.groupby(list(family_cols)).groups.items():
+        ids = [i for i in idx if member.at[i]]
+        if not ids:
+            continue
+        adjusted = holm(out.loc[ids, 'p_headline'].tolist())
+        out.loc[ids, 'p_headline_holm'] = adjusted
+        out.loc[ids, 'p_mixed_holm'] = adjusted
+        out.loc[ids, 'holm_family_size'] = int(np.isfinite(out.loc[ids, 'p_headline'].to_numpy(float)).sum())
+    out.loc[out['p_mixed'].isna(), 'p_mixed_holm'] = np.nan
+    flag = (out['p_headline_holm'] < alpha).astype(object)
+    flag[~member] = pd.NA
+    out['significant_headline_holm_0p05'] = flag
+    return out
+
+
+def with_mixed_alias(table):
+    """Validated contrasts with the short ``mixed_p`` alias column (a copy of ``p_mixed``)."""
+    out = require_validated_mixed(table, 'mixed_p alias input').copy()
+    out[MIXED_ALIAS] = out['p_mixed'] if 'p_mixed' in out else np.nan
+    return out

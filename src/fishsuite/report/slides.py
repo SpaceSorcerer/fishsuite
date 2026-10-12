@@ -13,7 +13,7 @@ from openpyxl.utils import get_column_letter, coordinate_to_tuple
 
 from .aggregate import ReportInputError
 from .sensitivities import (mixed_p_text, mixed_validated, mixed_value, headline_holm_value,
-                            withhold_unvalidated_mixed, withhold_unvalidated_rows)
+                            require_validated_mixed, require_validated_rows, require_validated_slide_cache)
 from . import figures
 from .provenance import guard_output, sha256
 
@@ -42,11 +42,19 @@ def validate_deck(workbook: Path, spec: dict) -> list:
         raise ReportInputError('stale workbook hash')
     book = load_workbook(workbook, data_only=True, read_only=True)
     cache={}
+    # Refuse legacy statistics before resolving anything, including cached Slide values.
+    try:
+        sheet_rows = {name: require_validated_rows(list(book[name].values), name) for name in book.sheetnames}
+        if 'Slide values' in sheet_rows:
+            require_validated_slide_cache(sheet_rows['Slide values'], sheet_rows)
+    except Exception:
+        book.close()
+        raise
     def cell_value(sheet,cell):
         if sheet not in book:
             raise ReportInputError(f'missing workbook sheet: {sheet}')
         if sheet not in cache:
-            cache[sheet]=withhold_unvalidated_rows(list(book[sheet].values))
+            cache[sheet]=sheet_rows[sheet]
         row,col=coordinate_to_tuple(cell)
         values=cache[sheet]
         if row>len(values) or col>len(values[row-1]):
@@ -400,9 +408,9 @@ def prepare_deck(template: dict, sheets: dict, out_dir: Path, data: dict,
     Values copied to Slide values retain their exact origin cell. Speaker notes
     summarize contrasts; slide_sources.csv retains all cell-level provenance.
     """
-    contrasts = withhold_unvalidated_mixed(contrasts)
+    require_validated_mixed(contrasts, 'deck contrasts')
     if 'Contrasts' in sheets:
-        sheets['Contrasts'] = withhold_unvalidated_mixed(sheets['Contrasts'])
+        require_validated_mixed(sheets['Contrasts'], 'deck Contrasts sheet')
     from . import figures as fig
     out_dir = guard_output(out_dir)
     for item in template['slides']:

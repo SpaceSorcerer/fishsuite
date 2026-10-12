@@ -12,7 +12,7 @@ import yaml
 from PIL import Image
 from . import aggregate, endpoints, build
 from .provenance import sha256
-from .sensitivities import (withhold_unvalidated_mixed, withhold_unvalidated_rows, mixed_p_text,
+from .sensitivities import (require_validated_mixed, require_validated_rows, mixed_p_text,
                             mixed_validated, mixed_value, with_mixed_alias, MIXED_ALIAS)
 
 DECISION = ('Mixed-model headline decision 2026-09-07 after data inspection; '
@@ -119,18 +119,10 @@ def assemble(run, panel, prior, spec_path, out):
     finalize(out,prior,run,panel)
 
 
-def _withhold_book(book):
-    """Rewrite every worksheet that carries mixed-model columns with unvalidated inference withheld."""
+def _require_validated_book(book):
+    """Refuse a workbook in which any sheet carries unvalidated mixed-model inference."""
     for ws in book.worksheets:
-        rows=[list(r) for r in ws.iter_rows(values_only=True)]
-        clean=withhold_unvalidated_rows(rows)
-        if clean is rows or clean==rows:
-            continue
-        for r,values in enumerate(clean,1):
-            if r==1:
-                continue
-            for col,value in enumerate(values,1):
-                ws.cell(r,col).value=value
+        require_validated_rows([list(r) for r in ws.iter_rows(values_only=True)], ws.title)
 
 
 def finalize(out,prior,run,panel):
@@ -141,11 +133,10 @@ def finalize(out,prior,run,panel):
     from . import figures, slides
     from .dapi_delivery import preview_deck
     book=openpyxl.load_workbook(out/'REPORT.xlsx')
-    _withhold_book(book)
-    contrasts=withhold_unvalidated_mixed(pd.read_csv(out/'contrasts.csv'))
+    _require_validated_book(book)
+    contrasts=require_validated_mixed(pd.read_csv(out/'contrasts.csv'),'contrasts.csv')
     old=pd.read_csv(prior/'nucleus_floor_comparison.csv')
-    # The prior comparison predates mixed-model validation: every mixed column in it is withheld.
-    old=withhold_unvalidated_mixed(old.loc[old.floor_px.eq(16000)].copy())
+    old=require_validated_mixed(old.loc[old.floor_px.eq(16000)].copy(),'prior nucleus_floor_comparison.csv')
     old['mixed_status']=[mixed_p_text(r) for _,r in old.iterrows()]
     new=with_mixed_alias(contrasts.copy().assign(floor_px=4000))
     new['mixed_status']=[mixed_p_text(r) for _,r in new.iterrows()]
@@ -281,8 +272,7 @@ def refresh(out, prior, run, panel):
     eps.append(endpoints.Endpoint('protein_nuclear_mean_seconly_corrected','protein_nuclear_mean_seconly_corrected',
         'detection','AU','{protein} nuclear mean, matched secondary subtracted',descriptive_only=True,
         absolute_intensity=True,source=str(out/'data/RNASEH2B_TOTAL_CORRECTED.csv')))
-    contrasts=withhold_unvalidated_mixed(sheets['Contrasts'])
-    sheets['Contrasts']=contrasts
+    contrasts=require_validated_mixed(sheets['Contrasts'],'REPORT.xlsx Contrasts')
     narrative(spec, contrasts)
     contrasts['significant_holm_0p05']=contrasts.p_welch_holm_within_family.lt(.05).where(contrasts.in_holm_family)
     contrasts.to_csv(out/'contrasts.csv',index=False)

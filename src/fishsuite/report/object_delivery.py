@@ -235,8 +235,8 @@ def rnase(run,prior,out,a20=False):
 
 
 def rn_readout(contrasts,summary):
-    from .sensitivities import withhold_unvalidated_mixed, headline_value, WELCH_HEADLINE
-    c=withhold_unvalidated_mixed(contrasts).set_index('endpoint')
+    from .sensitivities import require_validated_mixed, headline_value, WELCH_HEADLINE
+    c=require_validated_mixed(contrasts,'RNASEH2B readout contrasts').set_index('endpoint')
     def values(name,scale=1):
         r=c.loc[name]
         return f'WT {scale*r.mean_ref:.6g}, KO {scale*r.mean_test:.6g}'
@@ -244,8 +244,7 @@ def rn_readout(contrasts,summary):
         value=headline_value(c.loc[name])
         if np.isfinite(value):
             return f'{value:.6g}'+(' (Welch, well-level)' if c.loc[name].get('headline_test')==WELCH_HEADLINE else '')
-        welch=pd.to_numeric(c.loc[name].get('p_welch',np.nan),errors='coerce')
-        return f'{welch:.6g} (Welch, well-level)' if np.isfinite(welch) else 'missing (descriptive)'
+        return 'missing (descriptive)'
     r=summary['ratio']
     lines=[
         '1: BIN1 intron puncta/nucleus '+values('rna1_spots_per_nucleus')+' (p='+p('rna1_spots_per_nucleus')+'); footprint area (square micrometres) '+values('rna1_punctum_footprint_area_um2')+' (p='+p('rna1_punctum_footprint_area_um2')+').',

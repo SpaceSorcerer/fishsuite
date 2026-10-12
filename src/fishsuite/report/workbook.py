@@ -146,12 +146,13 @@ def write(path: Path, sheets: Dict[str, pd.DataFrame],
     guard_output(path)
     path.parent.mkdir(parents=True, exist_ok=True)
 
+    from .sensitivities import require_validated_mixed
+    for name in order:  # refuse legacy statistics before any byte is written
+        if sheets.get(name) is not None:
+            require_validated_mixed(sheets[name], f'workbook sheet {name}')
     with pd.ExcelWriter(path, engine="openpyxl") as xl:
         for name in order:
             df = sheets.get(name)
-            if df is not None and len(df):
-                from .sensitivities import withhold_unvalidated_mixed
-                df = withhold_unvalidated_mixed(df)
             if df is None or len(df) == 0:
                 df = pd.DataFrame({"note": [f"the sheet '{name}' produced no rows"]})
             df.to_excel(xl, sheet_name=name[:31], index=False, startrow=1)

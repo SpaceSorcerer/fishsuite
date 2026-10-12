@@ -103,8 +103,9 @@ def _load(run: Path, groups: ConditionsCfg):
             contrasts.append(row)
     if labels.secondary_only.any():
         order.append(agg.SEC_ONLY_GROUP)
-    from fishsuite.report.sensitivities import withhold_unvalidated_mixed
-    return cfg, nuclei, fields, wells, withhold_unvalidated_mixed(pd.DataFrame(contrasts), headline=True), endpoints, order
+    from fishsuite.report.sensitivities import add_mixed_columns
+    table = add_mixed_columns(pd.DataFrame(contrasts)) if contrasts else pd.DataFrame(contrasts)
+    return cfg, nuclei, fields, wells, table, endpoints, order
 
 
 def _render(run: Path, out: Path, groups: ConditionsCfg):

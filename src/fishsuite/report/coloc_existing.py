@@ -164,8 +164,8 @@ def simple_statistics(nuclei, reference, metrics=SIMPLE_METRICS):
                  threshold=('fixed config manual floors' if 'labfloor' in metric else 'Costes-converged nuclei only') if 'manders' in metric else 'threshold-free',
                  **welch(a,b),**mixed_model(bio[['group','well_id','image',metric]].rename(columns={metric:'value'}),test,reference))
         rows.append(row)
-    from .sensitivities import withhold_unvalidated_mixed
-    return fields,wells,withhold_unvalidated_mixed(pd.DataFrame(rows))
+    from .sensitivities import add_mixed_columns
+    return fields,wells,add_mixed_columns(pd.DataFrame(rows),headline=False) if rows else pd.DataFrame(rows)
 
 
 def render_simple_coloc(nuclei, fields, wells, contrasts, out_dir, rna, partner, reference, run_name=None):

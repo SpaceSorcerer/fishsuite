@@ -9,7 +9,7 @@ from . import endpoints as ep, aggregate, figures, workbook
 from .stats import holm
 
 
-from .sensitivities import withhold_unvalidated_mixed
+from .sensitivities import require_validated_mixed, add_headline_holm
 def cache_signature(run,frame,definitions=()):
     """Content attestations, not cache existence, govern reuse."""
     import hashlib
@@ -94,14 +94,15 @@ def amend_rnase(sheets, run, out):
         sheets['Per well'] = pd.concat([sheets['Per well'],w],ignore_index=True)
         sheets['Contrasts'] = pd.concat([sheets['Contrasts'],c],ignore_index=True)
         defs += additions
-    c = sheets['Contrasts'].copy()
+    # Inherited contrasts must already carry validated mixed inference; legacy ones are refused.
+    c = require_validated_mixed(sheets['Contrasts'], 'A20 inherited Contrasts').copy()
     absolute = c.absolute_intensity.fillna(False).astype(bool)
     c.loc[absolute,['descriptive_only','excluded_from_holm','holm_exclusion_reason','endpoint_note']] = [False,'','',ep.INTENSITY_CAVEAT]
     c['in_holm_family'] = ~(c.descriptive_only.fillna(False).astype(bool) | c.endpoint_absent_in_run.fillna(False).astype(bool) | c.excluded_from_holm.fillna('').astype(bool))
     for _, indexes in c.groupby(['family','test_group','reference_group']).groups.items():
         ids = [i for i in indexes if c.at[i,'in_holm_family']]
         c.loc[ids,'p_welch_holm_within_family'] = holm(c.loc[ids,'p_welch'].tolist())
-    c = withhold_unvalidated_mixed(c, .05, headline=True)
+    c = add_headline_holm(c, .05, ['family','test_group','reference_group'])
     c['significant_holm_0p05'] = (c.p_welch_holm_within_family < .05).where(c.in_holm_family)
     c['observed_g_reaches_mde']=c.observed_g_reaches_mde.astype(object)
     from functools import lru_cache
