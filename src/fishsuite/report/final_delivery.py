@@ -14,7 +14,7 @@ from . import aggregate, endpoints, build
 from .provenance import sha256
 from .sensitivities import (require_current_statistics, require_current_book, read_stats_csv, read_stats_excel,
                             stamp_statistics, LegacyStatisticsError, REBUILD_MESSAGE, mixed_p_text,
-                            mixed_validated, mixed_value, with_mixed_alias, MIXED_ALIAS)
+                            mixed_validated, mixed_value, with_mixed_alias, stored_flag, MIXED_ALIAS)
 
 DECISION = ('Mixed-model headline decision 2026-09-07 after data inspection; '
             'Welch on well means remains reported. Nucleus-level linear mixed model: '
@@ -156,7 +156,8 @@ def finalize(out,prior,run,panel):
         a=rows.loc[rows.floor_px.eq(16000)].iloc[0]
         b=rows.loc[rows.floor_px.eq(4000)].iloc[0]
         for column in ['p_welch',MIXED_ALIAS]:
-            if pd.notna(a[column]) and pd.notna(b[column]) and (a[column]<.05)!=(b[column]<.05):
+            # Stored build-time flags (each run's alpha); a p without its stored flag is refused.
+            if pd.notna(a[column]) and pd.notna(b[column]) and stored_flag(a,column)!=stored_flag(b,column):
                 changes.append(dict(endpoint=endpoint,test=column,old_p=a[column],new_p=b[column]))
     changed=stamp_statistics(pd.DataFrame(changes,columns=['endpoint','test','old_p','new_p']),'floor_conclusion_changes')
     changed.to_csv(out/'floor_conclusion_changes.csv',index=False)

@@ -371,7 +371,23 @@ def add_headline_holm(table, alpha, family_cols):
     flag = (out['p_headline_holm'] < alpha).astype(object)
     flag[~member] = pd.NA
     out['significant_headline_holm_0p05'] = flag
+    raw = (out['p_mixed'] < alpha).astype(object)
+    raw[out['p_mixed'].isna()] = pd.NA
+    out['significant_mixed_raw_0p05'] = raw
     return out
+
+
+# Stored build-time decision behind each p column used in the floor comparison.
+FLOOR_FLAGS = {'p_welch': 'significant_raw_0p05', 'mixed_p': 'significant_mixed_raw_0p05'}
+
+
+def stored_flag(row, p_column):
+    """The stored build-time significance flag for one row's p; refuse when the flag is absent."""
+    flag = FLOOR_FLAGS[p_column]
+    if flag not in row or pd.isna(row[flag]):
+        raise LegacyStatisticsError(f'{REBUILD_MESSAGE} (no stored {flag} for {row.get("endpoint", "?")})')
+    value = row[flag]
+    return value if isinstance(value, bool) else str(value).strip().lower() in ('true', '1')
 
 
 def with_mixed_alias(table):

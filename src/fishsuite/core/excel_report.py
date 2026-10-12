@@ -930,6 +930,15 @@ GLOSSARIES: Dict[str, Dict[str, Tuple[str, str, str]]] = {
 # Stats helpers (Mann-Whitney U + Cliff's delta)
 # ---------------------------------------------------------------------------
 
+# Inferential sheets (Comparison_Table, PI_Focus) carry the fishsuite statistics generation stamp (2026-10-12).
+_STATS_STAMP_HEADERS = ('fishsuite_stats_generation', 'fishsuite_stats_commit')
+
+
+def _stats_stamp_values():
+    from fishsuite.report.sensitivities import STATS_GENERATION, STATS_COMMIT
+    return [STATS_GENERATION, STATS_COMMIT]
+
+
 def _mannwhitney_and_cliffs_delta(
     a: Sequence[float], b: Sequence[float],
 ) -> Tuple[Optional[float], Optional[float]]:
@@ -1941,7 +1950,7 @@ def _build_comparison_table(
         f"{ko_cond}_mean", f"{ko_cond}_SEM", f"{ko_cond}_n",
         "MWU p-value", "Cliff's delta",
         "sec-only_mean", "sec-only_n",
-    ]
+    ] + list(_STATS_STAMP_HEADERS)
     for i, h in enumerate(headers, start=1):
         cell = ws.cell(row=row, column=i, value=h)
         cell.font = BOLD
@@ -2006,7 +2015,7 @@ def _build_comparison_table(
             ko_mean, ko_sem, ko_n,
             pval, delta,
             sec_mean, sec_n,
-        ]
+        ] + _stats_stamp_values()
 
     for metric_label, img_col, nuc_col, category in COMPARISON_METRICS:
         # 2026-05-20 Brian/Sam: skip metric rows whose underlying columns
@@ -2316,7 +2325,7 @@ def _build_pi_focus(
         "Mann-Whitney p",
         "Cliff's delta",
         "Direction",
-    ]
+    ] + list(_STATS_STAMP_HEADERS)
     for i, h in enumerate(headers, start=1):
         c = ws.cell(row=row, column=i, value=h)
         c.font = BOLD
@@ -2371,6 +2380,8 @@ def _build_pi_focus(
         ws.cell(row=row, column=4, value=pval if pval is not None else None)
         ws.cell(row=row, column=5, value=delta if delta is not None else None)
         ws.cell(row=row, column=6, value=direction)
+        for offset, stamp in enumerate(_stats_stamp_values(), start=7):
+            ws.cell(row=row, column=offset, value=stamp)
         # Borders + alignment + per-section fill on metric name column
         for cc in range(1, N_COLS + 1):
             cell = ws.cell(row=row, column=cc)

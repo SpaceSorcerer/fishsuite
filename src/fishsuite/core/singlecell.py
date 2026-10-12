@@ -534,8 +534,9 @@ def _write_excel(results: Dict[str, Any], xlsx: Path) -> None:
 
     xlsx.parent.mkdir(parents=True, exist_ok=True)
     with pd.ExcelWriter(xlsx, engine="openpyxl") as xw:
+        from fishsuite.report.sensitivities import stamp_statistics
         for name, dfx in sheets:
-            (dfx if not dfx.empty else pd.DataFrame({"(no rows)": []})).to_excel(
+            (stamp_statistics(dfx, name) if not dfx.empty else pd.DataFrame({"(no rows)": []})).to_excel(
                 xw, sheet_name=name, index=False)
 
     wb = load_workbook(xlsx)

@@ -117,3 +117,43 @@ def test_slide_values_sheet_without_lineage_schema_is_refused(tmp_path):
                           {}, order=['Slide values'])
     with pytest.raises(S.LegacyStatisticsError, match=REBUILD):
         slides.validate_deck(path, {'workbook_sha256': slides.sha256(path), 'slides': [{'title': 't', 'values': []}]})
+
+
+def test_floor_table_reads_stored_flags_and_refuses_missing_ones():
+    row = pd.Series(dict(endpoint='x', p_welch=.03, significant_raw_0p05=False, mixed_p=.2,
+                         significant_mixed_raw_0p05='True'))
+    assert S.stored_flag(row, 'p_welch') is False  # stored decision at the run's alpha, not p < .05 now
+    assert S.stored_flag(row, 'mixed_p') is True
+    with pytest.raises(S.LegacyStatisticsError, match=REBUILD):
+        S.stored_flag(row.drop('significant_raw_0p05'), 'p_welch')
+    with pytest.raises(S.LegacyStatisticsError, match=REBUILD):
+        S.stored_flag(pd.concat([row.drop('significant_mixed_raw_0p05'), pd.Series({'significant_mixed_raw_0p05': np.nan})]), 'mixed_p')
+
+
+def test_build_time_holm_stores_the_raw_mixed_flag_at_the_run_alpha():
+    fresh = pd.DataFrame(dict(endpoint=['x', 'y'], sensitivity_mixed_p=[np.nan, .02], p_welch=[.8, .4],
+                              sensitivity_mixed_validation=['not_validated:x', 'validated'],
+                              family=['f', 'f'], test_group=['t', 't'], in_holm_family=[True, True]))
+    out = S.add_headline_holm(S.add_mixed_columns(fresh), .01, ['family', 'test_group'])
+    assert out.significant_mixed_raw_0p05.iloc[1] is False and pd.isna(out.significant_mixed_raw_0p05.iloc[0])
+
+
+def test_pixel_pattern_welch_sheet_is_stamped(tmp_path):
+    from fishsuite.core.pixel_pattern import _write_excel
+    xlsx = tmp_path / 'pixel_pattern.xlsx'
+    _write_excel(pd.DataFrame(dict(a=[1.])), pd.DataFrame(dict(metric=['gini'], welch_p=[.2])),
+                 pd.DataFrame(), pd.DataFrame(), None, xlsx, chan_labels={})
+    welch = pd.read_excel(xlsx, sheet_name='nt_vs_condition_welch')
+    assert S.require_current_statistics(welch) is not None and welch[S.STATS_GENERATION_COLUMN].eq(2).all()
+    assert S.STATS_GENERATION_COLUMN not in pd.read_excel(xlsx, sheet_name='per_nucleus')
+
+
+def test_engine_inferential_sheets_declare_the_stamp_columns():
+    import inspect
+    from fishsuite.core import excel_report, singlecell
+    from fishsuite.figures import gallery
+    assert excel_report._STATS_STAMP_HEADERS == (S.STATS_GENERATION_COLUMN, S.STATS_COMMIT_COLUMN)
+    for fn in (excel_report._build_comparison_table, excel_report._build_pi_focus):
+        assert '_STATS_STAMP_HEADERS' in inspect.getsource(fn) and '_stats_stamp_values' in inspect.getsource(fn)
+    assert 'stamp_statistics' in inspect.getsource(singlecell._write_excel)
+    assert inspect.getsource(gallery).count('stamp_statistics(df, name)') == 2
