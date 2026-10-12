@@ -153,9 +153,6 @@ def finalize(out, run, dispatch):
     census['unretained_area_q25_um2'] = census.image.map(dropped.quantile(.25))
     census['unretained_area_q75_um2'] = census.image.map(dropped.quantile(.75))
     census['unretained_area_iqr_um2'] = census.unretained_area_q75_um2-census.unretained_area_q25_um2
-    census.to_csv(census_path,index=False)
-    from .dapi_mask import seal_dapi_cache
-    seal_dapi_cache(out/'dapi', run)
     sheet = book['DAPI census']
     from copy import copy
     old_last = sheet.max_column
@@ -177,10 +174,22 @@ def finalize(out, run, dispatch):
                 if isinstance(cell.value,str) and 'because laser power is retuned per section' in cell.value:
                     cell.value = cell.value.replace('because laser power is retuned per section',
                         'exposure is uniform per acquirer but staining batch remains a caveat')
-    book.save(out/'REPORT.xlsx')
+    # Stage and validate the amended workbook against the amended spec before anything is published.
+    staged = out/'REPORT.staged.xlsx'
+    book.save(staged)
     spec_path = out/'deck_spec.resolved.yaml'
     resolved = yaml.safe_load(spec_path.read_text())
-    resolved['workbook_sha256'] = sha256(out/'REPORT.xlsx')
+    resolved['workbook_sha256'] = sha256(staged)
+    from .slides import validate_deck
+    try:
+        validate_deck(staged, resolved)
+    except Exception:
+        staged.unlink()
+        raise
+    census.to_csv(census_path,index=False)
+    from .dapi_mask import seal_dapi_cache
+    seal_dapi_cache(out/'dapi', run)
+    staged.replace(out/'REPORT.xlsx')
     spec_path.write_text(yaml.safe_dump(resolved,sort_keys=False),encoding='utf-8')
     from .slides import build_deck
     build_deck(out/'REPORT.xlsx',resolved,out/'Sam_RNASEH2B_BIN1.pptx')

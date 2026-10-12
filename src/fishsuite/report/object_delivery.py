@@ -56,6 +56,14 @@ def finish(out,sheets,spec,book_name,deck_name,missing,fresh=()):
     fresh=set(fresh)|{'A17 Figure sources','A17 Slide content'}
     for name,table in sheets.items():
         stamp_statistics(table,f'{book_name}: {name}',fresh=name in fresh)
+    # Whole-bundle preflight: the proposed workbook and deck spec are written to a scratch directory outside the
+    # delivery and validated (stamps, lineage, figures) before the first delivery output is created.
+    import tempfile
+    with tempfile.TemporaryDirectory() as scratch:
+        probe=workbook.write(Path(scratch)/book_name,sheets,{},order=list(sheets),fresh=fresh)
+        proposed=json.loads(json.dumps(spec,default=str))
+        proposed['workbook_sha256']=sha256(probe)
+        slides.validate_deck(probe,proposed)
     out=guard_output(out)
     expanded=[]
     for item in spec['slides']:
@@ -85,8 +93,15 @@ def finish(out,sheets,spec,book_name,deck_name,missing,fresh=()):
     sheets['A17 Figure sources']=pd.DataFrame(index)
     sheets['A17 Slide content']=pd.DataFrame([dict(slide=i,title=s['title'],body=s.get('body',''))
                                             for i,s in enumerate(spec['slides'],1)])
-    book=workbook.write(out/book_name,sheets,{},order=list(sheets),fresh=fresh)
-    spec['workbook_sha256']=sha256(book)
+    # The final workbook is staged and validated against the final spec before it or the spec is published.
+    staged=workbook.write(out/(Path(book_name).stem+'.staged.xlsx'),sheets,{},order=list(sheets),fresh=fresh)
+    spec['workbook_sha256']=sha256(staged)
+    try:
+        slides.validate_deck(staged,spec)
+    except Exception:
+        staged.unlink()
+        raise
+    book=staged.replace(out/book_name)
     (out/'deck_spec.resolved.yaml').write_text(yaml.safe_dump(spec,sort_keys=False),encoding='utf-8')
     slides.build_deck(book,spec,out/deck_name)
     focus_sources=(out/'slide_sources.csv').read_bytes()

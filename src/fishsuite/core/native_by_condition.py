@@ -240,7 +240,7 @@ _P_TEXT = __import__('re').compile(r'(mixed model p|\bp\s*[=<>]\s*[0-9.]|p-value
 def _legacy_inferential(root: Path) -> set:
     """Legacy files that carry inference (unstamped statistical tables, figures whose SVG prints a p, Holm or
     MDE, and the raster/PDF twins of those figures); they are not republished by regeneration."""
-    from fishsuite.report.sensitivities import is_statistical, STATS_GENERATION_COLUMN
+    from fishsuite.report.sensitivities import is_statistical
     skip, stems = set(), set()
     for p in root.rglob('*'):
         if not p.is_file():
@@ -249,7 +249,7 @@ def _legacy_inferential(root: Path) -> set:
         try:
             if suffix in ('.csv', '.tsv'):
                 head = pd.read_csv(p, nrows=0, sep='\t' if suffix == '.tsv' else ',').columns
-                if is_statistical(head) and STATS_GENERATION_COLUMN not in head:
+                if is_statistical(head):  # legacy inference is regenerated, never copied, whatever its stamp
                     skip.add(p.resolve())
             elif suffix == '.xlsx':
                 skip.add(p.resolve())  # engine workbooks are not regenerated outputs

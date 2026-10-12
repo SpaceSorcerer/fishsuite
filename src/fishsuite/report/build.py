@@ -651,7 +651,7 @@ def build_report(run_dir: Path, out_dir: Optional[Path] = None,
         sc = _agg.build_contrasts(sw, sf, sensitivity_ep, [], group_order_resolved, reference, labels, alpha)
         dapi.update(sensitivity_field=sf, sensitivity_well=sw, sensitivity_contrasts=sc)
         for key in ['sensitivity_field','sensitivity_well','sensitivity_contrasts']:
-            dapi[key].to_csv(out_dir/'dapi'/f'dapi_{key}.csv', index=False)
+            stamp_statistics(dapi[key], f'dapi_{key}', fresh=True).to_csv(out_dir/'dapi'/f'dapi_{key}.csv', index=False)
     sec = _agg.secondary_only_table(data["nuclei"], data["per_image"], data["labels"],
                                     exclude_fields, sec_min_nuclei, sec_outlier_k)
 
@@ -738,7 +738,9 @@ def build_report(run_dir: Path, out_dir: Optional[Path] = None,
             'Coloc per nucleus':persisted.tables['per_nucleus'],
             'Coloc per field':persisted.tables['per_FOV'],
             'Coloc per well':persisted.tables['per_well'],
-            'Coloc contrasts':persisted.tables['contrasts'],
+            'Coloc contrasts':persisted.tables['endpoint_contrasts'],
+            **({'Coloc pooled-pixel summary':persisted.tables['contrasts_appendix']}
+               if len(persisted.tables.get('contrasts_appendix',())) else {}),
             'Coloc line profiles':persisted.tables['line_profiles'],
             'Coloc source cells':persisted.sources,
             'Endpoint definitions':pd.DataFrame([asdict(e) for e in endpoints]).assign(

@@ -14,7 +14,7 @@ from openpyxl.utils import get_column_letter, coordinate_to_tuple
 from .aggregate import ReportInputError
 from .sensitivities import (mixed_p_text, mixed_validated, mixed_value, headline_holm_value,
                             check_writable, require_current_rows, require_validated_slide_cache,
-                            LegacyStatisticsError, REBUILD_MESSAGE)
+                            LegacyStatisticsError, REBUILD_MESSAGE, table_block)
 from . import figures
 from .provenance import guard_output, sha256
 
@@ -60,6 +60,9 @@ def validate_deck(workbook: Path, spec: dict) -> list:
         values=cache[sheet]
         if row>len(values) or col>len(values[row-1]):
             raise ReportInputError(f'missing workbook cell: {sheet}!{cell}')
+        block=table_block(values)
+        if block is None or not (block[2] <= row-1 < block[3] and col-1 < len(block[1])):
+            raise LegacyStatisticsError(f'{REBUILD_MESSAGE} ({sheet}!{cell} lies outside the validated table block)')
         return values[row-1][col-1]
     identifiers = set(book.sheetnames)
     for sheet in ('Per nucleus', 'Per well', 'Micrographs'):

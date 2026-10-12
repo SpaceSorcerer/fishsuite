@@ -390,6 +390,11 @@ def load_existing_panel(path: Path, figure_index: Path, baseline_manifest: Path,
     separators=np.flatnonzero(raw_contrasts['endpoint'].isna().to_numpy())
     stop=int(separators[0]) if len(separators) else len(raw_contrasts)
     tables['endpoint_contrasts']=raw_contrasts.iloc[:stop].copy()
+    appendix=raw_contrasts.iloc[stop:].dropna(how='all')
+    if len(appendix):  # the appended pooled-pixel table, re-headed by its own header row (descriptive)
+        head=[str(v) for v in appendix.iloc[0]]
+        keep=[j for j,v in enumerate(appendix.iloc[0]) if pd.notna(v)]
+        tables['contrasts_appendix']=pd.DataFrame(appendix.iloc[1:,keep].to_numpy(),columns=[head[j] for j in keep])
     if pn.duplicated(['image', 'nucleus_id']).any():
         raise ReportInputError('duplicate panel nucleus keys')
     for c in ('manders_m1_costes_only', 'manders_m2_costes_only'):

@@ -393,7 +393,13 @@ def stored_flag(row, p_column):
     if flag not in row or pd.isna(row[flag]):
         raise LegacyStatisticsError(f'{REBUILD_MESSAGE} (no stored {flag} for {row.get("endpoint", "?")})')
     value = row[flag]
-    return value if isinstance(value, bool) else str(value).strip().lower() in ('true', '1')
+    if isinstance(value, (bool, np.bool_)):
+        return bool(value)
+    if isinstance(value, (int, float, np.integer, np.floating)) and np.isfinite(value) and float(value) in (0.0, 1.0):
+        return bool(float(value))  # Excel/openpyxl round-trips True as 1 or 1.0
+    if isinstance(value, str) and value.strip().lower() in ('true', 'false', '1', '0', '1.0', '0.0'):
+        return value.strip().lower() in ('true', '1', '1.0')
+    raise LegacyStatisticsError(f'{REBUILD_MESSAGE} (malformed stored {flag} {value!r} for {row.get("endpoint", "?")})')
 
 
 def stored_mixed_flag(row):
@@ -504,23 +510,51 @@ def _header_row(row) -> bool:
     return len(cells) >= 2 and all(isinstance(c, str) for c in cells)
 
 
+def _filled(row):
+    return [c for c in (row or ()) if c is not None and str(c).strip() != '']
+
+
+def table_block(rows):
+    """The single supported table of a worksheet, or None.
+
+    Supported layouts: (a) a description row (one cell, possibly empty), then an all-text header row (the ``workbook.write``
+    layout); (b) an all-text header in row 1 (plain table, including single-column tables). Data rows run from
+    below the header to the first blank row. Returns (header_row, header, first_data_row, end_row, trailing),
+    0-based, where ``trailing`` is True when any non-blank row follows the block.
+    """
+    rows = [list(r) if r is not None else [] for r in rows]
+    text = lambda r: bool(_filled(r)) and all(isinstance(c, str) for c in _filled(r))
+    if len(rows) >= 2 and len(_filled(rows[0])) <= 1 and text(rows[1]):
+        h = 1
+    elif rows and text(rows[0]):
+        h = 0
+    else:
+        return None
+    width = max((j + 1 for j, c in enumerate(rows[h]) if c is not None and str(c).strip() != ''), default=0)
+    header = [str(c) if c is not None else f'_col{j}' for j, c in enumerate(rows[h][:width])]
+    end = h + 1
+    while end < len(rows) and _filled(rows[end]):
+        end += 1
+    trailing = any(_filled(r) for r in rows[end:])
+    return h, header, h + 1, end, trailing
+
+
 def require_current_rows(rows, where='sheet', force=False):
     """Reader gate on worksheet rows; rows returned unchanged.
 
-    Supported layouts: header in row 1 (plain table) or in row 2 (description row, then header). A header row
-    is a row of two or more text cells. Each candidate header's block (to the first blank row) is gated.
+    The supported block (``table_block``) is gated. A statistical block followed by further non-blank rows is an
+    unsupported layout and is refused: rows outside the block cannot be validated.
     """
     rows = [list(r) if r is not None else [] for r in rows]
-    for index in (0, 1):
-        if index >= len(rows) or not _header_row(rows[index]):
-            continue
-        header = [str(h) if h is not None else f'_col{j}' for j, h in enumerate(rows[index])]
-        block = []
-        for r in rows[index + 1:]:
-            if not any(v is not None and str(v).strip() != '' for v in r):
-                break
-            block.append(r[:len(header)] + [None] * max(0, len(header) - len(r)))
-        require_current_statistics(pd.DataFrame(block, columns=header), f'{where} (header row {index + 1})', force)
+    block = table_block(rows)
+    if block is None:
+        return rows
+    h, header, first, end, trailing = block
+    data = [r[:len(header)] + [None] * max(0, len(header) - len(r)) for r in rows[first:end]]
+    table = pd.DataFrame(data, columns=header)
+    require_current_statistics(table, f'{where} (header row {h + 1})', force)
+    if trailing and (force or is_statistical(header)):
+        raise LegacyStatisticsError(f'{REBUILD_MESSAGE} ({where}: unsupported layout, rows after the validated table)')
     return rows
 
 

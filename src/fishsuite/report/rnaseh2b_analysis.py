@@ -262,9 +262,11 @@ def build_analysis(run_dir, output_dir, correction_csv, acquisition_method=None)
     for name, table in tables.items():
         stamp_statistics(table, name, fresh=True).to_csv(out/'data'/(name.replace(' ', '_')+'.csv'), index=False)
     summary = dict(ratio=result, spearman=spearman.to_dict('records'), ratio_line=ratio_line)
-    (out/'A17_RESULTS.json').write_text(json.dumps(summary, indent=2), encoding='utf-8')
-    (out/'A17_ANALYSIS_FIGURES.json').write_text(json.dumps(figures, indent=2), encoding='utf-8')
-    (out/'A17_ANALYSIS_SLIDES.json').write_text(json.dumps(slides, indent=2), encoding='utf-8')
+    from .sensitivities import STATS_GENERATION, STATS_COMMIT
+    stamp = dict(fishsuite_stats_generation=STATS_GENERATION, fishsuite_stats_commit=STATS_COMMIT)
+    (out/'A17_RESULTS.json').write_text(json.dumps(dict(summary, **stamp), indent=2), encoding='utf-8')
+    (out/'A17_ANALYSIS_FIGURES.json').write_text(json.dumps(dict(figures=figures, **stamp), indent=2), encoding='utf-8')
+    (out/'A17_ANALYSIS_SLIDES.json').write_text(json.dumps(dict(slides=slides, **stamp), indent=2), encoding='utf-8')
     (out/'A17_ANALYSIS_MISSING.md').write_text('\n'.join(missing)+'\n', encoding='utf-8')
     (out/'A17_ANALYSIS_TITLE_MAP.json').write_text(json.dumps(TITLE_MAP, indent=2), encoding='utf-8')
     (out/'A17_ANALYSIS_METHODS.md').write_text(
