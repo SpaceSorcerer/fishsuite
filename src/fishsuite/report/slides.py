@@ -12,6 +12,7 @@ from openpyxl import load_workbook
 from openpyxl.utils import get_column_letter, coordinate_to_tuple
 
 from .aggregate import ReportInputError
+from .figures import mixed_p_text, mixed_validated
 from . import figures
 from .provenance import guard_output, sha256
 
@@ -155,7 +156,7 @@ def speaker_notes(workbook, definition, notes_trailer=None):
                 groups.setdefault(row,{})[item.get('label','')]=item['value']
         lines=[f'Workbook: {Path(workbook).resolve()}', 'Levels of comparison: per nucleus → per FOV → per well.']
         for row in groups.values():
-            lines.append(f"{row.get('endpoint')}: {row.get('reference_group')} well mean {row.get('mean_ref')}; {row.get('test_group')} well mean {row.get('mean_test')}; mixed p {row.get('p_mixed')}; Welch (wells) p {row.get('p_welch')}. {row.get('sensitivity_mixed_status')}.")
+            lines.append(f"{row.get('endpoint')}: {row.get('reference_group')} well mean {row.get('mean_ref')}; {row.get('test_group')} well mean {row.get('mean_test')}; {mixed_p_text(row)}; Welch (wells) p {row.get('p_welch')}. {row.get('sensitivity_mixed_status')}.")
             for arm in ('reference','test'):
                 lines.append(f"{arm}: {row.get('sensitivity_n_nuclei_'+arm)} defined nuclei, {row.get('sensitivity_n_fovs_'+arm)} FOVs, {row.get('sensitivity_n_wells_'+arm)} wells; nucleus median {row.get('sensitivity_nucleus_median_'+arm)}.")
         lines += ['Nucleus-level model: fixed arm, random well and FOV within well. Two-sided asymptotic Wald p; exploratory, unadjusted.',
@@ -182,13 +183,17 @@ def speaker_notes(workbook, definition, notes_trailer=None):
         test, ref = row.get('test_group', 'test'), row.get('reference_group', 'reference')
         n = lambda key: number(row.get(key))
         means.append(f"{name}: {test} well mean {n('mean_test')}, {ref} well mean {n('mean_ref')}, difference {n('diff')} ({test} minus {ref})")
-        tests.append(f"{name}: mixed model p {n('p_mixed')}; Welch (wells) p {n('p_welch')}, Hedges g {n('hedges_g')}")
-        adjusted.append(f"{name}: Holm p {n('p_headline_holm')}, MDE g {n('mde_hedges_g_at_family_alpha')} at family alpha and 80% power")
+        validated = mixed_validated(row)
+        tests.append(f"{name}: {mixed_p_text(row)}; Welch (wells) p {n('p_welch')}, Hedges g {n('hedges_g')}")
+        holm_text = (f"Holm p {n('p_headline_holm')}" if validated or row.get('headline_test') != 'mixed model'
+                     else f"Holm p (well-level Welch) {n('p_welch_holm_within_family')}")
+        adjusted.append(f"{name}: {holm_text}, MDE g {n('mde_hedges_g_at_family_alpha')} at family alpha and 80% power")
         levels.extend([str(name),
             f"Per-nucleus median: {test} {n('sensitivity_nucleus_median_test')} (n={n('sensitivity_n_nuclei_test')} nuclei), {ref} {n('sensitivity_nucleus_median_reference')} (n={n('sensitivity_n_nuclei_reference')} nuclei); descriptive median, no pooled nucleus t test.",
             f"Per-FOV mean: {test} n={n('sensitivity_n_fovs_test')} FOVs, {ref} n={n('sensitivity_n_fovs_reference')} FOVs; technical-level Welch p {n('sensitivity_welch_fov_p')}.",
             f"Per-well mean: {test} n={n('n_wells_test')} wells, {ref} n={n('n_wells_reference')} wells; two-sided Welch comparison; pooled-variance Student sensitivity p {n('sensitivity_student_well_p')}.",
-            f"Nucleus-level mixed model: fixed arm, random well and FOV within well; Wald p {n('sensitivity_mixed_p')}; {row.get('sensitivity_mixed_status', 'missing')}."])
+            f"Nucleus-level mixed model: fixed arm, random well and FOV within well; "
+            + (f"Wald p {n('sensitivity_mixed_p')}" if validated else mixed_p_text(row)) + f"; {row.get('sensitivity_mixed_status', 'missing')}."])
     if endpoints:
         notes.extend(['; '.join(means)+'.', '; '.join(tests)+'.', '; '.join(adjusted)+'. MDE is not an exclusion bound.'])
     else:

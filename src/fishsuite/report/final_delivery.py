@@ -12,6 +12,8 @@ import yaml
 from PIL import Image
 from . import aggregate, endpoints, build
 from .provenance import sha256
+from .sensitivities import withhold_unvalidated_mixed
+from .figures import mixed_p_text, mixed_validated
 
 DECISION = ('Mixed-model headline decision 2026-09-07 after data inspection; '
             'Welch on well means remains reported. Nucleus-level linear mixed model: '
@@ -48,10 +50,10 @@ def narrative(spec, contrasts=None):
             row=contrasts.loc[contrasts.endpoint.eq(endpoint)].iloc[0]
             direction='higher' if row['diff']>0 else 'lower' if row['diff']<0 else 'unchanged'
             body=f'{label} is {direction} in KO. '
-            if row.sensitivity_mixed_status=='ok':
+            if mixed_validated(row):
                 body+='The raw mixed-model comparison '+('detects' if row.p_mixed<.05 else 'does not detect')+' a difference; family adjustment remains in the workbook and notes.'
             else:
-                body+='The mixed fit is unavailable; the bracket explicitly reports Welch on well means.'
+                body+=mixed_p_text(row).capitalize()+'; the bracket explicitly reports Welch on well means.'
         item['body']=body
     return spec
 
@@ -125,12 +127,15 @@ def finalize(out,prior,run,panel):
     from . import figures, slides
     from .dapi_delivery import preview_deck
     book=openpyxl.load_workbook(out/'REPORT.xlsx')
-    contrasts=pd.read_csv(out/'contrasts.csv')
+    contrasts=withhold_unvalidated_mixed(pd.read_csv(out/'contrasts.csv'))
     old=pd.read_csv(prior/'nucleus_floor_comparison.csv')
     old=old.loc[old.floor_px.eq(16000)].copy()
+    # The prior comparison predates mixed-model validation: its mixed p is never shown.
+    old['mixed_p']=float('nan')
+    old['mixed_status']='mixed model not validated (legacy result)'
     new=contrasts.copy().assign(floor_px=4000)
     new['mixed_p']=new.p_mixed
-    new['mixed_status']=new.sensitivity_mixed_status
+    new['mixed_status']=[mixed_p_text(r) for _,r in new.iterrows()]
     comp=pd.concat([old,new],ignore_index=True)
     comp.to_csv(out/'nucleus_floor_comparison.csv',index=False)
     if 'Nucleus floor comparison' in book:
@@ -175,7 +180,7 @@ def finalize(out,prior,run,panel):
     lines=[]
     for row in focus.itertuples():
         scale=100 if row.endpoint=='nuclear_spot_fraction_dapi' else 1
-        lines.append(f'{row.endpoint}, floor {row.floor_px:g}: WT {row.mean_ref*scale:.4g}; KO {row.mean_test*scale:.4g}; mixed p {row.mixed_p:.4g}; Welch p {row.p_welch:.4g}')
+        lines.append(f'{row.endpoint}, floor {row.floor_px:g}: WT {row.mean_ref*scale:.4g}; KO {row.mean_test*scale:.4g}; '+(f'mixed p {row.mixed_p:.4g}' if pd.notna(row.mixed_p) else str(row.mixed_status))+f'; Welch (well-level) p {row.p_welch:.4g}')
     body=slide.shapes.add_textbox(Inches(.5), Inches(1.4), Inches(12), Inches(5))
     body.text_frame.text='\n\n'.join(lines)
     for para in body.text_frame.paragraphs: para.font.size=Pt(18)
@@ -263,7 +268,8 @@ def refresh(out, prior, run, panel):
     eps.append(endpoints.Endpoint('protein_nuclear_mean_seconly_corrected','protein_nuclear_mean_seconly_corrected',
         'detection','AU','{protein} nuclear mean, matched secondary subtracted',descriptive_only=True,
         absolute_intensity=True,source=str(out/'data/RNASEH2B_TOTAL_CORRECTED.csv')))
-    contrasts=sheets['Contrasts']
+    contrasts=withhold_unvalidated_mixed(sheets['Contrasts'])
+    sheets['Contrasts']=contrasts
     narrative(spec, contrasts)
     for _,idx in contrasts.groupby(['family','test_group']).groups.items():
         member=[i for i in idx if contrasts.at[i,'in_holm_family']]

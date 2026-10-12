@@ -608,7 +608,8 @@ def build_contrasts(well: pd.DataFrame, field: pd.DataFrame,
         out["endpoint_absent_in_run"], "column absent from this run",
         np.where(out["excluded_from_holm"].astype(bool), out["excluded_from_holm"],
                  np.where(out["descriptive_only"], "descriptive only by design", "")))
-    out['p_mixed'] = out['sensitivity_mixed_p'].where(out['sensitivity_mixed_status'].eq('ok'))
+    out['p_mixed'] = out['sensitivity_mixed_p'].where(out['sensitivity_mixed_status'].eq('ok')
+                                                      & out.get('sensitivity_mixed_validation', pd.Series('', index=out.index)).eq('validated'))
     out['p_headline'] = out.p_mixed.fillna(out.p_welch)
     out['headline_test'] = np.where(out.p_mixed.notna(), 'mixed model', 'Welch (well means)')
     out['p_mixed_holm'] = np.nan

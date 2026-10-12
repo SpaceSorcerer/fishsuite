@@ -48,7 +48,7 @@ def mixed_p_text(r, sep: str = " ") -> str:
     if mixed_validated(r):
         return f"mixed model p{sep}{fmt_p(pd.to_numeric(r.get('p_mixed', r.get('sensitivity_mixed_p')), errors='coerce'))}"
     validation = r.get('sensitivity_mixed_validation', None)
-    if validation is None or (isinstance(validation, float) and np.isnan(validation)):
+    if validation is None or (isinstance(validation, float) and np.isnan(validation)) or 'legacy' in str(validation):
         if status == 'ok':
             return "mixed model not validated (legacy result)"
     if 'field-level' in status:

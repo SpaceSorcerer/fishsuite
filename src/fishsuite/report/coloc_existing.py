@@ -163,7 +163,7 @@ def simple_statistics(nuclei, reference, metrics=SIMPLE_METRICS):
         row=dict(endpoint=metric,test_group=test,reference_group=reference,
                  threshold=('fixed config manual floors' if 'labfloor' in metric else 'Costes-converged nuclei only') if 'manders' in metric else 'threshold-free',
                  **welch(a,b),**mixed_model(bio[['group','well_id','image',metric]].rename(columns={metric:'value'}),test,reference))
-        row['p_mixed']=row['sensitivity_mixed_p']
+        row['p_mixed']=row['sensitivity_mixed_p'] if row.get('sensitivity_mixed_validation')=='validated' else np.nan
         rows.append(row)
     return fields,wells,pd.DataFrame(rows)
 

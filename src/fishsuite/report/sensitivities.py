@@ -190,3 +190,37 @@ def outlier_sensitivity(field, contrasts, alpha=.05):
              with_exclusion_mean_reference=result['mean_ref'],with_exclusion_n_wells_test=result['n_test'],
              with_exclusion_n_wells_reference=result['n_ref']))
     return pd.DataFrame(rows)
+
+
+LEGACY_VALIDATION = 'not_validated:legacy result (no validation marker; built before 70500c0)'
+
+
+def withhold_unvalidated_mixed(contrasts):
+    """Copy of a persisted contrasts table whose mixed inference is kept only where
+    ``sensitivity_mixed_validation == 'validated'``. A table without that column was
+    built before 70500c0 and every mixed p in it is withheld. Withheld rows fall back
+    to the well-level Welch p as headline, labelled as such, and the headline Holm
+    columns are recomputed within (family, test_group) when the table carries them."""
+    from .stats import holm
+    c = contrasts.copy()
+    if 'sensitivity_mixed_validation' not in c:
+        c['sensitivity_mixed_validation'] = LEGACY_VALIDATION
+    c['sensitivity_mixed_validation'] = c['sensitivity_mixed_validation'].fillna(LEGACY_VALIDATION)
+    ok = c['sensitivity_mixed_validation'].eq('validated')
+    for col in ('p_mixed', 'sensitivity_mixed_p', 'p_mixed_holm'):
+        if col in c:
+            c[col] = c[col].where(ok)
+    if 'p_welch' not in c:
+        return c
+    mixed = c['p_mixed'] if 'p_mixed' in c else pd.Series(np.nan, index=c.index)
+    c['p_headline'] = mixed.where(ok).fillna(c['p_welch'])
+    c['headline_test'] = np.where(ok & mixed.notna(), 'mixed model', 'Welch (well means)')
+    if {'family', 'test_group', 'in_holm_family'} <= set(c.columns):
+        c['p_headline_holm'] = np.nan
+        for _, idx in c.groupby(['family', 'test_group']).groups.items():
+            member = [i for i in idx if bool(c.at[i, 'in_holm_family'])]
+            c.loc[member, 'p_headline_holm'] = holm(c.loc[member, 'p_headline'].tolist())
+        c['p_mixed_holm'] = c['p_headline_holm'].where(ok & mixed.notna())
+        if 'significant_headline_holm_0p05' in c:
+            c['significant_headline_holm_0p05'] = c.p_headline_holm.lt(.05).where(c.in_holm_family.astype(bool))
+    return c
