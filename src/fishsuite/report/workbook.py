@@ -146,10 +146,12 @@ def write(path: Path, sheets: Dict[str, pd.DataFrame],
     guard_output(path)
     path.parent.mkdir(parents=True, exist_ok=True)
 
-    from .sensitivities import require_validated_mixed
-    for name in order:  # refuse legacy statistics before any byte is written
+    from .sensitivities import check_writable, stamp_statistics
+    for name in order:  # validate every input before any byte is written
         if sheets.get(name) is not None:
-            require_validated_mixed(sheets[name], f'workbook sheet {name}')
+            check_writable(sheets[name], f'workbook sheet {name}')
+    sheets = {name: (stamp_statistics(df, f'workbook sheet {name}') if df is not None else None)
+              for name, df in sheets.items()}
     with pd.ExcelWriter(path, engine="openpyxl") as xl:
         for name in order:
             df = sheets.get(name)

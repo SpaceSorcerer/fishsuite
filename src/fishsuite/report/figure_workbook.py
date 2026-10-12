@@ -6,6 +6,7 @@ import hashlib
 import re
 import numpy as np
 import pandas as pd
+from .sensitivities import stamp_statistics, require_current_statistics
 from . import figures
 from .provenance import guard_output
 
@@ -94,12 +95,12 @@ def write_tables(out,sheets,spec,captured):
                 endpoint=meta.get('endpoint',stem.removeprefix('FIG_'))
                 name=sheet_name(endpoint,slide,number,used)
                 if values.empty and meta['kind']!='image': missing.append(name+': no numeric source')
-                values=ordered_values(values)
+                values=stamp_statistics(ordered_values(values),name,force=True)
                 values.to_excel(writer,sheet_name=name,index=False)
                 if not nuclei.empty:
                     keep=VALUE_COLUMNS+['nucleus_uid','object_id','spot_id','class','x']
                     nuclei=nuclei[[c for c in keep if c in nuclei]]
-                    ordered_values(nuclei).to_excel(writer,sheet_name=name+'_nuc',index=False)
+                    stamp_statistics(ordered_values(nuclei),name+'_nuc',force=True).to_excel(writer,sheet_name=name+'_nuc',index=False)
                     meta['nuclei_sheet']=name+'_nuc'
                 metadata[name]=meta
                 for table,kind in [(name,'figure')]+([(name+'_nuc','source')] if not nuclei.empty else []):
@@ -213,8 +214,7 @@ def re_safe(text):
 
 
 def render(path,sheet,out):
-    """Render edited values; well-only edits receive Welch, never stale mixed p."""
-    from .stats import welch
+    """Render stored values descriptively. No test is computed here; inference comes only from a rebuild."""
     import shutil
     path=Path(path).resolve();out=guard_output(Path(out));out.mkdir(parents=True,exist_ok=True)
     metadata=json.loads(path.with_suffix('.json').read_text()) if path.with_suffix('.json').exists() else {}
@@ -233,7 +233,7 @@ def render(path,sheet,out):
                 grouped.append(pd.read_excel(book,sheet_name=key).rename(columns={'condition':'group','well':'well_id','value':'well_mean_of_field_values'}).assign(endpoint=key,axis_series=key))
         union=pd.concat(grouped,ignore_index=True) if grouped else pd.DataFrame()
         for name in names:
-            df=pd.read_excel(book,sheet_name=name)
+            df=require_current_statistics(pd.read_excel(book,sheet_name=name),f'DATA_FOR_FIGURES:{name}',force=True)
             if not {'condition','well','value'} <= set(df): raise ValueError('required columns: condition, well, value')
             meta=metadata.get(name,{'kind':'well','title':name,'ylabel':'Value'})
             if meta['kind']=='image':
@@ -250,11 +250,8 @@ def render(path,sheet,out):
             kind=meta['kind'];foot='Edited workbook values'
             if kind=='well':
                 w=df.rename(columns={'condition':'group','well':'well_id','value':'well_mean_of_field_values'}).assign(endpoint=name)
-                contrasts=[]
-                for group in order[1:]:
-                    result=welch(df.loc[df.condition.eq(group),'value'].dropna().to_numpy(),df.loc[df.condition.eq(order[0]),'value'].dropna().to_numpy())
-                    contrasts.append(dict(endpoint=name,test_group=group,reference_group=order[0],**result))
-                foot=figures.draw_replicate_simple(ax,ctx,name,w,pd.DataFrame(),pd.DataFrame(),pd.DataFrame(contrasts),meta.get('ylabel','Value'),None)
+                foot=figures.draw_replicate_simple(ax,ctx,name,w,pd.DataFrame(),pd.DataFrame(),pd.DataFrame(),meta.get('ylabel','Value'),None)
+                foot='Edited workbook values, descriptive only: no test is computed from edited values; rebuild from the source run for inference. '+foot
             else:
                 source=pd.read_excel(book,sheet_name=meta['nuclei_sheet']) if meta.get('nuclei_sheet') else df
                 for group,rows in source.groupby('condition',sort=False):

@@ -1,5 +1,6 @@
 """Mixed-model headline and supplementary analyses; decision 2026-09-07."""
 from __future__ import annotations
+import re
 import warnings
 import numpy as np
 import pandas as pd
@@ -378,3 +379,95 @@ def with_mixed_alias(table):
     out = require_validated_mixed(table, 'mixed_p alias input').copy()
     out[MIXED_ALIAS] = out['p_mixed'] if 'p_mixed' in out else np.nan
     return out
+
+
+# ---------------------------------------------------------------- statistics generation stamp (2026-10-12)
+# One mechanism for every persisted artifact that carries statistics. Writers in fixed code stamp each
+# statistical table with the generation and commit; every reader of persisted p, Holm, significance or MDE
+# refuses a table without a stamp >= STATS_GENERATION. A missing schema, missing columns, an absent slide
+# cache schema and every pre-stamp build (ba24827 included) all fail the same check.
+STATS_GENERATION = 2
+STATS_GENERATION_COLUMN = 'fishsuite_stats_generation'
+STATS_COMMIT_COLUMN = 'fishsuite_stats_commit'
+STATS_COMMIT = MIXED_VALIDATION_COMMIT
+_STAT_COLUMN = re.compile(r'(^p$|^p_|_p$|_p_|holm|^significant|mde|^ci_|_ci_|ci_low|ci_high|^ci95)', re.I)
+_SLIDE_CACHE = {'source_sheet', 'source_cell', 'value'}
+
+
+def statistical_columns(columns):
+    """Column names that carry p, Holm, significance, MDE or confidence-interval values."""
+    return [str(c) for c in columns if _STAT_COLUMN.search(str(c))]
+
+
+def is_statistical(columns) -> bool:
+    names = {str(c) for c in columns}
+    return bool(statistical_columns(names)) or _SLIDE_CACHE <= names
+
+
+def _check_stamp(table, where):
+    if STATS_GENERATION_COLUMN not in table.columns:
+        raise LegacyStatisticsError(f'{REBUILD_MESSAGE} ({where}: no {STATS_GENERATION_COLUMN} stamp)')
+    generation = pd.to_numeric(table[STATS_GENERATION_COLUMN], errors='coerce')
+    if len(table) and not (generation >= STATS_GENERATION).all():
+        raise LegacyStatisticsError(f'{REBUILD_MESSAGE} ({where}: {STATS_GENERATION_COLUMN} below {STATS_GENERATION})')
+
+
+def require_current_statistics(table, where='table', force=False):
+    """Reader gate: a persisted statistical table must carry a current stamp and validated mixed inference."""
+    if force or is_statistical(table.columns):
+        _check_stamp(table, where)
+    return require_validated_mixed(table, where)
+
+
+def check_writable(table, where='table'):
+    """Writer pre-flight: validated mixed inference, and any stamp it already carries must be current."""
+    require_validated_mixed(table, where)
+    if STATS_GENERATION_COLUMN in table.columns:
+        _check_stamp(table, where)
+    return table
+
+
+def stamp_statistics(table, where='table', force=False):
+    """Writer: a copy stamped with the current generation and commit when the table is statistical."""
+    check_writable(table, where)
+    if STATS_GENERATION_COLUMN in table.columns or not (force or is_statistical(table.columns)):
+        return table  # an already-current stamp keeps the commit that built it
+    out = table.copy()
+    out[STATS_GENERATION_COLUMN] = STATS_GENERATION
+    out[STATS_COMMIT_COLUMN] = STATS_COMMIT
+    return out
+
+
+def unstamp(table):
+    """Build step that combines gated inputs into a new table: drop inherited stamps so the writer stamps the
+    combined table with the code that built it (a partially stamped table is refused by the writer)."""
+    return table.drop(columns=[c for c in (STATS_GENERATION_COLUMN, STATS_COMMIT_COLUMN) if c in table.columns])
+
+
+def require_current_rows(rows, where='sheet', force=False):
+    """Reader gate on worksheet rows (description row, header row, data rows); rows returned unchanged."""
+    rows = list(rows)
+    if len(rows) >= 2 and rows[1] is not None:
+        header = [str(h) for h in rows[1]]
+        data = [list(r)[:len(header)] + [None] * max(0, len(header) - len(r)) for r in rows[2:]]
+        require_current_statistics(pd.DataFrame(data, columns=header), where, force)
+    return rows
+
+
+def require_current_book(book):
+    """Reader gate on every worksheet of an openpyxl workbook written with a description row."""
+    for ws in book.worksheets:
+        require_current_rows([list(r) for r in ws.iter_rows(values_only=True)], ws.title)
+    return book
+
+
+def read_stats_csv(path, where=None, **kwargs):
+    return require_current_statistics(pd.read_csv(path, **kwargs), where or str(path))
+
+
+def read_stats_excel(path, sheet_name=None, header=1, force=False):
+    """Read persisted workbook sheet(s); every sheet passes the reader gate."""
+    tables = pd.read_excel(path, sheet_name=sheet_name, header=header)
+    if isinstance(tables, dict):
+        return {name: require_current_statistics(t, f'{path}:{name}', force) for name, t in tables.items()}
+    return require_current_statistics(tables, f'{path}:{sheet_name}', force)

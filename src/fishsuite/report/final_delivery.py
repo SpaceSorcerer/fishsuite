@@ -12,7 +12,8 @@ import yaml
 from PIL import Image
 from . import aggregate, endpoints, build
 from .provenance import sha256
-from .sensitivities import (require_validated_mixed, require_validated_rows, mixed_p_text,
+from .sensitivities import (require_current_statistics, require_current_book, read_stats_csv, read_stats_excel,
+                            stamp_statistics, LegacyStatisticsError, REBUILD_MESSAGE, mixed_p_text,
                             mixed_validated, mixed_value, with_mixed_alias, MIXED_ALIAS)
 
 DECISION = ('Mixed-model headline decision 2026-09-07 after data inspection; '
@@ -119,10 +120,15 @@ def assemble(run, panel, prior, spec_path, out):
     finalize(out,prior,run,panel)
 
 
-def _require_validated_book(book):
-    """Refuse a workbook in which any sheet carries unvalidated mixed-model inference."""
-    for ws in book.worksheets:
-        require_validated_rows([list(r) for r in ws.iter_rows(values_only=True)], ws.title)
+def _append_table(book, title, note, table):
+    """Add a stamped statistical sheet (description row, header row, data rows) to an open workbook."""
+    if title in book:
+        del book[title]
+    ws = book.create_sheet(title)
+    ws.append([note])
+    ws.append(table.columns.tolist())
+    for row in table.itertuples(index=False, name=None):
+        ws.append([None if pd.isna(v) else v for v in row])
 
 
 def finalize(out,prior,run,panel):
@@ -132,23 +138,17 @@ def finalize(out,prior,run,panel):
     from pptx.util import Inches, Pt
     from . import figures, slides
     from .dapi_delivery import preview_deck
-    book=openpyxl.load_workbook(out/'REPORT.xlsx')
-    _require_validated_book(book)
-    contrasts=require_validated_mixed(pd.read_csv(out/'contrasts.csv'),'contrasts.csv')
-    old=pd.read_csv(prior/'nucleus_floor_comparison.csv')
-    old=require_validated_mixed(old.loc[old.floor_px.eq(16000)].copy(),'prior nucleus_floor_comparison.csv')
+    # Every input is gated before anything is written.
+    book=require_current_book(openpyxl.load_workbook(out/'REPORT.xlsx'))
+    contrasts=read_stats_csv(out/'contrasts.csv')
+    old=read_stats_csv(prior/'nucleus_floor_comparison.csv')
+    old=old.loc[old.floor_px.eq(16000)].copy()
     old['mixed_status']=[mixed_p_text(r) for _,r in old.iterrows()]
     new=with_mixed_alias(contrasts.copy().assign(floor_px=4000))
     new['mixed_status']=[mixed_p_text(r) for _,r in new.iterrows()]
-    comp=pd.concat([old,new],ignore_index=True)
+    comp=stamp_statistics(pd.concat([old,new],ignore_index=True),'nucleus_floor_comparison')
     comp.to_csv(out/'nucleus_floor_comparison.csv',index=False)
-    if 'Nucleus floor comparison' in book:
-        del book['Nucleus floor comparison']
-    ws=book.create_sheet('Nucleus floor comparison')
-    ws.append(['Each floor retains its own cohort. Old-floor values copied from prior comparison; new-floor values rebuilt from the same-floor panel.'])
-    ws.append(comp.columns.tolist())
-    for row in comp.itertuples(index=False,name=None):
-        ws.append([None if pd.isna(v) else v for v in row])
+    _append_table(book,'Nucleus floor comparison','Each floor retains its own cohort. Old-floor values copied from prior comparison; new-floor values rebuilt from the same-floor panel.',comp)
     changes=[]
     for endpoint,rows in comp.groupby('endpoint'):
         if set(rows.floor_px)!={4000,16000} or len(rows)!=2:
@@ -158,14 +158,9 @@ def finalize(out,prior,run,panel):
         for column in ['p_welch',MIXED_ALIAS]:
             if pd.notna(a[column]) and pd.notna(b[column]) and (a[column]<.05)!=(b[column]<.05):
                 changes.append(dict(endpoint=endpoint,test=column,old_p=a[column],new_p=b[column]))
-    changed=pd.DataFrame(changes,columns=['endpoint','test','old_p','new_p'])
+    changed=stamp_statistics(pd.DataFrame(changes,columns=['endpoint','test','old_p','new_p']),'floor_conclusion_changes')
     changed.to_csv(out/'floor_conclusion_changes.csv',index=False)
-    if 'Floor conclusion changes' in book:
-        del book['Floor conclusion changes']
-    change_sheet=book.create_sheet('Floor conclusion changes')
-    change_sheet.append(['Raw p threshold transitions across floors; descriptive comparison, not an equivalence test.'])
-    change_sheet.append(changed.columns.tolist())
-    for row in changed.itertuples(index=False,name=None): change_sheet.append(row)
+    _append_table(book,'Floor conclusion changes','Raw p threshold transitions across floors; descriptive comparison, not an equivalence test.',changed)
     for ws in book:
         if ws.title in ['Contrasts','Read me','Multiplicity plan'] or 'by group' in ws.title:
             ws.cell(1,1).value=DECISION+' Thresholds, filters, Holm, effect sizes and MDE are recorded in endpoint/provenance rows.'
@@ -257,7 +252,7 @@ def refresh(out, prior, run, panel):
     from . import figures, slides, workbook, dapi_mask
     from .coloc_existing import load_existing_panel, integrate_panel, render_existing
     from .stats import holm
-    sheets=pd.read_excel(out/'REPORT.xlsx',sheet_name=None,header=1)
+    sheets=read_stats_excel(out/'REPORT.xlsx')
     spec=yaml.safe_load((out/'data/deck_spec.yaml').read_text(encoding='utf-8'))
     data=aggregate.load_run(run,{'WT_1':'WT','WT_2':'WT','WT_3':'WT','KO_1':'QKI-KO','KO_2':'QKI-KO','KO_3':'QKI-KO'}, {})
     pn=sheets['Per nucleus']
@@ -272,10 +267,11 @@ def refresh(out, prior, run, panel):
     eps.append(endpoints.Endpoint('protein_nuclear_mean_seconly_corrected','protein_nuclear_mean_seconly_corrected',
         'detection','AU','{protein} nuclear mean, matched secondary subtracted',descriptive_only=True,
         absolute_intensity=True,source=str(out/'data/RNASEH2B_TOTAL_CORRECTED.csv')))
-    contrasts=require_validated_mixed(sheets['Contrasts'],'REPORT.xlsx Contrasts')
+    contrasts=sheets['Contrasts']
+    if 'significant_holm_0p05' not in contrasts:  # read the stored decision; never recompute it here
+        raise LegacyStatisticsError(f'{REBUILD_MESSAGE} (REPORT.xlsx Contrasts: no stored significant_holm_0p05)')
     narrative(spec, contrasts)
-    contrasts['significant_holm_0p05']=contrasts.p_welch_holm_within_family.lt(.05).where(contrasts.in_holm_family)
-    contrasts.to_csv(out/'contrasts.csv',index=False)
+    stamp_statistics(contrasts,'contrasts.csv').to_csv(out/'contrasts.csv',index=False)
     # Family summaries use the same rebuilt headline columns.
     for family,name in [('detection','Spots per nucleus by group'),('localization','Nuclear fraction by group'),('partner','Partner at puncta by group')]:
         sheets[name]=aggregate.family_sheet(contrasts,sheets['Per well'],family,['WT','QKI-KO'])

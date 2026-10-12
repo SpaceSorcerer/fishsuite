@@ -39,6 +39,7 @@ from scipy import stats
 from fishsuite.core.ortho_profile import chord_through, sample_profile
 from fishsuite.core import io as _io
 from fishsuite.report import stats as _rstats
+from fishsuite.report.sensitivities import stamp_statistics as _rstats_stamp
 from fishsuite.core import output as _out
 from fishsuite.core import thresholds as _thr
 from fishsuite.runner import (
@@ -2163,7 +2164,7 @@ def write_workbook(path, ctx, per_nucleus, per_fov, per_well, contrasts,
         per_nucleus.to_excel(xw, sheet_name="per_nucleus", index=False)
         per_fov.to_excel(xw, sheet_name="per_FOV", index=False)
         per_well.to_excel(xw, sheet_name="per_well", index=False)
-        contrasts.to_excel(xw, sheet_name="contrasts", index=False)
+        _rstats_stamp(contrasts).to_excel(xw, sheet_name="contrasts", index=False)
         cyto_summary.to_excel(xw, sheet_name="contrasts", index=False,
                               startrow=len(contrasts) + 3)
         line_profiles.to_excel(xw, sheet_name="line_profiles", index=False)

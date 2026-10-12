@@ -9,7 +9,7 @@ from . import endpoints as ep, aggregate, figures, workbook
 from .stats import holm
 
 
-from .sensitivities import require_validated_mixed, add_headline_holm
+from .sensitivities import require_current_statistics, read_stats_csv, stamp_statistics, add_headline_holm, unstamp, require_validated_mixed
 def cache_signature(run,frame,definitions=()):
     """Content attestations, not cache existence, govern reuse."""
     import hashlib
@@ -36,6 +36,9 @@ def amend_rnase(sheets, run, out):
     """Reuse existing fitted contrasts, fit newly added measurements only."""
     from .coloc_existing import recompute_lab_manders, simple_statistics
     run, out = Path(run), Path(out)
+    # Inherited statistics are gated before anything is combined, fitted or written.
+    for name, table in sheets.items():
+        require_current_statistics(table, f'A20 inherited {name}')
     raw = pd.read_csv(run/'nuclei_metrics.csv')
     n = sheets['Per nucleus'].copy()
     extra = [c for c in raw if c not in n]
@@ -85,24 +88,24 @@ def amend_rnase(sheets, run, out):
         fit_cache.parent.mkdir(parents=True,exist_ok=True)
         fit_signature=cache_signature(run,n,additions)
         if cache_matches(fit_cache,fit_signature):
-            c=pd.read_csv(fit_cache,float_precision='round_trip')
+            c=read_stats_csv(fit_cache,'A20 added-contrasts cache',float_precision='round_trip')
         else:
             c = aggregate.build_contrasts(w,f,additions,[],['WT','QKI-KO'],'WT',ep.channel_labels(json.loads((run/'run_config.json').read_text())),nuclei=n)
-            c.to_csv(fit_cache,index=False)
+            stamp_statistics(c,'A20 added-contrasts cache').to_csv(fit_cache,index=False)
             seal_cache(fit_cache,fit_signature)
-        sheets['Per field'] = pd.concat([sheets['Per field'],f],ignore_index=True)
-        sheets['Per well'] = pd.concat([sheets['Per well'],w],ignore_index=True)
+        sheets['Per field'] = unstamp(pd.concat([sheets['Per field'],f],ignore_index=True))
+        sheets['Per well'] = unstamp(pd.concat([sheets['Per well'],w],ignore_index=True))
         sheets['Contrasts'] = pd.concat([sheets['Contrasts'],c],ignore_index=True)
         defs += additions
-    # Inherited contrasts must already carry validated mixed inference; legacy ones are refused.
-    c = require_validated_mixed(sheets['Contrasts'], 'A20 inherited Contrasts').copy()
+    # Inherited rows were gated above, added rows are fresh; the combined table is rebuilt by this code.
+    c = require_validated_mixed(unstamp(sheets['Contrasts']), 'A20 combined Contrasts').copy()
     absolute = c.absolute_intensity.fillna(False).astype(bool)
     c.loc[absolute,['descriptive_only','excluded_from_holm','holm_exclusion_reason','endpoint_note']] = [False,'','',ep.INTENSITY_CAVEAT]
     c['in_holm_family'] = ~(c.descriptive_only.fillna(False).astype(bool) | c.endpoint_absent_in_run.fillna(False).astype(bool) | c.excluded_from_holm.fillna('').astype(bool))
     for _, indexes in c.groupby(['family','test_group','reference_group']).groups.items():
         ids = [i for i in indexes if c.at[i,'in_holm_family']]
         c.loc[ids,'p_welch_holm_within_family'] = holm(c.loc[ids,'p_welch'].tolist())
-    c = add_headline_holm(c, .05, ['family','test_group','reference_group'])
+    c = unstamp(add_headline_holm(c, .05, ['family','test_group','reference_group']))
     c['significant_holm_0p05'] = (c.p_welch_holm_within_family < .05).where(c.in_holm_family)
     c['observed_g_reaches_mde']=c.observed_g_reaches_mde.astype(object)
     from functools import lru_cache

@@ -364,6 +364,12 @@ def load_existing_panel(path: Path, figure_index: Path, baseline_manifest: Path,
                 raise ReportInputError(f'missing or duplicate panel headers: {name}')
             # Use pandas' native dtype inference, without modifying any source cells.
             tables[name] = _groups(pd.read_excel(path, sheet_name=name))
+            if name == 'contrasts':
+                from .sensitivities import require_current_statistics
+                block = tables[name]
+                blank = block.index[block.isna().all(axis=1)]
+                require_current_statistics(block.loc[:blank[0] - 1] if len(blank) else block,
+                                           f'{path}:contrasts')
             for ri, row in enumerate(ws.iter_rows(min_row=2),2):
                 for ci, cell in enumerate(row,1):
                     sources.append(dict(file=str(path.resolve()), sha256=digest, sheet=name,

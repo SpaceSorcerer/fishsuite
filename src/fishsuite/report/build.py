@@ -24,6 +24,7 @@ from typing import Dict, List, Optional, Sequence, Tuple
 import numpy as np
 import pandas as pd
 
+from .sensitivities import stamp_statistics
 from . import aggregate as _agg
 from . import endpoints as _ep
 from . import figures as _fig
@@ -760,7 +761,7 @@ def build_report(run_dir: Path, out_dir: Optional[Path] = None,
             _wb.write(out_dir / 'REPORT.xlsx', sheets, strike, order=list(sheets))
             well.to_csv(out_dir/'per_well.csv',index=False)
             field.to_csv(out_dir/'per_field.csv',index=False)
-            contrasts.to_csv(out_dir/'contrasts.csv',index=False)
+            stamp_statistics(contrasts,'contrasts.csv').to_csv(out_dir/'contrasts.csv',index=False)
             resolved_deck = prepare_deck(template,sheets,out_dir,data,persisted,ctx,well,field,contrasts,endpoints)
     if micrograph_slides == 'per-well':
         from .micrograph_slides import prepare_per_well_micrographs
@@ -791,7 +792,7 @@ def build_report(run_dir: Path, out_dir: Optional[Path] = None,
         (out_dir/'deck_spec.resolved.yaml').write_text(yaml.safe_dump(resolved_deck,sort_keys=False),encoding='utf-8')
 
     well.to_csv(_prov.guard_output(out_dir / "per_well.csv"), index=False)
-    contrasts.to_csv(_prov.guard_output(out_dir / "contrasts.csv"), index=False)
+    stamp_statistics(contrasts, "contrasts.csv").to_csv(_prov.guard_output(out_dir / "contrasts.csv"), index=False)
     (out_dir / "READOUT.md").write_text(
         build_readout(run_dir, out_dir, contrasts, well, group_order_resolved, reference, sec,
                       absent, labels, alpha, caveat, primary_endpoint),

@@ -33,7 +33,8 @@ def validate_report(out):
     obj = pd.read_csv(out/'dapi/dapi_objects.csv')
     census = pd.read_csv(out/'dapi/dapi_object_census.csv')
     well = pd.read_csv(out/'per_well.csv')
-    contrasts = pd.read_csv(out/'contrasts.csv')
+    from .sensitivities import read_stats_csv
+    contrasts = read_stats_csv(out/'contrasts.csv')
     assert not sp.duplicated(['image','spot_id']).any()
     assert sp['class'].isin(CLASSES).all()
     assert not n.duplicated(['image','nucleus_id']).any()
@@ -135,7 +136,8 @@ def finalize(out, run, dispatch):
     # workbook attestation, preserving all measurement/statistical cells.
     import openpyxl
     import yaml
-    book = openpyxl.load_workbook(out/'REPORT.xlsx')
+    from .sensitivities import require_current_book
+    book = require_current_book(openpyxl.load_workbook(out/'REPORT.xlsx'))
     slide_values = book['Slide values']
     columns = {cell.value:cell.column for cell in slide_values[2]}
     for i in range(3,slide_values.max_row+1):

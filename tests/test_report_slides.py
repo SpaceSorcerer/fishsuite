@@ -170,8 +170,8 @@ def test_slide_validation_missing_and_stale(tmp_path):
     from fishsuite.report.slides import validate_deck
     from fishsuite.report.provenance import sha256
     from fishsuite.report.workbook import write
-    book = write(tmp_path/'REPORT.xlsx', {'Slide values':pd.DataFrame({'value':[1]})}, order=['Slide values'])
-    spec = {'workbook_sha256':sha256(book), 'slides':[{'title':'Measured value', 'values':[{'sheet':'Slide values','cell':'A3'}], 'figures':[]}]}
+    book = write(tmp_path/'REPORT.xlsx', {'Values':pd.DataFrame({'value':[1]})}, order=['Values'])
+    spec = {'workbook_sha256':sha256(book), 'slides':[{'title':'Measured value', 'values':[{'sheet':'Values','cell':'A3'}], 'figures':[]}]}
     validate_deck(book, spec)
     spec['slides'][0]['values'][0]['cell'] = 'A300'
     with pytest.raises(RuntimeError, match='missing'):
@@ -188,7 +188,7 @@ def test_slide_validation_rejects_untraced_numbers(tmp_path):
     from fishsuite.report.slides import validate_deck
     from fishsuite.report.workbook import write
     from fishsuite.report.provenance import sha256
-    book = write(tmp_path/'REPORT.xlsx', {'Slide values':pd.DataFrame({'value':[1]})}, order=['Slide values'])
+    book = write(tmp_path/'REPORT.xlsx', {'Values':pd.DataFrame({'value':[1]})}, order=['Values'])
     with pytest.raises(RuntimeError, match='literal numeric'):
         validate_deck(book, {'workbook_sha256':sha256(book), 'slides':[{'title':'393 nuclei', 'values':[], 'figures':[]}]})
 
@@ -197,7 +197,7 @@ def test_missing_stale_figure_and_cohort(tmp_path):
     from fishsuite.report.slides import validate_deck
     from fishsuite.report.workbook import write
     from fishsuite.report.provenance import sha256
-    book=write(tmp_path/'REPORT.xlsx',{'Slide values':pd.DataFrame({'value':[1]})},order=['Slide values'])
+    book=write(tmp_path/'REPORT.xlsx',{'Values':pd.DataFrame({'value':[1]})},order=['Values'])
     asset=tmp_path/'figure.png'
     spec={'workbook_sha256':sha256(book),'cohort':'retained',
           'slides':[{'title':'Measured endpoint','values':[],
@@ -232,8 +232,8 @@ def test_pptx_notes_media_and_count(tmp_path):
     from fishsuite.report.workbook import write
     from fishsuite.report.provenance import sha256
     from pptx import Presentation
-    book = write(tmp_path/'REPORT.xlsx', {'Slide values':pd.DataFrame({'value':[1]})}, order=['Slide values'])
-    spec = {'workbook_sha256':sha256(book), 'slides':[{'title':'Measured value','values':[{'sheet':'Slide values','cell':'A3'}], 'figures':[]}]}
+    book = write(tmp_path/'REPORT.xlsx', {'Values':pd.DataFrame({'value':[1]})}, order=['Values'])
+    spec = {'workbook_sha256':sha256(book), 'slides':[{'title':'Measured value','values':[{'sheet':'Values','cell':'A3'}], 'figures':[]}]}
     path = build_deck(book, spec, tmp_path/'deck.pptx')
     ppt = Presentation(path)
     assert len(ppt.slides) == 1

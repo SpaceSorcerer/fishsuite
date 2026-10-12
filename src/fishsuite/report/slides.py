@@ -13,7 +13,8 @@ from openpyxl.utils import get_column_letter, coordinate_to_tuple
 
 from .aggregate import ReportInputError
 from .sensitivities import (mixed_p_text, mixed_validated, mixed_value, headline_holm_value,
-                            require_validated_mixed, require_validated_rows, require_validated_slide_cache)
+                            check_writable, require_current_rows, require_validated_slide_cache,
+                            LegacyStatisticsError, REBUILD_MESSAGE)
 from . import figures
 from .provenance import guard_output, sha256
 
@@ -44,7 +45,7 @@ def validate_deck(workbook: Path, spec: dict) -> list:
     cache={}
     # Refuse legacy statistics before resolving anything, including cached Slide values.
     try:
-        sheet_rows = {name: require_validated_rows(list(book[name].values), name) for name in book.sheetnames}
+        sheet_rows = {name: require_current_rows(list(book[name].values), name) for name in book.sheetnames}
         if 'Slide values' in sheet_rows:
             require_validated_slide_cache(sheet_rows['Slide values'], sheet_rows)
     except Exception:
@@ -70,9 +71,11 @@ def validate_deck(workbook: Path, spec: dict) -> list:
                         identifiers.update(str(row[index]) for row in rows[2:] if row[index] is not None)
     resolved = []
     try:
-        if 'Slide values' in book and spec.get('schema') == 'resolved-deck-1':
+        if 'Slide values' in book:  # lineage equality is enforced with or without a deck schema
             table=list(book['Slide values'].values)
-            columns=list(table[1])
+            columns=list(table[1]) if len(table)>1 else []
+            if not {'source_sheet','source_cell','value'} <= set(columns):
+                raise LegacyStatisticsError(f'{REBUILD_MESSAGE} (Slide values: no source_sheet/source_cell lineage schema)')
             for row in table[2:]:
                 entry=dict(zip(columns,row))
                 source_sheet,source_cell=entry['source_sheet'],entry['source_cell']
@@ -408,9 +411,9 @@ def prepare_deck(template: dict, sheets: dict, out_dir: Path, data: dict,
     Values copied to Slide values retain their exact origin cell. Speaker notes
     summarize contrasts; slide_sources.csv retains all cell-level provenance.
     """
-    require_validated_mixed(contrasts, 'deck contrasts')
+    check_writable(contrasts, 'deck contrasts')
     if 'Contrasts' in sheets:
-        require_validated_mixed(sheets['Contrasts'], 'deck Contrasts sheet')
+        check_writable(sheets['Contrasts'], 'deck Contrasts sheet')
     from . import figures as fig
     out_dir = guard_output(out_dir)
     for item in template['slides']:

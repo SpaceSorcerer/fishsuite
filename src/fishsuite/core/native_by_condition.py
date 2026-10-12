@@ -136,15 +136,16 @@ def _render(run: Path, out: Path, groups: ConditionsCfg):
     shutil.copy2(overview_dir/'combined_output_panel_focus.png', overview_dir/'single_condition_panel.png')
     conditions = collapse_conditions(wells)
     workbook = out/'analysis_summary.xlsx'
-    original = run/'analysis_summary.xlsx'
-    if out != run and original.is_file():
-        shutil.copy2(original, workbook)
-    opts = dict(engine='openpyxl', mode='a', if_sheet_exists='replace') if workbook.exists() else dict(engine='openpyxl')
+    # Regeneration builds a clean workbook and never republishes the source workbook's sheets; in place, the
+    # engine's own workbook receives only freshly built, stamped native sheets.
+    from fishsuite.report.sensitivities import check_writable, stamp_statistics
+    native = {'Per condition': conditions, 'Per well': wells, 'Per image': fields, 'Condition contrasts': contrasts}
+    for name, table in native.items():
+        check_writable(table, name)
+    opts = dict(engine='openpyxl', mode='a', if_sheet_exists='replace') if (out == run and workbook.exists()) else dict(engine='openpyxl')
     with pd.ExcelWriter(workbook, **opts) as writer:
-        conditions.to_excel(writer,sheet_name='Per condition',index=False)
-        wells.to_excel(writer,sheet_name='Per well',index=False)
-        fields.to_excel(writer,sheet_name='Per image',index=False)
-        contrasts.to_excel(writer,sheet_name='Condition contrasts',index=False)
+        for name, table in native.items():
+            stamp_statistics(table, name).to_excel(writer,sheet_name=name,index=False)
     conditions.to_csv(out/'per_condition_summary.csv',index=False)
     fields.to_csv(out/'per_field_condition_summary.csv', index=False)
     wells.to_csv(out/'per_well_condition_summary.csv', index=False)

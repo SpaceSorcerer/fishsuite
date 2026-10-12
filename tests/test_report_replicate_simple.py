@@ -52,11 +52,13 @@ def test_a20_workbook_cli_renders_edited_well_values(tmp_path):
     source=tmp_path/'values.xlsx'
     df=pd.DataFrame({'condition':['WT']*3+['KO']*3,'well':['w1','w2','w3','k1','k2','k3'],
                      'value':[1,2,4,7,8,11],'SD':[999]*6,'n':[999]*6})
-    df.to_excel(source,sheet_name='Editable',index=False)
+    from fishsuite.report.sensitivities import stamp_statistics
+    # 2026-10-12: edited DATA_FOR_FIGURES values are stamped tables; the renderer computes no test from them.
+    stamp_statistics(df,force=True).to_excel(source,sheet_name='Editable',index=False)
     result=CliRunner().invoke(cli,['figure','--from-xlsx',str(source),'--sheet','Editable','--out',str(tmp_path/'render')])
     assert result.exit_code==0,result.output
     svg=(tmp_path/'render/Editable_focus.svg').read_text(encoding='utf-8')
-    assert 'Welch' in svg and 'Editable' in svg
+    assert 'Welch' not in svg and 'p = ' not in svg and 'Editable' in svg
     import xml.etree.ElementTree as ET
     labels=[''.join(n.itertext()) for n in ET.fromstring(svg).iter() if n.tag.endswith('}text')]
     assert not any('999' in text for text in labels)
@@ -92,7 +94,8 @@ def test_figure_workbook_names_columns_and_regeneration(tmp_path, monkeypatch):
         assert index.slide.eq(1).all()
         assert set(index.figure_file)=={f'FIG_{e}_{i}.png' for i,e in enumerate(endpoints)}
         raw=pd.read_excel(book,sheet_name='01_bin1_puncta_per_nucleus_nuc')
-        assert list(raw.columns)==['well_group','condition','well','image','nucleus_id','value']
+        assert list(raw.columns)==['well_group','condition','well','image','nucleus_id','value',
+                                   'fishsuite_stats_generation','fishsuite_stats_commit']  # stamped 2026-10-12
         assert raw.well_group.tolist()==['WT_folder','KO_folder']
         assert raw.condition.tolist()==['WT','KO']
         assert raw.value.tolist()==[1.,4.]

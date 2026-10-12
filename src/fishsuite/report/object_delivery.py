@@ -13,6 +13,7 @@ import yaml
 from openpyxl.utils import get_column_letter
 from . import figures, endpoints, slides, workbook
 from .provenance import sha256, guard_output
+from .sensitivities import read_stats_csv, read_stats_excel, check_writable
 
 
 def refs(sheets, names):
@@ -50,6 +51,9 @@ def chart(ctx,out,stem,title,w,c,endpoint,unit='',scale=1):
 
 
 def finish(out,sheets,spec,book_name,deck_name,missing):
+    # Validate every statistical input before the first output (DATA_FOR_FIGURES, assets, workbook) is written.
+    for name,table in sheets.items():
+        check_writable(table,f'{book_name}: {name}')
     out=guard_output(out)
     expanded=[]
     for item in spec['slides']:
@@ -108,7 +112,7 @@ def rnase(run,prior,out,a20=False):
     from .rnaseh2b_analysis import build_analysis
     out.mkdir(parents=True,exist_ok=True)
     (out/'figures').mkdir(exist_ok=True)
-    sheets=pd.read_excel(prior/'REPORT.xlsx',sheet_name=None,header=1)
+    sheets=read_stats_excel(prior/'REPORT.xlsx')
     if a20:
         from .a20_delivery import amend_rnase
         definitions = amend_rnase(sheets,run,out)
@@ -169,7 +173,7 @@ def rnase(run,prior,out,a20=False):
         pixels[(row.well_id,row.image,row.nucleus_id)]=(stored[f'{i}_rna'],stored[f'{i}_partner'])
     cyto=render_cytofluorogram(selected,pixels,out/'figures','BIN1 intron','RNASEH2B')
     add(spec,sheets,'Cytofluorograms',[out/'figures'/r['png'] for r in cyto],['Simple coloc representatives'],'cytofluorogram')
-    floor=pd.read_csv(prior/'nucleus_floor_comparison.csv')
+    floor=read_stats_csv(prior/'nucleus_floor_comparison.csv')
     sheets['A17 Floor comparison']=floor
     paths=[]
     for name in ['rna1_spots_per_nucleus','nuclear_spot_fraction_dapi']:
@@ -261,7 +265,7 @@ def miat(prior,out,a20=False):
     from . import miat_qki
     from .coloc_existing import render_simple_coloc
     out.mkdir(parents=True,exist_ok=True);(out/'figures').mkdir(exist_ok=True)
-    sheets=pd.read_excel(prior/'MIAT_QKI_RESULTS_v2.xlsx',sheet_name=None,header=1)
+    sheets=read_stats_excel(prior/'MIAT_QKI_RESULTS_v2.xlsx')
     spec=dict(cohort='mixed, explicitly labelled per slide',slides=[],a20=a20)
     ctx=miat_qki._context(prior/'data',miat_qki.COLORS)
     ctx.plot_style='replicate-simple'
