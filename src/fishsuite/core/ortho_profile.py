@@ -88,6 +88,13 @@ def line_profile(plane_cyx, p0, p1, width_px=3, *, pixel_size_um):
     return distance, values
 
 
+def strip_width_px(strip_um, pixel_size_um):
+    """Integer profile_line linewidth for a strip ``strip_um`` wide: round(strip_um / pixel size), at least 1."""
+    if not (np.isfinite(strip_um) and strip_um > 0 and np.isfinite(pixel_size_um) and pixel_size_um > 0):
+        raise ValueError('Profile strip width and pixel size must be finite and positive')
+    return max(1, int(round(strip_um/pixel_size_um)))
+
+
 def default_line(nucleus_mask, center_zyx):
     """Horizontal line at the punctum y spanning the saved nucleus bounding box."""
     ys,xs = np.nonzero(nucleus_mask)
@@ -281,7 +288,7 @@ _OUTLINE_COLOR = '#8ba6c4'
 def render_ortho_figure(stack_czyx, center_zyx, half_width_px=None, *, nucleus_mask,
                         pixel_size_um, z_step_um, display_levels,
                         line_endpoints=None, qki_min=None, miat_min=None, run_dir='',
-                        profile_width_px=3, analysed_plane_z=None, arm='', arm_color='#595959',
+                        profile_width_px=None, profile_strip_um=0.5, analysed_plane_z=None, arm='', arm_color='#595959',
                         image='', nucleus_id=None, metric='', metric_value=None, arm_median=None,
                         include_dapi=False, full_merge=None, dapi_display_level=None,
                         channel_labels=('MIAT', 'QKI'), dapi_label='DAPI',
@@ -310,6 +317,9 @@ def render_ortho_figure(stack_czyx, center_zyx, half_width_px=None, *, nucleus_m
     ``crosshairs``: 'single' (default) = one dotted crosshair, on the XY merge
     only; 'none' = no crosshair lines; 'all' = legacy crosshair on XY, XZ and YZ.
     ``profile_line_style``: 'dotted' (default) or 'solid' for the measured line.
+    Profile sampling: mean across a perpendicular strip ``profile_strip_um`` wide
+    (default 0.5 µm → ``strip_width_px``); an explicit ``profile_width_px`` wins.
+    The strip is not drawn; the measured line keeps its own drawn weight.
     """
     import matplotlib.pyplot as plt
     import textwrap
@@ -375,6 +385,11 @@ def render_ortho_figure(stack_czyx, center_zyx, half_width_px=None, *, nucleus_m
         endpoints = ((y,max(x0,p0[1])), (y,min(x1-1,p1[1])))
     else:
         endpoints = line_endpoints
+    if profile_width_px is None:
+        profile_width_px = strip_width_px(profile_strip_um, pixel_size_um)
+        strip_um = float(profile_strip_um)
+    else:
+        strip_um = profile_width_px*pixel_size_um
     distance,values = line_profile(stack_czyx[:,z],*endpoints,width_px=profile_width_px,
                                    pixel_size_um=pixel_size_um)
     label0, label1 = (str(channel_labels[0]), str(channel_labels[1]))
@@ -417,7 +432,8 @@ def render_ortho_figure(stack_czyx, center_zyx, half_width_px=None, *, nucleus_m
         'Display min–max: ' + '; '.join(level_text) + ' | Merge: ' + ', '.join(merge_text) +
         ' | Pixels drawn nearest-neighbour (no interpolation); all image panels at '
         f'{scale:.3f} in per µm, lateral and axial.',
-        "Profiles normalised to each channel's own min–max along this line (display only).",
+        "Profiles normalised to each channel's own min–max along this line (display only); "
+        f"sampled over a {strip_um:g} µm wide strip.",
         'Nucleus outline: 2-D segmentation mask contour on XY panels; on XZ/YZ its x / y extent (the XY '
         'outline projected), drawn through the z window (the mask has no z extent).',
     ]
@@ -661,6 +677,8 @@ def render_ortho_figure(stack_czyx, center_zyx, half_width_px=None, *, nucleus_m
         z_range_0based=(int(z0), int(z1)), n_z_total=int(stack_czyx.shape[1]),
         section_zyx_0based=(int(z), int(y), int(x)), interpolation='nearest',
         axial_data_aspect=float(axial_aspect), crosshairs=crosshairs, profile_line_style=profile_line_style,
+        profile_width_px=int(profile_width_px), profile_strip_um=strip_um,
+        profile_strip_um_sampled=float(profile_width_px*pixel_size_um),
         channel_labels=(label0, label1), display_levels=display,
         scale_bars_um=dict(lateral=lateral_bar, lateral_y=lateral_bar_y, axial=axial_bar),
         footer=' '.join(footer))
