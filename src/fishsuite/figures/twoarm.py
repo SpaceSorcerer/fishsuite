@@ -314,10 +314,10 @@ def micrograph(rgb8: np.ndarray, px_um: float, saver, stem: str, k: int = 1, lab
                bar_margin_px: int | None = None, bar_height_px: int | None = None):
     """Pixel-exact micrograph. rgb8 (uint8 HxWx3) is drawn at k output pixels per image pixel (integer k, so
     x-scale = y-scale and no resampling at 600 dpi). The output is exactly (h*k, w*k): no strip, no margin.
-    Scale bar (Brian 2026-09-30): white bar INSIDE the image, bottom-right, drawn in image-pixel space with
+    Scale bar: white bar INSIDE the image, bottom-right, drawn in image-pixel space with
     length ``scalebar_um / px_um`` image pixels (rounded), label in white above it. Optional ``count_text`` is a
     separate white text object (gid ``<stem>__count``) at the image top-left. Nuclear outlines are vector
-    contours of ``labels``, drawn only when ``labels`` holds a single nucleus (Brian 2026-09-30: never on whole
+    contours of ``labels``, drawn only when ``labels`` holds a single nucleus (never on whole
     fields); ``outline_fields=True`` overrides for a multi-nucleus field. ``strip_px`` is accepted for backward
     compatibility and ignored."""
     from matplotlib.patches import Rectangle

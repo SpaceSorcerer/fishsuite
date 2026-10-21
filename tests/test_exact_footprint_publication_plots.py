@@ -8,6 +8,7 @@ import pandas as pd
 import pytest
 from PIL import Image
 
+from fishsuite.core.exact_footprint_postrun import DEFAULT_RATIO_OF_RATIOS_SPECS
 from fishsuite.core.exact_footprint_publication_plots import (
     FigureDataError,
     PUBLICATION_FAMILIES,
@@ -109,14 +110,8 @@ def _publication_tables() -> tuple[
             }
         )
     ratio_rows = []
-    for numerator, denominator, effect in (
-        ("threshold_positive_spots_per_nucleus_q95", "n_spots_all", 0.50),
-        (
-            "miat_footprint_mass_q95_positive_union_deduplicated",
-            "miat_footprint_mass_all_union_deduplicated",
-            0.50,
-        ),
-    ):
+    effect = 0.50
+    for numerator, denominator in DEFAULT_RATIO_OF_RATIOS_SPECS:
         ratio_rows.append(
             {
                 "cohort": "sampled_primary",

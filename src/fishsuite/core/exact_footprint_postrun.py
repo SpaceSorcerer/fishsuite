@@ -10,6 +10,7 @@ import argparse
 import hashlib
 import json
 from dataclasses import dataclass
+from functools import partial
 from itertools import combinations, product
 from math import exp, log
 from pathlib import Path
@@ -20,6 +21,14 @@ import pandas as pd
 from scipy import stats
 
 from fishsuite.core.authoritative_sampling import correct_spot_sampling_flags
+from fishsuite.core.exact_footprint_common import (
+    bool_series,
+    fisher_estimable,
+    fisher_z,
+    require_columns,
+    safe_ratio as _safe_ratio,
+    sha256_file as _sha256,
+)
 
 
 THRESHOLDS = (90, 95, 99)
@@ -29,14 +38,16 @@ SIGNED_ADDITIVE = "signed_additive"
 _VALID_ENDPOINT_SCALES = {UNSIGNED_POSITIVE, SIGNED_ADDITIVE}
 EXPECTED_CHANNEL_INDICES = {"miat": 0, "qki": 1, "dapi": 2}
 ALLOWED_QUANTITATION_PLANES = ("exact_recorded_single_z",)
+# Single source of truth for the default ratio-of-ratios rows; the publication
+# renderer requires exactly these.
 DEFAULT_RATIO_OF_RATIOS_SPECS = (
     (
         "threshold_positive_spots_per_nucleus_q95",
-        "n_spots_floor",
+        "n_spots_all",
     ),
     (
-        "miat_footprint_mass_q95_positive_spot_summed",
-        "miat_footprint_mass_floor_spot_summed",
+        "miat_footprint_mass_q95_positive_union_deduplicated",
+        "miat_footprint_mass_all_union_deduplicated",
     ),
 )
 
@@ -64,41 +75,12 @@ class PostrunResults:
     ratio_of_ratios: pd.DataFrame
 
 
-def _require_columns(frame: pd.DataFrame, columns: Iterable[str], *, table: str) -> None:
-    missing = sorted(set(columns).difference(frame.columns))
-    if missing:
-        raise PostrunValidationError(f"{table} is missing required columns: {missing}")
+_require_columns = partial(require_columns, error=PostrunValidationError)
+_bool_series = partial(bool_series, error=PostrunValidationError)
 
 
 def _normalised_image_key(values: pd.Series) -> pd.Series:
     return values.astype(str).str.strip().str.casefold()
-
-
-def _bool_series(values: pd.Series, *, name: str) -> pd.Series:
-    true = {"true", "t", "yes", "y", "1"}
-    false = {"false", "f", "no", "n", "0"}
-
-    def convert(value: Any) -> bool:
-        if isinstance(value, (bool, np.bool_)):
-            return bool(value)
-        if isinstance(value, (int, np.integer)) and value in (0, 1):
-            return bool(value)
-        if isinstance(value, (float, np.floating)) and np.isfinite(value) and value in (0, 1):
-            return bool(int(value))
-        token = str(value).strip().casefold()
-        if token in true:
-            return True
-        if token in false:
-            return False
-        raise PostrunValidationError(f"{name} is not an explicit boolean: {value!r}")
-
-    return values.map(convert).astype(bool)
-
-
-def _safe_ratio(numerator: float, denominator: float) -> float:
-    if not np.isfinite(numerator) or not np.isfinite(denominator) or denominator == 0:
-        return float("nan")
-    return float(numerator / denominator)
 
 
 def _integer_series(values: pd.Series, *, name: str, minimum: int) -> pd.Series:
@@ -1026,8 +1008,6 @@ def build_endpoint_inference(
                     **_blank_inference_record(),
                 }
             )
-            # Restore the nonblank completeness count overwritten by the template.
-            rows[-1]["n_complete_sets"] = int(complete.sum())
             continue
         rows.append(
             _inference_row(
@@ -1291,14 +1271,14 @@ def _correlation_value(
         raise PostrunValidationError(f"unknown correlation method {method!r}")
     correlation = float(estimate.statistic)
     # Do not clip a boundary correlation into an invented finite Fisher value.
-    boundary = bool(np.isclose(abs(correlation), 1.0, rtol=0.0, atol=8 * np.finfo(float).eps))
+    boundary = not fisher_estimable(correlation)
     return {
         "n_spots": n_spots,
         "correlation": correlation,
         "p_value": float(estimate.pvalue),
         "estimable": not boundary,
         "fisher_estimable": not boundary,
-        "fisher_z": np.nan if boundary else float(np.arctanh(correlation)),
+        "fisher_z": fisher_z(correlation),
         "nonestimable_reason": "exact_boundary_correlation" if boundary else "",
     }
 
@@ -1799,14 +1779,6 @@ def build_postrun_statistics(
         correlation_inference=correlation_inference,
         ratio_of_ratios=pd.DataFrame(ratio_rows),
     )
-
-
-def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 def _write_csv(frame: pd.DataFrame, path: Path) -> None:

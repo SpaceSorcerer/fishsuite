@@ -27,8 +27,8 @@ FAMILY_ORDER: Tuple[str, ...] = ("detection", "localization", "partner")
 FAMILY_DESCRIPTION: Dict[str, str] = {
     "detection": (
         "How much signal each nucleus carries: puncta counted per nucleus, punctum "
-        "size, and absolute intensity. Acquisition uniform per acquirer 2026-09-07; "
-        "staining batch caveat. Absolute intensities enter the detection Holm family."),
+        "size, and absolute intensity. Whether an absolute intensity enters the "
+        "detection Holm family is stated per row in in_holm_family."),
     "localization": (
         "Where the signal sits rather than how much of it there is: the nuclear "
         "fraction of each nucleus's puncta, area-normalised density, and the "
@@ -116,7 +116,7 @@ ENDPOINTS: Tuple[Endpoint, ...] = (
     # ---- punctum size ----
     # The footprint endpoints are the size measurement. The moment-estimator
     # columns below them SATURATE and are kept only for continuity; see the note
-    # on each and docs/REPORT_SUBCOMMAND_2026-09-04.md.
+    # on each and docs/REPORT_SUBCOMMAND.md.
     Endpoint("rna1_punctum_footprint_area_um2", "rna1_punctum_footprint_area_um2",
              "detection", "square micrometres", "{rna1} punctum footprint area",
              source=FOOTPRINT, primary=True,
@@ -153,7 +153,7 @@ ENDPOINTS: Tuple[Endpoint, ...] = (
     Endpoint("rna1_nuclear_above_floor_intensity", "nuclear_above_floor_intensity_rna1",
              "detection", "arbitrary units",
              "{rna1} nuclear intensity above the detection floor",
-             absolute_intensity=True,
+             descriptive_only=True, absolute_intensity=True,
              note="Run-floor pixel integral in arbitrary units. DESCRIPTIVE ONLY: an "
                   "absolute intensity is not comparable as a level claim across "
                   "sections, so it carries no multiplicity adjustment."),
@@ -182,7 +182,7 @@ ENDPOINTS: Tuple[Endpoint, ...] = (
     Endpoint("rna2_nuclear_above_floor_intensity", "nuclear_above_floor_intensity_rna2",
              "detection", "arbitrary units",
              "{rna2} nuclear intensity above the detection floor",
-             absolute_intensity=True,
+             descriptive_only=True, absolute_intensity=True,
              note="DESCRIPTIVE ONLY: an absolute intensity is not comparable as a "
                   "level claim across sections."),
 
@@ -304,7 +304,7 @@ ENDPOINTS: Tuple[Endpoint, ...] = (
     Endpoint("partner_mean_in_exact_rna1_footprint", "partner_mean_in_exact_rna1_footprint",
              "partner", "arbitrary units",
              "{protein} mean inside the exact {rna1} punctum footprint",
-             source=SPOT, absolute_intensity=True,
+             source=SPOT, descriptive_only=True, absolute_intensity=True,
              note="Mean partner intensity inside the exact connected half-maximum "
                   "punctum footprint, never a fixed disk. DESCRIPTIVE ONLY: an "
                   "absolute intensity in arbitrary units carries no adjustment."),
@@ -471,7 +471,11 @@ AXIS_GROUPS = {
 
 
 def amend_endpoint(endpoint):
-    """A20 membership and display groups, declared independently of observed p."""
+    """Delivery-path membership and display groups, declared independently of observed p.
+
+    Absolute intensities become tested here, so only a delivery that declares
+    comparable acquisition calls this; the default registry keeps them descriptive.
+    """
     group = AXIS_GROUPS.get(endpoint.name, endpoint.axis_group)
     if endpoint.absolute_intensity:
         group = group or endpoint.name.removesuffix('_seconly_corrected')
@@ -480,7 +484,8 @@ def amend_endpoint(endpoint):
     return replace(endpoint, axis_group=group)
 
 
-ENDPOINTS = tuple(amend_endpoint(e) for e in ENDPOINTS)
+# Display groups only; test membership of the default registry is unchanged.
+ENDPOINTS = tuple(replace(e, axis_group=AXIS_GROUPS.get(e.name, e.axis_group)) for e in ENDPOINTS)
 
 # Opt-in A3 registry. The default registry remains the A0 + A2 proposal.
 # Freeze membership before computing any p value; never select by observed p.
@@ -547,7 +552,7 @@ def a3_endpoints(panel_columns: Sequence[str]) -> List[Endpoint]:
                             note=f'Anchor denominator: {anchor}; {threshold}. '
                                  'Observed, shuffled and excess values are separate measurements. '
                                  'Persisted nulls only. A3 partner family amendment; no pruning on p.'))
-    return [amend_endpoint(e) for e in out]
+    return [replace(e, axis_group=AXIS_GROUPS.get(e.name, e.axis_group)) for e in out]
 
 
 def channel_labels(cfg: dict) -> Dict[str, str]:

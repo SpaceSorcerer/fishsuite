@@ -15,9 +15,9 @@ from .provenance import sha256
 from .sensitivities import (require_current_statistics, require_current_book, read_stats_csv, read_stats_excel,
                             stamp_statistics, unstamp, fresh_since, stored_flag, stored_mixed_flag,
                             LegacyStatisticsError, REBUILD_MESSAGE, mixed_p_text,
-                            mixed_validated, mixed_value, with_mixed_alias, stored_flag, MIXED_ALIAS)
+                            mixed_validated, mixed_value, with_mixed_alias, MIXED_ALIAS)
 
-DECISION = ('Mixed-model headline decision 2026-09-07 after data inspection; '
+DECISION = ('Mixed-model headline chosen after data inspection; '
             'Welch on well means remains reported. Nucleus-level linear mixed model: '
             'fixed arm, random well and FOV within well, REML, two-sided Wald-normal p. '
             'Field-only or failed mixed fits use Welch (well means) on the bracket. '
@@ -226,7 +226,7 @@ def finalize(out,prior,run,panel):
     shutil.copyfile(panel,out/'data/coloc_standard_panel_floor4000.xlsx')
     (out/'README.md').write_text('v5: floor-4000 report and same-floor standard colocalization panel.\nStart with REPORT.xlsx and Sam_RNASEH2B_BIN1.pptx; full-scale variant: Sam_RNASEH2B_BIN1_full.pptx.\n'+DECISION+'\n'+lineage,encoding='utf-8')
     (out/'READOUT.md').write_text(DECISION+'\n\n'+'\n'.join(lines)+'\n'+lineage,encoding='utf-8')
-    (out/'versions.txt').write_text((run/'versions.txt').read_text(encoding='utf-8')+'\nreporter: uncommitted worktree, Claude commits\n'+lineage,encoding='utf-8')
+    (out/'versions.txt').write_text((run/'versions.txt').read_text(encoding='utf-8')+'\nreporter: '+build._reporter_commit()+'\n'+lineage,encoding='utf-8')
     import sys
     command="& '"+sys.executable+"' -m fishsuite.report.final_delivery "+' '.join("'"+v.replace("'","''")+"'" for v in sys.argv[1:])
     (out/'BUILD_COMMANDS.md').write_text("Reporter module: fishsuite.report.final_delivery. No one-off delivery scripts.\n\n"
@@ -251,7 +251,7 @@ def seal(out, run, panel):
             if name!='REPORT_LOCK.json':
                 files.append(dict(path=str(path.resolve()),sha256=sha256(path)))
     code=Path(__file__).parent
-    record=dict(reporter='uncommitted worktree, Claude commits',run=str(run),panel=str(panel),
+    record=dict(reporter=build._reporter_commit(),run=str(run),panel=str(panel),
                 source_panel_sha256=sha256(panel),files=files,
                 reporter_files=[dict(path=str(p),sha256=sha256(p)) for p in sorted(code.glob('*.py'))])
     (out/'REPORT_LOCK.json').write_text(json.dumps(record,indent=2),encoding='utf-8')

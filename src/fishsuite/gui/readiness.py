@@ -13,6 +13,7 @@ Status codes:
 """
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional, Tuple
 
@@ -91,25 +92,56 @@ def experiment_status(cfg: Dict[str, Any], *, input_dir: str, output_base: str, 
     return "green"
 
 
+# Discovery preflight results keyed on (input_dir, dir mtime, conditions, subset).
+_DISCOVERY_CACHE: Dict[Tuple[str, int, str, str], bool] = {}
+_DISCOVERY_CACHE_MAX = 32
+
+
+def clear_discovery_cache() -> None:
+    """Forget cached discovery results (e.g. before launching a run)."""
+    _DISCOVERY_CACHE.clear()
+
+
+def _discovery_ok(root: Path, conditions: Any, block: Any, subset: Any) -> bool:
+    """Run the discovery preflight once per distinct input; True if it passes."""
+    from fishsuite.config.hierarchy import discovery_roster
+    key = (
+        str(root),
+        root.stat().st_mtime_ns,
+        json.dumps(block, sort_keys=True, default=str),
+        json.dumps(subset, default=str),
+    )
+    if key in _DISCOVERY_CACHE:
+        return _DISCOVERY_CACHE[key]
+    try:
+        from fishsuite.core.io import discover_from_conditions
+        images = discover_from_conditions(root, conditions)
+        if subset:
+            from fishsuite.config.hierarchy import select_inputs
+            images = select_inputs(images, root, subset)
+        ok = bool(images)
+        if ok:
+            discovery_roster(images, root, conditions)
+    except (ValueError, OSError):
+        ok = False
+    if len(_DISCOVERY_CACHE) >= _DISCOVERY_CACHE_MAX:
+        _DISCOVERY_CACHE.clear()
+    _DISCOVERY_CACHE[key] = ok
+    return ok
+
+
 def conditions_status(cfg: Dict[str, Any], *, input_dir: str) -> Status:
     from fishsuite.config.schema import ConditionsCfg
-    from fishsuite.config.hierarchy import discovery_roster
     try:
-        conditions = ConditionsCfg.model_validate(cfg.get('conditions', {}))
+        block = cfg.get('conditions', {})
+        conditions = ConditionsCfg.model_validate(block)
         # The runner's preflight (discover -> subset -> non-empty -> hierarchy)
         # runs for every preset, grouped or not; readiness mirrors it so it is
-        # never green where the runner would raise (2026-09-24 review C1).
+        # never green where the runner would raise.
         if input_dir and Path(input_dir).is_dir():
-            from fishsuite.core.io import discover_from_conditions
-            root = Path(input_dir)
-            images = discover_from_conditions(root, conditions)
             subset = cfg.get('input_file_subset') or []
-            if subset:
-                from fishsuite.config.hierarchy import select_inputs
-                images = select_inputs(images, root, subset)
-            if not images:
+            if not _discovery_ok(Path(input_dir), conditions, block, subset):
                 return 'red'
-            discovery_roster(images, root, conditions)
             if conditions.groups:
                 return 'green'
     except (ValueError, OSError):
@@ -118,7 +150,7 @@ def conditions_status(cfg: Dict[str, Any], *, input_dir: str) -> Status:
     if mode == "subfolders":
         sub = _g(cfg, "conditions", "subfolder_conditions", default={}) or {}
         # Yellow if no mapping at all - pipeline will still run but everything
-        # gets a single condition. Most of the time Brian wants explicit labels.
+        # gets a single condition; explicit labels are usually wanted.
         if not sub:
             return "yellow"
         # Check existence of mapped subfolders (informational only; runner
@@ -144,8 +176,8 @@ def channels_status(cfg: Dict[str, Any]) -> Status:
     ab2 = _g(cfg, "channels", "antibody2", default=-1)
 
     def _set(v):
-        # -1 = auto; we treat auto-detect as YELLOW (works but Brian usually
-        # pins explicit indices). Any value >= 0 is "set".
+        # -1 = auto; we treat auto-detect as YELLOW (works, but explicit
+        # indices are safer). Any value >= 0 is "set".
         return isinstance(v, int) and v >= 0
 
     if mode == "rna_only":
@@ -162,8 +194,8 @@ def channels_status(cfg: Dict[str, Any]) -> Status:
         req = [dapi, ab, ab2]
     elif mode == "protein_only":
         req = [dapi, ab]
-    elif mode == "pub_images":
-        # All channels optional.
+    elif mode in ("pub_images", "if_intensity"):
+        # All channels optional (if_intensity routes channels per well).
         return "green"
     else:
         return "red"
@@ -180,8 +212,8 @@ def zstack_status(cfg: Dict[str, Any]) -> Status:
         s = _g(cfg, "z_stack", "start_slice")
         e = _g(cfg, "z_stack", "end_slice")
         if s is None or e is None:
-            return "yellow"  # works with full-stack autofocus, but Brian
-            # gets bitten when the actual in-focus window isn't pinned
+            return "yellow"  # works with full-stack autofocus, but an
+            # unpinned window can pick an out-of-focus plane
         try:
             if int(s) >= int(e):
                 return "red"
@@ -190,23 +222,23 @@ def zstack_status(cfg: Dict[str, Any]) -> Status:
         except (TypeError, ValueError):
             return "red"
         return "green"
-    if mode == "range":
+    if mode == "autofocus_maxproj":
+        # Window is detected per image; start/end are optional outer bounds.
         s = _g(cfg, "z_stack", "start_slice")
         e = _g(cfg, "z_stack", "end_slice")
-        if s is None or e is None:
-            return "red"
         try:
-            if int(s) >= int(e) or int(s) < 1:
+            if s is not None and int(s) < 1:
+                return "red"
+            if s is not None and e is not None and int(s) >= int(e):
                 return "red"
         except (TypeError, ValueError):
             return "red"
         return "green"
     if mode == "single":
+        # 0 / None = unset (schema default); only reject invalid values.
         ss = _g(cfg, "z_stack", "single_slice")
-        if ss is None:
-            return "red"
         try:
-            if int(ss) < 1:
+            if ss is not None and int(ss) < 0:
                 return "red"
         except (TypeError, ValueError):
             return "red"
@@ -244,7 +276,7 @@ def foci_status(cfg: Dict[str, Any]) -> Status:
     mode = _g(cfg, "channels", "analysis_mode", default="rna_only")
     enabled = _g(cfg, "foci", "enabled", default=True)
     # In modes that have no RNA channel, foci doesn't apply.
-    if mode in ("protein_only", "ab_ab", "pub_images"):
+    if mode in ("protein_only", "ab_ab", "pub_images", "if_intensity"):
         return "yellow"  # not applicable
     if not enabled:
         return "yellow"  # explicitly disabled
@@ -270,7 +302,7 @@ def foci_status(cfg: Dict[str, Any]) -> Status:
 
 def pixel_coloc_status(cfg: Dict[str, Any]) -> Status:
     mode = _g(cfg, "channels", "analysis_mode", default="rna_only")
-    if mode in ("pub_images", "protein_only"):
+    if mode in ("pub_images", "protein_only", "if_intensity"):
         return "yellow"
     tm = _g(cfg, "pixel_coloc", "threshold_mode", default="mad")
     if tm == "mad":
@@ -344,8 +376,8 @@ def _self_check() -> None:
         assert s["nuclei"] == "green", s
         assert s["foci"] == "green", s
         assert s["pixel_coloc"] == "green", s
-        # conditions: mapped folder "X" doesn't exist -> yellow
-        assert s["conditions"] == "yellow", s
+        # conditions: the empty dir has no images, so discovery fails -> red
+        assert s["conditions"] == "red", s
         # experiment is green (has tag + real dir)
         assert s["experiment"] == "green", s
 

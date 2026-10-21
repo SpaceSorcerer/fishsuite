@@ -707,6 +707,8 @@ def test_run_postrun_directory_writes_corrected_sampling_before_summaries_withou
         "threshold_positive_spots_per_nucleus_q95",
         "miat_footprint_mass_q95_positive_spot_summed",
         "miat_footprint_mass_floor_spot_summed",
+        "miat_footprint_mass_q95_positive_union_deduplicated",
+        "miat_footprint_mass_all_union_deduplicated",
     ]
     endpoint_scales = {endpoint: "unsigned_positive" for endpoint in endpoints}
 
@@ -791,3 +793,20 @@ def test_run_postrun_directory_writes_corrected_sampling_before_summaries_withou
             endpoints=endpoints,
             endpoint_scales=endpoint_scales,
         )
+
+
+def test_default_ratio_specs_satisfy_publication_renderer():
+    """Catches the publication renderer requiring rows postrun never writes."""
+
+    from fishsuite.core.exact_footprint_postrun import (
+        DEFAULT_RATIO_OF_RATIOS_SPECS,
+        build_postrun_statistics,
+    )
+    from fishsuite.core.exact_footprint_publication_plots import _required_ratio_rows
+
+    nuclei, spots, pixels = _full_postrun_fixture()
+    result = build_postrun_statistics(nuclei, spots, pixels)
+    selected = _required_ratio_rows(result.ratio_of_ratios)
+    assert list(
+        zip(selected["numerator_endpoint"], selected["denominator_endpoint"])
+    ) == list(DEFAULT_RATIO_OF_RATIOS_SPECS)

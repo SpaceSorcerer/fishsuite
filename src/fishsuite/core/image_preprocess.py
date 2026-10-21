@@ -67,10 +67,7 @@ def mask_dust_specks(
     if not bright_mask.any():
         return image.copy(), 0, 0
 
-    try:
-        from scipy.ndimage import label as cc_label
-    except Exception:
-        from skimage.measure import label as cc_label
+    from scipy.ndimage import label as cc_label
 
     labels, n_components = cc_label(bright_mask)
     if n_components == 0:

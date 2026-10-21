@@ -152,12 +152,14 @@ def compute_pixel_pattern_for_image(
     image: str = "",
     condition: str = "",
     cond2: str = "",
+    well: Optional[str] = None,
 ) -> Tuple[List[dict], List[dict], List[dict]]:
     """Return (rows, radial_records, sweep_records) for one image.
 
     ``chans`` maps role -> 2D array for the roles present ("rna1", "partner",
     "dapi"). ``partner_spots_by_nid`` maps nucleus_id -> (n,) peak-intensity array
     of partner spots (for the decile context; foci-band is computed separately).
+    ``well`` is the replicate key for the well-mean test (defaults to ``image``).
     """
     from scipy import ndimage as ndi
     from scipy.stats import pearsonr, spearmanr
@@ -194,7 +196,7 @@ def compute_pixel_pattern_for_image(
         depth = edt / dmax
         dvals = depth[npmask]
 
-        row = dict(image=image, condition=condition, cond2=cond2, well=condition,
+        row = dict(image=image, condition=condition, cond2=cond2, well=well or image,
                    nucleus_id=int(L), np_pix=int(npmask.sum()),
                    nucleolus_pix=int(nucleomask.sum()))
         for role in roles:
@@ -239,14 +241,30 @@ def compute_pixel_pattern_for_image(
 # ===========================================================================
 # I/O SHELL
 # ===========================================================================
-def _cond2(condition: str) -> str:
-    """Coarse group label: control-like -> its label; else 'perturbation';
-    secondary -> 'Sec'. Only used for grouping/plot color."""
-    from ._superplot import is_control_like
-    c = str(condition)
-    if "sec" in c.lower():
+def _cond2(condition: str, secondary_only: bool = False) -> str:
+    """Coarse group label for grouping/plot color: 'Sec' for images flagged
+    secondary-only, else the condition's leading token."""
+    if secondary_only:
         return "Sec"
-    return c.split("_")[0].split("-")[0]
+    return str(condition).split("_")[0].split("-")[0]
+
+
+def _flag_true(value) -> bool:
+    """Bool from a CSV cell (bool, number or 'True'/'False' text); NaN -> False."""
+    if isinstance(value, str):
+        return value.strip().lower() in ("true", "1", "yes", "y", "t")
+    try:
+        return False if pd.isna(value) else bool(value)
+    except (TypeError, ValueError):
+        return False
+
+
+def _well_key(prow, image_name: str) -> str:
+    """Replicate key for one per-image row: ``well_id`` if recorded, else the image."""
+    w = prow.get("well_id", None)
+    if w is None or (isinstance(w, float) and w != w) or str(w).strip() == "":
+        return image_name
+    return str(w)
 
 
 def pixelpattern_run(
@@ -355,10 +373,11 @@ def pixelpattern_run(
             pixel_um = voxel_xy_nm / 1000.0
             nucleolus_labels = _build_nucleolus_labels(cfg, labels, dapi_2d, voxel_xy_nm)
 
-            c2 = _cond2(condition)
+            c2 = _cond2(condition, _flag_true(prow.get("secondary_only", False)))
             rows, rad, swe = compute_pixel_pattern_for_image(
                 chans, labels, nucleolus_labels, {},
-                pixel_um=pixel_um, image=image_name, condition=condition, cond2=c2)
+                pixel_um=pixel_um, image=image_name, condition=condition, cond2=c2,
+                well=_well_key(prow, image_name))
             all_rows.extend(rows)
             all_radial.extend(rad)
             all_sweep.extend(swe)
@@ -607,7 +626,7 @@ def _make_figures(df, rad, swe, welch, fig_dir: Path, *, chan_labels: Dict[str, 
         ax.set_xlabel("normalized depth (0 = nuclear edge  ->  1 = center)")
         ax.set_ylabel(f"relative {p_lab} intensity (/ nucleus mean)")
         ax.set_title(f"{p_lab} radial profile: specific or present in secondary-only?")
-        ax.legend(fontsize=7)
+        ax.legend(fontsize=7, title="line = mean, band = +/- SEM (nuclei)", title_fontsize=7)
         ax.grid(alpha=0.25, ls="--")
         fig.tight_layout()
         p = fig_dir / "radial_partner_with_seconly.png"
@@ -645,7 +664,7 @@ def _make_figures(df, rad, swe, welch, fig_dir: Path, *, chan_labels: Dict[str, 
             ax.set_xlabel(xlabel)
             ax.set_ylabel("relative partner intensity (/ nucleus mean)")
             ax.set_title(title)
-            ax.legend()
+            ax.legend(title="line = mean, band = +/- SEM (nuclei)", title_fontsize=8)
             ax.grid(alpha=0.25, ls="--")
             fig.tight_layout()
             p = fig_dir / fname
@@ -677,8 +696,8 @@ def _write_excel(df, welch, rad, swe, foci_band, xlsx: Path, *, chan_labels):
         "cond2", "well", "*_gini", "*_gini_raw", "*_cv", "*_top5pct_frac / top10pct_frac",
         "*_perinuc_index", "pearson_rna1_partner_allpix", "partner_foci_ge<floor>", "is_secondary_control"],
         "Meaning": [
-        "Coarse group label (control prefix / perturbation / Sec = secondary-only).",
-        "Well = one biological replicate.",
+        "Coarse group label (condition prefix; Sec = image flagged secondary_only).",
+        "Replicate key: well_id from per_image_summary when recorded, else the image name.",
         "Gini of pixel intensity (0=uniform, 1=all-in-one-pixel); bg-subtracted. Higher = more 'bunched'.",
         "Gini on raw pixels (no bg subtraction), sensitivity check.",
         "Coefficient of variation (SD/mean) of pixel intensity.",
@@ -690,21 +709,21 @@ def _write_excel(df, welch, rad, swe, foci_band, xlsx: Path, *, chan_labels):
     ]})
     xlsx.parent.mkdir(parents=True, exist_ok=True)
     with pd.ExcelWriter(xlsx, engine="openpyxl") as xw:
-        readme.to_excel(xw, "How_to_read", index=False, startrow=0)
-        legend.to_excel(xw, "How_to_read", index=False, startrow=len(readme) + 3)
-        df.to_excel(xw, "per_nucleus", index=False)
+        readme.to_excel(xw, sheet_name="How_to_read", index=False, startrow=0)
+        legend.to_excel(xw, sheet_name="How_to_read", index=False, startrow=len(readme) + 3)
+        df.to_excel(xw, sheet_name="per_nucleus", index=False)
         from fishsuite.report.sensitivities import stamp_statistics
-        stamp_statistics(welch, "nt_vs_condition_welch", fresh=True).to_excel(xw, "nt_vs_condition_welch", index=False)
+        stamp_statistics(welch, "nt_vs_condition_welch", fresh=True).to_excel(xw, sheet_name="nt_vs_condition_welch", index=False)
         if not rad.empty:
             radt = rad.groupby(["channel", "cond2"])[DBINS].mean().reset_index()
             radt.columns = ["channel", "condition"] + [f"depthbin_{b}_edge0_center1" for b in range(10)]
-            radt.to_excel(xw, "radial_profile", index=False)
+            radt.to_excel(xw, sheet_name="radial_profile", index=False)
         if not swe.empty:
             swcols = [c for c in swe.columns if c.startswith(("partner_at_rna1_d", "rna1_at_partner_d"))]
             swt = swe.groupby("cond2")[swcols].mean().reset_index()
-            swt.to_excel(xw, "intensity_sweep", index=False)
+            swt.to_excel(xw, sheet_name="intensity_sweep", index=False)
         if foci_band is not None:
-            foci_band.to_excel(xw, "foci_band", index=False)
+            foci_band.to_excel(xw, sheet_name="foci_band", index=False)
     wb = load_workbook(xlsx)
     for ws in wb.worksheets:
         ws.freeze_panes = "A2"

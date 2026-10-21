@@ -1,7 +1,7 @@
 """Pydantic v2 schema for fishsuite YAML configs.
 
 Mirrors the Fiji-pipeline YAML schema where keys overlap; adds a few
-fishsuite-only knobs (parallel.*, input_discovery.*).
+fishsuite-only knobs (parallel.*). Every block rejects unknown keys.
 """
 from __future__ import annotations
 
@@ -12,7 +12,13 @@ import yaml
 from pydantic import BaseModel, ConfigDict, Field, AliasChoices, model_validator
 
 
-class ExperimentCfg(BaseModel):
+class _ConfigBlock(BaseModel):
+    """Shared base: a misspelled or unknown key is a load-time error."""
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class ExperimentCfg(_ConfigBlock):
     name: str = "experiment"
     description: str = ""
     cell_line: str = ""
@@ -20,8 +26,9 @@ class ExperimentCfg(BaseModel):
     analyst: str = ""
 
 
-class ConditionsCfg(BaseModel):
-    mode: Literal["auto", "explicit", "subfolders"] = "subfolders"
+class ConditionsCfg(_ConfigBlock):
+    mode: Literal["auto", "explicit", "subfolders"] = Field(
+        "subfolders", description="Accepted, not applied; discovery does not read it.")
     subfolder_conditions: Dict[str, str] = Field(default_factory=dict)
     strict_subfolders: bool = False
     recursive_discovery: bool = False
@@ -45,7 +52,9 @@ class ConditionsCfg(BaseModel):
     filename_conditions: List[List[str]] = Field(default_factory=list)
     strict_filenames: bool = False
     well_from_image: Optional[str] = None
-    condition_order: List[str] = Field(default_factory=list)
+    condition_order: List[str] = Field(
+        default_factory=list,
+        description="Accepted, not applied by the run; only `fishsuite coupling` reads it.")
     min_nuclei_for_stats: int = 6
     # 2026-09-04 Brian: CONDITION GROUPS. A condition (above) is one WELL. A
     # group is the condition several wells belong to, and is what gets compared.
@@ -100,17 +109,17 @@ class ConditionsCfg(BaseModel):
         return declared + [g for g in known if g not in declared]
 
 
-class ChannelsCfg(BaseModel):
+class ChannelsCfg(_ConfigBlock):
     analysis_mode: Literal[
         "rna_only", "rna_protein", "rna_rna", "ab_ab", "protein_only",
         "pub_images", "if_intensity"
     ] = "rna_only"
-    # 0 = auto-detect; otherwise 0-indexed channel
+    # -1 = auto-detect; otherwise 0-indexed channel
     dapi: int = -1
     rna: int = -1
     rna2: int = -1
     antibody: int = -1
-    antibody2: int = -1
+    antibody2: int = Field(-1, description="Accepted, not applied.")
     # Whether the numeric values above are 0-indexed (default) or 1-indexed Fiji-style
     one_indexed: bool = False
 
@@ -151,7 +160,7 @@ class ChannelsCfg(BaseModel):
     ab2_lut: str = "magenta"
 
 
-class ZStackCfg(BaseModel):
+class ZStackCfg(_ConfigBlock):
     mode: Literal["single", "maxproj", "autofocus", "autofocus_maxproj", "3d"] = "autofocus"
     single_slice: int = 0
     start_slice: Optional[int] = None
@@ -378,22 +387,13 @@ class ZStackCfg(BaseModel):
     focus_central_fraction: float = 0.0
 
 
-class NucleiCfg(BaseModel):
+class NucleiCfg(_ConfigBlock):
     """Nucleus segmentation.
 
-    2026-09-03: this block REJECTS unknown keys (``extra="forbid"``). It used to
-    inherit pydantic's default ``extra="ignore"``, and that silently discarded
-    ``cellpose_preclip_dapi_otsu`` from every preset naming it while the feature
-    was unmerged — so a run asserted a segmentation step it never performed and
-    still exited 0. A hard load-time error naming the key is the only version of
-    that check that cannot be missed. All 63 configs in this repository and in
-    the RNASEH2B_BIN1introns analysis tree validate under it.
-
-    NOTE: the other config blocks still inherit ``extra="ignore"`` and remain
-    exposed to the same failure.
+    Like every config block, this rejects unknown keys (``extra="forbid"``), so
+    a key naming a step the engine does not perform fails at load time instead
+    of being silently ignored.
     """
-
-    model_config = ConfigDict(extra="forbid")
 
     backend: Literal["stardist", "cellpose", "otsu"] = "stardist"
     prob_threshold: float = 0.5
@@ -419,8 +419,8 @@ class NucleiCfg(BaseModel):
     cellpose_flow_threshold: float = 0.4
     cellpose_cellprob_threshold: float = 0.0
     cellpose_model_type: str = "cpsam"
-    # 2026-05-25: speed lever for the cpsam transformer on CPU (no CUDA on
-    # Brian's AMD GPU). cpsam runtime scales ~quadratically with pixel count;
+    # 2026-05-25: speed lever for the cpsam transformer on CPU. cpsam runtime
+    # scales ~quadratically with pixel count;
     # H9 DAPI at 0.065 µm/px is heavily oversampled for segmentation (nuclei
     # ~200 px). Downsample the DAPI by this factor before cellpose, segment on
     # the smaller grid with a proportionally smaller diameter, then upsample
@@ -433,16 +433,15 @@ class NucleiCfg(BaseModel):
     # useful when dim extranuclear DAPI haze is otherwise segmented as tails.
     cellpose_preclip_dapi_otsu: bool = False
     # 2026-05-27: OPT-IN GPU acceleration for the cpsam transformer via
-    # torch-directml (Brian's AMD RX 6750 XT — no CUDA). DEFAULT "cpu" keeps
+    # torch-directml (Windows GPUs without CUDA). DEFAULT "cpu" keeps
     # the production CPU path byte-for-byte unchanged. "directml" builds the
     # cellpose net in fp32, moves only the network to the DirectML device, and
     # forces the sparse flow-dynamics step back to CPU (DirectML has no sparse
     # kernel) — see core.segmentation + segment_image.segment_cellpose. Only
-    # usable from an env that has torch-directml installed (e.g. fishproc_dml);
-    # the production fishproc env never selects it. cellpose backend only.
+    # usable from an environment that has torch-directml installed (the
+    # ``directml`` extra). cellpose backend only.
     #
-    # 2026-08-10: "cuda" added for NVIDIA GPUs (the common case outside this
-    # lab, which is AMD). It routes through core.segmentation, NOT through the
+    # 2026-08-10: "cuda" added for CUDA GPUs. It routes through core.segmentation, NOT through the
     # DirectML branch — CUDA has the sparse flow-dynamics kernel DirectML lacks,
     # so the DirectML CPU-fallback workaround must not be applied to it. Falls
     # back to CPU with a warning on stderr if torch reports no CUDA device.
@@ -469,7 +468,7 @@ class NucleiCfg(BaseModel):
     reject_ghost_min_area_um2: Optional[float] = Field(None, ge=0, allow_inf_nan=False)
 
 
-class SamplingCfg(BaseModel):
+class SamplingCfg(_ConfigBlock):
     """Fixed-N nucleus sampling — quantify the same N in every field of view.
 
     Without this, each condition's denominator is however many nuclei happened
@@ -572,14 +571,14 @@ class SamplingCfg(BaseModel):
     )
 
 
-class PixelColocCfg(BaseModel):
+class PixelColocCfg(_ConfigBlock):
     threshold_mode: Literal["mad", "percentile", "costes"] = "mad"
     threshold_scope: Literal["batch", "per_image"] = "batch"
     k_mad: float = 2.0
     percentile: float = 80.0
 
 
-class SpotColocCfg(BaseModel):
+class SpotColocCfg(_ConfigBlock):
     """Spot-to-spot colocalization between two RNA channels (rna_rna mode).
 
     Drives the nearest-neighbor (cKDTree) pairing between rna1 and rna2 spots.
@@ -590,7 +589,7 @@ class SpotColocCfg(BaseModel):
     report_nn_distance: bool = True
 
 
-class FociChannelOverrideCfg(BaseModel):
+class FociChannelOverrideCfg(_ConfigBlock):
     """Optional per-channel spot-analysis overrides.
 
     Every field defaults to ``None`` meaning "inherit from FociCfg". When a
@@ -622,7 +621,7 @@ class FociChannelOverrideCfg(BaseModel):
     # output.apply_pub_contrast_floor_to_spots. When set, spots in THIS channel
     # with peak intensity < value are dropped right after BigFISH detection,
     # before stratification/pairing. None = no floor (current behavior, byte-
-    # identical). Used to enforce the QKI antibody specificity floor.
+    # identical). Used to enforce an antibody specificity floor.
     min_spot_peak_intensity: Optional[float] = None
     # 2026-09-03 Brian: per-channel FIXED BigFISH LoG detection threshold.
     # None => inherit the shared ``FociCfg.threshold_override`` (which may
@@ -632,7 +631,7 @@ class FociChannelOverrideCfg(BaseModel):
     threshold_override: Optional[float] = None
 
 
-class FociCfg(BaseModel):
+class FociCfg(_ConfigBlock):
     enabled: bool = True
     backend: Literal["bigfish", "log"] = "bigfish"
     bigfish_voxel_size_nm: float = 0.0  # 0 = auto
@@ -644,15 +643,11 @@ class FociCfg(BaseModel):
     log_spot_radius_px: float = 2.5
     log_threshold: float = 0.05
     only_nuclear_spots: bool = False
-    # 2026-05-25 Brian: also run spot detection on secondary-only (no-probe)
-    # control images. Default False = legacy behavior (sec-only images skip
-    # spot detection and report zero spots). When True, sec-only images run
-    # the SAME BigFISH/LoG detection as normal images and their spot counts
-    # flow through per_image_summary / per-nucleus CSV exactly like any other
-    # image — REPORTED for background QC, never subtracted from sample images.
-    detect_in_sec_only: bool = False
-    # 2026-08-10: SPOT-CALLABILITY guardrail. When ``detect_in_sec_only`` is on and
-    # a run contains secondary-only images, the runner divides each punctate
+    detect_in_sec_only: bool = Field(
+        False,
+        description="Deprecated, no effect: spots are always detected on secondary-only images.")
+    # 2026-08-10: SPOT-CALLABILITY guardrail. When a run contains
+    # secondary-only images, the runner divides each punctate
     # channel's sample spots-per-nucleus by the same channel's secondary-only
     # spots-per-nucleus and warns when the ratio falls below this value. The
     # comparison was always computable — both counts already flow through
@@ -669,8 +664,8 @@ class FociCfg(BaseModel):
     # the mature-mRNA halo at distance. BigFISH LoG + manual contrast floor
     # already provide enough cleanup; the floater rule was too aggressive.
     drop_floater_spots: bool = False
-    min_spot_fwhm_px: float = 0.0
-    max_spot_peak_robust_z: float = 0.0
+    min_spot_fwhm_px: float = Field(0.0, description="Accepted, not applied.")
+    max_spot_peak_robust_z: float = Field(0.0, description="Accepted, not applied.")
     max_peak_over_p95_ratio: float = 0.0
     mask_dust_specks_min_size_px: int = 0
     mask_dust_specks_threshold_mad: float = 50.0
@@ -717,8 +712,8 @@ class FociCfg(BaseModel):
     # QKI IF, which otherwise carpets the field with meaningless "spots") is
     # NOT spotted. The INTENSITY-based colocalization is UNAFFECTED:
     # ``compute_partner_intensity`` samples the antibody-channel PIXELS at the
-    # rna1 (MIAT) spots — it never reads the antibody SPOTS — so QKI-intensity-
-    # at-MIAT-spots coloc, pixel-coloc (Pearson/Manders/Li), and all per-nucleus
+    # rna1 spots — it never reads the antibody SPOTS — so partner-intensity-
+    # at-RNA1-spots coloc, pixel-coloc (Pearson/Manders/Li), and all per-nucleus
     # antibody PIXEL metrics still compute. Consulted ONLY for the antibody
     # (rna2) channel of an rna_protein run: plain ``rna_rna`` (two real FISH
     # targets) ALWAYS spot-detects both channels regardless of this value, and
@@ -730,7 +725,7 @@ class FociCfg(BaseModel):
     # nucleus mean) has NO null model and NO error bar — washed out (~1.0) for a
     # dense-nuclear partner like the QKI IF. When True (requires
     # ``compute_partner_intensity: true``), for EACH nucleus the pipeline:
-    #   observed   = mean over rna1 (MIAT) spots of [mean partner (QKI) intensity
+    #   observed   = mean over rna1 spots of [mean partner intensity
     #                in a disk of radius ``partner_null_disk_px`` centered on the
     #                spot] — same disk-sample as the observed coloc;
     #   null       = the SAME number of spots placed at random IN-NUCLEUS
@@ -751,7 +746,7 @@ class FociCfg(BaseModel):
     # sample. CANONICAL = 3.0 px (~0.39 µm at 0.13 µm/px) — the value used by the
     # two validated reference scripts. This is INTENTIONALLY decoupled from the
     # tiny ``compute_partner_intensity`` radius (bigfish_spot_radius / voxel ≈ 1
-    # px at the MIAT-QKI preset's 100 nm radius / 0.13 µm voxel), which would not
+    # px at a 100 nm radius / 0.13 µm voxel), which would not
     # reproduce the validated method; pin it here so the null is reproducible.
     partner_null_disk_px: float = 3.0
     # Fixed RNG seed for the null draws -> deterministic across runs/processes.
@@ -765,7 +760,7 @@ class FociCfg(BaseModel):
     # nucleus (current/legacy behavior). DEFAULT FALSE.
     exclude_nucleolus_from_partner_null: bool = False
     # 2026-06-06 Brian: PIPELINE-NATIVE coloc-figure outputs (downstream "make
-    # coloc clear" null-overlay + radial QKI profile). All DEFAULT FALSE/empty
+    # coloc clear" null-overlay + radial partner profile). All DEFAULT FALSE/empty
     # carrier -> emitted ONLY via the empty-default ImageResult.extra dict, so
     # the per_image / nuclei / spots tables stay byte-identical (BIN1 / H9
     # unaffected). save_partner_null_draws surfaces the per-image pooled
@@ -774,8 +769,8 @@ class FociCfg(BaseModel):
     # overlay; requires compute_partner_null_enrichment.
     save_partner_null_draws: bool = False
     # When True (requires compute_partner_intensity), sweep CONCENTRIC ANNULI of
-    # increasing radius around each rna1 (MIAT) spot and compare the partner
-    # (QKI) intensity in each ring to the SAME-ring intensity at random
+    # increasing radius around each rna1 spot and compare the partner
+    # intensity in each ring to the SAME-ring intensity at random
     # in-nucleus positions (per-ring null, same seed / n as the disk null),
     # emitting a spot-count-weighted per-(image, ring) profile as
     # ``extra["coloc_radial_profile"]``. DEFAULT FALSE.
@@ -789,9 +784,9 @@ class FociCfg(BaseModel):
     # STRICTER companion to the random-position null above. Where the position
     # null randomizes spot POSITIONS (and is inflated when the partner and the
     # rna1 spots merely SHARE a nuclear compartment), the rotation null rotates
-    # each nucleus's rna1 (MIAT) spot CONSTELLATION about its OWN centroid
+    # each nucleus's rna1 spot CONSTELLATION about its OWN centroid
     # (registration-destroying, spatial-structure-PRESERVING): the spot pattern
-    # keeps its internal geometry while its alignment to the fixed partner (QKI)
+    # keeps its internal geometry while its alignment to the fixed partner
     # field is destroyed. observed > rotation-null therefore means the partner is
     # concentrated AT the spots BEYOND a shared compartment. When True (requires
     # ``compute_partner_intensity``), for EACH nucleus the pipeline emits per
@@ -945,47 +940,47 @@ class FociCfg(BaseModel):
     # Both values are recorded per image in thresholds.csv: rna_pedestal_factor
     # is what was APPLIED, rna_pedestal_factor_raw is what the medians implied.
     rna_pedestal_factor_max: Optional[float] = None
-    # 2026-07-07 Brian: PIPELINE-NATIVE MIAT x QKI ASSOCIATION metrics (approved
-    # spec _SPEC_association_analysis_2026-07-06.md). Continuous, floor-robust,
-    # AT-THE-PUNCTUM replacements for the binary "QKI-associated MIAT spots"
-    # count (which conflated abundance with propensity). When True (rna_protein /
-    # rna_rna path; the partner/rna2 channel is the protein, e.g. QKI), for EACH
-    # rna1 (MIAT) spot the pipeline samples the partner (QKI) intensity over the
+    # 2026-07-07 Brian: PIPELINE-NATIVE RNA1 x partner ASSOCIATION metrics (e.g.
+    # MIAT RNA x QKI protein; column names keep the qki_/miat_ prefixes).
+    # Continuous, floor-robust, AT-THE-PUNCTUM replacements for a binary
+    # "partner-associated RNA1 spots" count (which conflated abundance with
+    # propensity). When True (rna_protein / rna_rna path; the partner/rna2
+    # channel is the protein), for EACH rna1 spot the pipeline samples the
+    # partner intensity over the
     # spot's EXACT half-max (FWHM) FOOTPRINT — the connected rna1 pixels
     # >= bg + 0.5*(local_peak - bg) within a small per-spot window — so the sample
-    # SCALES with the spot's real size (a 0.3 um vs 1 um MIAT punctum covers a
+    # SCALES with the spot's real size (a 0.3 um vs 1 um RNA1 punctum covers a
     # different # of pixels), NOT a fixed disk. Emits per SPOT (spot_metrics.csv,
-    # rna1 rows): ``qki_at_miat_footprint`` (raw mean QKI over the footprint),
+    # rna1 rows): ``qki_at_miat_footprint`` (raw mean partner over the footprint),
     # ``miat_footprint_area_px``, and ``qki_footprint_enrichment``
-    # (= qki_at_miat_footprint / that spot's-nucleus mean QKI; floor-robust,
+    # (= qki_at_miat_footprint / that spot's-nucleus mean partner; floor-robust,
     # PRIMARY per-spot metric). Emits per NUCLEUS (nuclei_metrics.csv):
     # ``qki_assoc_ratio_continuous`` (mean of qki_footprint_enrichment over the
-    # nucleus's MIAT spots), ``coloc_moc`` (Manders Overlap Coefficient R = the
+    # nucleus's RNA1 spots), ``coloc_moc`` (Manders Overlap Coefficient R = the
     # threshold-free raw-intensity cosine overlap), ``coloc_icq`` (Li's ICQ), and
-    # ``qki_at_miat_foci_enrichment`` (mean QKI over the UNION of all this
-    # nucleus's MIAT-footprint pixels / nuclear-mean QKI). ALSO emits three
+    # ``qki_at_miat_foci_enrichment`` (mean partner over the UNION of all this
+    # nucleus's RNA1-footprint pixels / nuclear-mean partner). ALSO emits three
     # EXTENSIVE (mass-based) sponge-CAPACITY columns over this nucleus's NUCLEAR
-    # MIAT spots: ``qki_associated_with_miat`` (= sum of qki_at_miat_footprint *
-    # miat_footprint_area_px = total QKI intensity inside MIAT-spot pixels),
+    # RNA1 spots: ``qki_associated_with_miat`` (= sum of qki_at_miat_footprint *
+    # miat_footprint_area_px = total partner intensity inside RNA1-spot pixels),
     # ``miat_mass_nuclear`` (= sum of spot_peak_intensity * spot_area_px =
-    # integrated MIAT signal), and ``capacity_qki_at_miat`` (= qki_associated_with_miat /
-    # the nuclear QKI total ``nuclear_total_intensity_rna2`` [->
-    # nuclear_total_intensity_protein] = fraction of the nucleus's QKI associated with
-    # MIAT). All threshold-free and
+    # integrated RNA1 signal), and ``capacity_qki_at_miat`` (= qki_associated_with_miat /
+    # the nuclear partner total ``nuclear_total_intensity_rna2`` [->
+    # nuclear_total_intensity_protein] = fraction of the nucleus's partner
+    # associated with RNA1). All threshold-free and
     # emitted ALONGSIDE (never replacing) the MAD-thresholded Manders M1/M2 so a
-    # gated-vs-ungated comparison is possible. When a partner (QKI) floor is set
+    # gated-vs-ungated comparison is possible. When a partner floor is set
     # via ``assoc_qki_floor`` a SECONDARY floor-gated variant
-    # ``qki_assoc_ratio_gated_<floor>`` is ALSO emitted (MIAT spots whose footprint
-    # QKI < floor contribute 0 -> reintroduces floor-sensitivity; shown for
-    # contrast). DEFAULT FALSE -> none of these columns are emitted and the output
-    # is byte-equivalent to the pre-feature path (BIN1 / H9 unaffected). Runs the
-    # per-spot footprint loop in-process (like ``compute_partner_intensity``) ->
-    # use -p 1 (the MIAT/QKI presets already force single-process).
+    # ``qki_assoc_ratio_gated_<floor>`` is ALSO emitted (RNA1 spots whose footprint
+    # partner intensity < floor contribute 0 -> reintroduces floor-sensitivity;
+    # shown for contrast). DEFAULT FALSE -> none of these columns are emitted and
+    # the output is byte-equivalent to the pre-feature path. Runs the per-spot
+    # footprint loop in-process (like ``compute_partner_intensity``).
     compute_footprint_enrichment: bool = False
-    # Genuine partner (QKI) intensity floor for the SECONDARY floor-gated
+    # Genuine partner intensity floor for the SECONDARY floor-gated
     # association-ratio variant (``qki_assoc_ratio_gated_<floor>``). None / <= 0
     # => OFF (no gated column emitted; the continuous ratio is the primary). When
-    # set, a MIAT spot whose ``qki_at_miat_footprint`` is below this value
+    # set, an RNA1 spot whose ``qki_at_miat_footprint`` is below this value
     # contributes 0 to the gated per-nucleus ratio. Units = raw partner-channel
     # intensity (same scale as ``qki_at_miat_footprint``). DEFAULT None.
     assoc_qki_floor: Optional[float] = None
@@ -1083,13 +1078,13 @@ class FociCfg(BaseModel):
         }
 
 
-class CytoplasmCfg(BaseModel):
+class CytoplasmCfg(_ConfigBlock):
     enabled: bool = True
     voronoi_max_expansion_px: int = 80
-    measure_nc_ratio: bool = True
+    measure_nc_ratio: bool = Field(True, description="Accepted, not applied.")
 
 
-class NucleolusCfg(BaseModel):
+class NucleolusCfg(_ConfigBlock):
     """DAPI-low subnuclear region detection (nucleolus).
 
     When enabled, finds DAPI-low connected regions inside each nucleus mask
@@ -1112,7 +1107,7 @@ class NucleolusCfg(BaseModel):
     min_border_distance_px: int = 5
 
 
-class OutputCfg(BaseModel):
+class OutputCfg(_ConfigBlock):
     save_qc_overlays: bool = True
     save_per_image_csv: bool = True
     save_masks: bool = True
@@ -1294,41 +1289,35 @@ class OutputCfg(BaseModel):
     scalebar_um: float = 50.0
     scalebar_font_px: int = 32
 
+    comparison_unit: Literal["image", "well", "nucleus"] = Field(
+        "image",
+        description="Replicate unit for the Mann-Whitney comparison in analysis_summary.xlsx: "
+                    "per-image means (default), per-well means, or pooled nuclei (descriptive only).")
+    # Prepended to per-image output file names only; run-level master tables
+    # (per_image_summary.csv, nuclei_metrics.csv, ...) are never prefixed.
     prefix: str = ""
 
 
-class ParallelCfg(BaseModel):
-    workers: int | str = "auto"  # int or "auto"
-    # 2026-05-27 PERF: asymmetric parallelism is now the FISHSUITE DEFAULT.
-    # Empirically validated 3.9x end-to-end speedup on the H9 MIAT-KD ASO
-    # cohort on Brian's box (12 physical / 24 logical / 128 GB) with
-    # byte-identical numeric results vs the legacy serial path
-    # (F:\Image Analysis Work\H9-MIAT-KD\_gpu_accel_investigation\PIPELINE_PERF.md).
-    #
+class ParallelCfg(_ConfigBlock):
+    # ``workers`` and ``main_workers`` are kept so existing presets and GUI
+    # configs still load; the main per-image pass is serial and ignores them.
+    workers: int | str = Field("auto", description="Deprecated, no effect.")
     #   seg_workers     — process count for the segmentation pre-scan
-    #                     (cpsam is memory-heavy on CPU; on directml it MUST
-    #                     stay 1-2 since processes can't share the 12 GB VRAM).
+    #                     (cpsam is memory-heavy on CPU; on directml keep it
+    #                     at 1-2 since processes share GPU memory).
     #                     DEFAULT "auto" -> memory + core aware count on CPU
-    #                     (caps at 8; ~6 on Brian's box), forced to 1 on the
-    #                     directml device. 1 = legacy serial (still supported).
-    #   main_workers    — process count for the main per-image pass (BigFISH +
-    #                     measurement + figure rendering). Memory-light and
-    #                     embarrassingly parallel. Default stays at 1
-    #                     (memory-conservative; raising it 4x's transient RAM
-    #                     during the figure-render phase, opt-in per-preset).
-    #                     "auto" -> high on CPU.
+    #                     (caps at 8), forced to 1 on the directml device.
+    #                     1 = serial.
     #   threads_per_worker — cap OMP/MKL/numexpr/torch threads INSIDE each
     #                     worker so N_workers x threads stays <= logical cores
-    #                     (avoid BLAS oversubscription). DEFAULT 4 — with
-    #                     seg_workers='auto' resolving to ~6, 6 x 4 = 24
-    #                     matches the logical-core count exactly. 0 disables
-    #                     the cap (legacy behavior; lets BLAS pick).
+    #                     (avoid BLAS oversubscription). 0 disables the cap
+    #                     (lets BLAS pick).
     seg_workers: int | str = "auto"
-    main_workers: int | str = 1
+    main_workers: int | str = Field(1, description="Deprecated, no effect.")
     threads_per_worker: int = 4
 
 
-class QcCfg(BaseModel):
+class QcCfg(_ConfigBlock):
     """Per-image QC-flag thresholds (ADDITIVE, 2026-06-10).
 
     These drive the INFORMATIONAL ``qc_*`` columns the runner merges into
@@ -1372,18 +1361,16 @@ class QcCfg(BaseModel):
     qc_overdetect_min_per_nucleus_for_outlier: float = 50.0
 
 
-class IfIntensityCfg(BaseModel):
+class IfIntensityCfg(_ConfigBlock):
     """Immunofluorescence antibody-validation intensity mode (``if_intensity``).
 
     Drives the plate-level IF pipeline (per-well signal routing, exposure gate,
     per-nucleus + whole-FOV intensity, fold-over-secondary-only normalization,
     per-well biological-replicate stats, SuperPlots, and SHARED-display-range
-    micrographs). Ported verbatim from the locked panQKI WT-vs-QKI-KO standalone
-    (F:\\Image Analysis Work\\MIAT-QKI-Coloc\\WT-QKI-KO_2026_07_01\\_scripts).
+    micrographs). Ported from a standalone antibody-validation script.
     Segmentation params come from the shared ``nuclei`` block (cellpose/cpsam/
     DirectML), identical to the FISH modes. Only active when
     ``channels.analysis_mode == "if_intensity"``; every other mode ignores it.
-    Human / Homo sapiens.
     """
     # ---- plate map --------------------------------------------------------
     # CSV with one row per well: columns well, genotype, staining_arm (or arm),
@@ -1414,7 +1401,7 @@ class IfIntensityCfg(BaseModel):
     # ---- metrics ----------------------------------------------------------
     cyto_ring_px: int = 12          # dilated-ring width grown from each nucleus
     exposure_tol_s: float = 1e-6    # intra-channel exposure-equality tolerance
-    low_nuc_flag: int = 3           # flag FOVs with fewer than this many nuclei
+    low_nuc_flag: int = Field(3, description="Accepted, not applied.")
     pixel_size_um: float = 0.0      # 0 = read from image metadata
 
     # ---- shared-display micrographs ("Sam's floor") ----------------------
@@ -1472,7 +1459,7 @@ class IfIntensityCfg(BaseModel):
     # empty, falls back to micrograph_zstack_dir.
     pub_zstack_dir: str = ""
     pub_z_central_frac: float = 0.8    # central band the best-focus plane is picked from
-    pub_dapi_weight: float = 0.6       # DAPI dimming in the merge (locked)
+    pub_dapi_weight: float = Field(0.6, description="Accepted, not applied.")
     pub_signal_label: str = "signal"   # panel/label text (e.g. "QKI")
 
     # ---- misc -------------------------------------------------------------
@@ -1480,7 +1467,7 @@ class IfIntensityCfg(BaseModel):
     make_excel: bool = True
 
 
-class FishsuiteConfig(BaseModel):
+class FishsuiteConfig(_ConfigBlock):
     experiment: ExperimentCfg = Field(default_factory=ExperimentCfg)
     conditions: ConditionsCfg = Field(default_factory=ConditionsCfg)
     channels: ChannelsCfg = Field(default_factory=ChannelsCfg)

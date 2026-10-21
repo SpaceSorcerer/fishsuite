@@ -14,7 +14,7 @@ These tests prove, in TDD order:
       sub-threshold pixels and keeps supra ones (deterministic), and
       ``render_panel_g`` places the yellow markers EXACTLY at the supplied
       (x_px, y_px) spot coordinates and masks the sub-threshold QKI field;
-  (2) the panel-resolution helpers (default image_key prefers the OE g2-Dox image;
+  (2) the panel-resolution helpers (default image_key is the first prefix in sorted order;
       panel-prefix -> per_image VSI row mapping);
   (3) a SMOKE test of ``build_walkthrough_figure`` against a tiny synthetic run-dir
       (a few step PNGs + minimal spot_metrics / per_image_summary / run_config +
@@ -131,14 +131,14 @@ def _write_png(path: Path, h=24, w=24, value=120):
     Image.fromarray(arr).save(path)
 
 
-def test_resolve_image_key_default_prefers_OE(tmp_path):
-    """With no image_key, the OE g2-Dox image (its prefix contains MIAT_OE) is
-    chosen over the non-targeting Nog control."""
+def test_resolve_image_key_default_is_first_sorted(tmp_path):
+    """With no image_key, the first prefix in sorted order is chosen (no
+    experiment-specific preference)."""
     wk = tmp_path / "pipeline_walkthrough"
     _write_png(wk / "Nog_noDox__Nog_07__step01_DAPI_raw.png")
     _write_png(wk / "g2_wDox_(MIAT_OE)__g2-Dox_01__step01_DAPI_raw.png")
     key = _resolve_image_key(tmp_path, None)
-    assert key == "g2_wDox_(MIAT_OE)__g2-Dox_01"
+    assert key == "Nog_noDox__Nog_07"
 
 
 def test_resolve_image_key_explicit_passthrough(tmp_path):
@@ -332,3 +332,37 @@ def test_cli_main_runs_on_synthetic(tmp_path, monkeypatch):
                   "--image", IMAGE_KEY])
     assert rc == 0
     assert (run / "figures" / "07_coloc" / "79_pipeline_walkthrough.png").exists()
+
+
+def test_panel_titles_and_suptitle_use_config_labels(tmp_path, monkeypatch):
+    monkeypatch.setattr(_io, "read_image", lambda p, *a, **k: _fake_img())
+    run, staging = _build_synthetic_run(tmp_path)
+    fig, statuses = _build_walkthrough_fig(run, staging_dir=staging, image_key=IMAGE_KEY)
+    try:
+        titles = {s["letter"]: s["title"] for s in statuses}
+        assert titles["C"] == "MIAT-640 RNA-FISH"
+        assert titles["G"] == "MIAT-640 spots on thresholded QKI-561"
+        assert fig._suptitle.get_text().startswith("MIAT-640 + QKI-561 pipeline walkthrough")
+    finally:
+        plt.close(fig)
+
+
+def test_panel_titles_fall_back_to_generic_labels():
+    from fishsuite.core.walkthrough_figure import _panel_specs
+    titles = {s["letter"]: s["title"] for s in _panel_specs("k", None, None)}
+    assert titles["G"] == "RNA1 spots on thresholded partner"
+    assert titles["H"] == "Merge: RNA1 + partner"
+
+
+def test_threshold_without_any_source_is_nan_not_a_hard_coded_value(tmp_path):
+    from fishsuite.core.walkthrough_figure import _resolve_qki_threshold
+    with pytest.warns(UserWarning, match="no partner threshold"):
+        thr = _resolve_qki_threshold(None, tmp_path, "img.vsi", {"config_resolved": {"output": {}}})
+    assert np.isnan(thr)
+    fig, ax = plt.subplots()
+    try:
+        out = render_panel_g(ax, np.arange(16.0).reshape(4, 4), thr, np.empty((0, 2)),
+                             pixel_um=0.1, add_scalebar=False)
+        assert not np.ma.is_masked(out["masked"])  # whole field shown
+    finally:
+        plt.close(fig)

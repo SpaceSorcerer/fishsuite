@@ -116,6 +116,27 @@ def merge_config(base: Dict[str, Any], over: Dict[str, Any]) -> Dict[str, Any]:
     return out
 
 
+def overlay_widget_sections(
+    cfg: Dict[str, Any],
+    sections: Dict[str, Any],
+    *,
+    defaults: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Overlay widget-backed values onto ``cfg`` without dropping other keys.
+
+    ``cfg`` is merged over the schema defaults (or ``defaults``). Each dict in
+    ``sections`` is shallow-merged into its section, so keys that have no
+    widget keep their loaded value. Non-dict entries replace the value.
+    """
+    base = merge_config(schema_defaults() if defaults is None else defaults, cfg or {})
+    for sec, vals in sections.items():
+        if isinstance(vals, dict) and isinstance(base.get(sec), dict):
+            base[sec] = {**base[sec], **copy.deepcopy(vals)}
+        else:
+            base[sec] = copy.deepcopy(vals)
+    return base
+
+
 def cfg_to_yaml_str(cfg: Dict[str, Any]) -> str:
     """Render a config dict to a stable YAML string for previewing."""
     return yaml.safe_dump(cfg, sort_keys=False, default_flow_style=False)
@@ -289,7 +310,7 @@ def fluorophore_for_channel_name(name: str) -> Dict[str, Any]:
 
 
 def lut_for_emission_nm(em_nm: int | None) -> str | None:
-    """Brian's standard wavelength → LUT mapping for RNA-FISH outputs.
+    """Default wavelength → LUT mapping for RNA-FISH outputs.
 
     Convention (set 2026-05-14):
         - DAPI / 405 nm excitation (em ~440-470) → "blue"
@@ -319,7 +340,7 @@ def lut_for_emission_nm(em_nm: int | None) -> str | None:
 def suggested_lut_for_channel_name(name: str) -> str | None:
     """Combine ``fluorophore_for_channel_name`` + ``lut_for_emission_nm``.
 
-    Returns Brian's standard LUT for a microscope channel name string
+    Returns the default LUT for a microscope channel name string
     (e.g. "640 CSU" → "yellow", "405 CSU" → "blue"), or None if no
     confident emission match.
     """
@@ -400,8 +421,7 @@ def detect_channels_from_file(file_path: str) -> Dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 # File extensions surfaced in the per-file tree. Mirrors the runner's
-# discovery rule plus a couple of extras (lif / ome.tif) Brian's lab
-# occasionally hands us.
+# discovery rule plus a couple of common extras (lif / ome.tif).
 TREE_EXTENSIONS = (".vsi", ".czi", ".tif", ".tiff", ".ome.tif",
                    ".lif", ".nd2", ".oib", ".oif")
 

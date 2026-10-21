@@ -143,12 +143,11 @@ def test_unrecorded_plane_uses_argmax_even_with_legacy_spot_z():
     assert source == 'miat_5x5_mean_argmax'
 
 
-def test_prefixed_master_tables_and_config_overlay(synthetic_run, tmp_path, monkeypatch):
+def test_master_tables_ignore_prefix_and_config_overlay(synthetic_run, tmp_path, monkeypatch):
+    # Run-level master tables are never prefixed, even when output.prefix is set.
     from fishsuite.report import ortho
     run, cfg = synthetic_run
     cfg['output']['prefix'] = 'EXP_'
-    for name in ('nuclei_metrics.csv', 'spot_metrics.csv', 'per_image_summary.csv'):
-        (run / name).rename(run / ('EXP_' + name))
     (run / 'run_config.json').write_text(json.dumps({'config_resolved': cfg}))
     override = tmp_path / 'display.yaml'
     override.write_text('output:\n  manual_antibody_max: 300\n')

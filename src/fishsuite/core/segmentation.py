@@ -228,7 +228,7 @@ def segment_nuclei(
     # have lifted into compliance.
     _user_min_area = float(p.get("min_area", 250))
     _user_max_area = float(p.get("max_area", 1e12))
-    _backend_min_area = max(250, _user_min_area // 2)
+    _backend_min_area = min(_user_min_area, max(250, _user_min_area // 2))
     kwargs = dict(
         min_area=_backend_min_area,
         max_area=_user_max_area,
@@ -318,8 +318,7 @@ def segment_nuclei(
     # [_user_min_area, _user_max_area].
     # `stats` records the two counts the label image itself cannot express:
     # how many labels the backend produced, and how many the area filter
-    # zeroed. Zeroing does NOT renumber, so ``labels.max()`` afterwards is a
-    # max label ID, not a count — hence the explicit bookkeeping.
+    # zeroed. Surviving labels are renumbered densely to 1..N afterwards.
     _n_segmented = int(np.count_nonzero(np.unique(labels)))
     if diagnostics is not None:
         # Opt-in copy for QC only; preserves the backend and filter call path.
@@ -327,7 +326,7 @@ def segment_nuclei(
         diagnostics['min_area_px'] = _user_min_area
         diagnostics['max_area_px'] = _user_max_area
     _n_area_excluded = 0
-    if _user_min_area > _backend_min_area or _user_max_area < 1e12:
+    if _user_min_area >= _backend_min_area or _user_max_area < 1e12:
         from scipy.ndimage import sum as _ndi_sum
         _label_ids = np.unique(labels)
         _label_ids = _label_ids[_label_ids != 0]
@@ -336,9 +335,17 @@ def segment_nuclei(
             _bad = _label_ids[(_areas < _user_min_area) | (_areas > _user_max_area)]
             if len(_bad) > 0:
                 _n_area_excluded = int(len(_bad))
-                _mask = np.isin(labels, _bad)
-                labels = labels.copy()
-                labels[_mask] = 0
+                # Renumber kept labels densely to 1..N (same order as
+                # relabel_sequential) and dropped ones to N+1..M, so the QC
+                # copy of the pre-filter labels keeps matching IDs.
+                _keep = _label_ids[~np.isin(_label_ids, _bad)]
+                _lut = np.zeros(int(labels.max()) + 1, dtype=labels.dtype)
+                _lut[_keep] = np.arange(1, len(_keep) + 1)
+                _lut[_bad] = np.arange(len(_keep) + 1, len(_label_ids) + 1)
+                _renum = _lut[labels]
+                if diagnostics is not None:
+                    diagnostics['labels_before_area'] = _renum.copy()
+                labels = np.where(_renum > len(_keep), 0, _renum).astype(labels.dtype)
     if stats is not None:
         stats["n_segmented"] = _n_segmented
         stats["n_area_excluded"] = _n_area_excluded
@@ -606,7 +613,7 @@ def nucleus_pre_pass(
 
     dapi_f = np.asarray(dapi_2d, dtype=np.float64)
     # scipy bins over 1..max(id) internally, so a gap in the label numbering
-    # (left by the area filter, which zeroes without renumbering) makes it
+    # (e.g. a caller-supplied label image with missing IDs) makes it
     # divide by a zero count for the absent IDs. Those bins are discarded
     # below — only IDs in `ids` are read — so silence the numpy warning rather
     # than pre-compacting the label image, which would renumber it.
@@ -738,6 +745,11 @@ def order_nuclei(
     raise ValueError(f"unknown sampling order {order!r}")
 
 
+class SamplingShortfallError(ValueError):
+    """Raised when a unit has fewer eligible nuclei than requested and
+    ``sampling.on_short == "fail"``."""
+
+
 def resolve_nucleus_sampling(
     pre: Dict[int, Dict[str, float]],
     *,
@@ -778,7 +790,7 @@ def resolve_nucleus_sampling(
     short = len(eligible) < n_target
     dropped = False
     if short and on_short == "fail":
-        raise ValueError(
+        raise SamplingShortfallError(
             f"nucleus sampling: unit {unit_key!r} has {len(eligible)} eligible "
             f"nuclei but sampling.n_per_unit is {n_target} "
             f"(sampling.on_short='fail')"

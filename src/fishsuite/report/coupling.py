@@ -18,7 +18,6 @@ ABUNDANCE = ('n_miat_spots', 'integrated_nuclear_miat')
 ASSOCIATION = ('obs_minus_null_frac_miat_spots_qki_pos', 'qki_at_spots_minus_nuclear')
 SHEET_ORDER = ['README', 'per_well', 'per_arm', 'descriptive_qc', 'contrast', 'ratio_of_ratios',
                'within_well_correlation', 'sensitivity', 'all_arms']
-PERMUTATION_NOTE = '2 v 2 wells: exact permutation has 6 allocations; smallest two-sided p = 0.333'
 MARKERS = ('o', '^', 's', 'D')
 PLOT_METRICS = (*METRICS, 'mean_nuclear_miat', 'n_miat_spots_per_100um2')
 METRIC_LABELS = {
@@ -318,7 +317,7 @@ def build_coupling(assoc_csv, treated, control, out, config=None, seed=0, n_boot
         readme.columns = ['topic', 'detail']
     sheets['README'] = pd.concat([readme, pd.DataFrame(notes)], ignore_index=True)
     descriptions = {name: f'{name}: single-plane; biological wells are replicates; descriptive, no nucleus-level tests.' for name in SHEET_ORDER}
-    descriptions['contrast'] += ' ' + PERMUTATION_NOTE
+    descriptions['contrast'] += ' ' + str(sheets['contrast']['permutation_design_note'].iloc[0])
     destination.mkdir(parents=True, exist_ok=True)
     well_key.to_csv(destination / 'figure_well_key.csv', index=False)
     workbook.write(destination / 'coupling_summary.xlsx', sheets, order=SHEET_ORDER, descriptions=descriptions, fresh=True)

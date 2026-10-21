@@ -21,8 +21,13 @@ def _present(frame, column):
 
 def resolve_well_ids(frame: pd.DataFrame, *, well_col: str = "well",
                      condition_col: str = "condition") -> tuple[pd.Series, str]:
-    """Return (well key per row, key source). Raises ValueError on ambiguity."""
-    wells = frame[well_col].astype(str)
+    """Return (well key per row, key source). Raises ValueError on ambiguity
+    or on missing (NaN / empty) well labels."""
+    raw = frame[well_col]
+    if raw.isna().any() or raw.astype(str).str.strip().eq("").any():
+        raise ValueError(f"{well_col} must be filled on every row; missing well labels "
+                         "cannot be grouped into replicate wells")
+    wells = raw.astype(str)
     if all(_present(frame, c) for c in COMPOSITE):
         parts = [frame[c].astype(str).str.strip() for c in COMPOSITE]
         if any(p.eq("").any() or p.eq("nan").any() for p in parts):

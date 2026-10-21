@@ -29,8 +29,8 @@ dependencies = [
     "scikit-image>=0.22",
     "tifffile>=2024.1",
     "stardist>=0.9",
-    # cellpose 4.x changed the model API; the vendored segmentation code targets 3.x.
-    "cellpose>=3.0,<4.0",
+    # The vendored segmentation code uses the cellpose 4.x API (default model 'cpsam').
+    "cellpose>=4.0",
     "big-fish>=0.6",
     # torch arrives transitively via cellpose, but fishsuite imports it directly
     # (core/parallel.py, core/repro.py) so it is declared explicitly.

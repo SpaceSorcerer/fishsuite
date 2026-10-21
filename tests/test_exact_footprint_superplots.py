@@ -205,6 +205,27 @@ def test_build_endpoint_source_data_excludes_controls_and_unsampled_nuclei() -> 
     assert len(source.loc[source["tier"].eq("nucleus")]) == 8
 
 
+def test_nucleus_tier_uses_the_inference_gate_without_an_include_column() -> None:
+    """Catches plotted nuclei gated differently from the tested population."""
+
+    nuclei, fovs, sets, _ = _synthetic_tables()
+    endpoint = DEFAULT_ENDPOINT_FAMILIES[0].panels[0].endpoint
+    nuclei = nuclei.drop(columns=["include"])
+    nuclei.loc[0, "sampled_in_analysis"] = False
+    source = build_endpoint_source_data(nuclei, fovs, sets, endpoint)
+    assert len(source.loc[source["tier"].eq("nucleus")]) == 7
+
+
+def test_slide_marker_tolerates_non_numeric_slide_labels() -> None:
+    from fishsuite.core.exact_footprint_superplots import _slide_marker
+
+    assert _slide_marker(1) == "o"
+    assert _slide_marker(1.0) == "o"
+    assert _slide_marker("S1") == "o"
+    assert _slide_marker(2) == "s"
+    assert _slide_marker("slide B") == "s"
+
+
 @_needs_locked_style
 def test_build_correlation_source_data_preserves_three_level_hierarchy(
     tmp_path: Path,

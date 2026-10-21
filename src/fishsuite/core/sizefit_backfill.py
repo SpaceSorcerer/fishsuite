@@ -154,6 +154,9 @@ def sizefit_run(
             if vx_nm is None or vx_nm != vx_nm or float(vx_nm) <= 0:
                 vx_nm = float(img.voxel_xy_nm) if img.voxel_xy_nm == img.voxel_xy_nm \
                     and img.voxel_xy_nm > 0 else 65.0
+                if not (img.voxel_xy_nm == img.voxel_xy_nm and img.voxel_xy_nm > 0):
+                    from .pixel_size import warn_undeclared_voxel
+                    warn_undeclared_voxel(image_name, vx_nm)
             vx_um = float(vx_nm) / 1000.0
 
             planes: Dict[str, np.ndarray] = {}

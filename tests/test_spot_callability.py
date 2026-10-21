@@ -1,6 +1,6 @@
 """Spot-callability diagnostic — is the detector actually discriminating?
 
-Encodes a hard-won lab result as a guardrail. ``foci.detect_in_sec_only`` already
+Encodes a hard-won lab result as a guardrail. The pipeline always
 runs the SAME detector on the secondary-only (no-probe) control images, and both
 count sets already flow through ``per_image_summary`` — so the one division that
 reveals whether a channel has any thresholdable object at all was computable, and
@@ -30,9 +30,8 @@ from fishsuite.core.qc import (
 )
 
 
-def _cfg(*, detect_in_sec_only=True, min_ratio=2.0) -> FishsuiteConfig:
+def _cfg(*, min_ratio=2.0) -> FishsuiteConfig:
     cfg = FishsuiteConfig()
-    cfg.foci.detect_in_sec_only = detect_in_sec_only
     cfg.foci.min_spot_signal_to_control = min_ratio
     return cfg
 
@@ -162,15 +161,16 @@ def test_no_sample_images_means_no_diagnostic():
     assert flag_spot_callability(rows, _cfg()) == []
 
 
-def test_detect_in_sec_only_off_means_no_diagnostic():
-    """Without it the controls skip detection and report a structural zero, so
-    every ratio would be infinite — reassuring and meaningless."""
+def test_diagnostic_runs_whenever_secondary_only_rows_exist():
+    """Controls are always detected, so the rates are emitted without any flag;
+    a zero control rate gives a NaN ratio and no warning."""
     rows = [
         _row("a.tif", sec_only=False, rna1=30.0),
         _row("sec.tif", sec_only=True, rna1=0.0),
     ]
-    assert flag_spot_callability(rows, _cfg(detect_in_sec_only=False)) == []
-    assert "spot_rate_signal_to_control_rna1" not in rows[0]
+    assert flag_spot_callability(rows, _cfg()) == []
+    assert rows[0]["spot_rate_sample_per_nucleus_rna1"] == pytest.approx(30.0)
+    assert np.isnan(rows[0]["spot_rate_signal_to_control_rna1"])
 
 
 # ---------------------------------------------------------------------------

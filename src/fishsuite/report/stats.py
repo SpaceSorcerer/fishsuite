@@ -1,9 +1,7 @@
 """Replicate-level statistics for the ``fishsuite report`` layer.
 
-Ported in behaviour from the one-off report builders this module replaces
-(``05_REPORT_2026-09-03/build_report.py`` and
-``14_REPORT_HARMONIZED_2026-09-03/build_report_rnaseh2b.py`` under
-``F:\\Image Analysis Work``); see ``docs/REPORT_SUBCOMMAND_2026-09-04.md``.
+Ported in behaviour from the one-off report builders this module replaces;
+see ``docs/REPORT_SUBCOMMAND.md``.
 
 The replicate unit is the WELL. Every gate runs on well means; the field of view
 is a technical replicate and the nucleus is the measurement unit.
@@ -88,8 +86,10 @@ def exact_permutation(a: np.ndarray, b: np.ndarray) -> dict:
     """Exact permutation of well labels; statistic is the absolute mean difference.
 
     With 3 versus 3 wells there are 20 assignments and each is matched by its
-    complement, so the smallest attainable two-sided p is 0.10. That floor is
-    arithmetic, not a property of the data, and is reported alongside the p.
+    complement, so the smallest attainable two-sided p is 0.10. With unequal
+    groups an assignment has no same-size complement, so the floor is
+    1/n_assignments. That floor is arithmetic, not a property of the data, and is
+    reported alongside the p.
     """
     n1, n2 = len(a), len(b)
     out = dict(perm_obs_abs_diff=np.nan, perm_n_assignments=0,
@@ -109,8 +109,9 @@ def exact_permutation(a: np.ndarray, b: np.ndarray) -> dict:
             hits += 1
         total += 1
     out.update(perm_n_assignments=total, p_permutation=hits / total,
-               perm_arithmetic_floor=2.0 / total,
-               perm_note="exact; two-sided floor is 2/n_assignments by arithmetic")
+               perm_arithmetic_floor=(2.0 if n1 == n2 else 1.0) / total,
+               perm_note="exact; two-sided floor is %d/n_assignments by arithmetic"
+                         % (2 if n1 == n2 else 1))
     return out
 
 
@@ -198,41 +199,6 @@ def tukey_two_group(groups: Dict[str, np.ndarray], test: str, reference: str,
                p_tukey_fov=padj, tukey_q=q, tukey_k=k, tukey_df=df_w,
                tukey_pooled_sd=sp)
     return out
-
-
-def _power_two_sided(d: float, alpha: float, n1: int, n2: int) -> float:
-    """Power of the two-sided two-sample t test, by quadrature over the chi-square
-    mixing variable.
-
-    scipy's ``nct`` and statsmodels' ``TTestIndPower`` are both NON-MONOTONE in
-    alpha at df = 4 below about alpha = 0.004, which is exactly where a
-    Holm-adjusted family lands, so neither is usable here. Writing the power as
-
-        T = (Z + ncp) / sqrt(V / df),  Z ~ N(0,1), V ~ chi2(df)
-        P(|T| > c) = E_V[ Phibar(c sqrt(V/df) - ncp) + Phi(-c sqrt(V/df) - ncp) ]
-
-    is stable and reproduces the published small-sample values.
-    """
-    df = n1 + n2 - 2
-    if df < 1:
-        return float("nan")
-    return _power_noncentral_t(d * math.sqrt(n1 * n2 / (n1 + n2)), df, alpha)
-
-
-def _power_noncentral_t(ncp: float, df: float, alpha: float) -> float:
-    """P(|T| > t_{1-alpha/2, df}) for T noncentral t(df, ncp), df may be fractional; quadrature as above."""
-    from scipy import integrate, stats
-
-    c = stats.t.ppf(1 - alpha / 2, df)
-    chi2 = stats.chi2(df)
-    hi = float(chi2.ppf(1 - 1e-12))
-    up, _ = integrate.quad(
-        lambda v: stats.norm.sf(c * math.sqrt(v / df) - ncp) * chi2.pdf(v), 0, hi,
-        limit=400)
-    lo, _ = integrate.quad(
-        lambda v: stats.norm.cdf(-c * math.sqrt(v / df) - ncp) * chi2.pdf(v), 0, hi,
-        limit=400)
-    return float(up + lo)
 
 
 MDE_SIM_REPS = 20_000

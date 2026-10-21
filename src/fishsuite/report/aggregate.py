@@ -609,9 +609,11 @@ def build_contrasts(well: pd.DataFrame, field: pd.DataFrame,
         out["endpoint_absent_in_run"], "column absent from this run",
         np.where(out["excluded_from_holm"].astype(bool), out["excluded_from_holm"],
                  np.where(out["descriptive_only"], "descriptive only by design", "")))
-    out = add_headline_holm(add_mixed_columns(out), alpha, ["family", "test_group"])
+    # One Holm family per (family, comparison); the same key as the delivery path.
+    holm_key = ["family", "test_group", "reference_group"]
+    out = add_headline_holm(add_mixed_columns(out), alpha, holm_key)
     out["p_welch_holm_within_family"] = np.nan
-    for _, idx in out.groupby(["family", "test_group"]).groups.items():
+    for _, idx in out.groupby(holm_key).groups.items():
         member = [i for i in idx if out.at[i, "in_holm_family"]]
         for i, a in zip(member, holm([out.at[i, "p_welch"] for i in member])):
             out.at[i, "p_welch_holm_within_family"] = a
@@ -695,7 +697,8 @@ def family_sheet(contrasts: pd.DataFrame, well: pd.DataFrame, family: str,
              "p_welch", "significant_raw_0p05", "p_welch_holm_within_family",
              "significant_holm_0p05", "mde_hedges_g_at_family_alpha",
              "observed_g_reaches_mde", "p_permutation", "perm_arithmetic_floor",
-             "p_tukey_fov"]
+             "well_p_tukey_fov", "well_tukey_difference", "well_tukey_ci95_low",
+             "well_tukey_ci95_high", "p_tukey_fov"]
     c = c.rename(columns={"mean_ref": "mean_reference"})
     front = [x for x in front if x in c.columns]
     return c[front + [x for x in c.columns if x not in front]]

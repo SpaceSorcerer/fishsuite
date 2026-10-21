@@ -50,7 +50,7 @@ def amend_rnase(sheets, run, out):
         if isinstance(data.get('alt_columns'),str): data['alt_columns'] = ()
         defs.append(ep.amend_endpoint(ep.Endpoint(**data)))
     existing = {e.name for e in defs}
-    additions = [e for e in ep.a3_endpoints([]) if e.name not in existing]
+    additions = [ep.amend_endpoint(e) for e in ep.a3_endpoints([]) if e.name not in existing]
     # Equal FOV-weighted matched-arm secondary nuclear means, as in A17.
     sec = raw.loc[raw.secondary_only.astype(str).str.lower().eq('true')].copy()
     sec['group'] = np.where(sec.image.str.contains('ko',case=False),'QKI-KO','WT')

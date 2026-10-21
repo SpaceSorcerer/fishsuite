@@ -356,12 +356,13 @@ def classify_spots_by_subnuclear_region(
     nuc_labels: np.ndarray,
     nucleolus_labels: np.ndarray,
 ) -> pd.DataFrame:
-    """Add `in_nucleolus` column (0/1) and refine `in_nucleus` to
-    exclude nucleolar spots (so the three compartments — nucleolus,
-    nucleus-excluding-nucleolus, cytoplasm — are disjoint).
+    """Add `in_nucleolus` (0/1) and, when `in_nucleus` is present, an additive
+    `in_nucleus_excluding_nucleolus` (0/1) column, so nucleolus,
+    nucleus-excluding-nucleolus and cytoplasm are disjoint. `in_nucleus`
+    itself is left unchanged.
 
     Expects spots_df with columns x_px, y_px, in_nucleus, in_cytoplasm.
-    Returns a copy with the new/updated columns.
+    Returns a copy with the new columns.
     """
     out = spots_df.copy()
     if not len(out):
@@ -373,9 +374,8 @@ def classify_spots_by_subnuclear_region(
     nucleolus_at_spot = nucleolus_labels[yi.values, xi.values]
     out["in_nucleolus"] = (nucleolus_at_spot > 0).astype(int)
 
-    # Spots that were "in_nucleus" but are actually in the nucleolus —
-    # downgrade the in_nucleus flag so the three compartments are disjoint.
-    # (in_nucleolus is treated as a strict subset of in_nucleus.)
+    # Separate column for nuclear spots outside the nucleolus; in_nucleus is
+    # not modified. (in_nucleolus is treated as a strict subset of in_nucleus.)
     if "in_nucleus" in out.columns:
         in_nuc = out["in_nucleus"].astype(bool)
         in_nucleolus = out["in_nucleolus"].astype(bool)

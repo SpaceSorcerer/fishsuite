@@ -42,15 +42,6 @@ def detect_spots(
         # Apply threshold multiplier by first running auto, then re-running with
         # multiplied threshold. This matches the Fiji `threshold_multiplier`
         # semantic.
-        spots, auto_thr = detect_spots_bigfish(
-            rna,
-            voxel_size_nm=voxel_xy_nm,
-            spot_radius_nm=spot_radius_nm,
-            voxel_z_nm=voxel_z_nm,
-            spot_radius_z_nm=spot_radius_z_nm,
-            threshold=None,
-        )
-        used_threshold = auto_thr
         if threshold is not None:
             spots, used_threshold = detect_spots_bigfish(
                 rna,
@@ -58,18 +49,28 @@ def detect_spots(
                 spot_radius_nm=spot_radius_nm,
                 voxel_z_nm=voxel_z_nm,
                 spot_radius_z_nm=spot_radius_z_nm,
-                threshold=int(threshold),
+                threshold=float(threshold),
             )
-        elif abs(threshold_multiplier - 1.0) > 1e-6:
-            t = max(1.0, auto_thr * float(threshold_multiplier))
-            spots, used_threshold = detect_spots_bigfish(
+        else:
+            spots, auto_thr = detect_spots_bigfish(
                 rna,
                 voxel_size_nm=voxel_xy_nm,
                 spot_radius_nm=spot_radius_nm,
                 voxel_z_nm=voxel_z_nm,
                 spot_radius_z_nm=spot_radius_z_nm,
-                threshold=int(t),
+                threshold=None,
             )
+            used_threshold = auto_thr
+            if abs(threshold_multiplier - 1.0) > 1e-6:
+                t = max(1.0, auto_thr * float(threshold_multiplier))
+                spots, used_threshold = detect_spots_bigfish(
+                    rna,
+                    voxel_size_nm=voxel_xy_nm,
+                    spot_radius_nm=spot_radius_nm,
+                    voxel_z_nm=voxel_z_nm,
+                    spot_radius_z_nm=spot_radius_z_nm,
+                    threshold=float(t),
+                )
     elif backend == "log":
         spots, used_threshold = detect_spots_log(
             rna,
@@ -99,12 +100,8 @@ def _spots_to_dataframe(spots: np.ndarray, rna: np.ndarray, threshold_used: floa
             except Exception:
                 ipeak = float("nan")
         else:
-            if len(row) >= 3 and rna.ndim == 2:
-                # blob_log returns (y, x, sigma)
-                y, x = int(row[0]), int(row[1])
-            else:
-                # bigfish 2D returns (y, x)
-                y, x = int(row[0]), int(row[1])
+            # bigfish 2D returns (y, x); blob_log returns (y, x, sigma)
+            y, x = int(row[0]), int(row[1])
             z = 0
             try:
                 ipeak = float(rna[y, x])

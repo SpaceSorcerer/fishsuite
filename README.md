@@ -2,147 +2,89 @@
 
 [![CI](https://github.com/SpaceSorcerer/fishsuite/actions/workflows/test.yml/badge.svg)](https://github.com/SpaceSorcerer/fishsuite/actions/workflows/test.yml)
 
-**Self-contained Python pipeline for RNA-FISH / immunofluorescence (IF) image quantification and colocalization — runs without Fiji or ImageJ.**
+**A self-contained Python pipeline for RNA-FISH and immunofluorescence (IF) image quantification and colocalization. It runs without Fiji or ImageJ.**
 
-`fishsuite` segments nuclei (Cellpose / StarDist / Otsu), detects RNA-FISH spots (BigFISH LoG or plain LoG), measures per-nucleus spot counts, intensities and nuclear-vs-cytoplasmic distribution, and quantifies colocalization between two channels — including a literature-grounded **rotation "proper-background" null** for spot-vs-diffuse-protein association. It is built for *Homo sapiens* fluorescence microscopy (hESC and cardiomyocyte RNA-FISH / IF), runs from a single `fishsuite` command-line tool or a PySide6 GUI, and writes Excel-explorable result workbooks plus publication-ready figures.
+`fishsuite` segments nuclei (Cellpose, StarDist or Otsu), detects RNA-FISH spots (BigFISH LoG or plain LoG), measures per-nucleus spot counts, intensities and nuclear-versus-cytoplasmic distribution, and quantifies colocalization between two channels. Colocalization includes a rotation "proper-background" null for spots against a diffuse protein. It runs from one `fishsuite` command or a PySide6 desktop GUI, and writes Excel workbooks plus publication-ready figures.
 
-- **Version:** 0.1.0
+- **Version:** 1.0.0
 - **License:** MIT
-- **Scope:** *Homo sapiens* only. Tooling, presets and conventions assume human hESC / d8-cardiomyocyte imaging.
-- **Status:** `rna_only`, `rna_rna`, `rna_protein` and `if_intensity` are the production modes (validated end-to-end on H9 hESC, BIN1 d8-cardiomyocyte, MIAT×QKI colocalization and panQKI WT-vs-KO antibody-validation data). `ab_ab`, `protein_only` and `pub_images` are **not yet ported** — each is a one-line stub that aliases `rna_only` (see [Analysis modes](#analysis-modes)).
-- **Self-contained:** the segmentation and spot-detection routines are the lab's own implementations, vendored verbatim into the package at `src/fishsuite/core/_vendor/`. Their source commit and per-file SHA-256 checksums are recorded in `core/_vendor/PROVENANCE.md` and enforced by `tests/test_vendor_parity.py`, so an installed copy can be shown to be the code that produced the published numbers. No Fiji, ImageJ or external script tree is required to run the pipeline.
-
-> This README documents the actual source of this branch. Where a feature is opt-in, gated, or a stub, that is stated explicitly.
+- **Scope:** validated on human hESC and cardiomyocyte RNA-FISH and IF data. Nothing in the code is species-specific. Defaults that depend on pixel size (nuclear area limits, spot radius, ring and disk sizes) must be retuned for your objective and camera.
+- **Status:** `rna_only`, `rna_rna`, `rna_protein` and `if_intensity` are production modes. `ab_ab`, `protein_only` and `pub_images` are not yet implemented (see [Analysis modes](#analysis-modes)).
+- **Self-contained:** segmentation and spot-detection code is vendored at `src/fishsuite/core/_vendor/`, checksum-pinned in `_vendor/PROVENANCE.md` and checked by `tests/test_vendor_parity.py`.
 
 ---
 
 ## Table of contents
 
-1. [Overview](#overview)
-2. [Highlights](#highlights)
-3. [Installation and environment](#installation-and-environment)
-4. [Quickstart](#quickstart)
+1. [Installation](#installation)
+2. [Quickstart](#quickstart)
+3. [Organising your images](#organising-your-images)
+4. [Pixel size and channels](#pixel-size-and-channels)
 5. [Analysis modes](#analysis-modes)
 6. [The pipeline in depth](#the-pipeline-in-depth)
 7. [Colocalization](#colocalization)
-8. [Condition groups and the report layer](#condition-groups-and-the-report-layer)
-9. [CLI reference](#cli-reference)
+8. [Condition groups and the report](#condition-groups-and-the-report)
+9. [Command reference](#command-reference)
 10. [The desktop GUI](#the-desktop-gui)
 11. [Configuration and presets](#configuration-and-presets)
-12. [Outputs and metrics](#outputs-and-metrics)
+12. [Outputs](#outputs)
 13. [Statistics conventions](#statistics-conventions)
 14. [Reproducibility](#reproducibility)
 15. [Testing](#testing)
 16. [Repository layout](#repository-layout)
 17. [Citations and methods grounding](#citations-and-methods-grounding)
 18. [Scope and limitations](#scope-and-limitations)
-19. [Changelog / recent additions](#changelog--recent-additions)
-20. [Contributing](#contributing)
+19. [Changelog and contributing](#changelog-and-contributing)
 
 ---
 
-## Overview
+## Installation
 
-`fishsuite` is a standalone re-implementation of a Fiji image-analysis pipeline, written in pure Python so it can run headless, in parallel, and without ImageJ. It takes a folder of microscope images (`.tif`/`.tiff` and OME-TIFF in a base install; `.vsi`, `.czi`, `.lif`, `.nd2`, `.oib`/`.oif` with the [`bioformats` extra](#which-file-formats-a-base-install-can-read)) and produces a complete, condition-aware quantification of an RNA-FISH / IF experiment.
-
-The pipeline is organized around four building blocks:
-
-- **Nucleus segmentation** — Cellpose (incl. AMD-GPU via DirectML), StarDist, or Otsu, with border exclusion, label smoothing, optional Voronoi-expanded cytoplasm, and an opt-in ghost-nucleus rejection rule.
-- **Spot detection** — BigFISH Laplacian-of-Gaussian (default) or a plain scikit-image LoG, with physically-sized spot kernels and an auto-threshold scaled by a user multiplier.
-- **Colocalization** — whole-nucleus pixel coefficients (Pearson, Spearman, Manders M1/M2, Li ICQ, cosine, Jaccard, Dice), nearest-neighbor spot-to-spot pairing, and a spot-centric partner-intensity statistic tested against **three nulls** (position-randomization, rotation, translation).
-- **Nuclear retention / N:C** — per-nucleus nuclear-vs-cytoplasmic spot fractions and intensity ratios — the floor-robust readout for RNA nuclear-retention experiments.
-
-It is for wet-and-dry-lab biologists who acquire RNA-FISH / IF stacks and want reproducible, committee-defensible quantification with explorable Excel deliverables — without manual ImageJ work.
-
-## Report features added September 7–8, 2026
-
-- Locked replicate-simple well points, mean ± SD columns, shared arm axes, full/focus PNG and editable SVG.
-- Mixed-model headline with explicit Welch fallback/footer; Student and FOV-outlier sensitivities.
-- DAPI-based localization endpoints, unretained-object census and cytoplasmic-call QC.
-- Validated persisted coloc import, Pearson/ICQ and Costes-converged-only Manders figures.
-- Preferential-coloc ratios with covariance CI, exact tests, R-MDE and qualified readouts.
-- Workbook-traced deck export, independent chart assets and matched per-well micrograph panels.
-- `conditions.groups` collapses native figures by condition; `native-figures` regenerates from finished CSVs.
-- Release-marker guards and separate reporter/producing-commit provenance.
-
-See [flags, examples and implementation limits](docs/REPORT_FEATURES_2026-09-08.md), including the current `figures/` versus `deck_figures` distinction.
-
-## Highlights
-
-- **Single CLI** (`fishsuite`) with `run`, `preview`, `presets`, `init`, `gui` and three CPU-only post-run utilities (`backfill`, `walkthrough`, `postrun`).
-- **PySide6 desktop GUI** (`fishsuite gui`) with channel auto-detection, per-file selection, live YAML preview and readiness checks.
-- **Three production analysis modes**: `rna_only`, `rna_rna`, `rna_protein` (the last routes through the two-channel core with antibody-aware handling).
-- **Diffuse-antibody handling** — treat a dense nuclear IF channel (e.g. QKI) as an intensity layer instead of spot-detecting it (`detect_antibody_spots: false`).
-- **Rotation "proper-background" null** — a registration-destroying, structure-preserving control for whether a partner protein is concentrated at RNA spots *beyond* shared sub-nuclear compartmentalization.
-- **Locked, defensible z-handling** — intensity-weighted autofocus with a central-fraction peak guard, and a fixed-N objective-window max-projection.
-- **Excel-explorable deliverables** — `analysis_summary.xlsx` (PI report, column glossary, group comparison with Mann-Whitney U + Cliff's delta) and `analysis_raw_data.xlsx`.
-- **Reproducibility built in** — global seed, deterministic nulls, `versions.txt` + `command.log` written at run start.
-- **Parallel + GPU-aware** — memory/core-aware worker counts; cellpose on CPU, AMD (DirectML) or NVIDIA (CUDA); DirectML segmentation forced single-GPU.
-- **Tested on Linux and Windows, Python 3.10 and 3.12** — see the CI badge above for the current status.
-
----
-
-## Installation and environment
-
-`fishsuite` is an editable-installed Python package. Two conda environments exist on the lab workstation:
-
-| Env | Purpose |
-|---|---|
-| `fishproc_dml` | **DirectML / AMD GPU.** Required when a preset sets `nuclei.cellpose_device: directml`. |
-| `fishproc` | **CPU fallback.** Use when a preset sets `cellpose_device: cpu`. The post-run utilities (`backfill`, `walkthrough`, `postrun`) are CPU-only and run in either env. |
-
-> GPU is used **once**, during `fishsuite run`, for Cellpose nucleus segmentation (and accelerates the run overall). All post-run utilities are CPU-only. DirectML targets a single AMD GPU — run **one** GPU job at a time.
-
-### Editable install
-
-```powershell
-# DirectML / AMD GPU env:
-"C:\Users\ambur\miniconda3\envs\fishproc_dml\python.exe" -m pip install -e E:\Claude\fishsuite
-
-# or the CPU env:
-"C:\Users\ambur\miniconda3\envs\fishproc\python.exe"     -m pip install -e E:\Claude\fishsuite
-```
-
-This installs the `fishsuite` console script (entry point `fishsuite.cli:cli`).
-
-### Dependencies
-
-Runtime dependencies (from `pyproject.toml`):
-
-`numpy>=1.24,<2.0`, `scipy>=1.10`, `scikit-image>=0.22`, `tifffile>=2024.1`, `stardist>=0.9`, `cellpose>=3.0,<4.0`, `torch>=2.0`, `big-fish>=0.6`, `pillow>=10.0`, `roifile>=2023.8`, `bioio>=3.0`, `pydantic>=2.5`, `click>=8.1`, `rich>=13.0`, `psutil>=5.9`, `pyyaml>=6.0`, `openpyxl>=3.1`, `pandas>=2.0`, `matplotlib>=3.7`.
-
-### Which file formats a base install can read
-
-**A base install reads TIFF and OME-TIFF only.** Proprietary microscope formats — `.vsi`, `.czi`, `.lif`, `.nd2`, `.oib`/`.oif` — go through Bio-Formats, which is an optional extra:
+Use a fresh virtual environment. Python must be in the range declared by `requires-python` in `pyproject.toml`.
 
 ```bash
-pip install fishsuite                 # TIFF / OME-TIFF
-pip install "fishsuite[bioformats]"   # + .vsi .czi .lif .nd2 .oib/.oif
+# venv
+python -m venv fishsuite-env
+source fishsuite-env/bin/activate        # Windows: fishsuite-env\Scripts\activate
+
+# or conda
+conda create -n fishsuite python=3.12
+conda activate fishsuite
 ```
 
-Bio-Formats runs on the JVM, so `[bioformats]` needs a **JDK installed**, and the Bio-Formats jars are downloaded on first use (so the first read needs network access). That is why it is opt-in: it is the single largest install-failure surface, and a user who only has TIFFs should not have to clear it.
+Then install from PyPI, or from a clone in editable mode:
 
-It is also opt-in for a harder reason. `bioio-bioformats` depends on `bffile`, which declares `numpy>=2.1.0`, and fishsuite pins `numpy<2.0` because StarDist/TensorFlow require it. While `bioio-bioformats` sat in the base dependencies, **`pip install fishsuite` failed with `ResolutionImpossible` on every Python version.** The extra's floor is `>=1.3` rather than `>=2.0` so that pip can backtrack past that conflict to a version that resolves.
+```bash
+pip install fishsuite                    # base install
+pip install "fishsuite[all]"             # base + bioformats + gui
 
-Optional extras:
+git clone https://github.com/SpaceSorcerer/fishsuite
+cd fishsuite
+pip install -e ".[all]"
+```
 
-| Extra | Installs | For |
+This installs the `fishsuite` command. Dependency pins live in `pyproject.toml`; read them there rather than from this page.
+
+Cellpose and torch come with the base install. The StarDist backend also needs TensorFlow, which you install separately (`pip install tensorflow`). If you do not want TensorFlow, set `nuclei.backend: cellpose` or `otsu` in your config.
+
+### Extras
+
+| Extra | Adds | Use it for |
 |---|---|---|
-| `bioformats` | `bioio-bioformats>=1.3` | `.vsi`, `.czi`, `.lif`, `.nd2`, `.oib`/`.oif`. Needs a JDK. |
-| `gui` | `PySide6>=6.6` | `fishsuite gui` |
-| `directml` | `torch-directml>=0.2` | AMD GPU cellpose (Windows only) |
-| `all` | `bioformats` + `gui` | a normal interactive workstation |
+| `bioformats` | `bioio-bioformats` | `.vsi`, `.czi`, `.lif`, `.nd2`. Needs a JDK; the Bio-Formats jars download on first use. |
+| `gui` | `PySide6` | `fishsuite gui` |
+| `deck` | `python-pptx` | PowerPoint export from `fishsuite report --deck` |
+| `directml` | `torch-directml` | AMD GPU Cellpose on Windows |
+| `all` | `bioformats` + `gui` | a normal workstation |
 | `dev` | pytest, hypothesis, ruff, build, twine | development |
 
-> **Install the reader via the extra, not as a separate command.** `pip install "fishsuite[bioformats]"` resolves everything together and lands on numpy 1.26.4. Running `pip install bioio-bioformats` *afterwards* as its own command lets pip satisfy that package in isolation — observed to upgrade numpy to 2.2.6 and break the `numpy<2.0` pin that StarDist/TensorFlow need, silently, in an environment that had been working.
+A base install reads TIFF and OME-TIFF. Install the `bioformats` extra for proprietary formats.
 
-> **Do not install `bioio-tifffile` or another third-party bioio reader plugin to work around the above.** `bioio` picks a plugin per file, and a tifffile-based plugin resolves an ambiguous multi-plane TIFF's extra axis as **Z or T instead of C**. Channel indices then point at the wrong planes: DAPI segmentation runs on the RNA plane and **finds zero nuclei**, silently, with no error. If a run reports 0 nuclei on a multi-plane TIFF that clearly has nuclei, suspect reader axis inference first — check `n_channels` for the file and confirm it matches the channels you expect. Use the `bioformats` extra instead. (A guard that warns when a channel count looks like a mis-inferred time or z axis would be worth adding; it is not implemented yet.)
-
-Python `>=3.10,<3.13`. The upper bound is forced by `numpy<2.0` (a TensorFlow/StarDist transitive constraint): there are no numpy 1.x wheels for CPython 3.13, so installing there tries to build numpy from source and fails.
+> **Do not install extra bioio reader plugins** such as `bioio-tifffile`, and do not run `pip install bioio-bioformats` on its own. A third-party plugin can read the channel axis of a multi-plane TIFF as Z or T, so DAPI segmentation runs on the wrong plane and finds zero nuclei without an error. A separate install can also upgrade numpy past the pin. Always install the reader through the `bioformats` extra.
 
 ### GPU acceleration
 
-The GPU is used at exactly one step — Cellpose nucleus segmentation during `fishsuite run`. Every post-run utility is CPU-only. Set `nuclei.cellpose_device`:
+The GPU is used only for Cellpose nucleus segmentation during `fishsuite run`. All post-run utilities run on the CPU. Set `nuclei.cellpose_device`:
 
 | Value | Hardware | Install |
 |---|---|---|
@@ -150,94 +92,155 @@ The GPU is used at exactly one step — Cellpose nucleus segmentation during `fi
 | `cuda` | NVIDIA | a CUDA build of torch from pytorch.org |
 | `directml` | AMD, Windows | `pip install "fishsuite[directml]"` |
 
-`cuda` and `directml` both fall back to CPU with a warning on stderr rather than failing the run if the device turns out to be unavailable, so a config is portable across machines.
-
-The two GPU paths are **not** interchangeable internally. DirectML has no sparse kernel, so the DirectML path builds the cellpose network in fp32 and forces the flow-dynamics / mask-reconstruction step back onto the CPU. CUDA has that kernel and does not get the workaround — applying it would strand most of the speedup. If you are reading the code, that branch is `_install_cuda_cellpose_route` in `core/segmentation.py`, and it is conditioned on `device == "directml"` specifically rather than on `device != "cpu"`.
-
-DirectML targets a single AMD GPU — run one GPU job at a time.
-
-> **Notes on numpy/Bio-Formats:** numpy is pinned `<2.0` for TensorFlow/StarDist compatibility. On import, `fishsuite` forces a headless matplotlib backend (`MPLBACKEND=Agg`) and applies a small `bffile` numpy-1 compatibility monkeypatch (`_apply_bffile_compat_patch` in `__init__.py`) so `bioio` works under numpy 1.x — that patch is *why* `bffile` runs fine on numpy 1.26.4 despite declaring `numpy>=2.1.0`, and it is a no-op when `bffile` is absent. Bio-Formats runs under a JVM; truncated/0-byte image files (`<512` bytes) are rejected before reaching it (a guard against native JVM crashes).
+If the requested device is unavailable, the run falls back to CPU with a warning. DirectML targets one GPU, so run one DirectML job at a time.
 
 ---
 
 ## Quickstart
 
-Start with the [short PowerShell guide](docs/QUICKSTART.md) for this workstation.
-For the desktop launcher and report controls, see [GUI status](docs/GUI_STATUS.md).
+The short version is in [docs/QUICKSTART.md](docs/QUICKSTART.md).
 
-Pick the preset closest to your experiment, dry-run it to verify the discovered roster, then run for real and check the outputs.
-
-```powershell
-# 1) List the built-in presets
+```bash
+# 1. Copy the closest portable preset and edit it for your data
 fishsuite presets list
+fishsuite presets show generic_100x_0p065 > my_experiment.yaml
 
-# 2) Print one to inspect/clone
-fishsuite presets show h9_miat_kd_rerun_iwfocus_2026-05-31
+# 2. Dry-run: list the images and conditions found, process nothing
+fishsuite run -c my_experiment.yaml -i ./raw/my_experiment -o ./results/my_experiment_run1 --dry-run
 
-# 3) ALWAYS dry-run first: discover inputs and print the plan, do NOT process
-fishsuite run `
-  -c "E:\Claude\fishsuite\src\fishsuite\config\presets\h9_miat_kd_rerun_iwfocus_2026-05-31.yaml" `
-  -i "F:\Raw Images\H9-MIAT-KD-ASO\<dataset>" `
-  -o "F:\Image Analysis Work\H9-Output\RUN_<descriptor>_<timestamp>" `
-  --dry-run
+# 3. Run
+fishsuite run -c my_experiment.yaml -i ./raw/my_experiment -o ./results/my_experiment_run1
 
-# 4) Real run (new, timestamped output dir; raw input dirs are read-only)
-fishsuite run `
-  -c "E:\Claude\fishsuite\src\fishsuite\config\presets\h9_miat_kd_rerun_iwfocus_2026-05-31.yaml" `
-  -i "F:\Raw Images\H9-MIAT-KD-ASO\<dataset>" `
-  -o "F:\Image Analysis Work\H9-Output\RUN_<descriptor>_<timestamp>"
-
-# 5) Check outputs (run-root master tables + workbook)
-#    per_image_summary.csv, nuclei_metrics.csv, analysis_summary.xlsx,
-#    qc_overlays/, publication_images/, masks/
+# 4. Compare conditions (needs conditions.groups, see below)
+fishsuite report --run ./results/my_experiment_run1
 ```
 
-The dry-run flag is exactly `--dry-run` (it exists only on `run`). Use a **new, descriptively-named, timestamped output directory for every run** — never overwrite a prior run's folder, and never write into a raw-image directory.
+Use a new output folder for every run. Never write into the raw-image folder.
 
-Single-image preview (debug):
+---
 
-```powershell
-fishsuite preview "F:\Raw Images\...\image01.vsi" -c <preset>.yaml -o "F:\...\preview01"
+## Organising your images
+
+`fishsuite run -i <folder>` discovers images with these extensions only: `.vsi`, `.czi`, `.lif`, `.nd2`, `.tif`, `.tiff`. Files and folders whose names start with `_` are skipped.
+
+**One subfolder per well (recommended).** Each subfolder is one well, which `fishsuite` calls a condition. Its name is the condition label unless you map it:
+
+```
+raw/my_experiment/
+  WT_1/        img01.tif  img02.tif ...
+  WT_2/
+  KO_1/
+  KO_2/
+  Sec-Only/
 ```
 
-Or the GUI:
-
-```powershell
-fishsuite gui
+```yaml
+conditions:
+  mode: subfolders
+  subfolder_conditions: {WT_1: WT_1, WT_2: WT_2, KO_1: KO_1, KO_2: KO_2}
+  sec_only_folders: ["Sec-Only"]
 ```
+
+- `subfolder_conditions` maps a folder name to a condition label. An unmapped folder uses its own name and logs a warning. Set `strict_subfolders: true` to make an unmapped folder an error.
+- `sec_only_folders` lists secondary-only control folders. `sec_only_files` does the same for filename substrings. These images are labelled `Sec-Only` and never enter a biological group.
+- `exclude_subfolders` lists folders to skip.
+- When subfolders exist, image files sitting directly in the input folder are ignored, with a warning that names them.
+- Discovery looks one level deep. Set `recursive_discovery: true` to walk nested folders; nested folder keys use forward slashes, for example `plate1/WT_1`.
+
+**One flat folder, condition in the filename.** Use `filename_conditions`, an ordered list of `[substring, label]` pairs. The first pair whose substring appears in the filename (case-insensitive) sets the condition. Set `strict_filenames: true` to reject files that match no pair.
+
+```yaml
+conditions:
+  filename_conditions:
+    - ["_ctrl_", "Control"]
+    - ["_treated_", "Treated"]
+```
+
+**Condition is the line, well is in the filename.** If your folders name the condition but each filename carries the well, set `well_from_image` to a regex with exactly one capture group, for example `'_((?:WT|KO)-\d+)_'` for `sample_WT-1_00.tif`. Every biological image must match, or the run stops.
+
+`--dry-run` prints every discovered image with its condition and secondary-only flag. Check it before every real run. The run also writes the full roster to `resolved_experiment_hierarchy.csv`. For the GUI workflow and the condition, well and field hierarchy, see [docs/CONDITIONS.md](docs/CONDITIONS.md).
+
+---
+
+## Pixel size and channels
+
+### Pixel size
+
+The lateral pixel size is read from image metadata. Set `foci.bigfish_voxel_size_nm` (and `foci.bigfish_voxel_z_nm` for z) to a positive value in nanometres to override it; `0` means read from metadata. In `if_intensity` mode the key is `if_intensity.pixel_size_um` (`0` = metadata).
+
+When neither the config nor the image gives a pixel size:
+
+- The figure and post-run tools (walkthrough, backfill, figure panels) fall back to **0.13 um/px** and log a warning. `fishsuite fig-panels --px-um` overrides it.
+- The per-image analysis modes substitute 65 nm/px and log a warning.
+- The radial profile refuses to run rather than report distances in the wrong units.
+
+Areas, distances, scale bars and the BigFISH spot kernel all depend on pixel size. If your images carry no calibration, set `foci.bigfish_voxel_size_nm`.
+
+### Channels
+
+Channel indices are set in the `channels` block: `dapi`, `rna`, `rna2`, `antibody`, `antibody2`. They are 0-indexed unless `one_indexed: true`. `-1` means auto-detect.
+
+Auto-detection reads the channel names in the image metadata:
+
+- DAPI: a name containing `dapi`, `hoechst`, `draq5` or `405`.
+- RNA: a name containing `488`, `fitc`, `gfp`, `555`, `tritc`, `cy3` or `561`.
+- If no name matches DAPI, the brightest unassigned channel is taken as DAPI. Any remaining channel fills RNA in order.
+
+Set the indices explicitly when:
+
+- the mode is `rna_rna` or `rna_protein` (`rna2` and `antibody` have no auto-detection and must be set);
+- your RNA probe is in the far-red (640/647 names are not RNA patterns);
+- the metadata has no channel names, or generic ones such as `C0`, `C1`;
+- the dry run or the first QC overlay shows the wrong channel as DAPI.
+
+`*_label` fields name each channel in filenames and legends. `*_lut` fields set the display colour. A common convention colours by emission wavelength: 640/647 yellow, 561/568/594 magenta, 488 green, DAPI/405 blue.
 
 ---
 
 ## Analysis modes
 
-The mode is set by `channels.analysis_mode`. The dispatcher (`core/modes/__init__.py`) maps each mode name to its implementation:
+The mode is `channels.analysis_mode`.
 
 | `analysis_mode` | Status | Channel roles | What it does |
 |---|---|---|---|
-| `rna_only` | Production | `dapi`, `rna` | One FISH target. Per-nucleus spot counts (nuclear/cyto/total), `nuclear_spot_fraction`, measured spot sizes, spot/peak intensities, nuclear-vs-cyto intensity (N:C), and thresholded compartment intensity. (Single channel → no pixel-pixel coloc.) |
-| `rna_rna` | Production | `dapi`, `rna`, `rna2` | Two distinct FISH targets. Everything in `rna_only` per channel, **plus** spot-to-spot nearest-neighbor pairing, whole-nucleus pixel colocalization (Pearson/Spearman/Manders/Li ICQ/cosine/Jaccard/Dice), active-TS and mature-mRNA proxies, and (gated) partner-intensity + nulls. `rna2` is required. |
-| `rna_protein` | Production | `dapi`, `rna`, `antibody` | FISH + IF. **Routes through the `rna_rna` core**: the antibody channel is mapped into the `rna2` slot, the full two-channel analysis runs, then every `rna2_*` output is relabeled `protein_*`. Supports diffuse-antibody handling. |
-| `if_intensity` | Production | `dapi`, `antibody` | **Plate-level** antibody-validation intensity mode (no spot detection). Per-nucleus mean antibody intensity across a multi-well plate, routed per well from a `plate_layout_csv`; exposure filtering, fold-over-secondary-only normalization, cross-condition Welch statistics, SuperPlots, and shared-display micrographs. Because it is plate-level rather than per-image, `runner.run_batch` diverts to `run_if_batch` instead of the per-image `ImageResult` contract. |
-| `ab_ab` | **Not yet ported** | — | One-line stub (`core/modes/ab_ab.py:7`) that calls `rna_only.run_one`. Selecting it gives you single-channel `rna_only` output, **not** two-antibody coloc. |
-| `protein_only` | **Not yet ported** | — | One-line stub (`core/modes/protein_only.py:7`) that calls `rna_only.run_one`. For per-nucleus protein intensity today, use `if_intensity` (plate-level) or `rna_protein` with `detect_antibody_spots: false`. |
-| `pub_images` | **Not yet ported** | — | One-line stub (`core/modes/pub_images.py:7`) that calls `rna_only.run_one`. To regenerate figures from a finished run, use the `fishsuite if-pub-images` / `walkthrough` / `postrun` subcommands instead. |
-
-> The three stubs are registered so that `get_mode()` resolves them, and they are wired to `rna_only` rather than raising. They are **aliases, not implementations** — do not read their output as two-antibody or figures-only results.
-
-### Channel roles and LUT-by-wavelength
-
-Channel indices are configured per dataset (`channels.dapi/rna/rna2/antibody`, `-1` = auto-detect; 0-indexed unless `one_indexed: true`). The lab convention assigns pseudo-color **by emission wavelength, not by probe** — e.g. 640/647 → yellow, 561/568/594 → magenta, 488 → green, DAPI/405 → blue — via `*_lut` fields. Channel `*_label` fields name each channel in filenames and burned-in legends.
+| `rna_only` | Production | `dapi`, `rna` | One FISH target. Per-nucleus spot counts (nuclear, cytoplasmic, total), `nuclear_spot_fraction`, measured spot sizes, spot and peak intensities, nuclear-versus-cytoplasmic intensity, and thresholded compartment intensity. |
+| `rna_rna` | Production | `dapi`, `rna`, `rna2` | Two FISH targets. Everything in `rna_only` per channel, plus spot-to-spot pairing, whole-nucleus pixel colocalization and the optional partner-intensity nulls. |
+| `rna_protein` | Production | `dapi`, `rna`, `antibody` | FISH plus IF. Runs the `rna_rna` core with the antibody in the second slot, then renames `rna2_*` outputs to `protein_*`. Supports diffuse-antibody handling. |
+| `if_intensity` | Production | `dapi`, `antibody` | Plate-level antibody-validation intensity. No spot detection. Per-nucleus antibody intensity per well, exposure checks, fold over secondary-only, Welch statistics on wells, SuperPlots and shared-display micrographs. |
+| `ab_ab`, `protein_only`, `pub_images` | Not implemented | | Reserved names. Do not select them. For per-nucleus protein intensity use `if_intensity`, or `rna_protein` with `detect_antibody_spots: false`. To regenerate figures use the post-run commands. |
 
 ### Diffuse-antibody handling
 
-In `rna_protein` mode, `rna_protein.run_one` calls the `rna_rna` core with `rna2_is_antibody=True`. When the antibody is a **diffuse, abundant nuclear protein** (e.g. QKI IF that fills the nucleoplasm rather than forming sparse puncta), spot-detecting it carpets every nucleus with meaningless "spots." Set:
+When the antibody fills the nucleoplasm instead of forming sparse puncta, spot detection covers every nucleus with meaningless spots. In `rna_protein` mode set:
 
 ```yaml
 foci:
-  detect_antibody_spots: false   # rna_protein only
+  detect_antibody_spots: false
 ```
 
-With `detect_antibody_spots: false` **and** `rna2_is_antibody` (i.e. in `rna_protein`), the antibody channel is **not** spot-detected (empty spot set). The antibody **pixel** plane is still loaded, so pixel colocalization and the partner-intensity nulls — which sample antibody **pixels** at the RNA1 spots, never antibody spots — are unaffected. Plain `rna_rna` (two real FISH targets) always detects both channels regardless of this flag.
+The antibody channel is then not spot-detected. Its pixels are still loaded, so pixel colocalization and the partner-intensity nulls, which sample antibody pixels at RNA spots, are unaffected. Plain `rna_rna` always detects both channels.
+
+### `if_intensity` plate map
+
+`if_intensity` reads one subfolder per well. The well number is parsed from the folder name (`well1`, `well-1`, `well_1`, `well 1`). Image files are matched by `if_intensity.input_glob_exts` (default `["vsi"]`).
+
+`if_intensity.plate_layout_csv` is required. It has one row per well. Column names are case-insensitive; the first matching alias wins:
+
+| Role | Accepted column names | Values |
+|---|---|---|
+| well | `well`, `well_num`, `well_number` | integer well number |
+| genotype | `genotype`, `geno`, `line` | any value containing `KO` is KO; everything else is WT |
+| staining arm | `staining_arm`, `arm`, `staining` | any value containing `primary` is a primary well; everything else is secondary-only |
+| secondary | `secondary`, `secondary_label_in_layout`, `secondary_antibody`, `secondary_label`, `secondary_label_in_folder_name` | values containing `647` become `647`; values containing `568` or `565` become `568` |
+
+```csv
+well,genotype,staining_arm,secondary
+1,WT,primary,647
+2,KO,primary,647
+3,WT,secondary-only,647
+```
+
+Each secondary is routed to an image channel by `if_intensity.signal_channel_map` (default `{"647": "640", "568": "561", "565": "561"}`, matched as substrings of the channel names). DAPI is found by `if_intensity.dapi_channel_key` (default `"405"`). `if_intensity.well_secondary_overrides` replaces the secondary for named wells.
 
 ---
 
@@ -245,185 +248,147 @@ With `detect_antibody_spots: false` **and** `rna2_is_antibody` (i.e. in `rna_pro
 
 ### Segmentation
 
-> **Standing stack, decided 2026-09-03:** cellpose **4.2.1.1** with model
-> **`cpsam_v2`**, plus the DAPI Otsu pre-clip
-> (`nuclei.cellpose_preclip_dapi_otsu`, available but **default off**). Note that
-> cellpose **4.1.1 does not know the name `cpsam_v2`**: it silently substitutes
-> `cpsam` and logs only a warning naming the substitute, so a downgraded
-> environment segments with the wrong model and still exits 0. Check
-> `versions.txt` and pin 4.2.1.1.
+`nuclei.backend` selects one of three backends:
 
-`segment_nuclei(dapi_2d, backend, params)` dispatches to one of three backends:
+- **StarDist** (`stardist`, model `2D_versatile_fluo`): `prob_threshold`, `nms_threshold`, `n_tiles`, `stardist_gauss_sigma`, optional `stardist_postprocess` (`none`, `dilate`, `watershed_otsu`, `watershed_triangle`).
+- **Cellpose** (`cellpose`, model `cpsam`): `cellpose_diameter_px` (0 = auto), `cellpose_flow_threshold`, `cellpose_cellprob_threshold`, `cellpose_device`. Use the cellpose version pinned in `pyproject.toml`; `versions.txt` records the version each run used.
+- **Otsu** (`otsu`): plain thresholding, no ML dependency.
 
-- **StarDist** (`backend: stardist`, default model `2D_versatile_fluo`) — knobs: `prob_threshold`, `nms_threshold`, `n_tiles`, `stardist_gauss_sigma`, and an optional post-process (`stardist_postprocess` ∈ `none`/`dilate`/`watershed_otsu`/`watershed_triangle`). StarDist ignores diameter.
-- **Cellpose** (`backend: cellpose`, default model `cpsam`) — knobs: `cellpose_diameter_px` (0 = auto), `cellpose_flow_threshold`, `cellpose_cellprob_threshold`. `cellpose_device: directml` enables the torch-DirectML GPU path; `cpu` is the legacy path.
-- **Otsu** (`backend: otsu`) — pure thresholding.
+Model names are free strings. `cellpose_preclip_dapi_otsu` (off by default) zeroes DAPI pixels below a per-image Otsu threshold before Cellpose inference; the floor is recorded as `cellpose_dapi_otsu_floor` in `thresholds.csv`.
 
-**DAPI Otsu pre-clip** (`cellpose_preclip_dapi_otsu`, opt-in, default off, cellpose only) — zeroes DAPI pixels below a per-image Otsu threshold **before** model inference, so dim extranuclear haze is not segmented as tails. It changes the model input, not the returned labels, and the applied floor is recorded per image as `cellpose_dapi_otsu_floor` in `thresholds.csv`.
-
-> `stardist_model` and `cellpose_model_type` are plain strings in the schema (not restricted enums) — any model name is accepted; the defaults are `2D_versatile_fluo` / `cpsam`.
-
-Common post-segmentation steps: an authoritative `[min_area_px, max_area_px]` area filter applied after smoothing; optional **label-boundary smoothing** (`label_smoothing_radius_px`, morphological close-then-open with a disk, to round StarDist star-convex corners); a **downsample speed lever** (`cellpose_downsample_factor`, applies to any backend); and **border exclusion** (`exclude_border` / `border_margin_px`).
-
-**Ghost-nucleus rejection** (`reject_ghost_nuclei`, opt-in, default off) — a post-detection composite rule that flags a nucleus as an out-of-focus "ghost shell" **only if all three** hold: spot count `== 0`, area `>= reject_ghost_min_area_px` (default 6000 px), and nuclear DAPI CV `<= reject_ghost_max_dapi_cv` (default 0.12). Each condition alone is intentionally insufficient.
+After segmentation: an area filter (`min_area_px`, `max_area_px`), optional label smoothing (`label_smoothing_radius_px`), an optional downsample (`cellpose_downsample_factor`), border exclusion (`exclude_border`, `border_margin_px`), and optional ghost-nucleus rejection. A ghost is a nucleus with zero spots, area at least `reject_ghost_min_area_px` and DAPI CV at most `reject_ghost_max_dapi_cv`; all three must hold.
 
 ### Fixed-N nucleus sampling
 
-The `sampling` block (opt-in, `enabled: false` by default) quantifies the **same number of nuclei in every field of view**. Without it, each condition's denominator is however many nuclei happened to land in each frame, so a confluent field and a sparse one contribute unequally to the same condition mean.
+The `sampling` block (off by default) measures the same number of nuclei in every field of view, so dense and sparse fields weigh equally.
 
 | Field | Default | Meaning |
 |---|---|---|
-| `enabled` | `false` | Master switch. Off means off — no selection, no extra columns, no `sampling_methods.txt`, byte-identical output to before. |
-| `n_per_unit` | `20` | Nuclei to keep per unit. |
-| `unit` | `per_image` | `per_image`. `per_well` is **not implemented** and raises at the start of a run — the allocation happens before any nucleus count is known and never redistributes an unused share, so it cannot deliver the equal per-well denominator it exists for. |
-| `order` | `random` | `random`, `raster`, or `center_out`. |
-| `seed` | `None` | Falls back to the run's global `seed`. |
-| `on_short` | `keep` | What to do with a unit holding fewer than `n_per_unit`: `keep` it, `drop_unit`, or `fail` the run. |
-| `min_eligible` | `0` | Units with fewer eligible nuclei than this are not sampled. |
-| `apply_to_rollups` | `true` | Restrict the per-image rollups and pooled coloc nulls to the sampled set too, rather than sampling only the per-nucleus table. |
+| `enabled` | `false` | Master switch. Off produces no extra columns and no `sampling_methods.txt`. |
+| `n_per_unit` | `20` | Nuclei to keep per image. |
+| `unit` | `per_image` | `per_well` is not implemented and raises at run start. |
+| `order` | `random` | `random`, `raster` or `center_out`. |
+| `seed` | `None` | Falls back to the run's `seed`. |
+| `on_short` | `keep` | For an image with fewer nuclei: `keep`, `drop_unit` or `fail`. |
+| `min_eligible` | `0` | Images with fewer eligible nuclei are not sampled. |
+| `apply_to_rollups` | `true` | Also restrict per-image rollups and pooled nulls to the sampled set. |
 
-Supported in `rna_only`, `rna_rna`, `rna_protein`, `ab_ab`, `protein_only` and `pub_images`. `if_intensity` has its own per-nucleus loop and does not sample; enabling `sampling` there raises at the start of the run rather than writing a `sampling_methods.txt` describing a selection that never happened.
-
-Two properties make it defensible. Sampling runs **last** in the filter chain (area → border → ghost → sample), so it selects among nuclei that already passed every quality filter rather than competing with them. And it selects using **only the DAPI channel and geometry — never the analysis channels**, so the choice of which nuclei to measure cannot be influenced by the quantity being measured. The selection is seeded and the criteria are written to `sampling_methods.txt` in the run directory.
-
-The well remains the biological replicate; fields of view within a well are technical replicates. Fixed-N sampling equalizes the technical layer, it does not create replicates.
+Sampling runs last in the filter chain (area, border, ghost, sample) and uses only DAPI and geometry, never the measured channels. It is not available in `if_intensity`. The well stays the biological replicate; sampling only equalises the technical layer.
 
 ### Z-handling
 
-The z mode is `z_stack.mode` ∈ `single`, `maxproj`, `autofocus`, `autofocus_maxproj`, `3d`. Per-slice focus is scored by `focus_metric` (default `variance_of_laplacian` = `var(laplace(plane / mean))`; the plane is mean-normalized so the score depends on gradient structure, not absolute brightness; also `tenengrad`, `normalized_variance`).
+`z_stack.mode` is one of `single`, `maxproj`, `autofocus`, `autofocus_maxproj`, `3d`. Focus is scored by `focus_metric` (default `variance_of_laplacian` on the mean-normalised plane; also `tenengrad`, `normalized_variance`).
 
-- **`autofocus`** — pick one in-focus DAPI plane; RNA/antibody channels are **locked to that same plane** (the nuclear mask and spot xy come from one physical plane, so disk-sampling stays co-registered).
-- **`autofocus_maxproj`** — detect a DAPI focus *window*, then max-project that same window for DAPI and the RNA channel(s).
+- **`autofocus`** picks one plane and reads every channel at that plane.
+- **`autofocus_maxproj`** finds a DAPI focus window and max-projects that window for every channel.
 
-Two locked guards make the focus pick robust on thick / bright-throughout stacks:
+Options:
 
-- **`autofocus_intensity_weighted: true`** multiplies each slice's score by its mean (`var(laplace(plane/mean)) * mean`), pulling the peak to the bright **and** sharp nuclear plane instead of a dim/noisy stack edge. The plain (unweighted) metric can climb toward dim edge slices and pick garbage.
-- **`focus_central_fraction`** (e.g. `0.6`) restricts the **peak search** to the central fraction of the stack, so the window anchor can never be a true edge plane.
-
-Window selection is FWHM-based by default (walk outward while score `>= focus_threshold_frac * peak`, enforce `focus_window_min_slices` / `focus_window_max_slices`), or a **fixed-N centered window** when `focus_window_fixed_n_slices > 0` (constant integration depth across the batch; the window slides rather than shrinks at stack bounds). Per-image z windows can be pinned via `z_stack.file_overrides`.
+- `autofocus_intensity_weighted: true` multiplies the focus score by plane brightness, so the pick lands on the bright, sharp nuclear plane instead of a dim stack edge.
+- `focus_central_fraction` (for example `0.6`) limits the peak search to the central part of the stack.
+- `focus_window_fixed_n_slices > 0` uses a fixed-depth window instead of the default FWHM window (`focus_threshold_frac`, `focus_window_min_slices`, `focus_window_max_slices`).
+- `file_overrides` pins the z window per image.
+- `autofocus_channel` chooses which channel picks the plane in `autofocus` mode: `dapi` (default), `rna`, `auto` (use RNA when its quality score reaches `autofocus_auto_rna_quality_min`, else DAPI) or `joint` (the plane where all channels are jointly in focus; see `autofocus_joint_reduce`). Use `rna` or `auto` when a dim RNA target is out of focus on the sharpest DAPI plane, which shows up as thousands of noise spots. Non-default choices add audit columns (`z_autofocus_channel_used`, `z_plane`, `rna_focus_score` and others) to `per_image_summary.csv`. This is wired for `rna_rna` and `rna_protein`.
 
 ### Spot detection
 
-`detect_spots(rna, backend, ...)` returns one row per spot.
+- **BigFISH LoG** (`foci.backend: bigfish`, default): BigFISH auto-threshold scaled by `threshold_multiplier`, or an explicit `threshold_override`. Overrides can be shared (`foci.threshold_override`) or per channel (`foci.<rna|rna2|antibody>_overrides.threshold_override`); a per-channel `null` inherits the shared value. Spot size is physical: `bigfish_spot_radius_nm` and `bigfish_spot_radius_z_nm`.
+- **Plain LoG** (`backend: log`): `log_spot_radius_px` and `log_threshold`.
 
-- **BigFISH LoG** (`backend: bigfish`, default) — auto-threshold from BigFISH, then re-run scaled by `threshold_multiplier` (`threshold = max(1, auto * multiplier)`), or use an explicit `threshold_override`. `threshold_override` may be set **shared** (`foci.threshold_override`, applies to every channel) or **per channel** (`foci.<rna|rna2|antibody>_overrides.threshold_override`, which wins for that channel only). A channel value of `null` inherits the shared value, so an unset override reproduces the shared-only behaviour exactly. Use the per-channel form when the antibody channel needs a fixed threshold while the RNA channel keeps its per-image auto threshold. Spot size is physical: `bigfish_spot_radius_nm` (default 130), `bigfish_spot_radius_z_nm` (default 300), with voxel sizes feeding the LoG sigma and built-in local-max separation.
-- **Plain LoG** (`backend: log`) — `log_spot_radius_px` (default 2.5) in pixels, threshold `log_threshold` (default 0.05) scaled by the multiplier.
+Spot diameters are measured per spot, not assumed. Spots are assigned to nucleus or cytoplasm during stratification. `apply_pub_contrast_floor_to_spots` drops spots below the channel's display floor.
 
-Per-spot diameters are **measured** (moment-based 2D Gaussian FWHM), not assumed constant. Spot-to-compartment assignment (`in_nucleus`/`in_cytoplasm`, parent `nucleus_id`) is done downstream during stratification; "nuclear-only" analyses then filter on `in_nucleus`. An optional post-detection **floor filter** (`apply_pub_contrast_floor_to_spots`) drops spots whose peak intensity is below the channel's resolved floor.
+For a textured antibody stain, a looser `threshold_multiplier` finds real foci but also background texture. Use a loose LoG with an absolute floor calibrated on the secondary-only control: set `<channel>_overrides.min_spot_peak_intensity` just above the highest spot peak seen in the secondary-only wells. Spots are always detected on secondary-only control images, so the control spot rate stays visible.
+
+Spot size: the moment-based `spot_diameter_um` saturates for large puncta. Read [docs/SPOT_SIZE_FIT.md](docs/SPOT_SIZE_FIT.md) before comparing punctum sizes; the per-spot Gaussian fit (`size_fit_*` columns, on by default through `foci.compute_size_fit`) is the measurement to use.
 
 ### Thresholds
 
-`thresholds.py` is a bit-identical port of the Fiji coloc threshold math:
+`thresholds.py` reproduces the Fiji coloc threshold math:
 
-- **MAD** (default): `median + k_mad * MAD` over raw nuclear pixels (**unscaled** MAD; `k_mad` default 2.0).
+- **MAD** (default): `median + k_mad * MAD` over raw nuclear pixels (unscaled MAD, `k_mad` 2.0).
 - **percentile**: a chosen percentile (default 80th).
-- **Costes**: the genuine automatic Costes threshold (requires `>=20` pixels; scans descending thresholds until the below-threshold Pearson drops `<=0`). Its fallback uses `1.4826 * MAD` — note this differs from the plain (unscaled) MAD threshold.
+- **Costes**: the automatic Costes threshold (needs at least 20 pixels). Its fallback uses `1.4826 * MAD`.
 
-Scope is `threshold_scope` ∈ `batch` (one pooled threshold over all images, computed in a pre-pass) or `per_image`. This pixel-coloc threshold is the **internal coloc cut**, distinct from (and usually much lower than) the spot-detection floor.
+`threshold_scope` is `batch` (one pooled threshold) or `per_image`. This pixel-coloc threshold is separate from, and usually lower than, the spot-detection floor.
 
 ### Floors and the floor-robust readout
 
-Display/analysis floors live in `output` (`pub_contrast_mode: manual` + `manual_<channel>_min/_max`; "Sam's method" tunes the retention-channel floor on the strongest-retention condition and applies the same floor everywhere). `apply_pub_contrast_floor_to_spots` gates spots below the floor; `apply_pub_contrast_floor_to_analysis` adds above-floor intensity columns.
+Display and analysis floors live in `output` (`pub_contrast_mode: manual` with `manual_<channel>_min/_max`). One approach tunes the floor on the strongest condition and applies it everywhere. `apply_pub_contrast_floor_to_analysis` adds above-floor intensity columns.
 
-Because absolute spot counts and intensities are floor-sensitive in **magnitude**, the headline nuclear-retention readout is **`nuclear_spot_fraction`** (% of a nucleus's spots that are nuclear) and the N:C ratios — these are floor-robust in direction. A third, spot-caller-independent view, **thresholded compartment intensity** (`compute_thresholded_compartment_intensity`), integrates the raw intensity of all pixels `>=` a settable floor separately in nucleus and cytoplasm, capturing diffuse + punctate above-floor signal. (See `THRESHOLD_INTENSITY_FEATURE.md`.)
+Absolute counts and intensities move with the floor. The floor-robust readouts are `nuclear_spot_fraction` and the N:C ratios. A third, spot-caller-independent readout is thresholded compartment intensity; see [THRESHOLD_INTENSITY_FEATURE.md](THRESHOLD_INTENSITY_FEATURE.md).
+
+### QC flags
+
+QC columns are advisory. No image is ever dropped. `qc.qc_min_nuclei`, `qc_saturated_frac` and `qc_min_focus_score` set the basic flags. Images with implausibly many RNA1 spots are flagged by `qc_overdetect_rna1` (above `qc.qc_overdetect_rna1_max_per_nucleus`, default 300) and `qc_overdetect_rna1_run_outlier` (a robust outlier against the run median, `qc.qc_overdetect_robust_mad_k`, above `qc.qc_overdetect_min_per_nucleus_for_outlier`). Set a threshold to `0` to turn its flag off. A flag sets `qc_pass = False`.
 
 ### Parallelism
 
-Worker counts are memory- and core-aware (`min(physical_cores - 2, available_RAM / per_worker_GB, cap)`), with per-worker BLAS/OMP thread caps to avoid oversubscription. **DirectML segmentation is forced to a single worker** (one GPU). `--parallel`/`-p` accepts `auto` (default) or an integer.
+Worker counts are chosen from physical cores and free memory, with per-worker BLAS/OMP thread caps. DirectML segmentation always uses one worker. The `parallel` config block overrides the automatic counts.
 
 ---
 
 ## Colocalization
 
-`fishsuite` measures colocalization at several levels (in `rna_rna` / `rna_protein`), from whole-nucleus pixel coefficients down to a spot-centric statistic with explicit nulls. Which one is appropriate depends on whether the partner channel has a thresholdable object at all — §5 is the diagnostic that tells you.
+In `rna_rna` and `rna_protein`, colocalization is measured at several levels. Which one fits depends on whether the partner channel has thresholdable objects; the [spot-callability diagnostic](#5-spot-callability-diagnostic) tells you.
 
-### 1. Pixel colocalization (whole-nucleus)
+### 1. Pixel colocalization (whole nucleus)
 
-`compute_coloc_metrics` operates on the two channels' pixels inside each nuclear mask, thresholded at the run's pixel-coloc thresholds, and returns: **Pearson** `r`, **Spearman** `rho`, **Li ICQ** (fraction of pixels with co-varying intensity, minus 0.5), **cosine overlap**, **Manders M1/M2**, **Jaccard**, **Dice**, plus reciprocal enrichment ratios and overlap fractions. For a diffuse, abundant partner these whole-nucleus coefficients wash out (the partner fills the nucleus), which is why the spot-centric nulls below are the headline for spot-vs-diffuse cases.
+`compute_coloc_metrics` uses the two channels' pixels inside each nucleus, thresholded at the run's pixel-coloc thresholds: Pearson, Spearman, Li ICQ, cosine overlap, Manders M1/M2, Jaccard and Dice, plus enrichment ratios and overlap fractions. For a diffuse, abundant partner these coefficients wash out, so the spot-centric nulls below are the main readout.
 
-**Per-image rollups.** All nine coefficients are also summarized to the per-image sheet as `mean_` / `median_` / `sd_` / `n_nuclei_in_` for each coefficient — 36 columns, generated from one table rather than hand-written, with a test asserting the glossary and the emitting code agree so a column cannot go undocumented. This exists because **the per-image mean is the lab's replicate unit**: treating each nucleus as an independent observation is pseudoreplication, and a coefficient reported per nucleus invites exactly that. `sd_` is the sample SD (`ddof=1`) and is NaN when only one nucleus contributed — one observation has no spread. `n_nuclei_in_` is the denominator behind the other three, which also makes it the place to see whether nucleus sampling restricted the rollup.
+All nine coefficients are also summarised per image as `mean_`, `median_`, `sd_` and `n_nuclei_in_` columns. The per-image value is the replicate-level statistic; per-nucleus values are pseudoreplicates. `sd_` is the sample SD and is NaN for one nucleus.
 
 ### 2. Spot-to-spot pairing
 
-A `scipy.spatial.cKDTree` nearest-neighbor search pairs spots across channels in 3D: per-spot `nn_distance_um` and `paired_at_<X>um` (X = `spot_coloc.pair_distance_um`, default 0.3 µm), aggregated to per-nucleus / per-image paired fractions and median NN distances. Nuclear + paired spots serve as an active-transcription-site proxy.
+A nearest-neighbour search pairs spots across channels in 3D: per-spot `nn_distance_um` and `paired_at_<X>um` (X = `spot_coloc.pair_distance_um`, default 0.3 um), rolled up to paired fractions and median distances.
 
-### 3. Partner-intensity statistic and nulls (spot-centric, floor-robust)
+### 3. Partner intensity and nulls
 
-For each RNA1 spot, the partner channel's mean intensity is sampled in a small disk (`partner_null_disk_px`, default 3.0 px) on the **same z-locked plane**, using **raw** intensity (so the metric does not move when the display/spot floor moves). The per-nucleus observed statistic is the mean of those disk-means over the nucleus's RNA1 spots. It is tested against three nulls (all opt-in; all require `compute_partner_intensity: true`):
+For each RNA1 spot, the partner channel's raw intensity is averaged in a small disk (`partner_null_disk_px`, default 3.0 px) on the same plane. The per-nucleus statistic is the mean over the nucleus's RNA1 spots. It is tested against three nulls. All are opt-in and need `compute_partner_intensity: true`.
 
-**(a) Position-randomization null** (`compute_partner_null_enrichment`) — re-place the same number of spots uniformly within the nucleus and re-sample. Controls for spot count and nuclear geometry. *Limitation (stated in code):* it does **not** control for co-distribution — if both channels prefer the same sub-nuclear regions, enrichment is inflated.
+**(a) Position null** (`compute_partner_null_enrichment`): spots are re-placed uniformly in the nucleus. It controls for spot count and nuclear shape, but not for both channels preferring the same sub-nuclear regions.
 
-**(b) Rotation "proper-background" null** (`compute_partner_rotation_null`) — the headline control. Instead of randomizing positions, it **rotates the entire RNA1 spot constellation rigidly about its own centroid**, preserving the spot pattern's internal geometry while destroying its registration to the (fixed) partner field. `observed > rotation-null` therefore means the partner is concentrated at the spots **beyond shared sub-nuclear compartmentalization**. Implementation details (function `_rotation_null_for_nucleus` in `core/modes/rna_rna.py`):
+**(b) Rotation null** (`compute_partner_rotation_null`): the RNA1 spot pattern is rotated rigidly about its centroid, keeping its internal geometry but breaking its registration to the partner. `observed > rotation null` means the partner is concentrated at the spots beyond shared compartments.
 
-- First three rotations are exactly **90°, 180°, 270°**; the remaining `partner_rotation_n - 3` (default 1000 total) are uniform on `[0, 360)`.
-- **Keep-N redraw:** any spot rotated out of the nuclear mask is **redrawn** (fresh per-spot angle, up to 40 retries) rather than dropped — dropping shrinks the active spot count and biases enrichment low. Spots that remain unplaceable fall back to their observed position (rare).
-- **Usability gate:** a nucleus is usable only if median first-pass in-mask retention `>= partner_rotation_min_retention` (default 0.5) and at least 2 valid draws exist (`rotation_null_usable`). Only usable nuclei contribute to the pooled rotation null.
-- **Association fraction** (`partner_rotation_assoc_percentile`, default 95.0) — the fraction of observed spots whose own disk-mean partner exceeds the high-percentile threshold of a single-spot rotation null (chance level `= 1 - pct/100`, i.e. 0.05 at the 95th percentile). Reads as "X% of RNA spots sit in partner-rich neighborhoods beyond the rotation-chance level."
+- The first three rotations are 90, 180 and 270 degrees; the rest of `partner_rotation_n` (default 1000) are uniform.
+- A spot rotated out of the nucleus is redrawn (up to 40 tries) rather than dropped.
+- A nucleus counts only if median in-mask retention is at least `partner_rotation_min_retention` (default 0.5) and it has at least 2 valid draws (`rotation_null_usable`).
+- The association fraction is the share of spots whose partner value exceeds the `partner_rotation_assoc_percentile` (default 95) of a single-spot rotation null. Chance is 0.05 at the 95th percentile.
 
-**(b2) Partner-anchored rotation null** (`compute_partner_anchored_rotation_null`, default off; requires `compute_partner_intensity` **and** `compute_partner_rotation_null`) — the **reciprocal** of (b). The constellation is the **RNA2 / antibody** spot set and the sampled field is the **RNA1** channel, so it asks whether RNA1 is concentrated at the partner puncta beyond shared compartmentalization. It calls the same `_rotation_null_for_nucleus` with the (field, constellation) pair swapped, and shares (b)'s disk radius, `partner_rotation_n`, seed root, `partner_rotation_min_retention` and `partner_rotation_assoc_percentile`; only the RNG stream differs (rotation offset +303, association +606), so turning it on leaves (b)'s draws bit-for-bit unchanged. Per-nucleus columns `rna1_rotation_enrichment_at_rna2_spots`, `rna1_rotation_null_z_at_rna2_spots`, `rna1_rotation_null_p_at_rna2_spots`, `rna1_rotation_assoc_fraction_at_rna2_spots`, `rotation_null_usable_at_rna2_spots`, plus the spot-count-weighted per-image rollup `rna1_pooled_rotation_*_at_rna2_spots` / `rna1_mean_rotation_assoc_fraction_at_rna2_spots` / `n_nuclei_partner_rotation_null_at_rna2_spots`. In `rna_protein` mode these read `..._at_protein_spots`. **NaN for any nucleus with no partner spots** — that is every nucleus when `detect_antibody_spots: false`, since the diffuse-antibody path detects no partner spots at all.
+**(b2) Partner-anchored rotation null** (`compute_partner_anchored_rotation_null`, needs (b)): the reverse question. The partner spots are rotated and RNA1 is sampled. Columns end in `_at_rna2_spots` (`_at_protein_spots` in `rna_protein`) and are NaN when the partner has no spots, which includes every nucleus when `detect_antibody_spots: false`.
 
-**(c) Translation null** (`compute_partner_translation_null`) — a rigid-shift companion. **Flagged unreliable for dense / space-filling spot patterns** (most shifts push too many points out of the mask, biasing enrichment low). Use rotation as the headline; translation is supplementary at best.
+**(c) Translation null** (`compute_partner_translation_null`): a rigid shift. It is biased low for dense spot patterns; treat it as supplementary.
 
-Supporting control: **nucleolus exclusion** (`exclude_nucleolus_from_partner_null`, with `nucleolus.enabled`) removes DAPI-poor nucleolar voids — which an abundant nuclear protein also avoids — from **both** the null positions and the observed spots, so mutual nucleolar avoidance cannot inflate enrichment.
+`exclude_nucleolus_from_partner_null` (with `nucleolus.enabled`) removes nucleolar voids from both observed and null positions. Each null uses its own fixed-seed RNG stream, so turning one on never changes another, and `backfill` reproduces the run's draws exactly.
 
-All nulls use fixed seeds with separate RNG streams (position `partner_null_seed`; rotation offset +101; association +404; partner-anchored rotation +303; partner-anchored association +606), so toggling one never perturbs another, and the post-run `backfill` reproduces the engine's draws bit-for-bit.
+Report the partner-at-punctum enrichment using each punctum's exact footprint ([docs/FOOTPRINT_ASSOCIATION.md](docs/FOOTPRINT_ASSOCIATION.md)), and always report it alongside the standard colocalization panel (Pearson, Manders with Costes thresholds, Li ICQ, cytofluorogram) that `fishsuite report` builds.
 
-#### Reporting rules (Brian, 2026-09-04) — authoritative copy in the `fishsuite-rna-fish` skill
+### 4. Radial profile
 
-Two rules govern how these nulls are *reported*, independent of how the engine computes them. The
-binding statement lives in `fishsuite-rna-fish` SKILL.md, §Diffuse antibody / protein partner; this is
-a pointer, not a second source of truth.
-
-1. **Sampling region = the exact punctum footprint.** `partner_null_disk_px` (3.0 px) is the engine's
-   run-time default and is retained for backwards compatibility only. The reported
-   partner-at-punctum enrichment, the called-colocalized rule and every null (position-randomization,
-   rotation, partner-anchored) use each punctum's **exact segmented footprint**, supplied by the
-   exact-footprint backfill (`fishsuite.core.exact_footprint_backfill`, worktree
-   `E:\Claude\fishsuite-codex-miat-qki-footprint\`, commit `937626ec`) until the engine exposes a footprint
-   option natively. **Disk-based columns are labelled legacy in reports.**
-2. **The standard colocalization panel is required alongside any null-based enrichment.** Per-nucleus
-   Pearson and Manders M1/M2 with a Costes auto-threshold (fallback median+k·MAD, flagged), Li ICQ, a
-   pooled-nuclear-pixel cytofluorogram with both thresholds drawn, straight-line intensity profiles
-   through representative nuclei with each channel in its LUT colour, an object-based called-coloc
-   fraction with a translated-footprint shuffle control, and QC overlays colouring every detected
-   punctum by its call. Tool: `E:\Claude\fishsuite\scripts\coloc_standard_panel.py`. **The rotation null is a
-   randomisation control presented alongside, never the sole number; where the two families disagree,
-   the disagreement is the finding.**
-
-### 4. Radial profile — the metric that fits a diffuse partner
-
-`compute_partner_radial_profile` measures the partner channel's enrichment in concentric annuli around each RNA1 spot (`partner_radial_bins_um`, outer-edge radii in µm, default `[0.25, 0.5, 0.75, 1.0]`). It is the 2-D analogue of a line scan, and it is the one metric here that needs **no thresholdable object in the partner channel** — only the partner's intensity as a function of distance from an object in the punctate channel. For a diffuse, abundant partner, that makes it the appropriate readout rather than a supporting one.
-
-It reports at every level: per-nucleus enrichment-by-distance columns, and per-image columns in both flavours — the spot-count-weighted pool and the equal-weight per-nucleus rollup, the latter being the replicate-level statistic. It also emits a **mean ± 95% CI profile table and figure**, so the distance dependence can be read directly instead of inferred from a wall of columns.
-
-One deliberate hard failure: because every distance bin is specified in µm and converted using the image's own µm/px, a substituted or missing pixel size would silently rescale every bin. The radial path **refuses to run** on an image whose pixel size it cannot trust rather than emitting quietly-wrong distances.
+`compute_partner_radial_profile` measures partner enrichment in rings around each RNA1 spot (`partner_radial_bins_um`, default `[0.25, 0.5, 0.75, 1.0]`). It needs no thresholdable object in the partner channel, so it suits a diffuse partner. It writes per-nucleus and per-image columns, `coloc_radial_profile.csv`, and a mean with 95% CI figure. It refuses to run on an image without a trustworthy pixel size.
 
 ### 5. Spot-callability diagnostic
 
-Advisory, run-level, and computed automatically wherever secondary-only (no-probe) control images are present. For each punctate channel it reports three columns on every per-image row (they are run-level constants, so a reader does not have to re-derive them):
+When secondary-only images are present, every per-image row gets, per punctate channel:
 
 | Column | Meaning |
 |---|---|
-| `spot_rate_sample_per_nucleus_<ch>` | mean spots per nucleus across the sample images |
-| `spot_rate_seconly_per_nucleus_<ch>` | the same, on the secondary-only controls, using the identical detector and settings |
-| `spot_rate_signal_to_control_<ch>` | the ratio of the two |
+| `spot_rate_sample_per_nucleus_<ch>` | mean spots per nucleus on sample images |
+| `spot_rate_seconly_per_nucleus_<ch>` | the same on secondary-only controls |
+| `spot_rate_signal_to_control_<ch>` | their ratio |
 
-The point is to answer a question the pipeline could always compute but never showed: **does the spot detector actually discriminate in this channel?** A ratio near 1 means it finds as many "spots" in the no-probe control as in the sample. That channel has no thresholdable object, and every mask-based coefficient derived from it — Manders, ICQ, Jaccard, Dice — is then measuring textured background. For such a channel the honest read is a threshold-free correlation plus a rotation null, or the radial profile above.
+A ratio near 1 means the detector finds as many spots in the control as in the sample. Mask-based coefficients for that channel then measure background; use a threshold-free correlation, the rotation null or the radial profile instead. `foci.min_spot_signal_to_control` (default 2.0) sets the warning level. Nothing is dropped.
 
-It never drops an image or fails a run; it is a flag on results you would otherwise over-interpret. `foci.min_spot_signal_to_control` (default 2.0) sets where the warning fires.
-
-These methods follow the colocalization-with-an-explicit-null tradition: pixel coefficients (Manders 1993; Pearson) require a chance model (Costes 2004; van Steensel 1996), object/spot association is tested against a mask-constrained random placement (Lagache/SODA 2018), and the defensible null must **destroy registration while preserving each channel's own structure** (Dunn 2011; Aaron 2018). See [Citations](#citations-and-methods-grounding). The rotation "proper-background" null is **our own construction** in the registration-destroying tradition — not attributable to a single methods paper.
+The rotation null is this pipeline's own construction in the registration-destroying tradition, not a named published method. See [Citations](#citations-and-methods-grounding).
 
 ---
 
-## Condition groups and the report layer
+## Condition groups and the report
 
-A fishsuite **condition** is one WELL. A **condition group** is the condition several
-wells belong to, and is what gets compared. Wells inside a group are biological
-replicates; fields of view inside a well are technical replicates; nuclei are the
-measurement unit and are pseudoreplicates.
+A **condition** is one well. A **group** is the set of wells that share a treatment, and is what gets compared. Wells are biological replicates, fields of view within a well are technical replicates, and nuclei are the measurement unit.
 
 ### Declaring groups
+
+This is the one reference for the `conditions.groups` YAML. Other pages link here.
 
 ```yaml
 conditions:
@@ -432,505 +397,254 @@ conditions:
                          KO_1: KO_1, KO_2: KO_2, KO_3: KO_3}
   sec_only_folders: ["Sec-Only"]
   groups:
-    WT:     ["WT_1", "WT_2", "WT_3"]
-    QKI-KO: ["KO_1", "KO_2", "KO_3"]
-  group_order: ["WT", "QKI-KO"]      # first entry is the default reference group
+    WT: ["WT_1", "WT_2", "WT_3"]
+    KO: ["KO_1", "KO_2", "KO_3"]
+  group_order: ["WT", "KO"]        # the first entry is the default reference
+  group_colors: {WT: "#595959", KO: "#D67AE5"}   # optional
+  well_from_image: null            # see Organising your images
 ```
 
-With `groups` set, every master CSV that carries `condition` gains a `group`
-column beside it, and the run additionally writes `figures/by_group/` — one panel
-per condition group with its wells as the replicate points inside it. The run's
-own `figures/` directory, which splits on `condition`, is untouched.
+With `groups` set:
 
-* A well named in no group keeps its own label as its group, so an unlisted well
-  is visible rather than pooled silently.
-* Secondary-only images are never placed in a biological group; they are labelled
-  `Secondary-only`.
-* With `groups` empty no column is written and behaviour is unchanged.
+- every master CSV gains a `group` column beside `condition`;
+- the run collapses its figures by group (nucleus, then field mean, then well mean, then group mean) into `figures/per_condition/` and `figures/00_overview/`, and moves per-well figures to `figures/per_well_supplementary/`;
+- `analysis_summary.xlsx` gains `Per condition`, `Per well`, `Per image` and `Condition contrasts` sheets.
+
+A well named in no group keeps its own label as its group. Secondary-only images are labelled `Secondary-only` and never enter a biological group. A well may belong to only one group.
 
 ### `fishsuite report`
 
-Builds the condition-versus-condition workbook, readout and figures for a
-FINISHED run. The run directory is read, never modified.
+`fishsuite report --run <run>` builds a condition-versus-condition workbook, a plain-language readout and figures for a finished run. It reads the run and never writes into it. Groups come from `--groups NAME=well1,well2`, a `--groups-file report_groups.yaml`, or the run's own config, in that order of precedence.
 
-```powershell
-fishsuite report --run "F:\out\UD_run" `
-  --groups WT=WT_1,WT_2,WT_3 --groups QKI-KO=KO_1,KO_2,KO_3 `
-  --reference WT --engine-repo "E:\Claude\fishsuite" --preset preset.yaml
-```
+The headline test is a nucleus-level mixed model (fixed group, random well intercept, field-within-well variance). When the fit fails, the report falls back to Welch's t on well means and labels the fallback. Welch on well means, Hedges g, Holm adjustment and the minimum detectable effect are always reported in the `Contrasts` sheet.
 
-Writes `<run>\report_<stamp>\` containing:
-
-| File | Contents |
-|---|---|
-| `REPORT.xlsx` | Read me / Spots per nucleus by group / Nuclear fraction by group / Partner at puncta by group / Per well / Per field / Per nucleus / Contrasts / Secondary-only / Run provenance. Every sheet opens with a two-to-three sentence description row |
-| `READOUT.md` | Ten plain lines, agnostic framing, first line the run path |
-| `figures/` | One SuperPlot per endpoint, representative micrographs, `FIG_MAIN`, `FIGURE_INDEX.md`. PNG at 600 dpi plus editable-text SVG |
-| `per_well.csv`, `contrasts.csv` | The tested points and every statistic |
-| `versions.txt`, `command.log` | Library versions, seed, and the exact command |
-
-### Punctum size: read the footprint, not the moment estimator
-
-`spot_fwhm_px` and `spot_diameter_um` ARE measured per punctum, by a second-moment
-estimator on a background-subtracted crop (`core/modes/rna_rna.py`
-`_measure_spot_diameter_um`). They are not the configured BigFISH radius. But the
-crop is FIXED at 9 by 9 pixels, so the moment is truncated and the estimator
-SATURATES: on synthetic Gaussians it tracks true width below about 3 px and then
-flattens, reporting a five-fold change in true width as a 1.17-fold change. Two
-conditions can therefore look identical on it while differing in real punctum size.
-
-`fishsuite report` treats the engine's exact half-maximum footprint as THE size
-endpoint instead:
-
-| Endpoint | Source | Behaviour |
-|---|---|---|
-| `rna1_punctum_footprint_area_um2` (primary) | `miat_footprint_area_px` times the run voxel area | segmented per punctum; does not saturate |
-| `rna1_punctum_equivalent_diameter_um` | the same footprint, restated as the diameter of a circle of equal area | mean of per-punctum diameters, not the diameter of the mean area |
-| `rna1_spot_fwhm_px`, `rna1_spot_diameter_um` | the moment estimator | kept, marked descriptive only, no multiplicity-adjusted gate, saturation stated in the workbook note |
-
-A run that emitted no footprint column reports both footprint endpoints as not
-available rather than falling back to the saturating one. See
-`docs/REPORT_SUBCOMMAND_2026-09-04.md`.
-
-A genuine per-punctum Gaussian fit at detection time IS now implemented, as an
-additive `size_fit_*` column family that leaves the three legacy columns
-untouched. It is on by default (`foci.compute_size_fit`) and can be backfilled
-onto a finished run with `fishsuite sizefit --run <run_dir>`. Always filter on
-`size_fit_ok` and read `size_fit_flag` before reading a median: on a channel with
-no isolated compact objects the fit has no scale of its own and most spots are
-rejected rather than given a plausible-looking number. See
-`docs/SPOT_SIZE_FIT_2026-09-04.md`.
-
-### Staging a run's groups
-
-A `report_groups.yaml` beside a run makes its report reproducible from one flag:
-
-```yaml
-groups:
-  WT:     ["WT_1", "WT_2", "WT_3"]
-  QKI-KO: ["KO_1", "KO_2", "KO_3"]
-group_order: ["WT", "QKI-KO"]
-reference: WT
-well_from_image: '_((?:WT|KO)-\d)_'             # only when the run needs it
-exclude_fields: {"WT_1_01.vsi": "out of focus"}
-note: free text recorded with the report
-```
-
-```powershell
-fishsuite report --run "F:\out\UD_run" --groups-file "F:\out\UD_run\report_groups.yaml"
-```
-
-Command-line flags override any key the file sets.
-
-`--well-from-image` exists for one specific failure: some runs record the LINE as
-their condition and carry the well only in the file name (`..._WT-2_22.vsi`).
-Without the regex every field of a line collapses into a single well, leaving one
-replicate per group and no possible test. The expression needs exactly one capture
-group and must match every biological image, or the command refuses to run.
-
-### Source-run linkage
-
-Every report folder names its producing run three times over: `SOURCE_RUN.md` at
-the top (run path, preset, SHA-256 of `run_config.json` / `versions.txt` /
-`thresholds.csv` / `command.log`, segmentation model and cellpose version,
-thresholds read back off the run, group definitions, and what to open in the run);
-a `00_SOURCE_FISHSUITE_RUN` directory junction when the report is written outside
-the run; and copies of the run's provenance files under `provenance\source_run\`.
-Line one of `READOUT.md` is the run path.
-
-The gate is a **Welch t on well means** with Hedges g and a 95 percent interval,
-Holm-adjusted within an endpoint family (a family is one by-group sheet), with the
-**minimum detectable effect** in Hedges g units carried next to every p. Exact
-permutation of well labels and Tukey on field means are sensitivity columns, never
-the gate.
-
-**The star on a figure is the RAW Welch p.** The Holm-adjusted p and the minimum
-detectable effect are printed in the same footnote, so neither the unadjusted nor
-the adjusted result is hidden.
-
-Endpoints are declared in ROLE terms (rna1 / rna2 / protein) and resolved against
-whatever columns a run emitted. An endpoint whose column is absent is reported as
-not available with a note, never dropped.
-
-On an `rna_rna` or `rna_protein` run the subcommand also calls
-`scripts/coloc_standard_panel.py` and writes `coloc_standard_panel/` beside the
-workbook. Pass `--no-coloc-panel` to skip it, `--no-figures` for the workbook only.
-
-Full detail, including the provenance of the ported algorithms and the reproduction
-check against the report builders this replaces:
-`docs/REPORT_SUBCOMMAND_2026-09-04.md`.
+The report writes `REPORT.xlsx`, `READOUT.md`, `figures/`, `per_well.csv`, `contrasts.csv`, `SOURCE_RUN.md`, `versions.txt` and `command.log`. On `rna_rna` and `rna_protein` runs it also writes the standard colocalization panel. Run `fishsuite report --help` for every option. Details: [docs/REPORT_SUBCOMMAND.md](docs/REPORT_SUBCOMMAND.md) (groups, statistics, provenance) and [docs/REPORT_FEATURES.md](docs/REPORT_FEATURES.md) (plot styles, DAPI localization, deck export).
 
 ---
 
-### Replicate-simple style
+## Command reference
 
-Brian's locked style for imaging figures draws well means as the tested points,
-with group-mean columns (width 0.6, group-colour fill at 35% opacity, solid 1 pt edge),
-mean ± sample SD error bars (ddof=1 across well means), and optional muted FOV
-points. Columns and capped SD bars sit behind the well points and are omitted
-for groups with fewer than two finite wells. Focus columns start at the axis
-floor (50 for a 50–100 window). Footer: "bar = mean of well means, error bar = ± SD".
-The two-group colour key is
-WT grey (#595959), QKI-KO purple (#D67AE5); explicit run colour overrides remain
-supported. Every plot and composite exports a `_full` / `_focus` pair as 600 dpi
-PNG and editable SVG. Full scale starts at zero (percentages 0-100); focus uses
-50-100 for percentages only when every well mean exceeds 50, otherwise 0-100.
-Other focus axes round outward around the displayed data, never below zero for
-non-negative quantities. Brackets clear the highest displayed point or SD-bar top by 13% of
-the final axis span, with extra headroom above 100 when needed for annotations.
-Footers identify the axis variant; workbook figure indexes and decks default to
-`_focus` and list `_full` alongside it. Statistics are unchanged. Standalone
-figures retain the one-line title and 6 pt footer.
+Every command has `--help`. Quote paths that contain spaces.
 
+**Core**
 
-## CLI reference
+| Command | What it does |
+|---|---|
+| `fishsuite run` | Run the full pipeline on a folder of images. |
+| `fishsuite preview IMAGE -c CONFIG -o OUT` | Run the pipeline on a single image, for debugging a config. |
+| `fishsuite report` | Condition-versus-condition report for a finished run. |
+| `fishsuite presets list` / `show NAME` | List built-in presets or print one. |
+| `fishsuite gui` | Open the desktop launcher (needs the `gui` extra). |
+| `fishsuite init` | Placeholder. Prints setup information and the shipped presets; there is no wizard yet. |
 
-The console script is **`fishsuite`** (entry point `fishsuite.cli:cli`). It exposes `--version` and the subcommands below. Quoting paths with spaces is required on Windows.
+**Post-run utilities.** These read a finished run and never re-segment. Options and outputs are in [POSTRUN_UTILITIES.md](POSTRUN_UTILITIES.md).
 
-### `fishsuite run`
+| Command | What it does |
+|---|---|
+| `fishsuite backfill` | Add colocalization null draws, radial profile and an enrichment montage to an older run. `--rotation` adds the rotation null. |
+| `fishsuite walkthrough` | Build the 8-panel pipeline-walkthrough figure for one image. |
+| `fishsuite postrun` | Run `backfill` then `walkthrough`. |
+| `fishsuite sizefit` | Fit a 2D Gaussian to every spot of a finished run. See [docs/SPOT_SIZE_FIT.md](docs/SPOT_SIZE_FIT.md). |
+| `fishsuite singlecell` | Per-nucleus dose-response and matched-abundance analysis from `nuclei_metrics.csv`. |
+| `fishsuite pixelpattern` | Per-nucleus pixel-pattern metrics and a stain-QC panel. |
+| `fishsuite if-pub-images` | Regenerate publication images from a finished `if_intensity` run. |
+| `fishsuite native-figures` | Rebuild condition figures from a run's CSVs with a groups YAML, into a new folder. |
+| `fishsuite figure` | Render values from a workbook sheet in the fishsuite figure style. |
+| `fishsuite ortho` | Render median-selected nuclei with orthogonal sections and line profiles. |
+| `fishsuite seg-sweep` | Compare candidate nuclear diameters on raw images before a run. See [docs/seg_sweep.md](docs/seg_sweep.md). |
 
-Run the full pipeline on a folder of images.
+**Dataset-specific.** These were built for one published dataset. They expect its file layout and are kept for reproducibility.
 
-| Option | Required | Default | Meaning |
-|---|---|---|---|
-| `-c`, `--config` | yes | — | Path to a fishsuite YAML config / preset. |
-| `-i`, `--input-dir` | yes | — | Folder of images (or folder of subfolders). |
-| `-o`, `--output-dir` | yes | — | Where to write outputs. |
-| `-p`, `--parallel` | no | `auto` | Worker count: `auto` or an integer (string, resolved downstream). |
-| `--resume` | no | off | Skip images that already have outputs. |
-| `--dry-run` | no | off | Discover inputs and print the plan; do **not** process. |
-| `-v`, `--verbose` | no | off | Print full tracebacks on per-image failures. |
+| Command | What it does |
+|---|---|
+| `fishsuite footprint-backfill` | Reconstruct exact punctum footprints on recorded planes. Pass `--check-design` to assert one specific cohort layout; off by default. |
+| `fishsuite qki-assoc` | Single-plane area occupancy of an RNA and a protein with exact-footprint placement nulls. |
+| `fishsuite coupling` | Well-level RNA abundance against protein association. |
+| `fishsuite fig-panels` | Rebuild a fixed figure gallery from an exact-footprint backfill. |
 
-```powershell
-fishsuite run -c preset.yaml -i "F:\Raw Images\UD" -o "F:\out\UD_run" --dry-run
-```
+### `fishsuite run` options
 
-### `fishsuite report`
-
-Build the condition-versus-condition report for a finished run. Reads the run
-directory; never writes to it.
-
-| Option | Required | Default | Meaning |
-|---|---|---|---|
-| `--run` | yes | — | Finished fishsuite output directory to report on. |
-| `--groups` | no | run config | `NAME=well1,well2,...`, repeatable. First group is the reference unless `--reference` says otherwise. |
-| `--reference` | no | first group | Group every other group is compared against. |
-| `--out` | no | `<run>/report_<stamp>/` | Where to write the report. |
-| `--exclude-field` | no | none | One image name to drop, repeatable. Each needs its own `--reason`. |
-| `--reason` | no | none | Why the matching `--exclude-field` was dropped, same order. |
-| `--style` | no | `brian` | `brian` is the locked lab style; `plain` reserved. |
-| `--alpha` | no | `0.05` | Significance level for the Welch gate and the Holm family. |
-| `--qc-min-nuclei` | no | `5` | Fields below this are FLAGGED in the Per field sheet. Nothing is dropped. |
-| `--sec-min-nuclei` | no | `10` | Secondary-only fields below this are excluded by rule. |
-| `--engine-repo` | no | — | fishsuite checkout whose git HEAD is recorded in Run provenance. |
-| `--preset` | no | — | Preset YAML the run used; its md5 is recorded. |
-| `--no-figures` | no | off | Workbook and readout only. |
-| `--no-coloc-panel` | no | off | Skip the standard colocalization panel. |
-| `--stamp` | no | now | Timestamp used in the default output directory name. |
-
-```powershell
-fishsuite report --run "F:\out\UD_run" --groups WT=WT_1,WT_2,WT_3 --groups QKI-KO=KO_1,KO_2,KO_3 --reference WT
-```
-
-### `fishsuite preview`
-
-Run the pipeline on a single image (preview / debug); processes the image's parent folder with `parallel=1`.
-
-```powershell
-fishsuite preview "F:\Raw Images\UD\img01.vsi" -c preset.yaml -o "F:\out\preview01"
-```
-
-Required options: `-c/--config`, `-o/--output-dir`. (No `--dry-run`/`--parallel`/`--resume`.)
-
-### `fishsuite presets`
-
-Manage built-in presets.
-
-```powershell
-fishsuite presets list                  # print "<stem>\t<path>" for every shipped *.yaml
-fishsuite presets show <name>           # print the named preset's YAML (exit 2 if not found)
-```
-
-### `fishsuite init`
-
-Placeholder setup command. Prints info and lists the shipped preset YAMLs; it does not (yet) run an interactive wizard.
-
-### `fishsuite gui`
-
-Launch the PySide6 desktop launcher (requires the `gui` extra / `PySide6`). See [The desktop GUI](#the-desktop-gui).
-
-### Post-run utilities (CPU-only)
-
-These operate on a **completed run directory** (one containing `run_config.json`, `per_image_summary.csv`, `nuclei_metrics.csv`, `masks/`). They reuse saved masks + spots and never re-segment, re-detect, or touch the GPU. Errors are plain-English (exit 2 for user-fixable issues). Source VSIs are auto-detected from the run's recorded `input_dir`; pass `--staging` if auto-detection fails.
-
-#### `fishsuite backfill`
-
-Retrofit colocalization products onto an existing run.
-
-| Option | Default | Meaning |
+| Option | Required | Meaning |
 |---|---|---|
-| `--run` | (required) | Completed run output directory. |
-| `--staging` | auto-detect | Folder holding the source VSIs. |
-| `--input` | auto-detect | Alternate source folder (rarely needed). |
-| `--seed` | 0 | RNG seed for the null/montage (deterministic). |
-| `--no-null-draws` | off | Skip writing the null-draw CSV(s). |
-| `--no-radial` | off | Skip writing `coloc_radial_profile.csv`. |
-| `--no-montage` | off | Skip the partner-enrichment montage PNG. |
-| `--rotation` | off | **Also** compute the rotation "proper-background" null (writes `coloc_rotation_null_summary.csv` + `coloc_rotation_null_draws.csv`). Opt-in. |
-
-The three `--no-*` flags are negative-only (products are on by default); `--rotation` is positive opt-in. `backfill` self-validates pooled numbers against the run's stored records and warns (exit 1) on mismatch.
-
-```powershell
-fishsuite backfill --run "F:\Image Analysis Work\MIAT-QKI-Coloc\my_run"
-fishsuite backfill --run "F:\...\my_run" --rotation --seed 0
-fishsuite backfill --run "F:\...\my_run" --no-null-draws --no-radial
-```
-
-#### `fishsuite walkthrough`
-
-Build the 8-panel pipeline-walkthrough figure for one representative image.
-
-| Option | Default | Meaning |
-|---|---|---|
-| `--run` | (required) | Completed run output directory. |
-| `--image` | auto-pick | Panel-prefix image key. |
-| `--out` | `<run>/figures/07_coloc/79_pipeline_walkthrough.png` | Output PNG path (created). |
-| `--staging` / `--input` | auto-detect | VSI source for the rendered panel. |
-
-The figure is a 2×4 grid (600 DPI): (A) DAPI, (B) nucleus segmentation, (C) RNA FISH, (D) RNA spot detection, (E) protein IF, (F) thresholded protein, (G) RNA spots on thresholded protein (freshly rendered at the DAPI autofocus z), (H) merge. Missing panels self-skip with a gray placeholder.
-
-```powershell
-fishsuite walkthrough --run "F:\...\my_run"
-fishsuite walkthrough --run "F:\...\my_run" --image "g2_wDox_(MIAT_OE)__g2-Dox_01" --out "F:\figures\wt.png"
-```
-
-#### `fishsuite postrun`
-
-One-shot "make my figures": runs `backfill` then `walkthrough`, prints a per-step progress line, continues past a failed step, and exits non-zero if any step failed. (No `--no-*`, no `--rotation`, no `--out`; its backfill step writes null-draws + radial + montage but **not** the rotation null.)
-
-```powershell
-fishsuite postrun --run "F:\Image Analysis Work\MIAT-QKI-Coloc\my_run"
-```
-
-> The legacy module entry points still work: `python -m fishsuite.core.coloc_backfill` and `python -m fishsuite.core.walkthrough_figure`. The subcommands are friendlier wrappers. See `POSTRUN_UTILITIES.md`.
+| `-c`, `--config` | yes | YAML config or preset file. |
+| `-i`, `--input-dir` | yes | Folder of images, or folder of subfolders. |
+| `-o`, `--output-dir` | yes | Where to write outputs. |
+| `--dry-run` | no | List discovered images and conditions; process nothing. |
+| `-v`, `--verbose` | no | Print full tracebacks for failed images. |
+| `--resume` | no | Not implemented. Use a new output directory. |
 
 ---
 
 ## The desktop GUI
 
-`fishsuite gui` opens a PySide6 launcher over the same config model and the same runner the CLI uses — it writes a YAML config and shells out to `fishsuite run`, so a GUI run and a CLI run are the same run.
+`fishsuite gui` opens a PySide6 launcher over the same config model and runner. It writes a YAML config and runs `fishsuite run`, so a GUI run and a CLI run are the same run. It also has a Report tab for `fishsuite report` and `native-figures`.
 
 ![The fishsuite desktop launcher](docs/gui_light.png)
 
-The settings are split across tabs, each carrying a **readiness dot**: green means that tab has everything it needs, amber means it is usable but something is still defaulted or guessed, red means the run will not start until you fix it. The status line at the bottom names the specific blocking problem rather than only reporting that one exists. Alongside the form it offers channel auto-detection from the image metadata, per-file selection for running a subset, and a live YAML preview so you can see exactly what config the run will get — and save it, which is the recommended way to produce a reusable preset.
-
-The GUI follows the OS light/dark theme; `docs/gui_dark.png` shows the dark variant.
-
-The GUI needs the `gui` extra (`pip install "fishsuite[gui]"`). It is a launcher, not a viewer: it does not display results, because the run writes its own QC overlays, publication images and Excel workbooks.
+Each tab has a readiness dot: green is ready, amber is usable with defaults or guesses, red blocks the run. It offers channel detection from image metadata, per-file selection, and a live YAML preview you can save as a preset. It follows the OS light or dark theme ([dark screenshot](docs/gui_dark.png)). The GUI does not display results. See [docs/GUI.md](docs/GUI.md).
 
 ---
 
 ## Configuration and presets
 
-Configuration is a Pydantic v2 YAML model (`config/schema.py`). `FishsuiteConfig.from_yaml(path)` loads and validates; omitted blocks fall back to defaults. The config is grouped into blocks: `experiment`, `conditions`, `channels`, `z_stack`, `nuclei`, `sampling`, `pixel_coloc`, `spot_coloc`, `foci`, `cytoplasm`, `nucleolus`, `output`, `parallel`, `qc`, `if_intensity`, plus top-level `seed` (default 0) and `input_file_subset` (default `[]`).
+Configuration is a Pydantic v2 model in `src/fishsuite/config/schema.py`. Omitted blocks use defaults. Blocks: `experiment`, `conditions`, `channels`, `z_stack`, `nuclei`, `sampling`, `pixel_coloc`, `spot_coloc`, `foci`, `cytoplasm`, `nucleolus`, `output`, `parallel`, `qc`, `if_intensity`, plus top-level `seed` (default 0) and `input_file_subset` (default `[]`).
 
-### The minimal working config
-
-Every block has defaults, so a runnable config is short. This is a complete one — copy it, point `fishsuite run` at a folder whose subfolders are named `control/` and `treated/`, and it works:
+### A minimal config
 
 ```yaml
 experiment:
   name: my_first_run
 channels:
   analysis_mode: rna_only
-  dapi: 0                # 0-indexed; -1 = auto-detect from channel metadata
+  dapi: 0
   rna: 1
 conditions:
   mode: subfolders
   subfolder_conditions: {control: Control, treated: Treated}
 nuclei:
-  backend: stardist      # or otsu, which needs no ML dependency
-  min_area_px: 2000      # in PIXELS — scale this to your pixel size
+  backend: cellpose      # stardist needs TensorFlow; otsu needs no ML
+  min_area_px: 2000      # pixels: scale to your pixel size
 foci:
   backend: bigfish
-  bigfish_spot_radius_nm: 150.0   # physical spot radius, not pixels
+  bigfish_spot_radius_nm: 150.0
 ```
 
-Two fields are worth setting deliberately rather than inheriting: `nuclei.min_area_px` is in pixels, so the right value depends on your objective and camera (the shipped presets are named after the pixel size they assume), and `foci.bigfish_spot_radius_nm` is a physical size that BigFISH converts to a kernel using the image's own µm/px. Getting either wrong is the most common cause of a first run that produces nothing or produces thousands of spurious spots.
+Set two values deliberately. `nuclei.min_area_px` is in pixels and depends on your objective and camera. `foci.bigfish_spot_radius_nm` is physical and is converted using the image's pixel size. Getting either wrong is the usual cause of a first run that finds nothing, or finds thousands of spurious spots. For real work, start from a portable preset.
 
-For anything real, start from the closest shipped portable preset instead — see [Portable presets](#portable-presets-vs-run-records) below.
+### Selected fields and defaults
 
-### Selected fields and real defaults
+**`channels`**: `analysis_mode` (`rna_only`); `dapi`/`rna`/`rna2`/`antibody`/`antibody2` (`-1` = auto); `one_indexed` (false); LUTs `dapi_lut` blue, `rna_lut` yellow, `rna2_lut` magenta, `antibody_lut` green, `ab2_lut` magenta; labels `DAPI`/`RNA1`/`RNA2`/`Protein`/`Protein2`.
 
-**`channels`** — `analysis_mode` (default `rna_only`; one of `rna_only`/`rna_protein`/`rna_rna`/`if_intensity`, plus the three not-yet-ported aliases `ab_ab`/`protein_only`/`pub_images`); indices `dapi`/`rna`/`rna2`/`antibody`/`antibody2` (default `-1` = auto-detect; `one_indexed: false`); LUTs `dapi_lut`=`blue`, `rna_lut`=`yellow`, `rna2_lut`=`magenta`, `antibody_lut`=`green`, `ab2_lut`=`magenta`; labels default `DAPI`/`RNA1`/`RNA2`/`Protein`/`Protein2`.
+**`z_stack`**: `mode` (`autofocus`); `start_slice`/`end_slice` (None); `autofocus_channel` (`dapi`); `autofocus_intensity_weighted` (false); `focus_central_fraction` (0.0 = off); `focus_metric` (`variance_of_laplacian`); `focus_threshold_frac` (0.5); `focus_window_min_slices` (3); `focus_window_max_slices` (0); `focus_window_fixed_n_slices` (0); `file_overrides` (`{}`).
 
-**`z_stack`** — `mode` (default `autofocus`; `single`/`maxproj`/`autofocus`/`autofocus_maxproj`/`3d`); `start_slice`/`end_slice` (None); `autofocus_intensity_weighted` (False); `focus_central_fraction` (0.0 = off); `focus_metric` (`variance_of_laplacian`); `focus_threshold_frac` (0.5); `focus_window_min_slices` (3); `focus_window_max_slices` (0); `focus_window_fixed_n_slices` (0); `focus_min_intensity_frac_of_peak` (0.0); `file_overrides` (`{}`).
+**`nuclei`**: `backend` (`stardist`); `prob_threshold` (0.5); `nms_threshold` (0.5); `stardist_model` (`2D_versatile_fluo`); `cellpose_model_type` (`cpsam`); `cellpose_diameter_px` (0.0 = auto); `cellpose_downsample_factor` (1.0); `cellpose_device` (`cpu`); `min_area_px` (10000); `max_area_px` (1e12); `label_smoothing_radius_px` (0); `exclude_border` (true); `border_margin_px` (5); `reject_ghost_nuclei` (false); `reject_ghost_max_dapi_cv` (0.12); `reject_ghost_min_area_px` (6000). Physical alternatives such as `expected_diameter_um` and `min_area_um2` are converted with the pixel size.
 
-**`nuclei`** — `backend` (`stardist`; or `cellpose`/`otsu`); `prob_threshold` (0.5); `nms_threshold` (0.5); `stardist_model` (`2D_versatile_fluo`, free string); `cellpose_model_type` (`cpsam`, free string); `cellpose_diameter_px` (0.0 = auto); `cellpose_downsample_factor` (1.0); `cellpose_device` (`cpu`; or `directml` for AMD, `cuda` for NVIDIA — see [GPU acceleration](#gpu-acceleration)); `min_area_px` (10000); `max_area_px` (1e12); `label_smoothing_radius_px` (0); `exclude_border` (True) / `border_margin_px` (5); `reject_ghost_nuclei` (False) / `reject_ghost_max_dapi_cv` (0.12) / `reject_ghost_min_area_px` (6000).
+**`pixel_coloc`**: `threshold_mode` (`mad`); `threshold_scope` (`batch`); `k_mad` (2.0); `percentile` (80.0).
 
-**`sampling`** — fixed-N nucleus sampling; `enabled` (False), `n_per_unit` (20), `unit` (`per_image`; `per_well` is not implemented and raises), `order` (`random`; or `raster`/`center_out`), `seed` (None = the run seed), `on_short` (`keep`; or `drop_unit`/`fail`), `min_eligible` (0), `apply_to_rollups` (True). See [Fixed-N nucleus sampling](#fixed-n-nucleus-sampling).
+**`spot_coloc`**: `pair_distance_um` (0.3); `report_nn_distance` (true).
 
-**`pixel_coloc`** — `threshold_mode` (`mad`; or `percentile`/`costes`); `threshold_scope` (`batch`; or `per_image`); `k_mad` (2.0); `percentile` (80.0).
+**`foci`**: `backend` (`bigfish`); `bigfish_spot_radius_nm` (130.0); `bigfish_spot_radius_z_nm` (300.0); `bigfish_voxel_size_nm` / `bigfish_voxel_z_nm` (0 = metadata); `threshold_multiplier` (0.7); `only_nuclear_spots` (false); `min_sep_px` (1); `log_spot_radius_px` (2.5); `log_threshold` (0.05); per-channel `rna_overrides`/`rna2_overrides`/`antibody_overrides`; `detect_antibody_spots` (true); `compute_size_fit` (true). `detect_in_sec_only` is accepted but ignored: spots are always detected on secondary-only images. Null and coloc options (all off by default): `compute_partner_intensity`, `compute_partner_null_enrichment`, `partner_null_n` (1000), `partner_null_disk_px` (3.0), `partner_null_seed` (0), `exclude_nucleolus_from_partner_null`, `save_partner_null_draws`, `compute_partner_radial_profile`, `partner_radial_bins_um`, `compute_partner_rotation_null`, `partner_rotation_n` (1000), `partner_rotation_seed` (0), `partner_rotation_min_retention` (0.5), `partner_rotation_assoc_percentile` (95.0), `compute_partner_translation_null`, `save_partner_rotation_null_draws`, `compute_partner_anchored_rotation_null`, `compute_footprint_enrichment`.
 
-**`spot_coloc`** — `pair_distance_um` (0.3); `report_nn_distance` (True).
+**`cytoplasm`**: `enabled` (true); `voronoi_max_expansion_px` (80); `measure_nc_ratio` (true).
 
-**`foci`** — `backend` (`bigfish`; or `log`); `bigfish_spot_radius_nm` (130.0); `bigfish_spot_radius_z_nm` (300.0); `threshold_multiplier` (0.7); `only_nuclear_spots` (False); `min_sep_px` (1); `log_spot_radius_px` (2.5) / `log_threshold` (0.05); per-channel `rna_overrides`/`rna2_overrides`/`antibody_overrides`; `compute_partner_intensity` (False); `detect_antibody_spots` (True). Null/coloc cluster (all default off unless noted): `compute_partner_null_enrichment` (False), `partner_null_n` (1000), `partner_null_disk_px` (3.0), `partner_null_seed` (0), `exclude_nucleolus_from_partner_null` (False), `save_partner_null_draws` (False), `compute_partner_radial_profile` (False), `partner_radial_bins_um` (`[0.25, 0.5, 0.75, 1.0]`), `compute_partner_rotation_null` (False), `partner_rotation_n` (1000), `partner_rotation_seed` (0), `partner_rotation_min_retention` (0.5), `partner_rotation_assoc_percentile` (95.0), `compute_partner_translation_null` (False), `save_partner_rotation_null_draws` (False), `compute_partner_anchored_rotation_null` (False). Each per-channel override block also accepts `threshold_override` (None -> inherit `foci.threshold_override`).
+**`nucleolus`**: `enabled` (false); `intra_nuclear_percentile` (25.0); `min_area_um2` (1.0); `max_area_frac_of_nucleus` (0.6); `closing_radius_px` (2); `min_border_distance_px` (5).
 
-**`cytoplasm`** — `enabled` (True); `voronoi_max_expansion_px` (80); `measure_nc_ratio` (True).
+**`output`**: `save_qc_overlays`, `save_per_image_csv`, `save_masks`, `save_publication_images` (true); `save_publication_tifs` (false); `pub_contrast_mode` (`auto_batch`; or `auto_per_image`, `manual`, `reference_image`) with percentile knobs; `manual_<dapi|rna|rna2|antibody>_min/_max` (None); `apply_pub_contrast_floor_to_analysis`, `apply_pub_contrast_floor_to_spots` (false); `rna_intensity_threshold`, `rna2_intensity_threshold` (None); `scalebar_um` (50.0).
 
-**`nucleolus`** — `enabled` (False); `intra_nuclear_percentile` (25.0); `min_area_um2` (1.0); `max_area_frac_of_nucleus` (0.6); `closing_radius_px` (2); `min_border_distance_px` (5).
+**`qc`**: `qc_min_nuclei` (5); `qc_saturated_frac` (0.01); `qc_min_focus_score` (0.0); `qc_overdetect_rna1_max_per_nucleus` (300); `qc_overdetect_robust_mad_k` (5); `qc_overdetect_min_per_nucleus_for_outlier` (50).
 
-**`output`** — save toggles `save_qc_overlays`/`save_per_image_csv`/`save_masks`/`save_publication_images` (True), `save_publication_tifs` (False); `pub_contrast_mode` (`auto_batch`; or `auto_per_image`/`manual`/`reference_image`) with percentile knobs (`pub_contrast_floor_pct` 98.0, `pub_contrast_ceil_pct` 99.9, `pub_contrast_dapi_floor_pct` 40.0, `pub_contrast_dapi_ceil_pct` 99.9, `pub_contrast_rna_floor_bump_pct` 10.0); manual floors `manual_<dapi|rna|rna2|antibody>_min/_max` (None); `apply_pub_contrast_floor_to_analysis` (False) / `apply_pub_contrast_floor_to_spots` (False); `rna_intensity_threshold` / `rna2_intensity_threshold` (None); `scalebar_um` (50.0).
+**`parallel`**: `workers`, `seg_workers` (`auto`); `main_workers` (1); `threads_per_worker` (4).
 
-**`qc`** — `qc_min_nuclei` (5); `qc_saturated_frac` (0.01); `qc_min_focus_score` (0.0 = focus never flags). QC columns are advisory only; no image is ever dropped.
+The full list, with comments, is in `schema.py`.
 
-**`parallel`** — `workers`/`seg_workers` (`auto`); `main_workers` (1); `threads_per_worker` (4).
+### Portable presets
 
-### Cloning a preset
+Six presets are portable starting points. They are marked `# portable: true` on line 1 and are the only presets in the built wheel:
 
-Clone the closest shipped preset and retarget channels/floors per dataset — never write a config from scratch, and don't improvise z-handling, floor, or output-dir naming.
-
-```powershell
-fishsuite presets show bin1_d8cmyo_100x > my_new_preset.yaml
-# edit channel indices/labels/LUTs, z-handling, and floors, then run --dry-run
-```
-
-### Portable presets vs run records
-
-The presets folder holds two different kinds of file, and confusing them wastes time.
-
-**Six presets are portable starting points.** They are marked with a `# portable: true` comment on line 1 and are the only ones shipped inside the built wheel:
-
-| Portable preset | Mode | Use when |
+| Preset | Mode | Use when |
 |---|---|---|
-| `generic_100x_0p065.yaml` | rna_only | One FISH target. 100× objective, ~0.065 µm/px. |
-| `generic_60x_0p108.yaml` | rna_only | One FISH target. 60× objective, ~0.108 µm/px. |
-| `u2os_100x.yaml` | rna_only | U2OS, 100×. |
-| `hek293_60x.yaml` | rna_only | HEK293, 60×. |
-| `generic_rna_rna_100x.yaml` | rna_rna | **Two FISH probes.** Spot-to-spot pairing + whole-nucleus pixel coloc. |
-| `generic_rna_protein_100x.yaml` | rna_protein | **FISH × diffuse antibody.** The diffuse-partner path: `detect_antibody_spots: false`, partner-intensity statistic, position + rotation nulls, and the radial profile all enabled. |
+| `generic_100x_0p065.yaml` | rna_only | One FISH target, 100x, about 0.065 um/px. |
+| `generic_60x_0p108.yaml` | rna_only | One FISH target, 60x, about 0.108 um/px. |
+| `u2os_100x.yaml` | rna_only | U2OS cells, 100x. |
+| `hek293_60x.yaml` | rna_only | HEK293 cells, 60x. |
+| `generic_rna_rna_100x.yaml` | rna_rna | Two FISH probes. |
+| `generic_rna_protein_100x.yaml` | rna_protein | FISH with a diffuse antibody, with the nulls and radial profile on. Read its comments before configuring any coloc with an abundant nuclear protein. |
 
-The last two are written from scratch as templates rather than stripped from a lab run, and they are commented at length — particularly `generic_rna_protein_100x.yaml`, which explains *why* a nucleoplasm-filling protein must not be spot-detected. If you are doing colocalization with an abundant nuclear protein, read that file before configuring anything: it is the case the tool is best at and the one most easily gotten wrong.
+Copy one with `fishsuite presets show NAME > my_preset.yaml`, then retarget channels, pixel-size-dependent values, z-handling and floors.
 
-**Everything else is a run record** — the provenance of a specific figure, kept so that a published result can be traced back to the exact settings that produced it. They are not templates. Most carry an `input_file_subset` listing the author's own image filenames, `z_stack.file_overrides` keyed to literal filenames, or `cellpose_device: directml` (AMD-only), so running one unchanged on another machine will discover zero images or fail on the device. They stay in the repository for provenance but are **excluded from the built wheel**, so a `pip install fishsuite` ships only the six portable ones.
-
-`h9_rna_rna_test.yaml` and `h9_rna_rna_test_labeled.yaml` deserve a specific warning, because they look portable and are not: they carry no absolute paths and no file subset, but their `subfolder_conditions` are keyed to the author's folder names, and **their `rna2` channel contains no probe** — the headers say so, and the labelled variant names it `Empty-Cy3`. They are two-channel infrastructure checks, not two-probe experiments. Use `generic_rna_rna_100x.yaml`.
-
-If you cloned the repository rather than pip-installing, `fishsuite presets list` will show all of them. Read the header comment before reusing one.
-
-### Built-in presets
-
-Shipped presets live in `src/fishsuite/config/presets/`. Representative ones (all but the last two rows are run records, per the section above):
-
-| Preset | Mode | Purpose |
-|---|---|---|
-| `h9_hesc_100x.yaml` | rna_only | H9 hESC 100x baseline (DAPI + RNA). |
-| `h9_miat_kd_rerun_iwfocus_2026-05-31.yaml` | rna_only | Committee-grade H9 MIAT NT-vs-KD with the objective windowed-MIP z-handling. |
-| `h9_miat_kd_aso_cellpose.yaml`, `..._stardist_ds3.yaml`, `h9_miat_kd_0505_rerun_*`, `h9_miat_kd_0506_descriptive_*`, `h9_miat_kd_aso_DECONV_*` | rna_only | H9 MIAT-KD variants (backend / dataset / deconvolution-specific). |
-| `miat_oe_ud_g2_rna_only_2026-06-03.yaml` | rna_only | Undifferentiated hESC g2 MIAT overexpression (Dox-inducible) FISH. |
-| `bin1_d8cmyo_100x.yaml` | rna_rna | BIN1 d8 cardiomyocyte exon/intron retention (KO vs WT). |
-| `bin1_d8cmyo_*` (XRN2, QKIKO4-2, RNaseTreat variants) | rna_rna | BIN1 d8-cMyo follow-ups. |
-| `h9_rna_rna_test.yaml`, `..._labeled.yaml` | rna_rna | Two-channel infrastructure validation on H9 data (the 561 channel is an unused stand-in — not a real two-probe experiment). |
-| `miat_qki_coloc_ud_g2_PLAIN_strictMIAT_2026-06-05.yaml` | rna_protein | MIAT × QKI coloc, g2 control vs MIAT-OE, diffuse-partner; rotation/null products on. |
-| `miat_qki_coloc_ud_ALLARMS_PLAIN_strictMIAT_2026-06-05.yaml` | rna_protein | MIAT × QKI coloc, all three dCas9-VPR arms × ±Dox in one run. |
-| `miat_qki_coloc_ud_g2_rna_protein_2026-06-04.yaml` | rna_protein | Earlier g2 MIAT × QKI coloc pilot. |
-| `miat_qki_coloc_d4CM_decon_2026-06-20.yaml`, `..._d8CM_...`, `..._d15CM_...` | rna_protein | MIAT × QKI coloc on d4/d8/d15 cardiomyocytes (deconvolved). |
-| `miat_qki_EXPLORATORY_qkifoci_*` | rna_protein | Exploratory QKI-foci tuning variants. |
-| `generic_60x_0p108.yaml`, `generic_100x_0p065.yaml` | rna_only | **Portable.** Generic single-FISH starting points at the named pixel sizes. |
-| `hek293_60x.yaml`, `u2os_100x.yaml` | rna_only | **Portable.** Generic cell-line single-FISH templates. |
-| `generic_rna_rna_100x.yaml` | rna_rna | **Portable.** Generic two-probe template. |
-| `generic_rna_protein_100x.yaml` | rna_protein | **Portable.** Generic FISH × diffuse-antibody template with the nulls and radial profile on. |
-
-> `presets list` prints every `*.yaml` in the presets folder, which may include local scratch presets (e.g. `_tmp_*`); those are not official shipped presets.
+Every other preset in a source checkout is a run record: the exact settings behind a specific result. Most name specific files, folders or a GPU device and will find no images on another machine. They are excluded from the wheel. Read the header comment before reusing one. `presets list` also shows local scratch files such as `_tmp_*`.
 
 ---
 
-## Outputs and metrics
+## Outputs
 
-A run writes a complete, condition-aware output tree. Per-image files are condition-prefixed (`<condition>__<stem>__<suffix>`); an optional `output.prefix` is prepended to all names.
+Per-image files are named `<condition>__<stem>__<suffix>`. `output.prefix` is prepended to all names when set.
 
-### Directory layout
+### What a run writes
 
-```
-<output_dir>/
-  per_image_summary.csv      # master, one row per image
-  nuclei_metrics.csv         # master, one row per nucleus
-  spot_metrics.csv           # master, one row per spot (has a `channel` column)
-  cell_morphology.csv        # master, one row per nucleus (shape)
-  thresholds.csv             # master, per-image threshold record
-  coloc_null_draws.csv       # only when save_partner_null_draws is on
-  coloc_radial_profile.csv   # only when the radial-profile feature is on
-  coloc_rotation_null.csv    # only when save_partner_rotation_null_draws is on
-  analysis_summary.xlsx      # PI report workbook
-  analysis_raw_data.xlsx     # raw-data workbook
-  run_config.json            # full resolved config + provenance
-  versions.txt               # tool versions + seed (written at run start)
-  command.log                # argv + config + seed (written at run start)
-  qc_overlays/               # QC composite + segmentation-on-DAPI PNGs
-  per_image_csv/             # per-image nuclei + spot CSVs (+ optional channel-split spot CSVs)
-  masks/                     # per-image label/mask TIFFs + per-image thresholds.csv
-  publication_images/        # per-channel pseudo-colored PNGs (+ optional 16-bit TIFs) and merges
-  pipeline_walkthrough/      # step01..stepNN methods micrographs
-  nuclei_popouts/            # representative single-nucleus crops
-  nucleolus_overlay/         # nucleolus overlays (populated only in nucleolus-aware runs)
-  _downstream_plots.log      # log of the optional downstream figure step
-```
+| Path | When | Contents |
+|---|---|---|
+| `per_image_summary.csv` | always | One row per image. The replicate-level table. |
+| `nuclei_metrics.csv` | always | One row per nucleus. |
+| `spot_metrics.csv` | always | One row per spot, with a `channel` column. |
+| `cell_morphology.csv` | always | Per-nucleus shape. |
+| `thresholds.csv` | always | Per-image, per-channel threshold record. |
+| `failed_images.csv` | always | Images that failed, with the exception. Empty when none failed. |
+| `resolved_experiment_hierarchy.csv` | always | Every discovered image with its condition, well, group and output stem. |
+| `resolved_nuclear_size.json` | always | Nuclear size limits as resolved for each image. |
+| `analysis_summary.xlsx` | always | Summary workbook. |
+| `analysis_raw_data.xlsx` | always | Raw-data workbook. |
+| `run_config.json` | always | Resolved config and provenance. |
+| `versions.txt`, `command.log` | always, at run start | Library versions, seed and the exact command. |
+| `condition_output_status.json` | always | Whether grouped figures completed, separate from measurements. |
+| `sampling_methods.txt` | `sampling.enabled` | The sampling criteria. |
+| `coloc_null_draws.csv` | `save_partner_null_draws` | Pooled position-null draws. |
+| `coloc_rotation_null.csv` | `save_partner_rotation_null_draws` | Pooled rotation-null draws. |
+| `coloc_radial_profile.csv`, `coloc_radial_profile_ci.png` | `compute_partner_radial_profile` | Ring statistics and the mean with 95% CI figure. |
+| `qc_overlays/` | `save_qc_overlays` | QC composites and segmentation on DAPI. |
+| `per_image_csv/` | `save_per_image_csv` | Per-image nucleus and spot CSVs. |
+| `masks/` | `save_masks` | Label and mask TIFFs. |
+| `publication_images/` | `save_publication_images` | Per-channel pseudo-coloured PNGs (optional 16-bit TIFs) and merges. |
+| `pipeline_walkthrough/`, `nuclei_popouts/`, `nucleolus_overlay/` | always created | Step micrographs, single-nucleus crops, nucleolus overlays. |
+| `figures/`, `_downstream_plots.log` | always | Built-in figure step and its log. A figure failure does not fail the measurements. |
+| `figures/per_condition/`, `figures/00_overview/`, `figures/per_well_supplementary/` | `conditions.groups` set | Group-level figures; per-well figures moved aside. |
+| `per_condition_summary.csv`, `per_well_condition_summary.csv`, `per_field_condition_summary.csv`, `condition_report_hierarchy.csv`, `native_by_condition.json` | `conditions.groups` set | Group, well and field summaries and their provenance. |
 
-> **`figures/` is produced by an optional bundled downstream step, not by fishsuite itself.** At the end of a run, the runner shells out to an external script (`python -m analysis.single_condition_plots`) that creates `figures/` (and subfolders such as `figures/07_coloc/`). The `walkthrough` utility also writes its figure to `figures/07_coloc/79_pipeline_walkthrough.png` by default (creating that path).
+An `if_intensity` run writes instead `per_nucleus.csv`, `per_fov.csv`, `per_well.csv`, `stats.csv`, `exposure_report.csv`, `seconly_pooled.csv`, `<experiment>_IF_intensity.xlsx`, `per_image_summary.csv`, `nuclei_metrics.csv`, `if_run_context.json`, and `figures/`, `micrographs/`, `montages/` and `publication_images/`.
+
+Post-run commands add their own files; see [POSTRUN_UTILITIES.md](POSTRUN_UTILITIES.md). `fishsuite report` writes into its own `report_<stamp>/` folder.
 
 ### Master CSVs and key columns
 
-- **`per_image_summary.csv`** (the replicate-level table): per-image spot totals and per-nucleus rollups — `total_spots`, `total_spots_rna1/rna2`, `mean/median/cv_spots_per_nucleus(_rna1/_rna2)`, `frac_nuclear_rna1/rna2`, `frac_nuclei_with_ge_{1,5,10}_spot(s)`, intensity rollups, pairing (`paired_fraction_*_at_0p3um`, `median_nn_distance_*_um_all_spots_in_frame` — the bare `median_nn_distance_*_um` name survives per nucleus only, alongside the `mean/median/sd_median_nn_distance_*_um_per_nucleus` rollups), and — when the partner-null features are on — the **pooled null summary columns** (e.g. `rna2_pooled_enrichment_vs_null_at_rna1_spots`, `rna2_pooled_rotation_enrichment_at_rna1_spots`, with their pooled null mean / z / empirical p; relabeled `protein_*` in `rna_protein`).
-- **`nuclei_metrics.csv`** (per nucleus): `rna_spot_count`, `nuclear_spot_count`, `cyto_spot_count`, **`nuclear_spot_fraction`**, `nuclear_spot_density_per_um2`, raw intensities and `rna_nc_ratio` / `nc_ratio_total_intensity_*`, spot peak-intensity aggregates, the thresholded-compartment columns (`rna_thresh_total/mean_intensity_*`, `_pos_area_px_*`, `_pos_fraction_*`, `rna_thresh_floor`, plus `rna2_thresh_*`/`protein_thresh_*`), pairing, the Manders/Pearson/etc. per-nucleus coloc columns, and — when on — the per-nucleus partner columns (`rna2_enrichment_vs_null_at_rna1_spots`, `rna2_rotation_enrichment_at_rna1_spots`, `rna2_rotation_assoc_fraction_at_rna1_spots`, `rotation_null_usable`).
+- **`per_image_summary.csv`** (the replicate-level table): per-image spot totals and per-nucleus rollups: `total_spots`, `total_spots_rna1/rna2`, `mean/median/cv_spots_per_nucleus(_rna1/_rna2)`, `frac_nuclear_rna1/rna2`, `frac_nuclei_with_ge_{1,5,10}_spot(s)`, intensity rollups, pairing (`paired_fraction_*_at_0p3um` and `median_nn_distance_*_um_all_spots_in_frame`; the bare `median_nn_distance_*_um` name exists per nucleus only, with the `mean/median/sd_median_nn_distance_*_um_per_nucleus` rollups here), and, when the partner nulls are on, the pooled null summary columns (for example `rna2_pooled_enrichment_vs_null_at_rna1_spots` and `rna2_pooled_rotation_enrichment_at_rna1_spots`, with pooled null mean, z and empirical p; named `protein_*` in `rna_protein`).
+- **`nuclei_metrics.csv`** (per nucleus): `rna_spot_count`, `nuclear_spot_count`, `cyto_spot_count`, **`nuclear_spot_fraction`**, `nuclear_spot_density_per_um2`, raw intensities and `rna_nc_ratio` / `nc_ratio_total_intensity_*`, spot peak-intensity aggregates, the thresholded-compartment columns (`rna_thresh_total/mean_intensity_*`, `_pos_area_px_*`, `_pos_fraction_*`, `rna_thresh_floor`, plus `rna2_thresh_*`/`protein_thresh_*`), pairing, the per-nucleus Manders, Pearson and other coloc columns, and, when on, the per-nucleus partner columns (`rna2_enrichment_vs_null_at_rna1_spots`, `rna2_rotation_enrichment_at_rna1_spots`, `rna2_rotation_assoc_fraction_at_rna1_spots`, `rotation_null_usable`).
 - **`spot_metrics.csv`** (per spot): `channel` (`rna1`/`rna2`/`protein`), `spot_id`, `nucleus_id`, `in_nucleus`, `in_cytoplasm`, `x_px`/`y_px`/`z_slice`, `spot_peak_intensity`, measured `spot_fwhm_px`/`spot_diameter_um`/`spot_area_px`, `nn_distance_um`, `paired_at_0p3um`.
 - **`cell_morphology.csv`**: per-nucleus `area_um2`, `perimeter_um`, `circularity`, `aspect_ratio`, `roundness`, `elongation`, `solidity`, `feret_max_um`/`feret_min_um`.
-- **`thresholds.csv`**: per-image per-channel threshold provenance (method/mode/`k_mad`/scope/value, BigFISH params, channel labels).
-- **Coloc CSVs**: `coloc_null_draws.csv` and `coloc_rotation_null.csv` carry per-iteration pooled draws (`image, condition, iter, pooled_null_value, pooled_obs`); `coloc_radial_profile.csv` carries per-ring stats (`image, condition, ring_um, obs_mean, null_mean, null_sd, enrichment, z, n_spots`).
+- **`thresholds.csv`**: per-image, per-channel threshold provenance (method, mode, `k_mad`, scope, value, BigFISH parameters, channel labels).
+- **Coloc CSVs**: `coloc_null_draws.csv` and `coloc_rotation_null.csv` hold per-iteration pooled draws (`image, condition, iter, pooled_null_value, pooled_obs`); `coloc_radial_profile.csv` holds per-ring statistics (`image, condition, ring_um, obs_mean, null_mean, null_sd, enrichment, z, n_spots`).
 
-> The full, authoritative per-column glossary (name / type / unit / description) is embedded in the workbook README sheet and in `core/excel_report.py`.
+Some column names carry legacy experiment tokens, for example `miat_footprint_area_px` or `qki_at_miat_footprint`. Read `miat` as RNA1 and `qki` as the partner channel. The full per-column glossary is in the README sheet of `analysis_summary.xlsx`.
 
 ### Excel workbooks
 
-- **`analysis_summary.xlsx`** — 10 sheets: `README` (provenance + per-column glossary), `Executive_Summary`, `PI_Focus`, `Comparison_Table` (group comparison with Mann-Whitney U p-value + Cliff's delta), `Per_Image_Summary`, `Per_Nucleus_Metrics`, `Per_Spot_Metrics`, `Cell_Morphology`, `Thresholds`, `Run_Config`. Data sheets have a bold header, frozen header row, auto-fit widths, numeric formats, and condition color-coding; generic channel tokens are substituted with the preset's channel labels.
-- **`analysis_raw_data.xlsx`** — 5 sheets: `Raw_README` + the 4 data sheets (`Per_Image_Summary`, `Per_Nucleus_Metrics`, `Per_Spot_Metrics`, `Cell_Morphology`).
+- **`analysis_summary.xlsx`**: `README` (provenance and column glossary), `Executive_Summary`, `PI_Focus`, `Comparison_Table` (Mann-Whitney U and Cliff's delta on the unit set by `output.comparison_unit`: per-image means by default, per-well means, or pooled nuclei as a descriptive view), `Per_Image_Summary`, `Per_Nucleus_Metrics`, `Per_Spot_Metrics`, `Cell_Morphology`, `Thresholds`, `Run_Config`. With `conditions.groups` set it also has `Per condition`, `Per well`, `Per image` and `Condition contrasts`. Channel tokens are replaced by your channel labels.
+- **`analysis_raw_data.xlsx`**: `Raw_README` plus `Per_Image_Summary`, `Per_Nucleus_Metrics`, `Per_Spot_Metrics`, `Cell_Morphology`.
 
 ### `run_config.json`
 
-Records identity/provenance (`package`, `version`, `python_version`, `platform`, `run_start_utc`/`run_end_utc`, `runtime_s`, `n_workers`, `config_path`, `input_dir`, `output_dir`, `n_images`, `failures`), the full resolved config (`config_resolved`), Fiji-parity uppercase keys, output toggles, the resolved publication-contrast (`batch_contrast`), and top-level channel labels.
+Records package, version, Python, platform, start and end times, runtime, worker count, config path, input and output folders, image count, failures, the fully resolved config (`config_resolved`), output toggles, the resolved publication contrast and channel labels.
 
 ---
 
 ## Statistics conventions
 
-- **The per-image mean is the replicate unit.** Per-nucleus values are pseudoreplicated (Lord 2020); inference is at the image/replicate level. SuperPlots show per-nucleus points shaded by image, with image-means as the tested replicates.
-- **When `conditions.groups` is set the WELL is the replicate unit and the condition GROUP is what gets compared.** Fields of view become technical replicates within a well. `fishsuite report` tests well means; its SuperPlots shade nuclei by well and draw well means as the tested points. See [Condition groups and the report layer](#condition-groups-and-the-report-layer).
-- **Report `nuclear_spot_fraction` / N:C as the headline** for nuclear-retention experiments ("at floor N"); absolute counts/intensities are floor-sensitive support, robust in direction but not magnitude.
-- **Never compare absolute antibody/RNA intensity across conditions or sections** when laser power was re-tuned per section. Report counts, fractions, and within-nucleus ratios only.
-- **Colocalization is reported with its null** — effect size (observed vs null) plus an empirical p, never a bare coefficient; for diffuse-partner cases the rotation-null columns are reported ALONGSIDE the standard colocalization panel (Brian's rule 2026-09-04; see Reporting rules above), never as the sole number.
+- **The replicate is the well when groups are set, otherwise the image.** Per-nucleus values are pseudoreplicates (Lord 2020). SuperPlots shade nuclei by replicate and draw replicate means as the tested points.
+- **Report `nuclear_spot_fraction` and N:C as the headline** for nuclear-retention experiments. Absolute counts and intensities depend on the floor.
+- **Do not compare absolute intensity across conditions** if laser power or exposure was retuned between them. Use counts, fractions and within-nucleus ratios.
+- **Report colocalization with its null**: effect size against the null plus an empirical p, never a bare coefficient. For a diffuse partner, report the rotation null alongside the standard colocalization panel, never alone.
 
 ---
 
 ## Reproducibility
 
-- A global `seed` (default 0) seeds Python `random`, NumPy, `PYTHONHASHSEED`, and torch (via `core/repro.py`) at the very start of a run.
-- Every stochastic null uses `numpy.random.default_rng` with a fixed seed and a separate RNG stream per null family, so results are deterministic and `backfill` reproduces the engine's draws bit-for-bit.
+- A global `seed` (default 0) seeds Python, NumPy, `PYTHONHASHSEED` and torch at run start.
+- Each null uses its own fixed-seed RNG stream. `backfill` reproduces the run's draws exactly.
 - Z-window selection is deterministic.
-- `versions.txt` (fishsuite version, seed, Python, platform, and installed versions of numpy/scipy/scikit-image/pandas/cellpose/stardist/big-fish/torch/torch-directml/bioio/bioio-bioformats) and `command.log` (full `sys.argv`, config path, output dir, seed, mode, z-mode) are written at run start, so provenance survives even if a run later crashes.
-- Use a new, descriptively-named, timestamped output directory per run; raw input directories are read-only.
+- `versions.txt` and `command.log` are written at run start, so provenance survives a crash.
+- Use a new output folder per run. Treat raw input folders as read-only.
 
 ---
 
 ## Testing
 
-Run the suite with pytest from the repo root (in either env):
+From a clone, after `pip install -e ".[dev]"`:
 
-```powershell
-"C:\Users\ambur\miniconda3\envs\fishproc_dml\python.exe" -m pytest -q
+```bash
+python -m pytest -q -m "not heavy"     # what CI runs
+python -m pytest -q                    # full suite, needs StarDist/TensorFlow and cellpose/torch
 ```
 
-The current pass count is whatever the CI badge at the top of this file reports — a number written into prose here goes stale, so it is deliberately not repeated. Tests that need a GPU, the full ML stack, a working image reader, or the author's lab tree are marked (`gpu` / `heavy` / `bioformats` / `lab`) and skip when unavailable. CI runs `-m "not heavy"`. See `CONTRIBUTING.md` for what each marker means.
-
-Coverage areas (one test file each): autofocus z-lock, fixed-N focus window, partner-intensity performance, position-randomization null coloc, partner radial profile, rotation null, threshold-intensity feature, output/Excel schema, reproducibility (`repro`), QC flags, nucleolus performance-equivalence, rna_protein depth, coloc backfill, CLI post-run subcommands, walkthrough figure, and a general smoke test.
+Tests that need a GPU, the full ML stack, a working Bio-Formats reader or private data are marked `gpu`, `heavy`, `bioformats` or `lab` and skip when unavailable. See the CI badge for current status and [CONTRIBUTING.md](CONTRIBUTING.md) for the markers.
 
 ---
 
@@ -938,103 +652,65 @@ Coverage areas (one test file each): autofocus z-lock, fixed-N focus window, par
 
 ```
 src/fishsuite/
-  __init__.py            # version, headless matplotlib, bffile numpy-1 patch
-  cli.py                 # Click CLI (run/preview/presets/init/gui/backfill/walkthrough/postrun)
+  cli.py               # Click CLI, all subcommands
+  runner.py            # batch runner: discovery, per-image dispatch, master CSVs, workbooks
   config/
-    schema.py            # Pydantic v2 config model
-    presets/             # shipped *.yaml presets
+    schema.py          # Pydantic config model
+    hierarchy.py       # condition / well / field roster
+    presets/           # presets (portable ones ship in the wheel)
   core/
-    io.py                # bioio reader, channel autodetect, z-window logic
-    segmentation.py      # wrapper over _vendor: cellpose / stardist / otsu backend
-                         #   selection, GPU device routing (DirectML + CUDA),
-                         #   ghost-nucleus rule, fixed-N nucleus sampler
-    spots.py             # wrapper over _vendor: BigFISH / LoG spot detection
-    _vendor/             # the lab's own segmentation + spot-detection code,
-                         #   copied VERBATIM and checksum-pinned. Never edit;
-                         #   see _vendor/PROVENANCE.md and CONTRIBUTING.md.
-    thresholds.py        # MAD / Costes thresholds (Fiji-bit-compatible)
-    metrics.py           # Pearson/Manders/Li-ICQ/Jaccard/Dice; thresholded compartment intensity
-    morphology.py        # Voronoi cytoplasm, N/C stratification, regionprops
-    nucleolus.py         # DAPI-low nucleolus detection + chromatin texture
-    parallel.py          # ProcessPool worker count + thread caps
-    repro.py             # seeds, versions.txt, command.log
-    qc.py                # advisory per-image QC flags
-    output.py            # per-image PNG/TIF/CSV/mask writers
-    excel_report.py      # the two Excel workbooks + column glossaries
-    coloc_backfill.py    # CPU post-run coloc products (orchestrates rna_rna null helpers)
-    walkthrough_figure.py# the 8-panel pipeline-walkthrough figure
-    modes/
-      __init__.py        # mode registry / dispatch
-      rna_only.py        # single-channel mode (+ the floor resolver helpers)
-      rna_rna.py         # two-channel core (partner-intensity + ALL nulls live here)
-      rna_protein.py     # antibody->rna2 remap wrapper over rna_rna
-      if_intensity.py    # plate-level IF antibody-validation intensity mode
-      if_report.py       # if_intensity Excel + statistics reporting
-      if_pub_images.py   # if_intensity publication micrographs
-      ab_ab.py           # not yet ported -> aliases rna_only
-      protein_only.py    # not yet ported -> aliases rna_only
-      pub_images.py      # not yet ported -> aliases rna_only
-  gui/                   # PySide6 desktop launcher (main, state, widgets, readiness, runner_proc)
-tests/                   # pytest suite
-CONTRIBUTING.md          # dev install, markers, the _vendor rule, versioning policy
-file_map.md              # per-file orientation index
-POSTRUN_UTILITIES.md     # beginner guide to backfill/walkthrough/postrun
-THRESHOLD_INTENSITY_FEATURE.md  # the thresholded-compartment-intensity feature
-docs/dev/                # internal development records (not user documentation)
+    io.py              # bioio reader, channel auto-detect, discovery, z-windows
+    pixel_size.py      # pixel-size resolution and fallback
+    segmentation.py    # Cellpose / StarDist / Otsu wrapper over _vendor
+    spots.py           # BigFISH / LoG wrapper over _vendor
+    _vendor/           # vendored segmentation and spot code; never edit
+    thresholds.py      # MAD / percentile / Costes thresholds
+    metrics.py         # pixel coloc metrics, thresholded compartment intensity
+    morphology.py      # Voronoi cytoplasm, N/C stratification
+    nucleolus.py       # nucleolus detection
+    qc.py              # advisory QC flags
+    excel_report.py    # the two run workbooks and glossaries
+    native_by_condition.py  # group-level figures and summaries
+    coloc_backfill.py, walkthrough_figure.py, singlecell.py, pixel_pattern.py  # post-run tools
+    modes/             # rna_only, rna_rna, rna_protein, if_intensity (+ reserved stubs)
+  report/              # fishsuite report
+  figures/             # figure-panel rendering
+  gui/                 # PySide6 launcher
+tests/                 # pytest suite
+docs/                  # user guides; docs/dev/ holds internal development records
 ```
+
+[file_map.md](file_map.md) describes every file.
 
 ---
 
 ## Citations and methods grounding
 
-The colocalization design follows the "coefficient-with-an-explicit-null" tradition. All references below were verified against PubMed (PMID + DOI):
+The colocalization design follows the coefficient-with-an-explicit-null tradition:
 
-- **Manders, Verbeek & Aten 1993** — co-occurrence coefficients M1/M2. *J Microsc* 169(3):375-382. PMID 33930978 · DOI 10.1111/j.1365-2818.1993.tb03313.x
-- **van Steensel et al. 1996** — cross-correlation / lateral-shift control for nuclear-compartment coloc. *J Cell Sci* 109(4):787-792. PMID 8718670 · DOI 10.1242/jcs.109.4.787
-- **Costes et al. 2004** — automatic threshold + randomization significance test. *Biophys J* 86(6):3993-4003. PMID 15189895 · DOI 10.1529/biophysj.103.038422
-- **Dunn, Kamocka & McDonald 2011** — practical guide to evaluating colocalization (registration-destroying controls). *Am J Physiol Cell Physiol* 300(4):C723-C742. PMID 21209361 · DOI 10.1152/ajpcell.00462.2010
-- **Aaron, Taylor & Chew 2018** — co-occurrence vs correlation; pixel-coloc / resolution limits. *J Cell Sci* 131(3):jcs211847. PMID 29439158 · DOI 10.1242/jcs.211847
-- **Lagache et al. 2018 (SODA)** — object-based spatial statistics with a mask-constrained random-placement null. *Nat Commun* 9(1):698. PMID 29449608 · DOI 10.1038/s41467-018-03053-x
-- **Lord et al. 2020 (SuperPlots)** — replicate-level reporting, anti-pseudoreplication. *J Cell Biol* 219(6):e202001064. PMID 32346721 · DOI 10.1083/jcb.202001064
+- **Manders, Verbeek & Aten 1993**: co-occurrence coefficients M1/M2. *J Microsc* 169(3):375-382. DOI 10.1111/j.1365-2818.1993.tb03313.x
+- **van Steensel et al. 1996**: cross-correlation and lateral-shift control for nuclear compartments. *J Cell Sci* 109(4):787-792. DOI 10.1242/jcs.109.4.787
+- **Costes et al. 2004**: automatic threshold and randomization test. *Biophys J* 86(6):3993-4003. DOI 10.1529/biophysj.103.038422
+- **Dunn, Kamocka & McDonald 2011**: practical guide to colocalization, registration-destroying controls. *Am J Physiol Cell Physiol* 300(4):C723-C742. DOI 10.1152/ajpcell.00462.2010
+- **Aaron, Taylor & Chew 2018**: co-occurrence versus correlation. *J Cell Sci* 131(3):jcs211847. DOI 10.1242/jcs.211847
+- **Lagache et al. 2018 (SODA)**: object-based statistics with a mask-constrained null. *Nat Commun* 9(1):698. DOI 10.1038/s41467-018-03053-x
+- **Lord et al. 2020 (SuperPlots)**: replicate-level reporting. *J Cell Biol* 219(6):e202001064. DOI 10.1083/jcb.202001064
 
-> **On the rotation "proper-background" null:** it is **not attributable to a single paper.** It is a registration-destroying, structure-preserving control built for this pipeline, in the spirit of the randomization-null tradition (Costes 2004; van Steensel 1996) and the registration-destroying principle articulated by Dunn 2011 and Aaron 2018. Cite it as our own construction, framed against those verified principles — not as a named published method.
+The rotation null is not a named published method. Cite it as this pipeline's construction, framed against Costes 2004, van Steensel 1996, Dunn 2011 and Aaron 2018. To cite fishsuite itself, see `CITATION.cff`.
 
 ---
 
 ## Scope and limitations
 
-- **Homo sapiens only.** Presets, channel conventions and validation data are human hESC / cardiomyocyte RNA-FISH / IF. There is no multi-species mode.
-- **Imaging is a lower bound on co-occupation for a diffuse, abundant partner.** In any diffraction-limited voxel, the *bound* fraction of an abundant nuclear protein is small relative to the diffuse pool, so a sparse RNA target yields low *apparent* colocalization even when association is real. A modest or null coloc result is sensitivity-limited and does not exclude interaction; report effect size + nulls and state the diffraction/abundance caveat.
-- **`ab_ab`, `protein_only`, `pub_images` are not yet ported.** Each is a one-line stub that aliases `rna_only`; selecting one gives you single-channel `rna_only` output, not the behavior its name implies.
-- **`figures/` depends on an external downstream script** (`analysis.single_condition_plots`); the core `fishsuite` package produces the CSVs, masks, QC overlays, publication images, walkthrough steps, and Excel workbooks.
-- **Splicing tools disagree by design** is not relevant here — but, analogously, colocalization coefficients answer different questions (co-occurrence vs correlation); never present one coefficient as "the answer" without its null.
+- Validated on human hESC and cardiomyocyte data. Other cell types and species need their own pixel-size-dependent settings and a check of segmentation and spot calls.
+- Imaging gives a lower bound on co-occupancy for a diffuse, abundant partner. A modest or null colocalization result does not exclude interaction. Report the effect size and nulls, and state the diffraction and abundance caveat.
+- `ab_ab`, `protein_only` and `pub_images` are not implemented.
+- Colocalization coefficients answer different questions (co-occurrence versus correlation). Never present one coefficient as the answer without its null.
 
 ---
 
-## Changelog / recent additions
+## Changelog and contributing
 
-- **Self-contained and citable** — the segmentation and spot-detection code is vendored into the package at `core/_vendor/`, checksum-pinned in `PROVENANCE.md` and enforced by `tests/test_vendor_parity.py`. An installed copy no longer depends on an external script tree.
-- **Fixed-N nucleus sampling** — the `sampling` block quantifies the same N nuclei per field of view, so a confluent field and a sparse one contribute equally. Selects last in the filter chain, from DAPI and geometry only. Default off.
-- **Per-image rollups of all nine pixel-coloc coefficients** — `mean_`/`median_`/`sd_`/`n_nuclei_in_` per coefficient on the per-image sheet, making the replicate-level statistic directly available instead of inviting per-nucleus pseudoreplication.
-- **Radial profile promoted to first class** — per-nucleus and per-image columns (spot-weighted pool and equal-weight rollup) plus a mean ± 95% CI table and figure; fails loudly rather than silently rescaling distance bins on an untrusted pixel size.
-- **Spot-callability diagnostic** — sample-vs-secondary-only spot rate and their ratio, per punctate channel, so a channel with no thresholdable object is visible before its mask-based coefficients get interpreted.
-- **CUDA support for cellpose** — `nuclei.cellpose_device: cuda` for NVIDIA hardware, alongside the existing DirectML path, without applying DirectML's CPU flow-dynamics workaround to it.
-- **`pip install fishsuite` works again** — `bioio-bioformats` moved to an optional `bioformats` extra. In the base dependencies it made the package impossible to install on any Python version (`bffile` requires `numpy>=2.1.0` against the `numpy<2.0` pin StarDist/TensorFlow force). A base install now reads TIFF/OME-TIFF; proprietary formats need the extra. New `all` extra bundles `bioformats` + `gui`.
-- **Two portable colocalization presets** — `generic_rna_rna_100x.yaml` and `generic_rna_protein_100x.yaml`, written as templates rather than stripped from a lab run. The tool previously shipped no portable example of two-channel coloc at all.
-- **Continuous integration** — Linux and Windows, Python 3.10 and 3.12, including a clean-venv install of the built wheel and a blocking dependency-resolution gate.
-- **Rotation "proper-background" null** — native, default-off rotation/translation nulls (`compute_partner_rotation_null` / `partner_rotation_*`), validated against an adversarial prototype; the headline control for spot-vs-diffuse-protein association beyond shared compartmentalization.
-- **Self-sufficient coloc outputs** — the canonical MIAT/QKI presets emit `coloc_null_draws.csv` + `coloc_radial_profile.csv` themselves, so `backfill` is only needed to retrofit older runs.
-- **Post-run utilities** — `backfill`, `walkthrough`, `postrun` as friendly CPU-only wrappers over the standalone modules, with plain-English errors.
-- **Reproducibility / QC hardening** — global seed + `versions.txt` + `command.log` at run start, and additive advisory `qc_*` columns (never drop an image).
-- **Thresholded compartment intensity** — a spot-caller-independent third intensity readout (`rna_thresh_*` / `rna2_thresh_*`).
-- **Diffuse-antibody handling** — `detect_antibody_spots: false` replaces the old threshold-multiplier hack for dense nuclear IF channels.
+Changes are listed in [CHANGELOG.md](CHANGELOG.md).
 
----
-
-## Contributing
-
-See **`CONTRIBUTING.md`** for the dev install, how to run the tests and what each pytest marker means, the linting setup, and two rules that matter more than the rest: **never edit `src/fishsuite/core/_vendor/`** (it is checksum-pinned provenance — wrap it instead), and **any change that alters a computed number is a MAJOR version bump and requires a parity run**.
-
----
-
-*fishsuite is dissertation-adjacent research tooling. For workflow conventions (z-handling, floors, output-dir naming, one-GPU-at-a-time), see `POSTRUN_UTILITIES.md`, `THRESHOLD_INTENSITY_FEATURE.md`, and `file_map.md`. Internal development records live in `docs/dev/` and are not user documentation.*
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the development install, tests, linting and two rules: never edit `src/fishsuite/core/_vendor/`, and any change that alters a computed number is a major version bump with a parity run.

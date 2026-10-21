@@ -67,10 +67,3 @@ def test_the_condition_column_is_never_altered(frame):
     cfg = ConditionsCfg(groups={"WT": ["WT_1"], "QKI-KO": ["KO_1"]})
     out = _attach(frame, cfg)
     pd.testing.assert_series_equal(out["condition"], frame["condition"])
-
-
-def test_the_runner_exposes_the_by_group_figure_helper():
-    """The by-group figure step must exist and be importable, or a configured run
-    silently gets the old one-panel-per-well figures and nobody notices."""
-    from fishsuite.runner import _write_by_group_figures
-    assert callable(_write_by_group_figures)

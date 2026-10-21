@@ -87,7 +87,7 @@ def test_panelrun_mixed_manifest_needs_a_key_and_missing_manifest_gives_none(tmp
 
 SRC = Path(__file__).resolve().parents[1] / "src" / "fishsuite"
 # Non-pixel 0.13 literals (jitter width, layout offsets). Any other bare 0.13 number token in src/ fails.
-ALLOWED_0P13 = {"core/exact_footprint_superplots.py": 2, "report/figures.py": 4}
+ALLOWED_0P13 = {"core/exact_footprint_superplots.py": 1, "report/figures.py": 4}
 
 
 def test_no_new_bare_0p13_outside_the_resolver():

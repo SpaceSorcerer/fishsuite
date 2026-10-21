@@ -229,6 +229,10 @@ jobs:
     if: github.event_name != 'schedule'
     name: pip install resolves (py${{ matrix.python-version }})
     runs-on: ubuntu-latest
+    # bash with pipefail, so a ResolutionImpossible piped into tail still fails the step.
+    defaults:
+      run:
+        shell: bash
     strategy:
       fail-fast: false
       matrix:

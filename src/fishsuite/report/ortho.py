@@ -228,7 +228,7 @@ def render_run(run_dir, *, config=None, k=3, metric='nuclear_spot_count', seed=0
     else:
         channel_label_2 = getattr(cfg.channels, 'antibody_label', None) or 'Protein'
     dapi_label = getattr(cfg.channels, 'dapi_label', None) or 'DAPI'
-    prefix = saved.get('output', {}).get('prefix') or ''
+    prefix = ''  # run-level master tables are never prefixed
     nuclei_path = run_dir / f'{prefix}nuclei_metrics.csv'
     spots_path = run_dir / f'{prefix}spot_metrics.csv'
     for path in (nuclei_path, spots_path):

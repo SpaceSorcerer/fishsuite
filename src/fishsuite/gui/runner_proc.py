@@ -17,7 +17,7 @@ Signals:
     line(str)      - one stdout line from any child process
     progress(int, int, str)
                    - (current, total, description) parsed from rich progress
-                     lines (e.g. "[3/12] H9-NT...") or "Pre-pass: 5/12"
+                     lines (e.g. "[3/12] Ctrl-01...") or "Pre-pass: 5/12"
     finished(bool, str)
                    - (success, output_dir) emitted exactly once when the
                      run (pipeline + optional downstream) completes
@@ -201,6 +201,9 @@ class PipelineRunner(QObject):
             self._finish(rc == 0)
             return
         if self._phase == "downstream":
+            if self._stop_requested:
+                self._finish(False)
+                return
             if rc != 0:
                 self.line.emit("[gui] downstream figure step failed (pipeline output still valid).\n")
             self._finish(self._pipeline_ok)

@@ -198,7 +198,8 @@ def _make_bins(abund: pd.Series) -> Tuple[List[float], List[str], List[float]]:
     a = a[a > 0]
     looks_count = (a.max() <= 200) and np.allclose(a, a.round())
     if looks_count and len(a):
-        edges = [0, 2, 5, 10, 20, 40, 10 ** 9]
+        # 0.5 lower edge keeps zero-count nuclei unbinned under include_lowest.
+        edges = [0.5, 2, 5, 10, 20, 40, 10 ** 9]
         labels = ["1-2", "3-5", "6-10", "11-20", "21-40", "40+"]
         centers = [1.5, 4, 8, 15, 30, 47]
         return edges, labels, centers
@@ -263,7 +264,7 @@ def compute_singlecell(
                           errors="coerce") * nm["_abund"])
 
     edges, blab, bctr = _make_bins(nm["_abund"])
-    nm["_abin"] = pd.cut(nm["_abund"], bins=edges, labels=blab)
+    nm["_abin"] = pd.cut(nm["_abund"], bins=edges, labels=blab, include_lowest=True)
 
     # metric column selection (auto-discover numeric, minus structural)
     if metrics:
@@ -289,7 +290,7 @@ def compute_singlecell(
                  "protein_rotation_null_p_at_rna1_spots",
                  "assoc_count_rotation"}
     pct_cols = {c for c in metric_cols if "fraction" in c.lower()
-                or c.endswith("_frac") or "nc_ratio" not in c and False}
+                or c.endswith("_frac")}
 
     results: Dict[str, Any] = {}
     for col in metric_cols:
@@ -806,7 +807,8 @@ def singlecell_run(
             pd.to_numeric(nm_prep["protein_rotation_assoc_fraction_at_rna1_spots"], errors="coerce")
             * nm_prep["_abund"])
     edges, blab, _ = _make_bins(nm_prep["_abund"])
-    nm_prep["_abin"] = pd.cut(nm_prep["_abund"], bins=edges, labels=blab)
+    nm_prep["_abin"] = pd.cut(nm_prep["_abund"], bins=edges, labels=blab,
+                              include_lowest=True)
 
     out_dir = run_dir / "deliverables" / out_subdir
     out_dir.mkdir(parents=True, exist_ok=True)

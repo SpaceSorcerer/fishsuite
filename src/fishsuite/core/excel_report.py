@@ -26,7 +26,7 @@ Both workbooks share:
   * Sec-only metric cells that would be misleading (frac_nuclear with 0
     spots) are written as blank (NaN, which pandas writes as empty).
 
-Brian's standing rules honored:
+Workbook conventions:
 
   * "Self-explanatory Excel": README + glossary covers every column.
   * "Agnostic framing": no "validates", "confirms", "active TSS / mature
@@ -80,7 +80,7 @@ INT_COLUMNS = {
     "paired_count_rna1_at_0p3um", "paired_count_rna2_at_0p3um",
     "n_nuclei_border_excluded", "total_spots",
     "dapi_channel", "rna_channel", "rna2_channel",
-    "voxel_xy_nm", "voxel_z_nm", "n_z",
+    "n_z",
     "nucleus_id", "nucleus_area_px", "rna_spot_count",
     "nuclear_spot_count", "cyto_spot_count",
     "n_spots_rna1", "n_spots_rna2",
@@ -94,8 +94,8 @@ INT_COLUMNS = {
     "nuclear_total_intensity_rna1", "nuclear_total_intensity_rna2",
     "cytoplasmic_total_intensity_rna1", "cytoplasmic_total_intensity_rna2",
     "paired_spot_count_rna1_at_0p3um", "paired_spot_count_rna2_at_0p3um",
-    "spot_id", "x_px", "y_px", "z_slice", "z_position_um",
-    "spot_peak_intensity", "quality", "spot_fwhm_px",
+    "spot_id", "x_px", "y_px", "z_slice",
+    "spot_peak_intensity", "quality",
     "peak_intensity", "in_nucleus", "in_cytoplasm",
     "paired_at_0p3um", "cell_id",
 }
@@ -105,7 +105,7 @@ RATE_COLUMNS_SUFFIX = ("_per_nucleus", "_per_cell", "_per_um2", "_um")
 
 
 # ---------------------------------------------------------------------------
-# User-facing label substitution (2026-05-19 Brian).
+# User-facing label substitution (2026-05-19).
 #
 # Every USER-FACING cell value in the README / Executive_Summary /
 # Comparison_Table sheets that mentions a generic "RNA1" / "RNA2" / "DAPI"
@@ -297,7 +297,7 @@ PER_IMAGE_GLOSSARY: Dict[str, Tuple[str, str, str]] = {
         "float", "—", "Mean N/C intensity ratio, RNA2."),
     "median_nc_ratio_total_intensity_rna2": (
         "float", "—", "Median N/C intensity ratio, RNA2."),
-    # ---- Above-floor intensity image-level rollups (Brian/Sam 2026-05-20) -
+    # ---- Above-floor intensity image-level rollups (2026-05-20) -
     # Image-level mean/median over the per-nucleus above-floor columns.
     # Only present when output.apply_pub_contrast_floor_to_analysis is True.
     "mean_nuclear_above_floor_intensity_rna1": (
@@ -451,12 +451,12 @@ PER_IMAGE_GLOSSARY: Dict[str, Tuple[str, str, str]] = {
     "runtime_s": (
         "float", "seconds",
         "Wall-clock processing time for this single image."),
-    "dapi_channel": ("int", "—", "Source channel index for DAPI (e.g. 3 = 405 nm)."),
-    "rna_channel": ("int", "—", "Source channel index for RNA1 (e.g. 0 = 640 nm)."),
-    "rna2_channel": ("int", "—", "Source channel index for RNA2 (e.g. 1 = 561 nm)."),
-    "voxel_xy_nm": ("int", "nm",
+    "dapi_channel": ("int", "—", "Source channel index for DAPI."),
+    "rna_channel": ("int", "—", "Source channel index for RNA1."),
+    "rna2_channel": ("int", "—", "Source channel index for RNA2."),
+    "voxel_xy_nm": ("float", "nm",
                     "Physical pixel size in xy (image metadata)."),
-    "voxel_z_nm": ("int", "nm", "Physical z-step (image metadata)."),
+    "voxel_z_nm": ("float", "nm", "Physical z-step (image metadata)."),
     "n_z": ("int", "count",
             "Number of z-slices in the source image (total stack, not just z window)."),
 }
@@ -577,7 +577,7 @@ PER_NUCLEUS_GLOSSARY: Dict[str, Tuple[str, str, str]] = {
                                      "Per-nucleus N/C ratio computed from total (summed) RNA1 intensity."),
     "nc_ratio_total_intensity_rna2": ("float", "—",
                                      "Per-nucleus N/C ratio computed from total RNA2 intensity."),
-    # ---- Above-floor intensity variants (Brian/Sam 2026-05-20) ------------
+    # ---- Above-floor intensity variants (2026-05-20) ------------
     # The "above-floor" intensity columns clip pixel values below the
     # publication-image contrast floor (per channel) to zero before summing.
     # Same threshold the eye uses on the rendered pub PNG. Only present when
@@ -681,13 +681,13 @@ PER_SPOT_GLOSSARY: Dict[str, Tuple[str, str, str]] = {
     "y_px": ("int", "px", "Spot center, y pixel coordinate."),
     "z_slice": ("int", "—",
                "Z-slice index of the spot center. 0 in autofocus 2D mode."),
-    "z_position_um": ("int", "um",
+    "z_position_um": ("float", "um",
                      "Z-position in physical units. 0 in autofocus 2D mode."),
     "spot_peak_intensity": ("int", "AU",
                            "Raw peak intensity at the BigFISH-fitted spot center."),
     "quality": ("int", "AU",
                "BigFISH spot quality score (currently set equal to spot_peak_intensity)."),
-    "spot_fwhm_px": ("int", "px",
+    "spot_fwhm_px": ("float", "px",
                     "Full-width-half-max of the fitted 2D Gaussian, in pixels."),
     "spot_diameter_um": ("float", "um",
                         "Spot diameter in um (FWHM x voxel_xy_um)."),
@@ -844,8 +844,8 @@ def _build_coloc_rollup_glossary() -> Dict[str, Tuple[str, str, str]]:
     for base, unit, what in _COLOC_ROLLUP_BASES:
         out[f"mean_{base}"] = (
             "float", unit,
-            f"Per-image MEAN over nuclei of {what}. The per-image mean is the "
-            f"lab's replicate unit — per-nucleus values are pseudoreplication.",
+            f"Per-image MEAN over nuclei of {what} (one value per image; "
+            f"nuclei within an image are not independent replicates).",
         )
         out[f"median_{base}"] = (
             "float", unit,
@@ -981,6 +981,60 @@ def _mean_sem_n(values: Sequence[float]) -> Tuple[Optional[float], Optional[floa
     return mean, sem, int(len(s))
 
 
+# Unit the WT-vs-KO tests run on. "image" (default) and "well" test one mean
+# per unit; "nucleus" pools nuclei and is descriptive only.
+COMPARISON_UNITS = ("image", "well", "nucleus")
+_WELL_COLUMNS = ("well_id", "well")
+
+
+def _resolve_comparison_unit(
+    requested: Any, nuclei_df: pd.DataFrame, per_image_df: pd.DataFrame,
+) -> Tuple[str, Dict[str, str], str]:
+    """Return (unit, image->well map, note). Unknown values and "well" without
+    a well column fall back to "image"; the note says so."""
+    unit = str(requested).strip().lower() if requested not in (None, "") else "image"
+    note = ""
+    if unit not in COMPARISON_UNITS:
+        note = f"Unknown comparison_unit {requested!r}; used image."
+        unit = "image"
+    img_to_well: Dict[str, str] = {}
+    if unit == "well":
+        for df in (per_image_df, nuclei_df):
+            col = next((c for c in _WELL_COLUMNS if c in df.columns), None)
+            if col is None or "image" not in df.columns:
+                continue
+            pairs = df[["image", col]].dropna().drop_duplicates("image")
+            img_to_well.update(zip(pairs["image"].astype(str), pairs[col].astype(str)))
+        if not img_to_well:
+            note = "No well column found; tests fell back to per-image means."
+            unit = "image"
+    return unit, img_to_well, note
+
+
+def _comparison_unit_sentence(unit: str, note: str = "") -> str:
+    text = {
+        "image": "Tests use per-image means (one value per image; n = images per condition).",
+        "well": "Tests use per-well means (one value per well; n = wells per condition).",
+        "nucleus": ("Descriptive: nuclei are pseudoreplicates. Tests pool per-nucleus values "
+                    "(n = nuclei per condition), so p-values overstate the evidence."),
+    }[unit]
+    return f"{text} {note}".strip()
+
+
+def _unit_means(frame: pd.DataFrame, value_col: str, unit: str,
+                img_to_well: Dict[str, str]) -> List[float]:
+    """Values of ``value_col`` aggregated to one mean per test unit."""
+    if not len(frame) or value_col not in frame.columns:
+        return []
+    vals = pd.to_numeric(frame[value_col], errors="coerce")
+    if unit == "nucleus" or "image" not in frame.columns:
+        return vals.dropna().tolist()
+    key = frame["image"].astype(str)
+    if unit == "well":
+        key = key.map(img_to_well).fillna(key)
+    return vals.groupby(key, sort=True).mean().dropna().tolist()
+
+
 # ---------------------------------------------------------------------------
 # Generic helpers
 # ---------------------------------------------------------------------------
@@ -1002,21 +1056,44 @@ def _sort_df_by_condition(df: pd.DataFrame, extra_sort_cols: Sequence[str] = ())
         return df.copy()
     work = df.copy()
     sec_col = work["secondary_only"] if "secondary_only" in work.columns else pd.Series(False, index=work.index)
-    # 2026-05-19 Brian: remap sec-only rows' condition label to 'sec-only' so
-    # the displayed condition matches the gray fill that _condition_fill_hex
-    # applies. Previously the cell value still showed the parent subfolder
-    # condition (WT/KO) while the fill was gray, which made PI reviewers
-    # ask "is this row KO or sec-only?". secondary_only column is preserved
-    # untouched for downstream tools that filter on the bool.
-    is_sec_mask = sec_col.astype(bool)
-    if is_sec_mask.any():
-        work.loc[is_sec_mask, "condition"] = "sec-only"
     work["__sort_key"] = [
         _condition_sort_key(c, s) for c, s in zip(work["condition"], sec_col)
     ]
     sort_cols = ["__sort_key"] + [c for c in extra_sort_cols if c in work.columns]
     work = work.sort_values(sort_cols, kind="stable").drop(columns=["__sort_key"])
     return work.reset_index(drop=True)
+
+
+def _coerce_secondary_only(df: pd.DataFrame) -> pd.DataFrame:
+    """Return ``df`` with ``secondary_only`` as a plain bool column."""
+    if "secondary_only" not in df.columns or df["secondary_only"].dtype == bool:
+        return df
+
+    def _to_bool(v: Any) -> bool:
+        if isinstance(v, str):
+            return v.strip().lower() in ("true", "1", "yes", "y", "t")
+        try:
+            return False if pd.isna(v) else bool(v)
+        except (TypeError, ValueError):
+            return False
+
+    out = df.copy()
+    out["secondary_only"] = out["secondary_only"].map(_to_bool).astype(bool)
+    return out
+
+
+def _relabel_sec_only_for_sheet(df: pd.DataFrame) -> pd.DataFrame:
+    """Data-sheet view: show 'sec-only' as the condition of sec-only rows so
+    the cell text matches its gray fill. ``secondary_only`` is kept as-is.
+    Summary builders use the unrelabelled frames."""
+    if "secondary_only" not in df.columns or "condition" not in df.columns:
+        return df
+    mask = df["secondary_only"].astype(bool)
+    if not mask.any():
+        return df
+    out = df.copy()
+    out.loc[mask, "condition"] = "sec-only"
+    return out
 
 
 def _condition_fill_hex(condition: Any, sec: Any) -> Optional[str]:
@@ -1157,8 +1234,11 @@ def _build_readme(
     morph_df: pd.DataFrame,
     thr_df: pd.DataFrame,
     run_cfg_flat: Dict[str, Any],
+    comparison_unit: Optional[str] = None,
 ) -> List[str]:
     from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+
+    _unit, _, _unit_note = _resolve_comparison_unit(comparison_unit, nuclei_df, per_image_df)
 
     BOLD = Font(bold=True, size=11)
     H1 = Font(bold=True, size=14, color="FFFFFFFF")
@@ -1231,8 +1311,8 @@ def _build_readme(
     # ── A. RUN HEADER ────────────────────────────────────────────────────
     section_header("A. RUN HEADER")
     kv("Title", "fishsuite RNA-FISH analysis report")
-    # 2026-05-19 Brian: build subtitle from the actual config so the labels
-    # the user chose (e.g. "Exons" / "Introns") propagate, and we don't
+    # 2026-05-19: build subtitle from the actual config so the labels
+    # the user chose (custom channel names) propagate, and we don't
     # hardcode dye names (Cy5/Cy3) that may not match the actual probes.
     _ch = run_cfg_flat
     _rna_lbl = str(_ch.get("config_resolved.channels.rna_label", "RNA1"))
@@ -1243,9 +1323,9 @@ def _build_readme(
     _ch_dapi = _ch.get("config_resolved.channels.dapi", 3)
     kv(
         "Subtitle",
-        f"Two-channel FISH: ch{_ch_rna} (647 nm) = {_rna_lbl}; "
-        f"ch{_ch_rna2} (561 nm) = {_rna2_lbl}; "
-        f"ch{_ch_dapi} (405 nm) = {_dapi_lbl}.",
+        f"Two-channel FISH: ch{_ch_rna} = {_rna_lbl}; "
+        f"ch{_ch_rna2} = {_rna2_lbl}; "
+        f"ch{_ch_dapi} = {_dapi_lbl}.",
     )
     kv("Run start (UTC)", run_start_utc)
     kv("fishsuite version", fishsuite_version)
@@ -1267,7 +1347,10 @@ def _build_readme(
     kv("Number of images", f"{n_images} ({n_real} real, {n_sec} sec-only)")
     kv("Breakdown by condition", cond_str)
     if len(nuclei_df) and "condition" in nuclei_df.columns:
-        nuc_counts = nuclei_df.groupby("condition").size().to_dict()
+        _nuc_key = nuclei_df["condition"].astype(str)
+        if "secondary_only" in nuclei_df.columns:
+            _nuc_key = _nuc_key.where(~nuclei_df["secondary_only"], _nuc_key + " (sec-only)")
+        nuc_counts = _nuc_key.groupby(_nuc_key, sort=False).size().to_dict()
         nuc_str = ", ".join(f"{k}: {v}" for k, v in nuc_counts.items())
     else:
         nuc_str = "0"
@@ -1289,7 +1372,7 @@ def _build_readme(
          "cytoplasmic compartments. One-stop glance."),
         ("Comparison_Table",
          "WT vs KO side-by-side comparison for ~15 high-priority metrics, with "
-         "Mann-Whitney U p-values and Cliff's delta effect sizes (computed per-nucleus)."),
+         f"Mann-Whitney U p-values and Cliff's delta effect sizes (test unit: {_unit})."),
         ("Per_Image_Summary",
          "One row per image. Aggregate spot counts, nuclear fractions, "
          "intensities, paired (overlap) fractions, thresholds, provenance per FOV."),
@@ -1363,8 +1446,8 @@ def _build_readme(
          "apply_pub_contrast_floor_to_analysis flag (which only affects pixel-intensity "
          "quantification columns, not spot counts)."),
         ("Statistical comparison",
-         "WT vs KO computed per-nucleus (larger n than per-image) with two-sided Mann-Whitney "
-         "U test. Cliff's delta reported as a nonparametric effect size in [-1, +1]; "
+         f"WT vs KO two-sided Mann-Whitney U test. {_comparison_unit_sentence(_unit, _unit_note)} "
+         "Cliff's delta reported as a nonparametric effect size in [-1, +1]; "
          "magnitude > 0.474 typically called 'large', 0.33-0.474 'medium', 0.147-0.33 'small'. "
          "Sec-only excluded from significance testing."),
         ("Sec-only handling",
@@ -1800,7 +1883,7 @@ def _build_descriptive_paragraph(
 # per_image column is used for mean/SEM display; per_nucleus column for MWU.
 # If per_nucleus column is None, stats are skipped (image-only metric).
 COMPARISON_METRICS: List[Tuple[str, str, Optional[str], str]] = [
-    ("Nuclei analyzed (sum)", "nuclei_analyzed", None, "Counts"),
+    ("Nuclei analyzed per image (mean)", "nuclei_analyzed", None, "Counts"),
     ("Mean RNA1 spots per nucleus", "mean_spots_per_nucleus_rna1", "n_spots_rna1", "Counts"),
     ("Mean RNA2 spots per nucleus", "mean_spots_per_nucleus_rna2", "n_spots_rna2", "Counts"),
     ("Mean nuclear fraction RNA1", "frac_nuclear_rna1", "nuclear_spot_fraction", "Localization fractions"),
@@ -1823,7 +1906,7 @@ COMPARISON_METRICS: List[Tuple[str, str, Optional[str], str]] = [
      "nc_ratio_total_intensity_rna1", "Intensities"),
     ("Mean N/C ratio RNA2 (raw intensity)", "mean_nc_ratio_total_intensity_rna2",
      "nc_ratio_total_intensity_rna2", "Intensities"),
-    # ---- Above-floor intensity metrics (Brian/Sam 2026-05-20) -----------
+    # ---- Above-floor intensity metrics (2026-05-20) -----------
     # These rows only render when the per-image / per-nucleus tables actually
     # contain the column — _build_comparison_table skips metrics whose
     # per_image column is absent. So when apply_pub_contrast_floor_to_analysis
@@ -1877,10 +1960,12 @@ def _build_comparison_table(
     *,
     per_image_df: pd.DataFrame,
     nuclei_df: pd.DataFrame,
+    comparison_unit: Optional[str] = None,
 ) -> None:
     from openpyxl.formatting.rule import ColorScaleRule
     from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 
+    unit, img_to_well, unit_note = _resolve_comparison_unit(comparison_unit, nuclei_df, per_image_df)
     BOLD = Font(bold=True, size=11)
     H1 = Font(bold=True, size=14, color="FFFFFFFF")
     SECTION_FILL = PatternFill("solid", fgColor=SECTION_FILL_HEX)
@@ -1903,8 +1988,8 @@ def _build_comparison_table(
 
     # Sub-note
     note_cell = ws.cell(row=row, column=1, value=
-        "Statistics computed per-nucleus (larger n than per-image). Means + SEMs shown for "
-        "WT, KO, and sec-only. p-values are two-sided Mann-Whitney U. Cliff's delta is a "
+        f"{_comparison_unit_sentence(unit, unit_note)} Means, SEMs and n are over the "
+        "same units for WT, KO, and sec-only. p-values are two-sided Mann-Whitney U. Cliff's delta is a "
         "nonparametric effect size in [-1, +1] (positive = WT > KO). Sec-only excluded from tests."
     )
     note_cell.alignment = WRAP
@@ -1965,49 +2050,30 @@ def _build_comparison_table(
                         img_col: str,
                         nuc_col: Optional[str],
                         category: str) -> List[Any]:
-        # Prefer per-nucleus values for mean/SEM/n display when available
-        # (larger n than per-image). Fall back to per-image otherwise.
-        # Stats always use per-nucleus when nuc_col is supplied.
+        # Per-nucleus column when available, aggregated to the test unit;
+        # per-image column otherwise. Stats only for per-nucleus metrics.
         use_nuc = nuc_col is not None and len(real_nuc) and nuc_col in real_nuc.columns
+        src, col = (real_nuc, nuc_col) if use_nuc else (real_img, img_col)
 
-        # WT
-        if wt_cond is not None:
-            if use_nuc:
-                wt_vals = real_nuc.loc[real_nuc["condition"] == wt_cond, nuc_col]
-            elif img_col in real_img.columns:
-                wt_vals = real_img.loc[real_img["condition"] == wt_cond, img_col]
-            else:
-                wt_vals = pd.Series(dtype=float)
-            wt_mean, wt_sem, wt_n = _mean_sem_n(wt_vals)
-        else:
-            wt_mean, wt_sem, wt_n = None, None, 0
-        # KO
-        if ko_cond is not None:
-            if use_nuc:
-                ko_vals = real_nuc.loc[real_nuc["condition"] == ko_cond, nuc_col]
-            elif img_col in real_img.columns:
-                ko_vals = real_img.loc[real_img["condition"] == ko_cond, img_col]
-            else:
-                ko_vals = pd.Series(dtype=float)
-            ko_mean, ko_sem, ko_n = _mean_sem_n(ko_vals)
-        else:
-            ko_mean, ko_sem, ko_n = None, None, 0
+        def _cond_vals(cond: Any) -> List[float]:
+            if cond is None:
+                return []
+            return _unit_means(src.loc[src["condition"] == cond], col, unit, img_to_well)
 
-        # Stats: per-nucleus only
+        wt_list, ko_list = _cond_vals(wt_cond), _cond_vals(ko_cond)
+        wt_mean, wt_sem, wt_n = _mean_sem_n(wt_list) if wt_cond is not None else (None, None, 0)
+        ko_mean, ko_sem, ko_n = _mean_sem_n(ko_list) if ko_cond is not None else (None, None, 0)
+
         pval, delta = None, None
         if use_nuc and wt_cond and ko_cond:
-            a = real_nuc.loc[real_nuc["condition"] == wt_cond, nuc_col]
-            b = real_nuc.loc[real_nuc["condition"] == ko_cond, nuc_col]
-            pval, delta = _mannwhitney_and_cliffs_delta(a.values, b.values)
+            pval, delta = _mannwhitney_and_cliffs_delta(wt_list, ko_list)
 
-        # Sec-only: use per-image (sec-only nuclei have 0 spots → most
-        # nuc-level metrics are undefined; per-image total/mean is informative)
+        # Sec-only: same source (per-nucleus or per-image) as WT/KO.
         sec_mean = None
         sec_n = 0
-        if len(sec_img) and img_col in sec_img.columns:
-            sub = sec_img[img_col].dropna()
-            sec_n = int(len(sub))
-            sec_mean = float(sub.mean()) if sec_n else None
+        sub = _unit_means(sec_nuc if use_nuc else sec_img, col, unit, img_to_well)
+        sec_n = int(len(sub))
+        sec_mean = float(np.mean(sub)) if sec_n else None
 
         return [
             metric_label, category,
@@ -2018,7 +2084,7 @@ def _build_comparison_table(
         ] + _stats_stamp_values()
 
     for metric_label, img_col, nuc_col, category in COMPARISON_METRICS:
-        # 2026-05-20 Brian/Sam: skip metric rows whose underlying columns
+        # 2026-05-20: skip metric rows whose underlying columns
         # are absent from BOTH the per-image and per-nucleus tables. This
         # keeps the above-floor rows from polluting the table with blank
         # cells when output.apply_pub_contrast_floor_to_analysis = False.
@@ -2075,7 +2141,7 @@ def _build_comparison_table(
 
 
 # ---------------------------------------------------------------------------
-# PI_Focus sheet (2026-05-20 Brian/Sam)
+# PI_Focus sheet (2026-05-20)
 #
 # One curated sheet the PI opens first. Every metric they care about,
 # organized by metric × condition × compartment × channel, with
@@ -2088,15 +2154,10 @@ def _build_comparison_table(
 #   Section D — SPOT SIZE (diameter um, per-compartment)
 #   Section E — SIGNAL LOCALIZATION (nuclear fractions, overlap fractions)
 #
-# Stats:
-#   - Per-nucleus columns (Sections A/B + nuclear-fraction rows in E) →
-#     per-nucleus Mann-Whitney + Cliff's delta (matches Comparison_Table).
-#   - Per-spot columns (Sections C/D) → per-image MEAN across each
-#     image's filtered spot population, then Mann-Whitney across images.
-#     This keeps the test n at per-image (n=1-2 per condition for the
-#     BIN1 4-image preset — usually too few to be significant, will
-#     just render p/delta = NaN; the means + n still show).
-#   - Overlap-fraction rows (Section E) → per-nucleus when available.
+# Stats: every row is averaged to the comparison unit (image by default,
+# or well / nucleus; see COMPARISON_UNITS) before Mann-Whitney + Cliff's
+# delta, matching Comparison_Table. Per-spot columns (Sections C/D) start
+# from per-image means of each image's spots. Tests need n >= 3 per side.
 # ---------------------------------------------------------------------------
 
 
@@ -2227,6 +2288,7 @@ def _build_pi_focus(
     per_image_df: pd.DataFrame,
     nuclei_df: pd.DataFrame,
     spots_df: pd.DataFrame,
+    comparison_unit: Optional[str] = None,
 ) -> None:
     """Curated PI deliverable. See top-of-block docstring.
 
@@ -2251,6 +2313,10 @@ def _build_pi_focus(
     LEFT_TOP = Alignment(horizontal="left", vertical="top", wrap_text=True)
 
     N_COLS = 6
+    unit, img_to_well, unit_note = _resolve_comparison_unit(comparison_unit, nuclei_df, per_image_df)
+
+    def _to_unit(frame: pd.DataFrame, col: str) -> List[float]:
+        return _unit_means(frame, col, unit, img_to_well)
 
     row = 1
 
@@ -2270,10 +2336,9 @@ def _build_pi_focus(
     note = ws.cell(
         row=row, column=1,
         value=(
-            "One-stop deliverable. Sections A/B/E compute statistics PER-NUCLEUS "
-            "(n = nuclei per condition). Sections C/D compute PER-SPOT means "
-            "first, then run the test across PER-IMAGE means (test n = images "
-            "per condition). Direction column: arrow + condition that the metric "
+            f"One-stop deliverable. {_comparison_unit_sentence(unit, unit_note)} "
+            "Per-cell and per-spot values are averaged to that unit before the test "
+            "(Sections C/D start from per-image means of per-spot values). Direction column: arrow + condition that the metric "
             "trends toward (sign of Cliff's delta; mean fallback if delta is NaN). "
             "Stat tests are skipped when either condition has < 3 samples (cell "
             "renders blank). Sec-only images are excluded from tests."
@@ -2400,14 +2465,12 @@ def _build_pi_focus(
     def get_nuc_vals(col: str, cond: Any) -> Sequence[float]:
         if cond is None or col not in real_nuc.columns:
             return []
-        s = real_nuc.loc[real_nuc["condition"] == cond, col]
-        return pd.to_numeric(s, errors="coerce").dropna().tolist()
+        return _to_unit(real_nuc.loc[real_nuc["condition"] == cond], col)
 
     def get_img_vals(col: str, cond: Any) -> Sequence[float]:
         if cond is None or col not in real_img.columns:
             return []
-        s = real_img.loc[real_img["condition"] == cond, col]
-        return pd.to_numeric(s, errors="coerce").dropna().tolist()
+        return _to_unit(real_img.loc[real_img["condition"] == cond], col)
 
     # Helper to build per-image mean-of-spot values for Sections C/D.
     def per_image_spot_vals(
@@ -2430,13 +2493,13 @@ def _build_pi_focus(
     # nuclear_spot_count_rna2, cyto_spot_count_rna2,
     # n_nuclear_rna1_rna2_overlap_per_nucleus).
     a_rows = [
-        ("Total Introns spots per cell",          "n_spots_rna1"),
-        ("Nuclear Introns spots per cell",        "nuclear_spot_count"),
-        ("Cytoplasmic Introns spots per cell",    "cyto_spot_count"),
-        ("Total Exons spots per cell",            "n_spots_rna2"),
-        ("Nuclear Exons spots per cell",          "nuclear_spot_count_rna2"),
-        ("Cytoplasmic Exons spots per cell",      "cyto_spot_count_rna2"),
-        ("Nuclear Introns+Exons overlap per cell", "n_nuclear_rna1_rna2_overlap_per_nucleus"),
+        ("Total RNA1 spots per cell",          "n_spots_rna1"),
+        ("Nuclear RNA1 spots per cell",        "nuclear_spot_count"),
+        ("Cytoplasmic RNA1 spots per cell",    "cyto_spot_count"),
+        ("Total RNA2 spots per cell",            "n_spots_rna2"),
+        ("Nuclear RNA2 spots per cell",          "nuclear_spot_count_rna2"),
+        ("Cytoplasmic RNA2 spots per cell",      "cyto_spot_count_rna2"),
+        ("Nuclear RNA1+RNA2 overlap per cell", "n_nuclear_rna1_rna2_overlap_per_nucleus"),
     ]
     for label, col in a_rows:
         write_metric_row(label, get_nuc_vals(col, wt_cond), get_nuc_vals(col, ko_cond), sec_A)
@@ -2448,17 +2511,17 @@ def _build_pi_focus(
     sec_B = "B. SIGNAL ABOVE FLOOR"
     write_section_header(sec_B)
     b_rows = [
-        ("Mean per-pixel above-floor intensity, Introns NUCLEAR",
+        ("Mean per-pixel above-floor intensity, RNA1 NUCLEAR",
          "nuclear_above_floor_intensity_rna1"),
-        ("Mean per-pixel above-floor intensity, Introns CYTOPLASM",
+        ("Mean per-pixel above-floor intensity, RNA1 CYTOPLASM",
          "cytoplasmic_above_floor_intensity_rna1"),
-        ("N/C ratio above-floor, Introns",
+        ("N/C ratio above-floor, RNA1",
          "nc_ratio_above_floor_intensity_rna1"),
-        ("Mean per-pixel above-floor intensity, Exons NUCLEAR",
+        ("Mean per-pixel above-floor intensity, RNA2 NUCLEAR",
          "nuclear_above_floor_intensity_rna2"),
-        ("Mean per-pixel above-floor intensity, Exons CYTOPLASM",
+        ("Mean per-pixel above-floor intensity, RNA2 CYTOPLASM",
          "cytoplasmic_above_floor_intensity_rna2"),
-        ("N/C ratio above-floor, Exons",
+        ("N/C ratio above-floor, RNA2",
          "nc_ratio_above_floor_intensity_rna2"),
     ]
     for label, col in b_rows:
@@ -2471,10 +2534,10 @@ def _build_pi_focus(
     sec_C = "C. SPOT-INTRINSIC BRIGHTNESS"
     write_section_header(sec_C)
     c_specs = [
-        ("Introns spot peak intensity — NUCLEAR spots only",  "rna1",  "nuclear",     "spot_peak_intensity"),
-        ("Introns spot peak intensity — CYTOPLASMIC spots only", "rna1", "cytoplasmic", "spot_peak_intensity"),
-        ("Exons spot peak intensity — NUCLEAR spots only",    "rna2",  "nuclear",     "spot_peak_intensity"),
-        ("Exons spot peak intensity — CYTOPLASMIC spots only", "rna2", "cytoplasmic", "spot_peak_intensity"),
+        ("RNA1 spot peak intensity — NUCLEAR spots only",  "rna1",  "nuclear",     "spot_peak_intensity"),
+        ("RNA1 spot peak intensity — CYTOPLASMIC spots only", "rna1", "cytoplasmic", "spot_peak_intensity"),
+        ("RNA2 spot peak intensity — NUCLEAR spots only",    "rna2",  "nuclear",     "spot_peak_intensity"),
+        ("RNA2 spot peak intensity — CYTOPLASMIC spots only", "rna2", "cytoplasmic", "spot_peak_intensity"),
     ]
     # Cache per-image means so we can compute the nuc/cyto ratio per channel.
     c_image_means: Dict[Tuple[str, Optional[str]], pd.DataFrame] = {}
@@ -2485,12 +2548,12 @@ def _build_pi_focus(
                 spots_df, ch, comp, val_col, real_only_mask=spot_real_mask,
             )
         agg = c_image_means[key]
-        wt_v = agg.loc[agg["condition"] == wt_cond, "mean"].tolist() if wt_cond is not None else []
-        ko_v = agg.loc[agg["condition"] == ko_cond, "mean"].tolist() if ko_cond is not None else []
+        wt_v = _to_unit(agg.loc[agg["condition"] == wt_cond], "mean") if wt_cond is not None else []
+        ko_v = _to_unit(agg.loc[agg["condition"] == ko_cond], "mean") if ko_cond is not None else []
         write_metric_row(label, wt_v, ko_v, sec_C)
 
     # Add nuc/cyto ratio rows per channel (per-image: mean_nuc / mean_cyto).
-    for ch_label, ch in (("Introns", "rna1"), ("Exons", "rna2")):
+    for ch_label, ch in (("RNA1", "rna1"), ("RNA2", "rna2")):
         nuc_agg = c_image_means.get((ch, "nuclear"))
         cyt_agg = c_image_means.get((ch, "cytoplasmic"))
         if nuc_agg is None or cyt_agg is None or not len(nuc_agg) or not len(cyt_agg):
@@ -2507,8 +2570,8 @@ def _build_pi_focus(
         # Avoid div-by-zero: drop rows where cyt==0 (treat as NaN ratio)
         merged = merged.loc[merged["cyt"] > 0, :].copy()
         merged["ratio"] = merged["nuc"] / merged["cyt"]
-        wt_v = merged.loc[merged["condition"] == wt_cond, "ratio"].tolist() if wt_cond is not None else []
-        ko_v = merged.loc[merged["condition"] == ko_cond, "ratio"].tolist() if ko_cond is not None else []
+        wt_v = _to_unit(merged.loc[merged["condition"] == wt_cond], "ratio") if wt_cond is not None else []
+        ko_v = _to_unit(merged.loc[merged["condition"] == ko_cond], "ratio") if ko_cond is not None else []
         write_metric_row(
             f"{ch_label} spot peak intensity ratio (nuc/cyto)", wt_v, ko_v, sec_C,
         )
@@ -2519,17 +2582,17 @@ def _build_pi_focus(
     sec_D = "D. SPOT SIZE"
     write_section_header(sec_D)
     d_specs = [
-        ("Introns spot diameter (um) — NUCLEAR",   "rna1", "nuclear",     "spot_diameter_um"),
-        ("Introns spot diameter (um) — CYTOPLASMIC", "rna1", "cytoplasmic", "spot_diameter_um"),
-        ("Exons spot diameter (um) — NUCLEAR",     "rna2", "nuclear",     "spot_diameter_um"),
-        ("Exons spot diameter (um) — CYTOPLASMIC", "rna2", "cytoplasmic", "spot_diameter_um"),
+        ("RNA1 spot diameter (um) — NUCLEAR",   "rna1", "nuclear",     "spot_diameter_um"),
+        ("RNA1 spot diameter (um) — CYTOPLASMIC", "rna1", "cytoplasmic", "spot_diameter_um"),
+        ("RNA2 spot diameter (um) — NUCLEAR",     "rna2", "nuclear",     "spot_diameter_um"),
+        ("RNA2 spot diameter (um) — CYTOPLASMIC", "rna2", "cytoplasmic", "spot_diameter_um"),
     ]
     for label, ch, comp, val_col in d_specs:
         agg = _per_image_means_from_spots(
             spots_df, ch, comp, val_col, real_only_mask=spot_real_mask,
         )
-        wt_v = agg.loc[agg["condition"] == wt_cond, "mean"].tolist() if wt_cond is not None else []
-        ko_v = agg.loc[agg["condition"] == ko_cond, "mean"].tolist() if ko_cond is not None else []
+        wt_v = _to_unit(agg.loc[agg["condition"] == wt_cond], "mean") if wt_cond is not None else []
+        ko_v = _to_unit(agg.loc[agg["condition"] == ko_cond], "mean") if ko_cond is not None else []
         write_metric_row(label, wt_v, ko_v, sec_D)
 
     row += 1
@@ -2541,9 +2604,9 @@ def _build_pi_focus(
     # "nuclear_spot_fraction" / "nuclear_spot_fraction_rna2" (population
     # of per-cell nuclear fractions over cells that detected >0 spots).
     e_rows_nuc = [
-        ("Fraction of total Introns spots that are nuclear",
+        ("Fraction of total RNA1 spots that are nuclear",
          "nuclear_spot_fraction"),
-        ("Fraction of total Exons spots that are nuclear",
+        ("Fraction of total RNA2 spots that are nuclear",
          "nuclear_spot_fraction_rna2"),
     ]
     for label, col in e_rows_nuc:
@@ -2553,9 +2616,9 @@ def _build_pi_focus(
     # asymmetric per-cell paired fraction; fall back to per-image
     # "paired_fraction_rna1_at_0p3um" if absent at the per-nucleus level.
     overlap_specs = [
-        ("Fraction of total Introns spots that overlap with Exons",
+        ("Fraction of total RNA1 spots that overlap with RNA2",
          "paired_fraction_rna1_at_0p3um"),
-        ("Fraction of total Exons spots that overlap with Introns",
+        ("Fraction of total RNA2 spots that overlap with RNA1",
          "paired_fraction_rna2_at_0p3um"),
     ]
     for label, col in overlap_specs:
@@ -2568,13 +2631,9 @@ def _build_pi_focus(
         write_metric_row(label, wt_v, ko_v, sec_E)
 
     # ── Section F: COUNT × BRIGHTNESS — PER-NUCLEUS ──────────────────────
-    # 2026-05-21 Brian: the "fewer-but-brighter" story needs to be
-    # surfaced at PER-NUCLEUS granularity so it has real statistical
-    # power (n=cells, not n=images). Section C/D test across images,
-    # which collapses to n=1-3 for typical small datasets and renders
-    # no p-values. Section F pairs spot count with per-cell mean spot
-    # peak intensity AND per-cell total spot intensity (= count × peak,
-    # the combined headline). All from spots_df aggregated per cell.
+    # Section F pairs spot count with per-cell mean spot peak intensity AND
+    # per-cell total spot intensity (= count × peak). Values are computed
+    # per cell from spots_df, then averaged to the comparison unit.
     row += 1
     sec_F = "F. COUNT x BRIGHTNESS — PER-NUCLEUS"
     write_section_header(sec_F)
@@ -2589,15 +2648,15 @@ def _build_pi_focus(
         )
         if not len(agg):
             return []
-        return agg.loc[agg["condition"] == cond, "mean"].tolist()
+        return _to_unit(agg.loc[agg["condition"] == cond], "mean")
 
     f_specs_brightness = [
-        ("Introns mean spot peak per cell — ANY compartment",   "rna1", None,          "spot_peak_intensity"),
-        ("Introns mean spot peak per cell — NUCLEAR spots",     "rna1", "nuclear",     "spot_peak_intensity"),
-        ("Introns mean spot peak per cell — CYTOPLASMIC spots", "rna1", "cytoplasmic", "spot_peak_intensity"),
-        ("Exons mean spot peak per cell — ANY compartment",     "rna2", None,          "spot_peak_intensity"),
-        ("Exons mean spot peak per cell — NUCLEAR spots",       "rna2", "nuclear",     "spot_peak_intensity"),
-        ("Exons mean spot peak per cell — CYTOPLASMIC spots",   "rna2", "cytoplasmic", "spot_peak_intensity"),
+        ("RNA1 mean spot peak per cell — ANY compartment",   "rna1", None,          "spot_peak_intensity"),
+        ("RNA1 mean spot peak per cell — NUCLEAR spots",     "rna1", "nuclear",     "spot_peak_intensity"),
+        ("RNA1 mean spot peak per cell — CYTOPLASMIC spots", "rna1", "cytoplasmic", "spot_peak_intensity"),
+        ("RNA2 mean spot peak per cell — ANY compartment",     "rna2", None,          "spot_peak_intensity"),
+        ("RNA2 mean spot peak per cell — NUCLEAR spots",       "rna2", "nuclear",     "spot_peak_intensity"),
+        ("RNA2 mean spot peak per cell — CYTOPLASMIC spots",   "rna2", "cytoplasmic", "spot_peak_intensity"),
     ]
     for label, ch, comp, val_col in f_specs_brightness:
         wt_v = per_nuc_spot_vals(ch, comp, val_col, wt_cond)
@@ -2608,16 +2667,16 @@ def _build_pi_focus(
     # "count x brightness" headline. Already in nuclei_metrics as
     # rna_spot_total_peak_intensity.
     f_specs_totals = [
-        ("Total Introns spot intensity per cell (count x peak combined)",
+        ("Total RNA1 spot intensity per cell (count x peak combined)",
          "rna_spot_total_peak_intensity"),
-        ("Total Exons spot intensity per cell (count x peak combined)",
+        ("Total RNA2 spot intensity per cell (count x peak combined)",
          "rna2_spot_total_peak_intensity"),
     ]
     for label, col in f_specs_totals:
         write_metric_row(label, get_nuc_vals(col, wt_cond), get_nuc_vals(col, ko_cond), sec_F)
 
     # ── Section G: NUCLEOLUS SUBNUCLEAR BREAKDOWN (only if nucleolus on) ──
-    # 2026-05-21 Brian: when cfg.nucleolus.enabled is True, the spot_metrics
+    # 2026-05-21: when cfg.nucleolus.enabled is True, the spot_metrics
     # CSV has an `in_nucleolus` column. Surface nucleolar spots per cell
     # AND fraction-of-nuclear-spots-in-nucleolus per cell, so the WT vs KO
     # comparison can directly answer "is the nuclear retention going INTO
@@ -2651,16 +2710,20 @@ def _build_pi_focus(
                 sub.groupby(["image", "nucleus_id"]).size()
                 .reset_index(name="n")
             )
-            # Attach condition by joining via nuclei_df
-            if cond is not None and len(real_nuc):
-                _nuc = real_nuc[["image", "nucleus_id", "condition"]]
-                counts = counts.merge(_nuc, on=["image", "nucleus_id"], how="left")
-            return counts.loc[counts["condition"] == cond, "n"].tolist()
+            # One value per real nucleus of this condition; no spots -> 0.
+            if not len(real_nuc):
+                return []
+            _keys = real_nuc.loc[
+                real_nuc["condition"] == cond, ["image", "nucleus_id"]
+            ].drop_duplicates()
+            counts = _keys.merge(counts, on=["image", "nucleus_id"], how="left")
+            counts["n"] = counts["n"].fillna(0).astype(float)
+            return _to_unit(counts, "n")
 
         # Per-cell nucleolar count rows
         g_count_rows = [
-            ("Nucleolar Introns spots per cell", "rna1"),
-            ("Nucleolar Exons spots per cell",   "rna2"),
+            ("Nucleolar RNA1 spots per cell", "rna1"),
+            ("Nucleolar RNA2 spots per cell",   "rna2"),
         ]
         for label, ch in g_count_rows:
             wt_v = per_nuc_nucleolus_counts(ch, True, wt_cond)
@@ -2688,11 +2751,11 @@ def _build_pi_focus(
             if len(real_nuc):
                 _nuc = real_nuc[["image", "nucleus_id", "condition"]]
                 grouped = grouped.merge(_nuc, on=["image", "nucleus_id"], how="left")
-            return grouped.loc[grouped["condition"] == cond, "frac"].dropna().tolist()
+            return _to_unit(grouped.loc[grouped["condition"] == cond], "frac")
 
         g_frac_rows = [
-            ("Fraction of nuclear Introns spots that are in nucleolus", "rna1"),
-            ("Fraction of nuclear Exons spots that are in nucleolus",   "rna2"),
+            ("Fraction of nuclear RNA1 spots that are in nucleolus", "rna1"),
+            ("Fraction of nuclear RNA2 spots that are in nucleolus",   "rna2"),
         ]
         for label, ch in g_frac_rows:
             wt_v = per_nuc_nucleolus_fraction(ch, wt_cond)
@@ -2813,7 +2876,7 @@ CRITICAL_RUN_CONFIG_KEYS = {
     "batch_contrast.rna2.ceil",
     "batch_contrast.dapi.floor",
     "batch_contrast.dapi.ceil",
-    # 2026-05-20 reference_image mode (Sam-style per-channel tuning).
+    # 2026-05-20 reference_image mode (per-channel tuning).
     "PUB_CONTRAST_MODE",
     "config_resolved.output.pub_contrast_mode",
     "config_resolved.output.manual_rna_reference_image",
@@ -2927,8 +2990,13 @@ def write_analysis_summary_workbook(
     z_end: int,
     images: list,
     n_workers: int,
+    comparison_unit: Optional[str] = None,
 ) -> List[str]:
     """Write the full PI-ready ``analysis_summary.xlsx`` workbook.
+
+    ``comparison_unit`` ("image" default, "well", "nucleus") sets the unit the
+    Comparison_Table / PI_Focus tests run on; when None it is read from
+    ``output.comparison_unit`` in run_config.json.
 
     Sheets, in order:
         1.  README
@@ -2947,6 +3015,9 @@ def write_analysis_summary_workbook(
     """
     out_path = Path(out_path)
     output_dir = Path(output_dir)
+    per_image_df, nuclei_df, spots_df, morph_df = (
+        _coerce_secondary_only(d) for d in (per_image_df, nuclei_df, spots_df, morph_df)
+    )
 
     # Sort all data sheets by (condition, image, [nucleus/spot id])
     per_image_sorted = _sort_df_by_condition(per_image_df, extra_sort_cols=["image"])
@@ -2974,19 +3045,27 @@ def write_analysis_summary_workbook(
     else:
         thr_sorted = thr_df.copy()
 
+    # Data sheets show sec-only rows as condition "sec-only"; summaries do not.
+    sheet_frames = {
+        name: _relabel_sec_only_for_sheet(df)
+        for name, df in (
+            ("Per_Image_Summary", per_image_sorted),
+            ("Per_Nucleus_Metrics", nuclei_sorted),
+            ("Per_Spot_Metrics", spots_sorted),
+            ("Cell_Morphology", morph_sorted),
+        )
+    }
+
     # ---- 1. Stub workbook ---------------------------------------------------
     with pd.ExcelWriter(out_path, engine="openpyxl") as xl:
         pd.DataFrame({"_stub": [""]}).to_excel(xl, sheet_name="README", index=False)
         pd.DataFrame({"_stub": [""]}).to_excel(xl, sheet_name="Executive_Summary", index=False)
         pd.DataFrame({"_stub": [""]}).to_excel(xl, sheet_name="PI_Focus", index=False)
         pd.DataFrame({"_stub": [""]}).to_excel(xl, sheet_name="Comparison_Table", index=False)
-        per_image_sorted.to_excel(xl, sheet_name="Per_Image_Summary", index=False)
-        if len(nuclei_sorted):
-            nuclei_sorted.to_excel(xl, sheet_name="Per_Nucleus_Metrics", index=False)
-        if len(spots_sorted):
-            spots_sorted.to_excel(xl, sheet_name="Per_Spot_Metrics", index=False)
-        if len(morph_sorted):
-            morph_sorted.to_excel(xl, sheet_name="Cell_Morphology", index=False)
+        sheet_frames["Per_Image_Summary"].to_excel(xl, sheet_name="Per_Image_Summary", index=False)
+        for name in ("Per_Nucleus_Metrics", "Per_Spot_Metrics", "Cell_Morphology"):
+            if len(sheet_frames[name]):
+                sheet_frames[name].to_excel(xl, sheet_name=name, index=False)
         if len(thr_sorted):
             thr_sorted.to_excel(xl, sheet_name="Thresholds", index=False)
         pd.DataFrame({"_stub": [""]}).to_excel(xl, sheet_name="Run_Config", index=False)
@@ -3004,6 +3083,8 @@ def write_analysis_summary_workbook(
     # README first
     readme_ws = wb.create_sheet("README", 0)
     run_cfg_flat = _flatten_run_config(output_dir)
+    if comparison_unit is None:
+        comparison_unit = run_cfg_flat.get("config_resolved.output.comparison_unit")
     fallback_cols = _build_readme(
         readme_ws,
         fishsuite_version=fishsuite_version,
@@ -3022,6 +3103,7 @@ def write_analysis_summary_workbook(
         morph_df=morph_sorted,
         thr_df=thr_sorted,
         run_cfg_flat=run_cfg_flat,
+        comparison_unit=comparison_unit,
     )
     # Executive_Summary second
     exec_ws = wb.create_sheet("Executive_Summary", 1)
@@ -3038,6 +3120,7 @@ def write_analysis_summary_workbook(
         per_image_df=per_image_sorted,
         nuclei_df=nuclei_sorted,
         spots_df=spots_sorted,
+        comparison_unit=comparison_unit,
     )
     # Comparison_Table fourth
     cmp_ws = wb.create_sheet("Comparison_Table", 3)
@@ -3045,6 +3128,7 @@ def write_analysis_summary_workbook(
         cmp_ws,
         per_image_df=per_image_sorted,
         nuclei_df=nuclei_sorted,
+        comparison_unit=comparison_unit,
     )
     # Run_Config last
     rc_ws = wb.create_sheet("Run_Config")
@@ -3061,17 +3145,14 @@ def write_analysis_summary_workbook(
 
     # Format data sheets
     for sheet_name, df in [
-        ("Per_Image_Summary", per_image_sorted),
-        ("Per_Nucleus_Metrics", nuclei_sorted),
-        ("Per_Spot_Metrics", spots_sorted),
-        ("Cell_Morphology", morph_sorted),
+        *sheet_frames.items(),
         ("Thresholds", thr_sorted),
     ]:
         if sheet_name not in wb.sheetnames or not len(df):
             continue
         _format_data_sheet(wb, sheet_name, df)
 
-    # 2026-05-19 Brian: post-build label substitution. Walk the README +
+    # 2026-05-19: post-build label substitution. Walk the README +
     # Executive_Summary + Comparison_Table cell values and remap
     # "RNA1"/"RNA2"/"DAPI" generic tokens to the preset labels. Data sheets
     # are skipped — their column NAMES are the contract with downstream tooling
@@ -3108,11 +3189,19 @@ def write_raw_data_workbook(
     pointing back to ``analysis_summary.xlsx``.
     """
     out_path = Path(out_path)
+    per_image_df, nuclei_df, spots_df, morph_df = (
+        _coerce_secondary_only(d) for d in (per_image_df, nuclei_df, spots_df, morph_df)
+    )
 
-    per_image_sorted = _sort_df_by_condition(per_image_df, extra_sort_cols=["image"])
-    nuclei_sorted = _sort_df_by_condition(nuclei_df, extra_sort_cols=["image", "nucleus_id"])
-    spots_sorted = _sort_df_by_condition(spots_df, extra_sort_cols=["image", "channel", "spot_id"])
-    morph_sorted = _sort_df_by_condition(morph_df, extra_sort_cols=["image", "nucleus_id"])
+    # Data-sheet-only workbook: sec-only relabel applies to every sheet.
+    per_image_sorted = _relabel_sec_only_for_sheet(
+        _sort_df_by_condition(per_image_df, extra_sort_cols=["image"]))
+    nuclei_sorted = _relabel_sec_only_for_sheet(
+        _sort_df_by_condition(nuclei_df, extra_sort_cols=["image", "nucleus_id"]))
+    spots_sorted = _relabel_sec_only_for_sheet(
+        _sort_df_by_condition(spots_df, extra_sort_cols=["image", "channel", "spot_id"]))
+    morph_sorted = _relabel_sec_only_for_sheet(
+        _sort_df_by_condition(morph_df, extra_sort_cols=["image", "nucleus_id"]))
 
     with pd.ExcelWriter(out_path, engine="openpyxl") as xl:
         pd.DataFrame({"_stub": [""]}).to_excel(xl, sheet_name="Raw_README", index=False)

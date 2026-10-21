@@ -143,6 +143,31 @@ def _resolve_plate_columns(df: pd.DataFrame):
     return well_col, geno_col, arm_col, sec_col
 
 
+# Accepted plate-map labels (case/space-insensitive) -> canonical value.
+_GENOTYPE_LABELS = {
+    "wt": "WT", "wild type": "WT", "wild-type": "WT", "wildtype": "WT",
+    "ko": "KO", "knockout": "KO", "knock-out": "KO", "knock out": "KO",
+}
+_ARM_LABELS = {
+    "primary": "primary", "primary+secondary": "primary",
+    "primary + secondary": "primary", "primary_secondary": "primary",
+    "seconly": "seconly", "sec only": "seconly", "sec-only": "seconly",
+    "secondary only": "seconly", "secondary-only": "seconly",
+    "secondary_only": "seconly", "no primary": "seconly",
+}
+
+
+def _plate_label(raw, allowed: dict, what: str, well, csv_path) -> str:
+    """Map a plate-map cell to its canonical label, or raise naming the row."""
+    key = " ".join(str(raw).strip().lower().split())
+    if key in allowed:
+        return allowed[key]
+    raise ValueError(
+        f"plate_layout_csv {csv_path!r}: well {well} has unrecognised {what} "
+        f"{raw!r}; expected one of {sorted(allowed)}"
+    )
+
+
 def _build_plate_map(cfg, verbose: bool = True) -> dict:
     """Build {well:int -> dict(genotype, arm, secondary, qki_channel)} from the plate CSV.
 
@@ -165,10 +190,8 @@ def _build_plate_map(cfg, verbose: bool = True) -> dict:
                 w = int(r[well_col])
             except Exception:
                 continue
-            geno = "KO" if "KO" in str(r[geno_col]).upper() else "WT"
-            # Match "primary" FIRST — the label "primary+secondary" contains the
-            # substring "sec", so a naive "sec in ..." test mislabels primaries.
-            arm = "primary" if "primary" in str(r[arm_col]).lower() else "seconly"
+            geno = _plate_label(r[geno_col], _GENOTYPE_LABELS, "genotype", w, csv_path)
+            arm = _plate_label(r[arm_col], _ARM_LABELS, "staining arm", w, csv_path)
             sec = _normalize_secondary(r[sec_col])
             plate[w] = dict(genotype=geno, arm=arm, secondary=sec)
     else:
@@ -820,6 +843,7 @@ def run_if_batch(cfg, config_path, input_dir, output_dir, dirs,
     rep_images = {}   # well -> (dapi2d, qki2d, secondary) first FOV, for micrographs
     resolved_sizes = []
     n_pixels = None
+    failed_fovs = []   # every FOV that could not be processed, with the reason
     for f, w in manifest:
         pv = plate[w]
         qki_key = pv["qki_channel"]
@@ -831,6 +855,7 @@ def run_if_batch(cfg, config_path, input_dir, output_dir, dirs,
             chans, exp, dapi_idx, metadata_px_um = _load_fov(f, channel_keys, dapi_key)
         except Exception as exc:
             print(f"  [ERROR] well{w} {f.name}: {exc}")
+            failed_fovs.append({**meta, "stage": "load", "error": f"{type(exc).__name__}: {exc}"})
             continue
         px_um = _resolve_pixel_size_um(cfg, metadata_px_um, f)
         _record_nuclear_size(cfg, px_um, f, output_dir, resolved_sizes)
@@ -844,6 +869,8 @@ def run_if_batch(cfg, config_path, input_dir, output_dir, dirs,
             fov, nuc = _quantify_fov(chans, exp, qki_key, dapi_key, labels, signal_channels, cfg)
         except Exception as exc:
             print(f"  [ERROR] well{w} {f.name}: {exc}")
+            failed_fovs.append({**meta, "stage": "segment_quantify",
+                                "error": f"{type(exc).__name__}: {exc}"})
             continue
         if n_pixels is None:
             n_pixels = int(chans[dapi_key].size)
@@ -867,6 +894,16 @@ def run_if_batch(cfg, config_path, input_dir, output_dir, dirs,
 
     per_fov = pd.DataFrame(fov_rows)
     per_nucleus = pd.DataFrame(nuc_rows)
+    # Failed FOVs are recorded (not silently dropped) so per-well n_fov can be
+    # checked against what was on disk.
+    output_dir.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame(failed_fovs, columns=[
+        "well", "genotype", "arm", "secondary", "qki_channel", "file", "fov_seq",
+        "stage", "error",
+    ]).to_csv(output_dir / "failed_fovs.csv", index=False)
+    if failed_fovs:
+        print(f"  [WARN] {len(failed_fovs)}/{n_fov_total} FOV(s) failed; "
+              f"see failed_fovs.csv")
     if per_fov.empty:
         raise RuntimeError("No FOVs quantified — check masks / raw paths.")
     if n_pixels is None:
@@ -941,6 +978,7 @@ def run_if_batch(cfg, config_path, input_dir, output_dir, dirs,
     headline = _headline_wt_ko(stats_df, per_secondary)
     print("\n================ IF-INTENSITY SUMMARY ================")
     print(f"  wells quantified : {n_wells}   FOVs : {len(per_fov)}   nuclei : {len(per_nucleus)}")
+    print(f"  FOVs failed      : {len(failed_fovs)}")
     if headline is not None:
         sec, mean_wt, mean_ko, wp = headline
         print(f"  headline (secondary {sec}, nuclear QKI mean): "
@@ -953,6 +991,7 @@ def run_if_batch(cfg, config_path, input_dir, output_dir, dirs,
     return dict(
         n_wells=n_wells,
         n_fov=int(len(per_fov)),
+        n_failed_fov=int(len(failed_fovs)),
         n_nuclei=int(len(per_nucleus)),
         exposure_status=exposure_status,
         headline=None if headline is None else dict(
@@ -1011,7 +1050,7 @@ def _write_csvs(output_dir, prefix, per_fov, per_nucleus, per_well, stats_df,
                  "pixel_size_um_config_override"]
     other_cols = [c for c in per_fov.columns]  # meta + IF per-FOV metrics
     pis = pis[base_cols + other_cols]
-    pis.to_csv(output_dir / f"{prefix}per_image_summary.csv", index=False)
+    pis.to_csv(output_dir / "per_image_summary.csv", index=False)
 
     nm = per_nucleus.copy()
     if nm.empty:
@@ -1032,11 +1071,11 @@ def _write_csvs(output_dir, prefix, per_fov, per_nucleus, per_well, stats_df,
             "image", "condition", "secondary_only", "nucleus_id", "nucleus_area_px",
             "well", "genotype", "arm", "secondary", "qki_channel", "file", "fov_seq",
             "nuc_mean_qki", "nuc_integrated_qki", "cyto_mean_qki", "nuc_over_cyto"]]
-    nm.to_csv(output_dir / f"{prefix}nuclei_metrics.csv", index=False)
+    nm.to_csv(output_dir / "nuclei_metrics.csv", index=False)
 
     for p in ["per_nucleus.csv", "per_fov.csv", "per_well.csv", "stats.csv",
               "exposure_report.csv", "seconly_pooled.csv",
-              f"{prefix}per_image_summary.csv", f"{prefix}nuclei_metrics.csv"]:
+              "per_image_summary.csv", "nuclei_metrics.csv"]:
         print(f"[write] {output_dir / p}")
 
 

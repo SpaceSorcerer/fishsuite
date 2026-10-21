@@ -612,9 +612,12 @@ def test_repro_pure_core_matches_engine_radial(fake_img, monkeypatch):
     pix_um = float(fake_img.voxel_xy_nm) / 1000.0
     bins_px = [b / pix_um for b in cfg.foci.partner_radial_bins_um if b > 0]
 
+    # The core applies the engine's radial seed offset itself, so it gets the
+    # same base seed as the engine (partner_null_seed).
     out = _compute_coloc_extras_for_image(
         qki, labels, spots, nucleolus,
-        disk_px=3.0, n_null=300, seed=0, radial_bins_px=bins_px,
+        disk_px=3.0, n_null=300, seed=int(cfg.foci.partner_null_seed),
+        radial_bins_px=bins_px,
         do_null_draws=False, do_radial=True, do_montage=False,
     )
     eng_rad = res.extra["coloc_radial_profile"].reset_index(drop=True)
@@ -625,6 +628,9 @@ def test_repro_pure_core_matches_engine_radial(fake_img, monkeypatch):
         assert row["obs_mean"] == pytest.approx(float(eng_row["obs_mean"]), abs=1e-7)
         assert row["null_mean"] == pytest.approx(float(eng_row["null_mean"]), abs=1e-7)
         assert row["enrichment"] == pytest.approx(float(eng_row["enrichment"]), abs=1e-7)
+        # Pooled null SD and z (not a mean of per-nucleus SDs) match too.
+        assert row["null_sd"] == pytest.approx(float(eng_row["null_sd"]), abs=1e-7)
+        assert row["z"] == pytest.approx(float(eng_row["z"]), abs=1e-7, nan_ok=True)
 
 
 # ===========================================================================

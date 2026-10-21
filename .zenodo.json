@@ -1,5 +1,6 @@
 {
   "title": "fishsuite: a Python pipeline for RNA-FISH and immunofluorescence quantification and colocalization",
+  "version": "1.0.0",
   "upload_type": "software",
   "license": "MIT",
   "creators": [
