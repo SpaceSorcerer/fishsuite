@@ -277,7 +277,7 @@ Sampling runs last in the filter chain (area, border, ghost, sample) and uses on
 
 ### Z-handling
 
-`z_stack.mode` is one of `single`, `maxproj`, `autofocus`, `autofocus_maxproj`, `3d`. Focus is scored by `focus_metric` (default `variance_of_laplacian` on the mean-normalised plane; also `tenengrad`, `normalized_variance`).
+`z_stack.mode` is one of `single`, `maxproj`, `autofocus`, `autofocus_maxproj`, `3d`. `single` reads the plane `single_slice` (1-indexed) when it is set, otherwise `start_slice`, otherwise the middle plane. Focus is scored by `focus_metric` (default `variance_of_laplacian` on the mean-normalised plane; also `tenengrad`, `normalized_variance`).
 
 - **`autofocus`** picks one plane and reads every channel at that plane.
 - **`autofocus_maxproj`** finds a DAPI focus window and max-projects that window for every channel.
