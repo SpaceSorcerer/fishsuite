@@ -25,6 +25,7 @@ from .. import spots as _spots
 from .. import morphology as _morph
 from .. import thresholds as _thr
 from .. import metrics as _metrics
+from . import _zplanes
 
 
 def _resolve_thresh_intensity_floor(cfg, analysis_floors, channel: str) -> float:
@@ -166,150 +167,12 @@ def prepare_segmentation_planes(img, path, cfg) -> Dict[str, Any]:
     dapi_idx = max(0, min(img.n_channels - 1, dapi_idx))
     rna_idx = max(0, min(img.n_channels - 1, rna_idx))
 
-    z_mode = cfg.z_stack.mode
-    z_start = cfg.z_stack.start_slice
-    z_end = cfg.z_stack.end_slice
-    # 2026-05-22 Brian: per-image z-window override. If the current image's
-    # file name matches a key in cfg.z_stack.file_overrides, use that
-    # image-specific single_slice / start_slice / end_slice instead of the
-    # batch default. Mirrors the rna_rna.py lookup pattern exactly.
-    _file_overrides = getattr(cfg.z_stack, "file_overrides", {}) or {}
-    _img_name = Path(path).name
-    _ovr = _file_overrides.get(_img_name, {}) if _img_name in _file_overrides else {}
-    if _ovr:
-        if "start_slice" in _ovr:
-            z_start = int(_ovr["start_slice"])
-        if "end_slice" in _ovr:
-            z_end = int(_ovr["end_slice"])
-        try:
-            from rich.console import Console as _C
-            _C().print(f"  [dim]z-override: {_img_name} → start={z_start}, end={z_end}[/dim]")
-        except Exception:
-            pass
-    # 2026-05-25 Brian: per-channel z (DAPI single plane, RNA maxproj). When
-    # this image's override carries BOTH rna_start_slice and rna_end_slice,
-    # detect spots on a MAXPROJ of the RNA channel over that 1-indexed
-    # inclusive window while DAPI segmentation stays on the normal path.
-    # When absent → RNA extraction is unchanged (full back-compat).
-    rna_start_slice = _ovr.get("rna_start_slice") if _ovr else None
-    rna_end_slice = _ovr.get("rna_end_slice") if _ovr else None
-    rna_per_channel_z = (rna_start_slice is not None and rna_end_slice is not None)
-    if rna_per_channel_z:
-        rna_start_slice = int(rna_start_slice)
-        rna_end_slice = int(rna_end_slice)
-        if rna_start_slice > img.n_z:
-            rna_start_slice = 1
-        if rna_end_slice > img.n_z:
-            rna_end_slice = img.n_z
-        try:
-            from rich.console import Console as _C
-            _C().print(
-                f"  [dim]rna z-override: {_img_name} → RNA maxproj "
-                f"[{rna_start_slice},{rna_end_slice}][/dim]"
-            )
-        except Exception:
-            pass
-    if z_start is not None and z_start > img.n_z:
-        z_start = 1
-    if z_end is not None and z_end > img.n_z:
-        z_end = img.n_z
-
-    # 2026-05-24 Brian: autofocus_maxproj — per-image DAPI focus-window
-    # detection, then MIP that window for all channels. Replaces the need
-    # for per-image file_overrides on datasets with field-to-field focus
-    # drift (e.g. BIN1 KO_100x02 needed 15-49 vs default 9-78).
-    # 2026-05-28 Brian: dapi_autofocus_z holds DAPI's picked plane in
-    # z_mode == "autofocus" so RNA (here) and the antibody channel (in the
-    # rna_protein wrapper, via qc) can be locked to that SAME plane.
-    dapi_autofocus_z: Optional[int] = None
-    if z_mode == "autofocus_maxproj":
-        (afm_zs, afm_ze), afm_diag, dapi_2d = _io.extract_dapi_focus_window(
-            img, dapi_idx,
-            metric=cfg.z_stack.focus_metric,
-            threshold_frac=float(cfg.z_stack.focus_threshold_frac),
-            min_slices=int(cfg.z_stack.focus_window_min_slices),
-            max_slices=int(cfg.z_stack.focus_window_max_slices),
-            z_start=z_start, z_end=z_end,
-            fixed_n_slices=int(getattr(cfg.z_stack, "focus_window_fixed_n_slices", 0)),
-            min_intensity_frac_of_peak=float(getattr(cfg.z_stack, "focus_min_intensity_frac_of_peak", 0.0)),
-            intensity_weighted=bool(getattr(cfg.z_stack, "autofocus_intensity_weighted", False)),
-            central_fraction=float(getattr(cfg.z_stack, "focus_central_fraction", 0.0)),
-        )
-        if rna_per_channel_z:
-            rna_2d = _io.extract_channel(
-                img, rna_idx, z_mode="maxproj",
-                z_start=rna_start_slice, z_end=rna_end_slice,
-            )
-            if rna_2d.ndim != 2:
-                rna_2d = rna_2d.max(axis=0)
-        else:
-            rna_2d = _io.extract_channel_in_z_range(
-                img, rna_idx,
-                z_start_1indexed=afm_zs, z_end_1indexed=afm_ze,
-                project="maxproj",
-            )
-        try:
-            from rich.console import Console as _C
-            _C().print(
-                f"  [dim][autofocus_maxproj] {Path(path).name}: "
-                f"focus peak at z={afm_diag['peak_z']+1}, "
-                f"window=[{afm_zs},{afm_ze}] "
-                f"({afm_ze - afm_zs + 1} slices)[/dim]"
-            )
-        except Exception:
-            pass
-    elif z_mode == "autofocus":
-        # 2026-05-28 Brian: autofocus now LOCKS the RNA channel to DAPI's
-        # picked focal plane. Previously DAPI and RNA were autofocused
-        # INDEPENDENTLY (each calling extract_channel(z_mode="autofocus")),
-        # so they could land on different physical planes — spot xy then came
-        # from a different plane than the nuclear mask. We autofocus DAPI once
-        # (bounded by the z_start/z_end window, including per-image
-        # file_overrides), then read RNA at that exact plane. The DAPI-lock
-        # takes precedence over rna_per_channel_z in this mode.
-        dapi_autofocus_z, dapi_2d = _io.extract_channel_autofocus_with_idx(
-            img, dapi_idx, z_start=z_start, z_end=z_end,
-            intensity_weighted=bool(getattr(cfg.z_stack, "autofocus_intensity_weighted", False)),
-        )
-        rna_2d = _io.extract_channel_at_z(img, rna_idx, z_1indexed=dapi_autofocus_z)
-        try:
-            from rich.console import Console as _C
-            if rna_per_channel_z:
-                _C().print(
-                    f"  [dim]z-lock: {Path(path).name} → RNA locked to DAPI plane "
-                    f"z={dapi_autofocus_z} (per-channel RNA maxproj override IGNORED "
-                    f"under autofocus)[/dim]"
-                )
-            else:
-                _C().print(
-                    f"  [dim]z-lock: {Path(path).name} → all channels @ DAPI plane "
-                    f"z={dapi_autofocus_z}[/dim]"
-                )
-        except Exception:
-            pass
-    else:
-        dapi_2d = _io.extract_channel(img, dapi_idx, z_mode=z_mode, z_start=z_start, z_end=z_end)
-        if dapi_2d.ndim != 2:
-            dapi_2d = dapi_2d.max(axis=0)
-        if rna_per_channel_z:
-            rna_2d = _io.extract_channel(
-                img, rna_idx, z_mode="maxproj",
-                z_start=rna_start_slice, z_end=rna_end_slice,
-            )
-        else:
-            rna_2d = _io.extract_channel(img, rna_idx, z_mode=z_mode, z_start=z_start, z_end=z_end)
-        if rna_2d.ndim != 2:
-            rna_2d = rna_2d.max(axis=0)
-    return {
-        "dapi_idx": dapi_idx,
-        "rna_idx": rna_idx,
-        "z_mode": z_mode,
-        "z_start": z_start,
-        "z_end": z_end,
-        "dapi_autofocus_z": dapi_autofocus_z,
-        "dapi_2d": dapi_2d,
-        "rna_2d": rna_2d,
-    }
+    planes = _zplanes.extract_planes(
+        img, path, cfg, dapi_idx=dapi_idx, rna_idx=rna_idx,
+    )
+    planes.pop("rna2_2d", None)
+    planes.update(dapi_idx=dapi_idx, rna_idx=rna_idx)
+    return planes
 
 
 def segmentation_params(cfg, nuclear_size) -> Dict[str, Any]:
@@ -389,6 +252,7 @@ def run_one(
         pre-scan; see ``Coloc_Analysis.run_batch_prescan_for_thresholds``).
     """
     t0 = time.time()
+    path = Path(path)
     img = _io.read_image(path)
     nuclear_pixel_nm = _safe_float(cfg.foci.bigfish_voxel_size_nm)
     if not (math.isfinite(nuclear_pixel_nm) and nuclear_pixel_nm > 0):
@@ -408,6 +272,7 @@ def run_one(
     z_start = planes["z_start"]
     z_end = planes["z_end"]
     dapi_autofocus_z = planes["dapi_autofocus_z"]
+    _z_af_extra = planes.get("_z_af_extra") or {}
     dapi_2d = planes["dapi_2d"]
     rna_2d = planes["rna_2d"]
     del planes
@@ -464,35 +329,32 @@ def run_one(
     spots_df = pd.DataFrame()
     thr_val = float("nan")
     rna_params = cfg.foci.resolved_for("rna")
-    # 2026-05-25 Brian: optionally also detect spots on secondary-only control
-    # images (foci.detect_in_sec_only). Sec-only spot counts are REPORTED
-    # (flow through per_image_summary + per-nucleus CSV like any image) for
-    # background QC, never subtracted from sample images. Default False keeps
-    # legacy behavior (sec-only images skip detection → zero spots).
-    if cfg.foci.enabled and (not sec_only or getattr(cfg.foci, "detect_in_sec_only", False)):
+    # Secondary-only images are detected like any other image (as in the
+    # two-channel modes); their counts are reported for background QC and never
+    # subtracted. foci.detect_in_sec_only is therefore a no-op.
+    if cfg.foci.enabled:
         vx = cfg.foci.bigfish_voxel_size_nm
         vz = cfg.foci.bigfish_voxel_z_nm
         if vx <= 0:
             vx = voxel_xy_nm
         if vz <= 0:
             vz = voxel_z_nm
-        try:
-            spots_df = _spots.detect_spots(
-                rna_2d,
-                backend=cfg.foci.backend,
-                voxel_xy_nm=float(vx),
-                voxel_z_nm=float(vz),
-                spot_radius_nm=rna_params["bigfish_spot_radius_nm"],
-                spot_radius_z_nm=rna_params["bigfish_spot_radius_z_nm"],
-                threshold_multiplier=rna_params["threshold_multiplier"],
-                threshold=cfg.foci.threshold_override,
-                log_threshold=cfg.foci.log_threshold,
-                log_spot_radius_px=cfg.foci.log_spot_radius_px,
-            )
-            thr_val = float(spots_df["threshold_used"].iloc[0]) if len(spots_df) else float("nan")
-        except Exception:
-            spots_df = pd.DataFrame()
-            thr_val = float("nan")
+        # Detector errors propagate so the runner records a failed image
+        # instead of a silent zero-spot result.
+        spots_df = _spots.detect_spots(
+            rna_2d,
+            backend=cfg.foci.backend,
+            voxel_xy_nm=float(vx),
+            voxel_z_nm=float(vz),
+            spot_radius_nm=rna_params["bigfish_spot_radius_nm"],
+            spot_radius_z_nm=rna_params["bigfish_spot_radius_z_nm"],
+            threshold_multiplier=rna_params["threshold_multiplier"],
+            # Per-channel override; falls back to the shared value when unset.
+            threshold=rna_params["threshold_override"],
+            log_threshold=cfg.foci.log_threshold,
+            log_spot_radius_px=cfg.foci.log_spot_radius_px,
+        )
+        thr_val = float(spots_df["threshold_used"].iloc[0]) if len(spots_df) else float("nan")
 
     # Apply the channel-specific absolute peak floor before compartment
     # assignment so counts and all later outputs share the analyzed spot set.
@@ -826,7 +688,7 @@ def run_one(
         nuclear_spot_fraction = (nuclear_spot_count / float(rna_spot_count)) if rna_spot_count > 0 else float("nan")
 
         nuclear_spot_density_per_um2 = (
-            rna_spot_count / area_um2
+            nuclear_spot_count / area_um2
         ) if area_um2 > 0 else float("nan")
 
         # Per-nucleus intensity aggregates over its spots
@@ -1180,6 +1042,11 @@ def run_one(
                     spots_out_df = spots_out_df[
                         ~spots_out_df["nucleus_id"].isin(_gset)
                     ].reset_index(drop=True)
+                # 4) drop those nuclei from the cell morphology table.
+                if len(morph_df) and "cell_id" in morph_df.columns:
+                    morph_df = morph_df[
+                        ~morph_df["cell_id"].isin(_gset)
+                    ].reset_index(drop=True)
                 print(f"  ghost-filter: dropped {len(_gset)} empty nucleus shell(s) "
                       f"on {img_name} (ids={sorted(_gset)})")
                 _n_ghost_dropped = len(_gset)
@@ -1336,6 +1203,9 @@ def run_one(
         per_image.update(
             _seg.sampling_per_image_cols(_samp_res, n_ghost_excluded=_n_ghost_excluded)
         )
+    # Non-DAPI autofocus anchors record the plane they picked (empty otherwise).
+    if _z_af_extra:
+        per_image.update(_z_af_extra)
 
     thresholds = {
         "image": img_name,
@@ -1467,156 +1337,14 @@ def collect_nuclear_rna_pixels(path, *, cfg) -> Tuple[np.ndarray, np.ndarray]:
     except ValueError as exc:
         raise ValueError(f"{Path(path).name}: {exc}") from exc
 
-    one_indexed = bool(cfg.channels.one_indexed)
-    def _chan(idx: int) -> int:
-        return (idx - 1) if (one_indexed and idx > 0) else idx
+    # Same planes as run_one, so the pooled pixels and the cached labels come
+    # from exactly what the main pass analyzes.
+    planes = prepare_segmentation_planes(img, path, cfg)
+    dapi_2d = planes["dapi_2d"]
+    rna_2d = planes["rna_2d"]
+    del planes
 
-    dapi_idx = _chan(cfg.channels.dapi)
-    rna_idx = _chan(cfg.channels.rna)
-    if dapi_idx < 0 or rna_idx < 0:
-        auto = _io.autodetect_channels(img)
-        if dapi_idx < 0:
-            dapi_idx = auto["dapi"]
-        if rna_idx < 0:
-            rna_idx = auto["rna"]
-    dapi_idx = max(0, min(img.n_channels - 1, dapi_idx))
-    rna_idx = max(0, min(img.n_channels - 1, rna_idx))
-
-    z_mode = cfg.z_stack.mode
-    z_start = cfg.z_stack.start_slice
-    z_end = cfg.z_stack.end_slice
-    # 2026-05-22 Brian: per-image z-window override (mirrors run_one). Keeps
-    # the batch pixel-threshold pre-scan extracting the SAME pixels run_one
-    # will analyze for this image.
-    _file_overrides = getattr(cfg.z_stack, "file_overrides", {}) or {}
-    _img_name = Path(path).name
-    _ovr = _file_overrides.get(_img_name, {}) if _img_name in _file_overrides else {}
-    if _ovr:
-        if "start_slice" in _ovr:
-            z_start = int(_ovr["start_slice"])
-        if "end_slice" in _ovr:
-            z_end = int(_ovr["end_slice"])
-    # 2026-05-25 Brian: per-channel z. When BOTH rna_start_slice and
-    # rna_end_slice are set for this image, pool the RNA pixels from a MAXPROJ
-    # of the RNA channel over that window — SAME pixels run_one detects spots
-    # on. DAPI handling is unchanged.
-    rna_start_slice = _ovr.get("rna_start_slice") if _ovr else None
-    rna_end_slice = _ovr.get("rna_end_slice") if _ovr else None
-    rna_per_channel_z = (rna_start_slice is not None and rna_end_slice is not None)
-    if rna_per_channel_z:
-        rna_start_slice = int(rna_start_slice)
-        rna_end_slice = int(rna_end_slice)
-        if rna_start_slice > img.n_z:
-            rna_start_slice = 1
-        if rna_end_slice > img.n_z:
-            rna_end_slice = img.n_z
-    if z_start is not None and z_start > img.n_z:
-        z_start = 1
-    if z_end is not None and z_end > img.n_z:
-        z_end = img.n_z
-
-    # 2026-05-24 Brian: autofocus_maxproj — per-image DAPI focus-window
-    # detection, then MIP that window for all channels. Replaces the need
-    # for per-image file_overrides on datasets with field-to-field focus
-    # drift (e.g. BIN1 KO_100x02 needed 15-49 vs default 9-78).
-    if z_mode == "autofocus_maxproj":
-        (afm_zs, afm_ze), afm_diag, dapi_2d = _io.extract_dapi_focus_window(
-            img, dapi_idx,
-            metric=cfg.z_stack.focus_metric,
-            threshold_frac=float(cfg.z_stack.focus_threshold_frac),
-            min_slices=int(cfg.z_stack.focus_window_min_slices),
-            max_slices=int(cfg.z_stack.focus_window_max_slices),
-            z_start=z_start, z_end=z_end,
-            fixed_n_slices=int(getattr(cfg.z_stack, "focus_window_fixed_n_slices", 0)),
-            min_intensity_frac_of_peak=float(getattr(cfg.z_stack, "focus_min_intensity_frac_of_peak", 0.0)),
-            intensity_weighted=bool(getattr(cfg.z_stack, "autofocus_intensity_weighted", False)),
-            central_fraction=float(getattr(cfg.z_stack, "focus_central_fraction", 0.0)),
-        )
-        if rna_per_channel_z:
-            rna_2d = _io.extract_channel(
-                img, rna_idx, z_mode="maxproj",
-                z_start=rna_start_slice, z_end=rna_end_slice,
-            )
-            if rna_2d.ndim != 2:
-                rna_2d = rna_2d.max(axis=0)
-        else:
-            rna_2d = _io.extract_channel_in_z_range(
-                img, rna_idx,
-                z_start_1indexed=afm_zs, z_end_1indexed=afm_ze,
-                project="maxproj",
-            )
-        try:
-            from rich.console import Console as _C
-            _C().print(
-                f"  [dim][autofocus_maxproj] {Path(path).name}: "
-                f"focus peak at z={afm_diag['peak_z']+1}, "
-                f"window=[{afm_zs},{afm_ze}] "
-                f"({afm_ze - afm_zs + 1} slices)[/dim]"
-            )
-        except Exception:
-            pass
-    elif z_mode == "autofocus":
-        # 2026-05-28 Brian: IDENTICAL z-lock logic to run_one (above). The
-        # batch pre-pass pools threshold pixels and caches the nuclei labels;
-        # locking RNA to DAPI's autofocus plane here keeps the pooled pixels
-        # and the cached segmentation on the SAME plane the spots are detected
-        # on in run_one (which uses the same window deterministically). The
-        # DAPI-lock takes precedence over rna_per_channel_z under autofocus.
-        dapi_autofocus_z, dapi_2d = _io.extract_channel_autofocus_with_idx(
-            img, dapi_idx, z_start=z_start, z_end=z_end,
-            intensity_weighted=bool(getattr(cfg.z_stack, "autofocus_intensity_weighted", False)),
-        )
-        rna_2d = _io.extract_channel_at_z(img, rna_idx, z_1indexed=dapi_autofocus_z)
-        try:
-            from rich.console import Console as _C
-            if rna_per_channel_z:
-                _C().print(
-                    f"  [dim]z-lock (prescan): {Path(path).name} → RNA locked to DAPI "
-                    f"plane z={dapi_autofocus_z} (per-channel RNA maxproj override "
-                    f"IGNORED under autofocus)[/dim]"
-                )
-            else:
-                _C().print(
-                    f"  [dim]z-lock (prescan): {Path(path).name} → all channels @ DAPI "
-                    f"plane z={dapi_autofocus_z}[/dim]"
-                )
-        except Exception:
-            pass
-    else:
-        dapi_2d = _io.extract_channel(img, dapi_idx, z_mode=z_mode, z_start=z_start, z_end=z_end)
-        if dapi_2d.ndim != 2:
-            dapi_2d = dapi_2d.max(axis=0)
-        if rna_per_channel_z:
-            rna_2d = _io.extract_channel(
-                img, rna_idx, z_mode="maxproj",
-                z_start=rna_start_slice, z_end=rna_end_slice,
-            )
-        else:
-            rna_2d = _io.extract_channel(img, rna_idx, z_mode=z_mode, z_start=z_start, z_end=z_end)
-        if rna_2d.ndim != 2:
-            rna_2d = rna_2d.max(axis=0)
-
-    seg_params = dict(
-        min_area=nuclear_size.min_area_px,
-        max_area=nuclear_size.max_area_px,
-        prob_threshold=cfg.nuclei.prob_threshold,
-        nms_threshold=cfg.nuclei.nms_threshold,
-        n_tiles=cfg.nuclei.n_tiles,
-        stardist_model=cfg.nuclei.stardist_model,
-        stardist_gauss_sigma=cfg.nuclei.stardist_gauss_sigma,
-        stardist_postprocess=cfg.nuclei.stardist_postprocess,
-        stardist_postprocess_dilate_px=cfg.nuclei.stardist_postprocess_dilate_px,
-        stardist_postprocess_otsu_sigma=cfg.nuclei.stardist_postprocess_otsu_sigma,
-        stardist_postprocess_mask_closing_px=cfg.nuclei.stardist_postprocess_mask_closing_px,
-        label_smoothing_radius_px=cfg.nuclei.label_smoothing_radius_px,
-        diameter=nuclear_size.native_diameter_px,
-        flow_threshold=cfg.nuclei.cellpose_flow_threshold,
-        cellprob_threshold=cfg.nuclei.cellpose_cellprob_threshold,
-        cellpose_model_type=cfg.nuclei.cellpose_model_type,
-        cellpose_preclip_dapi_otsu=cfg.nuclei.cellpose_preclip_dapi_otsu,
-        cellpose_downsample_factor=cfg.nuclei.cellpose_downsample_factor,
-        cellpose_device=getattr(cfg.nuclei, "cellpose_device", "cpu"),
-    )
+    seg_params = segmentation_params(cfg, nuclear_size)
     labels = _seg.segment_nuclei(dapi_2d, backend=cfg.nuclei.backend, params=seg_params)
     if cfg.nuclei.exclude_border:
         labels = _seg.exclude_border_labels(labels, margin_px=nuclear_size.border_margin_px)

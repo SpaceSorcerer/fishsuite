@@ -17,6 +17,16 @@ from typing import Any, Mapping
 import numpy as np
 import pandas as pd
 
+from fishsuite.core.exact_footprint_common import (
+    bool_series as _bool_series,
+    median_mad as _median_mad,
+    parse_bool as _explicit_bool,
+    q95_call_masks,
+    require_columns as _require_columns,
+    robust_distance,
+    sha256_file as _sha256_file,
+)
+
 
 POSITIVE_COLOR = "#D55E00"
 NEGATIVE_COLOR = "#0072B2"
@@ -318,20 +328,6 @@ class OverlaySpec:
     footprint_method: str
 
 
-def _explicit_bool(value: object) -> bool:
-    if isinstance(value, (bool, np.bool_)):
-        return bool(value)
-    if isinstance(value, (int, np.integer)) and int(value) in (0, 1):
-        return bool(value)
-    if isinstance(value, str):
-        normalized = value.strip().casefold()
-        if normalized in {"true", "1", "yes"}:
-            return True
-        if normalized in {"false", "0", "no"}:
-            return False
-    raise ValueError(f"value is not an explicit boolean: {value!r}")
-
-
 def exact_footprint_outline_segments(
     footprint_yx: np.ndarray,
     *,
@@ -454,12 +450,6 @@ class RepresentativeSelection:
     manifest: pd.DataFrame
 
 
-def _require_columns(frame: pd.DataFrame, required: set[str], *, table: str) -> None:
-    missing = sorted(required - set(frame.columns))
-    if missing:
-        raise ValueError(f"{table} lacks required columns: {missing}")
-
-
 def _qc_pass(value: object) -> bool:
     return str(value).strip().casefold() not in {
         "fail",
@@ -467,22 +457,6 @@ def _qc_pass(value: object) -> bool:
         "exclude",
         "excluded",
     }
-
-
-def _bool_series(series: pd.Series, *, name: str) -> pd.Series:
-    try:
-        return series.map(_explicit_bool).astype(bool)
-    except ValueError as exc:
-        raise ValueError(f"{name} contains a non-boolean value") from exc
-
-
-def _median_mad(values: pd.Series | np.ndarray) -> tuple[float, float]:
-    array = pd.to_numeric(pd.Series(values), errors="coerce").to_numpy(float)
-    array = array[np.isfinite(array)]
-    if not array.size:
-        return np.nan, np.nan
-    median = float(np.median(array))
-    return median, float(np.median(np.abs(array - median)))
 
 
 def _slide_order(value: object) -> tuple[int, str]:
@@ -550,19 +524,7 @@ def _nucleus_rows_for_image(
                 scoped_spots["nucleus_id"], errors="coerce"
             ).eq(nucleus_id)
         ]
-        usable = (
-            _bool_series(group["null_usable"], name="null_usable")
-            if len(group)
-            else pd.Series(dtype=bool)
-        )
-        calls = pd.Series(False, index=group.index, dtype=bool)
-        if usable.any():
-            calls.loc[usable] = _bool_series(
-                group.loc[usable, "qki_threshold_positive_q95"],
-                name="qki_threshold_positive_q95",
-            )
-        positive = usable & calls
-        negative = usable & ~calls
+        usable, positive, negative = q95_call_masks(group)
         nonnucleolar = (
             ~_bool_series(
                 group["stored_in_nucleolus"], name="stored_in_nucleolus"
@@ -681,19 +643,7 @@ def select_representatives(
             key, spot_table, nucleus_table
         )
         nucleus_cache[key] = nucleus_rows
-        usable = (
-            _bool_series(group["null_usable"], name="null_usable")
-            if len(group)
-            else pd.Series(dtype=bool)
-        )
-        calls = pd.Series(False, index=group.index, dtype=bool)
-        if usable.any():
-            calls.loc[usable] = _bool_series(
-                group.loc[usable, "qki_threshold_positive_q95"],
-                name="qki_threshold_positive_q95",
-            )
-        positive = usable & calls
-        negative = usable & ~calls
+        usable, positive, negative = q95_call_masks(group)
         n_usable = int(usable.sum())
         counts = (
             nucleus_rows["n_spots_non_nucleolar"].astype(float)
@@ -800,13 +750,7 @@ def select_representatives(
                 cell_indexes, f"cell_median_{metric}"
             ] = median
             fields.loc[cell_indexes, f"cell_mad_{metric}"] = mad
-            values = pd.to_numeric(
-                fields.loc[cell_indexes, metric], errors="coerce"
-            ).to_numpy(float)
-            term = np.full(len(values), np.nan, dtype=float)
-            if np.isfinite(median) and np.isfinite(mad) and mad > 0:
-                finite = np.isfinite(values)
-                term[finite] = np.abs(values[finite] - median) / mad
+            term = robust_distance(fields.loc[cell_indexes, metric], median, mad)
             fields.loc[
                 cell_indexes, f"distance_term_{metric}"
             ] = term
@@ -895,20 +839,14 @@ def select_representatives(
         audit[
             "field_mad_log1p_non_nucleolar_spots"
         ] = log_mad
-        assoc_values = pd.to_numeric(
-            audit["association_fraction_q95"], errors="coerce"
-        ).to_numpy(float)
-        assoc_term = np.zeros(len(audit), dtype=float)
-        if np.isfinite(assoc_mad) and assoc_mad > 0:
-            finite = np.isfinite(assoc_values)
-            assoc_term[finite] = (
-                np.abs(assoc_values[finite] - assoc_median) / assoc_mad
-            )
-        count_term = np.zeros(len(audit), dtype=float)
-        if np.isfinite(log_mad) and log_mad > 0:
-            count_term = (
-                np.abs(log_counts.to_numpy(float) - log_median) / log_mad
-            )
+        # Non-finite values add no distance; zero MAD follows robust_distance.
+        assoc_term = np.nan_to_num(
+            robust_distance(audit["association_fraction_q95"], assoc_median, assoc_mad),
+            nan=0.0, posinf=np.inf,
+        )
+        count_term = np.nan_to_num(
+            robust_distance(log_counts, log_median, log_mad), nan=0.0, posinf=np.inf,
+        )
         audit["nucleus_distance"] = assoc_term + count_term
         audit["content_tier"] = np.where(
             (audit["n_positive_q95"] > 0)
@@ -1235,14 +1173,6 @@ def prepare_renderer_audits(
         image_audit=images,
         nucleus_qc_roster=roster,
     )
-
-
-def _sha256_file(path: str | Path) -> str:
-    digest = hashlib.sha256()
-    with Path(path).open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 def _slug(value: object) -> str:
@@ -1960,6 +1890,8 @@ def _threshold_sensitivity_rows(
             positive = int(labels.eq("threshold_positive").sum())
             negative = int(labels.eq("threshold_negative").sum())
             usable = positive + negative
+            n_unusable = int(labels.eq("unusable").sum())
+            n_below_floor = int(labels.eq("below_miat_floor").sum())
             rows.append(
                 {
                     "slide": selected["slide"],
@@ -1972,7 +1904,8 @@ def _threshold_sensitivity_rows(
                     "is_primary": percentile == 95,
                     "n_positive": positive,
                     "n_negative": negative,
-                    "n_unusable": int(len(group) - usable),
+                    "n_unusable": n_unusable,
+                    "n_below_floor": n_below_floor,
                     "association_fraction_among_usable": (
                         float(positive / usable) if usable else np.nan
                     ),

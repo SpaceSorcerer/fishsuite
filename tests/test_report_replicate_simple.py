@@ -6,11 +6,14 @@ import pytest
 
 
 def test_a20_absolute_intensity_is_tested():
-    from fishsuite.report.endpoints import ENDPOINTS, a3_endpoints
+    # Only the delivery-path amendment makes an absolute intensity tested.
+    from fishsuite.report.endpoints import ENDPOINTS, a3_endpoints, amend_endpoint
     for endpoint in (*ENDPOINTS, *a3_endpoints([])):
         if endpoint.absolute_intensity:
-            assert not endpoint.descriptive_only
-            assert not endpoint.excluded_from_holm
+            assert endpoint.descriptive_only or endpoint.excluded_from_holm
+            amended = amend_endpoint(endpoint)
+            assert not amended.descriptive_only
+            assert not amended.excluded_from_holm
 
 
 def test_a20_axis_groups_union_and_isolation(tmp_path):
@@ -526,21 +529,22 @@ def test_mixed_headline_and_explicit_failed_fit_fallback(tmp_path):
         plt.close(canvas)
 
 
-@pytest.mark.parametrize('absolute', [False, True])
-def test_custom_descriptive_endpoint_uses_contrast_flags(tmp_path, absolute):
+@pytest.mark.parametrize('absolute,descriptive', [(False, True), (True, False), (True, True)])
+def test_custom_descriptive_endpoint_uses_contrast_flags(tmp_path, absolute, descriptive):
+    # The row's descriptive_only flag decides; an absolute intensity is tested only when its row says so.
     endpoint='custom_corrected_intensity'
     wells=pd.DataFrame(dict(endpoint=[endpoint]*6,group=['WT']*3+['QKI-KO']*3,
         well_id=['w1','w2','w3','k1','k2','k3'],well_mean_of_field_values=[1,2,3,4,5,6]))
     rows=pd.DataFrame([dict(endpoint=endpoint,test_group='QKI-KO',reference_group='WT',
         p_mixed=.001,p_welch=.2,sensitivity_mixed_status='ok',sensitivity_mixed_validation='validated',
-        descriptive_only=True,absolute_intensity=absolute)])
+        descriptive_only=descriptive,absolute_intensity=absolute)])
     canvas,ax=plt.subplots()
     foot=fig.draw_replicate_simple(ax,context(tmp_path,plot_style='replicate-simple'),endpoint,
         wells,pd.DataFrame(),pd.DataFrame(),rows,'Intensity',None)
-    assert any(t.get_text()=='descriptive, no test' for t in ax.texts) == (not absolute)
-    assert any('p =' in t.get_text() for t in ax.texts) == absolute
+    assert any(t.get_text()=='descriptive, no test' for t in ax.texts) == descriptive
+    assert any('p =' in t.get_text() for t in ax.texts) == (not descriptive)
     assert 'mixed model p' in foot
-    assert ('same acquisition settings (acquirer); staining batch not controlled' if absolute else 'descriptive') in foot
+    assert ('descriptive' if descriptive else 'same acquisition settings (acquirer); staining batch not controlled') in foot
     plt.close(canvas)
 
 def test_axis_note_keeps_run_at_footer_end(tmp_path):

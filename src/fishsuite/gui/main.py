@@ -1,6 +1,6 @@
 """Main PySide6 window for the fishsuite GUI launcher.
 
-Comprehensive, modern, tabbed launcher built for Brian's dissertation work.
+Comprehensive, modern, tabbed launcher for fishsuite runs.
 Eleven tabs (Experiment, Conditions, Channels, Z-Stack, Nuclei, Foci,
 Pixel Coloc, Cytoplasm, Output, Run, YAML Preview) each with a colored
 readiness dot. Dynamic visibility — backend-specific options only show
@@ -83,7 +83,7 @@ _TABS: List[tuple] = [
 
 
 # Tuning presets layered on top of the base preset. Mirror Fiji's "apply_profile"
-# UX but keep it focused on the handful of tuning axes Brian iterates on.
+# UX but keep it focused on the handful of most-tuned axes.
 TUNING_OVERLAYS: Dict[str, Dict[str, Any]] = {
     "(no overlay)": {},
     "Strict spots (tm=0.7)": {"foci": {"threshold_multiplier": 0.7}},
@@ -134,6 +134,12 @@ if _QT_OK:
             # silently zeroing dapi/rna/etc. back to their construction default).
             self._loading_widgets: bool = False
 
+            # Readiness runs input discovery; debounce it so typing stays fast.
+            self._readiness_timer = QTimer(self)
+            self._readiness_timer.setInterval(300)
+            self._readiness_timer.setSingleShot(True)
+            self._readiness_timer.timeout.connect(self._refresh_readiness_now)
+
             # Build top-level UI.
             self._build_ui()
             self._wire_shortcuts()
@@ -142,7 +148,7 @@ if _QT_OK:
             self._populate_preset_combo()
             self._select_preset(self._current_preset_stem, push_to_settings=False)
             self._restore_settings()
-            self._refresh_readiness()
+            self._refresh_readiness_now()
             self._refresh_yaml_preview()
 
             # Auto-refresh YAML on a debounced timer so heavy edits don't lag.
@@ -321,7 +327,7 @@ if _QT_OK:
 
             grid.addWidget(QLabel("Run tag"), 2, 0)
             self.tag_edit = QLineEdit()
-            self.tag_edit.setPlaceholderText("e.g. h9-kd-sweep1")
+            self.tag_edit.setPlaceholderText("e.g. kd-sweep1")
             self.tag_edit.textChanged.connect(self._on_field_changed)
             grid.addWidget(self.tag_edit, 2, 1, 1, 2)
 
@@ -731,6 +737,7 @@ if _QT_OK:
             self.mode_combo = QComboBox()
             self.mode_combo.addItems([
                 "rna_only", "rna_protein", "rna_rna", "ab_ab", "protein_only", "pub_images",
+                "if_intensity",
             ])
             self.mode_combo.setToolTip(
                 "rna_only — DAPI + 1 RNA channel (spots + per-cell counts).\n"
@@ -738,7 +745,9 @@ if _QT_OK:
                 "rna_rna — DAPI + 2 RNA channels (spot-on-spot NN coloc per nucleus).\n"
                 "ab_ab — DAPI + 2 antibody channels (pixel-based coloc only).\n"
                 "protein_only — DAPI + antibody (intensity quantification).\n"
-                "pub_images — render per-channel + composite PNG/TIF, no quantification."
+                "pub_images — render per-channel + composite PNG/TIF, no quantification.\n"
+                "if_intensity — plate-level IF intensity; channels routed per well\n"
+                "from the if_intensity plate map (edit in the YAML)."
             )
             self.mode_combo.currentTextChanged.connect(self._on_mode_changed)
             form.addRow("Analysis mode", self.mode_combo)
@@ -883,6 +892,17 @@ if _QT_OK:
             cb.editTextChanged.connect(self._on_field_changed)
             return cb
 
+        def _set_combo_value(self, cb: QComboBox, value: Any) -> None:
+            """Select ``value``; append it first if the combo lacks it.
+
+            A preset value is never silently replaced by another item.
+            """
+            v = str(value)
+            cb.setCurrentText(v)
+            if cb.currentText() != v:
+                cb.addItem(v)
+                cb.setCurrentIndex(cb.count() - 1)
+
         def _set_open_combo(self, cb: QComboBox, value: str) -> None:
             """Set an editable combo's text; insert ``value`` if not in items.
 
@@ -916,9 +936,9 @@ if _QT_OK:
             cb.setCurrentIndex(ix if ix >= 0 else 0)
             cb.setToolTip(
                 "Pseudo-color (LUT) used to render this channel in QC and\n"
-                "publication images. Brian's wavelength convention\n"
-                "(2026-05-14): DAPI/405 → blue, 488 → green, 561/Cy3 →\n"
-                "magenta, 647/Cy5 → yellow. The Detect button auto-suggests\n"
+                "publication images. Default wavelength convention:\n"
+                "DAPI/405 → blue, 488 → green, 561/Cy3 → magenta,\n"
+                "647/Cy5 → yellow. The Detect button auto-suggests\n"
                 "by emission wavelength."
             )
             cb.currentTextChanged.connect(self._on_field_changed)
@@ -1055,13 +1075,13 @@ if _QT_OK:
             _state.save_settings(self._capture_settings_for_save())
             self._refresh_resolved_channel_labels()
             # Auto-suggest LUT colors based on each role's emission wavelength.
-            # Brian's convention (2026-05-14): 647→yellow, 561→magenta,
+            # Default convention: 647→yellow, 561→magenta,
             # 488→green, DAPI→blue. Only suggests when the detector has a
             # confident emission match; user can override afterward.
             self._auto_suggest_luts_from_detection(info["names"])
 
         def _auto_suggest_luts_from_detection(self, names: List[str]) -> None:
-            """Apply Brian's wavelength → LUT mapping to the channel LUT combos.
+            """Apply the default wavelength → LUT mapping to the channel LUT combos.
 
             For each role's channel spinbox, looks up the resolved channel
             name and queries ``state.suggested_lut_for_channel_name``.
@@ -1135,10 +1155,12 @@ if _QT_OK:
             ))
             form = QFormLayout()
             self.z_mode = QComboBox()
-            self.z_mode.addItems(["autofocus", "single", "maxproj", "3d"])
+            self.z_mode.addItems(["autofocus", "autofocus_maxproj", "single", "maxproj", "3d"])
             self.z_mode.setToolTip(
                 "autofocus — pick the single sharpest plane within "
                 "[start_slice, end_slice] (recommended).\n"
+                "autofocus_maxproj — detect the in-focus window per image on DAPI\n"
+                "and max-project only that window (start/end are outer bounds).\n"
                 "single — use a fixed slice (single_slice).\n"
                 "maxproj — collapse the substack via max-projection (FLATTENS Z; "
                 "tends to merge spots / overlapping nuclei — verify visually).\n"
@@ -1185,7 +1207,8 @@ if _QT_OK:
 
             note = QLabel(
                 "Tip: a too-wide window can pull autofocus onto an out-of-focus plane "
-                "(StarDist will under-segment). H9 100x default is 5-15."
+                "(StarDist will under-segment). Example: 5-15 for a ~20-slice\n"
+                "100x stack; pick the in-focus band of your own data."
             )
             note.setObjectName("tipLabel")
             note.setWordWrap(True)
@@ -1202,7 +1225,7 @@ if _QT_OK:
 
         def _refresh_zstack_visibility(self) -> None:
             mode = self.z_mode.currentText()
-            show_range = mode in ("autofocus", "range")
+            show_range = mode in ("autofocus", "autofocus_maxproj")
             show_single = mode == "single"
             for w, lbl in [
                 (self.z_start, self._z_start_row_label),
@@ -1245,10 +1268,10 @@ if _QT_OK:
             self.nuc_min_area.setSuffix(" px")
             self.nuc_min_area.setToolTip(
                 "Minimum nuclear area in RAW pixels² (not µm²). Drops debris\n"
-                "and small fragments. For H9 hESC at 100x@0.065 µm/px true\n"
-                "nuclei are 10000-40000 px²; default 10000 is a safe floor.\n"
-                "At 100x@0.108 µm/px, 100 µm² ≈ 8600 px². The StarDist label\n"
-                "TIFF has no calibration, so we operate in raw pixels."
+                "and small fragments. Example: at 0.065 µm/px, 10000 px² ≈\n"
+                "42 µm²; at 0.108 µm/px, 100 µm² ≈ 8600 px². Scale to your\n"
+                "pixel size and the nuclear size of your cell type. The\n"
+                "StarDist label TIFF has no calibration, so this is raw pixels."
             )
             self.nuc_min_area.valueChanged.connect(self._on_field_changed)
             form.addRow("min_area_px", self.nuc_min_area)
@@ -1261,7 +1284,8 @@ if _QT_OK:
             self.nuc_max_area.setToolTip(
                 "Maximum nuclear area in RAW pixels². Drops oversized clumps\n"
                 "and debris blobs. Default 1e12 = effectively unlimited. Set\n"
-                "to ~50000 px² at 100x@0.108 µm/px to filter very large clumps."
+                "a cap (example: ~50000 px² at 0.108 µm/px) scaled to your\n"
+                "pixel size and cell type to filter very large clumps."
             )
             self.nuc_max_area.valueChanged.connect(self._on_field_changed)
             form.addRow("max_area_px", self.nuc_max_area)
@@ -1311,7 +1335,7 @@ if _QT_OK:
             self.sd_prob.setToolTip(
                 "StarDist detection probability threshold. Lower = more\n"
                 "permissive (catches dim nuclei but also debris). 0.479 is\n"
-                "model default; H9 confluent monolayers typically need ~0.2-0.4."
+                "the model default; dense confluent monolayers often need ~0.2-0.4."
             )
             self.sd_prob.valueChanged.connect(self._on_field_changed)
             sgrp.addRow("prob_threshold", self.sd_prob)
@@ -1347,11 +1371,11 @@ if _QT_OK:
             self.sd_gauss = SliderSpin(0.0, 8.0, 0.5, decimals=1, value=3.0)
             self.sd_gauss.setToolTip(
                 "Gaussian blur sigma applied to DAPI BEFORE StarDist. 0 = off.\n"
-                "CRITICAL at high mag: 100x @ 0.065 µm/px without pre-blur\n"
-                "over-segments (each nucleolus / chromocenter becomes its own\n"
-                "'nucleus'). Sweep-validated for H9 hESC at 100x: sigma=3 with\n"
-                "prob=0.5, nms=0.5, min_area=10000. Keep at 0 for 60x or\n"
-                "100x @ 0.108 µm/px."
+                "At fine pixel sizes (e.g. 0.065 µm/px) StarDist without\n"
+                "pre-blur can over-segment (each nucleolus / chromocenter\n"
+                "becomes its own 'nucleus'). Example: sigma=3 with prob=0.5,\n"
+                "nms=0.5, min_area=10000 at 0.065 µm/px; coarser pixels\n"
+                "usually need little or none. Tune for your pixel size and cell type."
             )
             self.sd_gauss.valueChanged.connect(self._on_field_changed)
             sgrp.addRow("gauss_sigma (pre-blur)", self.sd_gauss)
@@ -1432,8 +1456,9 @@ if _QT_OK:
             self.cp_diam.setToolTip(
                 "Expected nucleus diameter in pixels. CRITICAL for CPU speed:\n"
                 "passing this lets Cellpose downsample internally to its\n"
-                "training scale (~30 px) and run ~7-10x faster. H9 hESC at\n"
-                "0.065 µm/px ≈ 200 px. Set 0 to fall back to slow auto-estimate."
+                "training scale (~30 px) and run ~7-10x faster. Example: a\n"
+                "~13 µm nucleus at 0.065 µm/px ≈ 200 px; scale to your pixel\n"
+                "size and cell type. Set 0 to fall back to slow auto-estimate."
             )
             self.cp_diam.valueChanged.connect(self._on_field_changed)
             cgrp.addRow("diameter_px", self.cp_diam)
@@ -1692,7 +1717,7 @@ if _QT_OK:
             self.sc_pair_um.setToolTip(
                 "Maximum nearest-neighbor distance for pairing RNA1 spots\n"
                 "with RNA2 spots, in microns. Default 0.3 µm ≈ 4-5 px at\n"
-                "H9 100x voxel size (~0.065 µm/px) — roughly the diffraction\n"
+                "0.065 µm/px (example) — roughly the diffraction\n"
                 "limit. Tighten for high-confidence pairs, loosen for sparse\n"
                 "data where pairs may be more separated. Consumed by the\n"
                 "cKDTree pairing pass in rna_rna mode."
@@ -1872,9 +1897,9 @@ if _QT_OK:
             self.cyt_vme.setSuffix(" px")
             self.cyt_vme.setToolTip(
                 "Maximum pixels of cytoplasmic ring around each nucleus for\n"
-                "the Voronoi expansion. 80 px is reasonable for confluent\n"
-                "monolayer H9 at 100x. Bump higher for sparser fields where\n"
-                "cells have more room."
+                "the Voronoi expansion. Example: 80 px for a confluent\n"
+                "monolayer at 0.065 µm/px; scale to your pixel size and cell\n"
+                "type, and go higher for sparser fields."
             )
             self.cyt_vme.valueChanged.connect(self._on_field_changed)
             form.addRow("voronoi_max_expansion_px", self.cyt_vme)
@@ -1925,7 +1950,7 @@ if _QT_OK:
                 "Render per-channel + composite publication PNGs with burned-\n"
                 "in scale bars. Required for figure preparation."
             )
-            # 2026-05-18 Brian: separate TIF toggle (default OFF) so we don't
+            # Separate TIF toggle (default OFF) so we don't
             # auto-emit the 16-bit RGB copy of every PNG. Flip on for figure
             # assembly in Illustrator / Fiji.
             self.o_pub_tifs = QCheckBox("Also save TIFs alongside PNGs (16-bit RGB)")
@@ -2038,8 +2063,8 @@ if _QT_OK:
             # Manual min/max subpanel — visible only when mode is "manual".
             # Each spinbox is bounded loosely; -1.0 sentinel means "leave
             # blank / inherit per-image percentile" (the GUI maps -1.0 ↔
-            # None for the underlying Optional[float] cfg field). Brian
-            # types a Fiji Brightness/Contrast Min and Max here.
+            # None for the underlying Optional[float] cfg field). Enter a
+            # Fiji Brightness/Contrast Min and Max here.
             self.o_pub_manual_group = QGroupBox(
                 "Manual contrast (mode='manual') — Min/Max per channel  "
                 "(-1 = leave blank, inherit per-image percentile)"
@@ -2512,7 +2537,7 @@ if _QT_OK:
             self.well_assignments.load_dict({w:g for g, wells in (co.get("groups") or {}).items() for w in wells})
             self.run_groups.setPlainText(yaml.safe_dump(co.get("groups") or {}, sort_keys=False))
             self.cond_mode.blockSignals(True)
-            self.cond_mode.setCurrentText(str(co.get("mode", "subfolders")))
+            self._set_combo_value(self.cond_mode, co.get("mode", "subfolders"))
             self.cond_mode.blockSignals(False)
             self.min_nuc.blockSignals(True)
             self.min_nuc.setValue(int(co.get("min_nuclei_for_stats", 6)))
@@ -2533,7 +2558,7 @@ if _QT_OK:
             # ---- channels ----
             ch = c.get("channels", {})
             self.mode_combo.blockSignals(True)
-            self.mode_combo.setCurrentText(str(ch.get("analysis_mode", "rna_only")))
+            self._set_combo_value(self.mode_combo, ch.get("analysis_mode", "rna_only"))
             self.mode_combo.blockSignals(False)
             self.one_indexed_chk.blockSignals(True)
             self.one_indexed_chk.setChecked(bool(ch.get("one_indexed", False)))
@@ -2601,7 +2626,7 @@ if _QT_OK:
             # ---- z-stack ----
             z = c.get("z_stack", {})
             self.z_mode.blockSignals(True)
-            self.z_mode.setCurrentText(str(z.get("mode", "autofocus")))
+            self._set_combo_value(self.z_mode, z.get("mode", "autofocus"))
             self.z_mode.blockSignals(False)
             self.z_start.blockSignals(True)
             self.z_start.setValue(int(z.get("start_slice") or 5))
@@ -2612,11 +2637,18 @@ if _QT_OK:
             self.z_single.blockSignals(True)
             self.z_single.setValue(int(z.get("single_slice") or 10))
             self.z_single.blockSignals(False)
+            # (loaded value, value shown) so unedited spinners round-trip.
+            self._z_loaded = {
+                k: (z.get(k), int(sp.value())) for k, sp in (
+                    ("start_slice", self.z_start), ("end_slice", self.z_end),
+                    ("single_slice", self.z_single),
+                ) if k in z
+            }
             self._refresh_zstack_visibility()
             # ---- nuclei ----
             n = c.get("nuclei", {})
             self.nuc_backend.blockSignals(True)
-            self.nuc_backend.setCurrentText(str(n.get("backend", "stardist")))
+            self._set_combo_value(self.nuc_backend, n.get("backend", "stardist"))
             self.nuc_backend.blockSignals(False)
             self.nuc_min_area.blockSignals(True)
             self.nuc_min_area.setValue(int(n.get("min_area_px", 10000)))
@@ -2637,7 +2669,7 @@ if _QT_OK:
             )
             self.sd_gauss.setValue(float(n.get("stardist_gauss_sigma", 3.0)))
             self.sd_postprocess.blockSignals(True)
-            self.sd_postprocess.setCurrentText(str(n.get("stardist_postprocess", "watershed_otsu")))
+            self._set_combo_value(self.sd_postprocess, n.get("stardist_postprocess", "watershed_otsu"))
             self.sd_postprocess.blockSignals(False)
             self.sd_dilate.blockSignals(True)
             self.sd_dilate.setValue(int(n.get("stardist_postprocess_dilate_px", 30)))
@@ -2668,7 +2700,7 @@ if _QT_OK:
             self.foci_enabled.setChecked(bool(fc.get("enabled", True)))
             self.foci_enabled.blockSignals(False)
             self.foci_backend.blockSignals(True)
-            self.foci_backend.setCurrentText(str(fc.get("backend", "bigfish")))
+            self._set_combo_value(self.foci_backend, fc.get("backend", "bigfish"))
             self.foci_backend.blockSignals(False)
             self.only_nuclear.blockSignals(True)
             self.only_nuclear.setChecked(bool(fc.get("only_nuclear_spots", False)))
@@ -2754,10 +2786,10 @@ if _QT_OK:
             # ---- pixel coloc ----
             pc = c.get("pixel_coloc", {})
             self.pc_mode.blockSignals(True)
-            self.pc_mode.setCurrentText(str(pc.get("threshold_mode", "mad")))
+            self._set_combo_value(self.pc_mode, pc.get("threshold_mode", "mad"))
             self.pc_mode.blockSignals(False)
             self.pc_scope.blockSignals(True)
-            self.pc_scope.setCurrentText(str(pc.get("threshold_scope", "batch")))
+            self._set_combo_value(self.pc_scope, pc.get("threshold_scope", "batch"))
             self.pc_scope.blockSignals(False)
             self.pc_kmad.setValue(float(pc.get("k_mad", 2.0)))
             self.pc_pct.setValue(float(pc.get("percentile", 80.0)))
@@ -2835,7 +2867,7 @@ if _QT_OK:
             self.o_prefix.blockSignals(True); self.o_prefix.setText(str(o.get("prefix", "") or "")); self.o_prefix.blockSignals(False)
             par = c.get("parallel", {})
             self.parallel_combo.blockSignals(True)
-            self.parallel_combo.setCurrentText(str(par.get("workers", "auto")))
+            self._set_combo_value(self.parallel_combo, par.get("workers", "auto"))
             self.parallel_combo.blockSignals(False)
             # ---- input_file_subset (Improvement 2 round-trip) ----
             # If a YAML carries an explicit subset, apply it to the tree by
@@ -2852,8 +2884,11 @@ if _QT_OK:
                     self._rebuild_file_tree()
 
         def _read_widgets_into_cfg(self) -> Dict[str, Any]:
-            """Read every widget and return a fresh config dict."""
-            base = _state.schema_defaults()
+            """Overlay every widget's value onto self._cfg and return the result.
+
+            Keys without a widget keep the value loaded from the preset.
+            """
+            base: Dict[str, Any] = {}
             base["experiment"] = {
                 "name": self.exp_name.text(),
                 "description": self.exp_desc.text(),
@@ -2910,15 +2945,14 @@ if _QT_OK:
             }
             base["z_stack"] = {
                 "mode": self.z_mode.currentText(),
-                "single_slice": int(self.z_single.value()),
-                "start_slice": int(self.z_start.value()),
-                "end_slice": int(self.z_end.value()),
+                "single_slice": self._z_spin_value("single_slice", self.z_single),
+                "start_slice": self._z_spin_value("start_slice", self.z_start),
+                "end_slice": self._z_spin_value("end_slice", self.z_end),
             }
             base["nuclei"] = {
                 "backend": self.nuc_backend.currentText(),
                 "prob_threshold": float(self.sd_prob.value()),
                 "nms_threshold": float(self.sd_nms.value()),
-                "n_tiles": None,
                 "stardist_model": self.sd_model.currentText().strip() or "2D_versatile_fluo",
                 "stardist_gauss_sigma": float(self.sd_gauss.value()),
                 "stardist_postprocess": self.sd_postprocess.currentText(),
@@ -3036,7 +3070,19 @@ if _QT_OK:
             # previously stored under self._cfg.
             existing_subset = list(self._cfg.get("input_file_subset") or [])
             base["input_file_subset"] = existing_subset
-            return base
+            return _state.overlay_widget_sections(self._cfg, base)
+
+        def _z_spin_value(self, key: str, spin: QSpinBox) -> Any:
+            """Spinner value, or the loaded value if the spinner was not edited.
+
+            The spinners cannot show None/0, so an unedited spinner returns the
+            value it was loaded from instead of its placeholder.
+            """
+            v = int(spin.value())
+            loaded = getattr(self, "_z_loaded", {})
+            if key in loaded and loaded[key][1] == v:
+                return loaded[key][0]
+            return v
 
         # ==================================================================
         # Change handlers
@@ -3059,6 +3105,10 @@ if _QT_OK:
                 self._yaml_timer.start()
 
         def _refresh_readiness(self) -> None:
+            """Schedule a readiness refresh (debounced)."""
+            self._readiness_timer.start()
+
+        def _refresh_readiness_now(self) -> None:
             statuses = _ready.evaluate_all(
                 self._cfg,
                 input_dir=self.input_edit.text(),
@@ -3094,7 +3144,7 @@ if _QT_OK:
         def _refresh_channel_preview(self) -> None:
             mode = self.mode_combo.currentText()
             # Use the user-typed labels (or the placeholder defaults when
-            # blank) so the live preview reads e.g. "Ch 0 = MIAT-Cy5"
+            # blank) so the live preview reads e.g. "Ch 0 = GeneX-Cy5"
             # rather than the generic role name.
             def _eff(le: QLineEdit, default: str) -> str:
                 t = le.text().strip()
@@ -3435,7 +3485,7 @@ if _QT_OK:
                 self._yaml_timer.start()
 
         def _on_file_tree_context_menu(self, point) -> None:
-            """Right-click menu over the tree (Brian's amendment)."""
+            """Right-click menu over the tree."""
             it = self.file_tree.itemAt(point)
             if it is None:
                 return
@@ -3627,6 +3677,16 @@ if _QT_OK:
             return self._settings
 
         def closeEvent(self, ev: QCloseEvent) -> None:
+            if self._runner.is_running():
+                ans = QMessageBox.question(
+                    self, "fishsuite",
+                    "A pipeline run is still in progress.\nStop it and close?",
+                    QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
+                )
+                if ans != QMessageBox.Yes:
+                    ev.ignore()
+                    return
+                self._runner.stop()
             if self.report_tab.runner.is_running():
                 self.report_tab.runner.stop()
             try:
@@ -3655,7 +3715,8 @@ if _QT_OK:
             if not self._preview_hierarchy():
                 QMessageBox.warning(self, "Invalid experiment hierarchy", self.hierarchy_status.text())
                 return
-            # Sanity recheck just before launching.
+            # Sanity recheck just before launching, against the current disk.
+            _ready.clear_discovery_cache()
             statuses = _ready.evaluate_all(
                 self._cfg,
                 input_dir=self.input_edit.text(),
@@ -3699,7 +3760,6 @@ if _QT_OK:
                 "--config", str(run_yaml),
                 "--input-dir", str(in_dir),
                 "--output-dir", str(out_dir),
-                "--parallel", str(self._cfg.get("parallel", {}).get("workers", "auto")),
             ]
             cmd_down: Optional[List[str]] = None
             down_cwd: Optional[Path] = None

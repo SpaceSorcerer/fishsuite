@@ -26,7 +26,7 @@ import subprocess
 import sys
 import time
 from dataclasses import asdict, dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from importlib import metadata as importlib_metadata
 from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping, Sequence
@@ -35,6 +35,13 @@ import numpy as np
 import pandas as pd
 from scipy import stats
 
+from .exact_footprint_common import (
+    fisher_estimable,
+    parse_bool as _explicit_bool,
+    require_columns as _require_columns,
+    safe_ratio as _safe_ratio,
+    sha256_file as _sha256_file,
+)
 from .footprint_null import (
     MiatFootprint,
     build_miat_footprints,
@@ -101,19 +108,6 @@ class ReconstructionResult:
     nucleolus_labels: np.ndarray
 
 
-def _explicit_bool(value: Any) -> bool:
-    if isinstance(value, (bool, np.bool_)):
-        return bool(value)
-    if value is None or (isinstance(value, float) and np.isnan(value)):
-        return False
-    text = str(value).strip().casefold()
-    if text in {"true", "1", "yes", "y"}:
-        return True
-    if text in {"false", "0", "no", "n", "", "nan", "none"}:
-        return False
-    raise ValueError(f"cannot interpret boolean value {value!r}")
-
-
 def _finite_integer(value: Any, *, name: str, minimum: int | None = None) -> int:
     try:
         numeric = float(value)
@@ -129,12 +123,6 @@ def _finite_integer(value: Any, *, name: str, minimum: int | None = None) -> int
 
 def _casefold_basename(value: Any) -> str:
     return Path(str(value)).name.casefold()
-
-
-def _require_columns(frame: pd.DataFrame, columns: Iterable[str], *, table: str) -> None:
-    missing = sorted(set(columns).difference(frame.columns))
-    if missing:
-        raise ValueError(f"{table} is missing required columns: {missing}")
 
 
 def stable_nucleus_seed(
@@ -970,12 +958,6 @@ def _array_stats(values: np.ndarray, *, prefix: str) -> dict[str, float]:
     }
 
 
-def _safe_ratio(numerator: float, denominator: float) -> float:
-    if not np.isfinite(numerator) or not np.isfinite(denominator) or denominator == 0:
-        return float("nan")
-    return float(numerator / denominator)
-
-
 def _disk_or_annulus_mean(
     image: np.ndarray,
     center_y: int,
@@ -1553,94 +1535,6 @@ def reconstruct_image_footprints(
                 footprint_by_spot_uid[str(spot_table.at[i, "spot_uid"])] for i in candidate_positions
             )
             footprints_by_nucleus[int(nucleus_id)] = candidate_footprints
-            if not compute_null:
-                continue
-            if len(candidate_positions) < 2:
-                reason = "insufficient_spots_for_rotation"
-                spot_table.loc[candidate_positions, "null_exclusion_reason"] = reason
-                continue
-            seed = stable_nucleus_seed(run_id, image_key, int(nucleus_id), params.global_seed)
-            valid_mask = (
-                (labels == int(nucleus_id))
-                & (nucleoli != int(nucleus_id))
-                & np.isfinite(qki)
-            )
-            null_result = keep_n_footprint_rotation_null(
-                qki,
-                candidate_footprints,
-                valid_mask,
-                n_null=params.n_null,
-                rng=np.random.default_rng(seed),
-                passes_miat_floor=[True] * len(candidate_footprints),
-                threshold_percentile=float(params.primary_threshold_percentile),
-                min_first_pass_retention=params.min_first_pass_retention,
-                min_valid_draw_fraction=params.min_valid_draw_fraction,
-                min_valid_draws=params.min_valid_draws,
-                max_redraw=params.max_redraw,
-            )
-            summaries = summarize_spot_null_draws(
-                [fp.observed_qki_raw for fp in candidate_footprints],
-                null_result.null_qki_raw,
-                require_all_draws=params.min_valid_draw_fraction == 1.0,
-                min_valid_draws=params.min_valid_draws,
-            )
-            for local_index, table_index in enumerate(candidate_positions):
-                summary = summaries.iloc[local_index].to_dict()
-                # These two fields encode upstream eligibility/provenance and
-                # must never be reset by the generic null-summary defaults.
-                summary.pop("null_candidate", None)
-                summary.pop("null_exclusion_reason", None)
-                engine_spot = null_result.spots[local_index]
-                usable = bool(summary["null_usable"] and engine_spot.null_usable)
-                if not usable:
-                    summary.update(
-                        {
-                            "qki_threshold_positive_q90": pd.NA,
-                            "qki_threshold_positive_q95": pd.NA,
-                            "qki_threshold_positive_q99": pd.NA,
-                            "qki_threshold_positive": pd.NA,
-                            "population_label_q90": "unusable",
-                            "population_label_q95": "unusable",
-                            "population_label_q99": "unusable",
-                            "population_label": "unusable",
-                        }
-                    )
-                summary["null_usable"] = usable
-                summary["null_seed"] = seed
-                summary["null_max_redraw"] = params.max_redraw
-                summary["first_pass_retention_mean"] = null_result.mean_first_pass_retention
-                summary["first_pass_retention_median"] = null_result.median_first_pass_retention
-                summary["n_redraws"] = int(null_result.redraw_counts[local_index].sum())
-                summary["n_unplaceable"] = int(
-                    np.count_nonzero(
-                        ~np.isfinite(null_result.null_qki_raw[local_index])
-                    )
-                )
-                for key, value in summary.items():
-                    spot_table.at[table_index, key] = value
-                spot_table.at[table_index, "null_exclusion_reason"] = (
-                    ""
-                    if usable
-                    else engine_spot.invalid_reason
-                    or null_result.invalid_reason
-                    or "null_unusable"
-                )
-            null_groups[int(nucleus_id)] = {
-                "seed": seed,
-                "spot_uid": spot_table.loc[candidate_positions, "spot_uid"].astype(str).to_numpy(),
-                "observed_qki_raw": np.asarray(
-                    [fp.observed_qki_raw for fp in candidate_footprints], dtype=np.float64
-                ),
-                "draw_qki_raw": null_result.null_qki_raw,
-                "initial_angles_deg": null_result.initial_angles_deg,
-                "placement_angles_deg": null_result.placement_angles_deg,
-                "first_pass_valid": null_result.first_pass_valid,
-                "redraw_counts": null_result.redraw_counts,
-                "null_usable": null_result.usable,
-                "unusable_reason": null_result.invalid_reason or "",
-                "first_pass_retention_mean": null_result.mean_first_pass_retention,
-                "first_pass_retention_median": null_result.median_first_pass_retention,
-            }
     population_audit = validate_spot_population_invariants(spot_table)
     audit = {
         "n_input_spots": int(len(work)),
@@ -1652,7 +1546,7 @@ def reconstruct_image_footprints(
         "spot_detection_reused": True,
         **population_audit,
     }
-    return ReconstructionResult(
+    result = ReconstructionResult(
         spot_metrics=spot_table,
         pixel_metrics=pixel_table,
         footprints_by_nucleus=footprints_by_nucleus,
@@ -1662,6 +1556,10 @@ def reconstruct_image_footprints(
         nucleus_labels=labels,
         nucleolus_labels=nucleoli,
     )
+    if compute_null:
+        result = calibrate_reconstruction_nulls(result, parameters=params, run_id=run_id)
+        result.audit.update(validate_spot_population_invariants(result.spot_metrics))
+    return result
 
 
 def calibrate_reconstruction_nulls(
@@ -1809,7 +1707,7 @@ def validate_historical_parity(
         {*keys, "footprint_area_px", "qki_footprint_mean_raw"},
         table="reconstructed spots",
     )
-    historical = historical_spots.copy()
+    historical = historical_rna1.copy()
     if "image_key" not in historical:
         historical["image_key"] = historical["image"].map(_casefold_basename)
     _require_columns(
@@ -1879,15 +1777,27 @@ def _correlation_result(x: np.ndarray, y: np.ndarray) -> dict[str, Any]:
         }
     pearson = stats.pearsonr(x, y)
     spearman = stats.spearmanr(x, y)
+    # Same boundary rule as the post-run Fisher z: |r| at 1 is non-estimable.
+    estimable = bool(
+        fisher_estimable(pearson.statistic) and fisher_estimable(spearman.statistic)
+    )
     return {
         "n_spots": n,
         "pearson_r": float(pearson.statistic),
         "pearson_p": float(pearson.pvalue),
         "spearman_rho": float(spearman.statistic),
         "spearman_p": float(spearman.pvalue),
-        "estimable": True,
-        "nonestimable_reason": "",
+        "estimable": estimable,
+        "nonestimable_reason": "" if estimable else "exact_boundary_correlation",
     }
+
+
+_CORRELATION_INPUT_COLUMNS = (
+    "nucleus_id", "footprint_full_nucleus_valid", "miat_footprint_mean_raw",
+    "qki_footprint_mean_raw", "stored_in_nucleolus", "null_candidate", "null_usable",
+    "miat_footprint_enrichment_vs_nucleus", "qki_footprint_enrichment_vs_nucleus",
+    *(f"qki_threshold_positive_q{percentile}" for percentile in THRESHOLD_PERCENTILES),
+)
 
 
 def correlation_records(spots: pd.DataFrame, *, nucleus_id: int) -> pd.DataFrame:
@@ -2050,6 +1960,9 @@ def aggregate_nucleus_metrics(
                 "nucleoplasm_qki_mean_raw": float(np.asarray(qki_2d)[nucleoplasm].mean()) if nucleoplasm.any() else np.nan,
             }
         )
+        # The backfill keeps every saved nucleus; renderers read these columns.
+        record.setdefault("include", True)
+        record.setdefault("exclude_reason", "")
         record["population_reconciliation_pass"] = bool(
             record["n_spots_floor"]
             == record["n_threshold_positive"] + record["n_threshold_negative"] + record["n_unusable"]
@@ -2078,14 +1991,16 @@ def aggregate_nucleus_metrics(
                 and record["n_spots_all"]
                 == record["n_spots_floor"] + record["n_below_floor"]
             )
-        if len(group):
-            for corr in correlation_records(group, nucleus_id=nucleus_id).to_dict("records"):
-                stem = f"corr_{corr['population']}_{corr['measurement_pair']}"
-                for key in (
-                    "n_spots", "pearson_r", "pearson_p", "spearman_rho", "spearman_p",
-                    "estimable", "nonestimable_reason", "conditional_descriptive",
-                ):
-                    record[f"{stem}_{key}"] = corr[key]
+        # Zero-spot nuclei get non-estimable correlation columns too, so every
+        # per-image fragment shares one header.
+        corr_input = group if len(group) else pd.DataFrame(columns=_CORRELATION_INPUT_COLUMNS)
+        for corr in correlation_records(corr_input, nucleus_id=nucleus_id).to_dict("records"):
+            stem = f"corr_{corr['population']}_{corr['measurement_pair']}"
+            for key in (
+                "n_spots", "pearson_r", "pearson_p", "spearman_rho", "spearman_p",
+                "estimable", "nonestimable_reason", "conditional_descriptive",
+            ):
+                record[f"{stem}_{key}"] = corr[key]
         rows.append(record)
     return pd.DataFrame(rows)
 
@@ -2312,7 +2227,7 @@ def _combine_csv_fragments(
     output_path.parent.mkdir(parents=True, exist_ok=True)
     opener_out = gzip.open if compressed else open
     with opener_out(temporary, "wt", encoding="utf-8", newline="") as target:
-        wrote_header = False
+        wrote_header = ""
         for fragment in fragments:
             if not fragment.is_file() or fragment.stat().st_size == 0:
                 continue
@@ -2323,10 +2238,12 @@ def _combine_csv_fragments(
                     continue
                 if not wrote_header:
                     target.write(header)
-                    wrote_header = True
+                    wrote_header = header
                 first_data = source.readline()
                 if not first_data:
                     continue
+                if header != wrote_header:
+                    raise ValueError(f"CSV fragment header differs from the first fragment: {fragment}")
                 target.write(first_data)
                 for line in source:
                     target.write(line)
@@ -2576,14 +2493,6 @@ def _select_execution_keys(
     return selected, "smoke_subset"
 
 
-def _sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
 def _source_table_fingerprint(source_run: Path, hierarchy_file: Path) -> str:
     paths = [
         source_run / "per_image_summary.csv",
@@ -2628,7 +2537,7 @@ def _software_provenance() -> dict[str, Any]:
         Path(__file__).with_name("footprint_null.py").resolve(),
     ]
     return {
-        "generated_utc": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+        "generated_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "python_version": sys.version,
         "platform": platform.platform(),
         "packages": packages,
@@ -2936,21 +2845,6 @@ def _finalize_provenance_outputs(
     }
 
 
-def _h5_complete(path: Path, group_path: str) -> bool:
-    if not path.is_file():
-        return False
-    import h5py
-
-    try:
-        with h5py.File(path, "r") as handle:
-            return bool(
-                group_path in handle
-                and handle[group_path].attrs.get("complete", False)
-            )
-    except (OSError, KeyError, ValueError):
-        return False
-
-
 def _h5_checkpoint_complete(
     path: Path,
     *,
@@ -3119,6 +3013,7 @@ def run_exact_footprint_backfill(
     image_keys: Sequence[str] | None = None,
     phase1_only: bool = False,
     allow_output_inside_run: bool = False,
+    enforce_resource_gates: bool | None = None,
 ) -> dict[str, Any]:
     """Run the two-phase, serial, resumable exact-footprint reconstruction.
 
@@ -3136,6 +3031,8 @@ def run_exact_footprint_backfill(
                       if native else Path(hierarchy_path))
     if native:
         validate_expected_design = False
+    if enforce_resource_gates is None:
+        enforce_resource_gates = validate_expected_design
     native_provenance = ({"design_check": "not_applicable_native_hierarchy",
                           "hierarchy_source": "native_run_outputs"} if native else {})
     output = Path(output_dir)
@@ -3226,7 +3123,8 @@ def run_exact_footprint_backfill(
         phase1_only=phase1_only,
         analysis_scope=analysis_scope,
     )
-    if validate_expected_design:
+    if enforce_resource_gates:
+        output.parent.mkdir(parents=True, exist_ok=True)
         _enforce_resource_gates(
             _resource_snapshot(output.parent), preflight=True
         )
@@ -3513,7 +3411,7 @@ def run_exact_footprint_backfill(
         del planes, loaded, labels, nucleoli, reconstruction
         gc.collect()
         resources = _resource_snapshot(output)
-        if validate_expected_design:
+        if enforce_resource_gates:
             _enforce_resource_gates(resources, preflight=False)
         phase1_elapsed = float(time.perf_counter() - image_started)
         _atomic_write_json(
@@ -3706,20 +3604,6 @@ def run_exact_footprint_backfill(
             nucleus_labels=labels,
             nucleolus_labels=nucleoli,
         )
-        if native:
-            # Eligibility can empty an image. Keep its zero-spot nuclei and
-            # correlation columns so CSV fragments have the populated schema.
-            for index in nucleus_table.index[nucleus_table["n_spots_all"].eq(0)]:
-                nid = int(nucleus_table.at[index, "nucleus_id"])
-                for corr in correlation_records(
-                    reconstruction.spot_metrics, nucleus_id=nid,
-                ).to_dict("records"):
-                    stem = f"corr_{corr['population']}_{corr['measurement_pair']}"
-                    for key in (
-                        "n_spots", "pearson_r", "pearson_p", "spearman_rho", "spearman_p",
-                        "estimable", "nonestimable_reason", "conditional_descriptive",
-                    ):
-                        nucleus_table.at[index, f"{stem}_{key}"] = corr[key]
         reconciliation_columns = [
             f"population_reconciliation_pass_q{p}"
             for p in THRESHOLD_PERCENTILES
@@ -3799,7 +3683,7 @@ def run_exact_footprint_backfill(
         del planes, labels, nucleoli, reconstruction
         gc.collect()
         resources = _resource_snapshot(output)
-        if validate_expected_design:
+        if enforce_resource_gates:
             _enforce_resource_gates(resources, preflight=False)
         phase2_elapsed = float(time.perf_counter() - image_started)
         _atomic_write_json(
@@ -3863,6 +3747,7 @@ def run_exact_footprint_backfill(
     )
     _assert_no_pending_h5_groups(selected_h5)
     _assert_no_pending_h5_groups(null_h5)
+    manifest["qc_pass"] = manifest["load_status"].eq("complete")
     _atomic_write_dataframe(manifest, manifest_path)
     provenance = _finalize_provenance_outputs(
         output=output,
@@ -3980,17 +3865,16 @@ def resolved_display_only_ranges(run_config: Mapping[str, Any]) -> dict[str, Any
 def write_backfill_command_log(output: Path, *, argv: Sequence[str], run_dir: Path,
                                hierarchy: Path | None, miat_floor: float,
                                miat_floor_source: str, n_null: int, seed: int) -> bool:
-    """``command.log`` for a footprint-backfill output. Crash-proof.
+    """Write ``command.log`` for a footprint-backfill output.
 
-    2026-09-17 review: this subcommand was the only one that wrote no argv
-    record, so a backfill output could not be tied to the flags that produced
-    it. Written after the run so the output-dir existence guard is untouched.
+    Ties the output to the flags that produced it. Written after the run so the
+    output-dir existence guard is untouched. A write failure only warns.
     """
     try:
         from subprocess import list2cmdline
 
         from .repro import reproduction_command, write_command_log
-        return write_command_log(
+        written = write_command_log(
             output, run_dir / "run_config.json", output, seed,
             extra={
                 "subcommand": "footprint-backfill",
@@ -4004,8 +3888,12 @@ def write_backfill_command_log(output: Path, *, argv: Sequence[str], run_dir: Pa
                 "reproduction": reproduction_command(["footprint-backfill", *argv]),
             },
         )
-    except Exception:
+    except OSError as exc:
+        print(f"WARNING: could not write command.log in {output}: {exc}", file=sys.stderr)
         return False
+    if not written:
+        print(f"WARNING: could not write command.log in {output}", file=sys.stderr)
+    return bool(written)
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -4038,13 +3926,20 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Stop after exact-footprint parity; do not calculate KEEP-N nulls.",
     )
     parser.add_argument(
+        "--check-design",
+        action="store_true",
+        help=(
+            "Assert one specific cohort's expected design (44 images, 37 biological, "
+            "7 controls, 12 sets). Off by default; the observed design tuple is "
+            "always logged and recorded in the output provenance."
+        ),
+    )
+    parser.add_argument(
         "--skip-design-check",
         action="store_true",
         help=(
-            "Skip the audited MIAT/QKI design assertion (44 images, 37 biological, "
-            "7 controls, 12 sets) so a run with a different design can be processed. "
-            "Validation is ON by default. The observed design tuple is logged and "
-            "recorded in the output provenance."
+            "Kept for compatibility: the design check is off unless --check-design "
+            "is given. Still disables the disk/RAM resource gates."
         ),
     )
     parser.add_argument("--dry-run", action="store_true", help="Validate roster/paths without reading pixels")
@@ -4071,7 +3966,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     if missing:
         parser.error(f"missing required inputs: {missing}")
     run_config = json.loads((run_dir / "run_config.json").read_text(encoding="utf-8"))
-    validate_design = hierarchy_path is not None and not args.skip_design_check
+    validate_design = hierarchy_path is not None and args.check_design
     try:
         hierarchy = (native_hierarchy_from_run(run_dir) if hierarchy_path is None
                      else pd.read_csv(hierarchy_path))
@@ -4091,9 +3986,8 @@ def main(argv: Sequence[str] | None = None) -> int:
               f"(images, biological, controls, sets) = {manifest.attrs.get('observed_design')}")
     elif not validate_design:
         print(
-            "DESIGN CHECK SKIPPED (--skip-design-check): observed design "
-            f"(images, biological, controls, sets) = {manifest.attrs.get('observed_design')}; "
-            "audited MIAT/QKI design is (44, 37, 7, 12)"
+            "DESIGN CHECK not requested (--check-design): observed design "
+            f"(images, biological, controls, sets) = {manifest.attrs.get('observed_design')}"
         )
     selected_image_keys, analysis_scope = _select_execution_keys(
         manifest, args.image_key
@@ -4162,6 +4056,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             parameters=parameters,
             resume=resume,
             validate_expected_design=validate_design,
+            # Resource gates keep their previous CLI default, independent of
+            # the opt-in design check.
+            enforce_resource_gates=hierarchy_path is not None and not args.skip_design_check,
             image_keys=args.image_key,
             phase1_only=args.phase1_only,
             **({"allow_output_inside_run": bool(args.output_root)}

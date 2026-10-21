@@ -193,11 +193,11 @@ def coloc_threshold(
         other = list(vals_other) if vals_other is not None else None
         if other is None or len(other) != len(v):
             # No paired channel (or a length mismatch that would break the
-            # pixel pairing) -> Fiji MAD fallback. This is the single-channel
-            # behavior and matches costes_threshold()'s own MAD fallback.
+            # pixel pairing) -> MAD fallback.
+            # Same expression as costes_threshold()'s fallback (scaled MAD, k=2).
             med = median(s)
             m = mad(s, center=med)
-            return med if m <= 0 else (med + float(k_mad) * m)
+            return med if m <= 0 else (med + 2.0 * 1.4826 * m)
         # Paired Costes regression. costes_threshold(this, other) returns
         # (this_threshold, other_threshold); we want THIS channel's threshold.
         # ``v``/``other`` are kept in ORIGINAL pixel order (not sorted) so the

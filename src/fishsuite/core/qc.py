@@ -80,7 +80,8 @@ def compute_qc_flags(res: Any, cfg: Any, dtype_max: int = 65535) -> Dict[str, An
         Used for ``cfg.qc.qc_min_nuclei``, ``cfg.qc.qc_saturated_frac``,
         ``cfg.qc.qc_min_focus_score``.
     dtype_max : int
-        Full-scale value of the analysed planes (uint16 -> 65535).
+        Full-scale value for non-integer planes; integer planes use their
+        own dtype's maximum.
 
     Returns
     -------
@@ -143,7 +144,13 @@ def compute_qc_flags(res: Any, cfg: Any, dtype_max: int = 65535) -> Dict[str, An
         if plane is None:
             continue
         try:
-            frac = _saturated_fraction(plane, sat_cut)
+            # Integer planes saturate at their own dtype's max; others use dtype_max.
+            p_dtype = np.asarray(plane).dtype
+            if np.issubdtype(p_dtype, np.integer):
+                p_cut = 0.999 * float(np.iinfo(p_dtype).max)
+            else:
+                p_cut = sat_cut
+            frac = _saturated_fraction(plane, p_cut)
         except Exception:
             frac = float("nan")
         out[f"qc_frac_saturated_{role}"] = frac
@@ -378,9 +385,8 @@ def flag_spot_callability(rows, cfg) -> list:
     """Run-level SPOT-CALLABILITY diagnostic (2026-08-10, ADVISORY).
 
     Answers a question the pipeline could always compute but never showed: does
-    the spot detector actually DISCRIMINATE in this channel? ``detect_in_sec_only``
-    already runs the same detector on the secondary-only (no-probe) control
-    images, and both count sets already reach ``per_image_summary``, so the
+    the spot detector actually DISCRIMINATE in this channel? Spots are always
+    detected on the secondary-only (no-probe) control images too, and both count sets already reach ``per_image_summary``, so the
     comparison was one division away from being visible.
 
     For each punctate channel this adds three columns to EVERY row (they are
@@ -410,11 +416,6 @@ def flag_spot_callability(rows, cfg) -> list:
 
     foci_cfg = getattr(cfg, "foci", None)
     if foci_cfg is None:
-        return []
-    # Without detect_in_sec_only the control images skip detection entirely and
-    # report a structural zero, which would make every ratio infinite and the
-    # diagnostic meaningless rather than reassuring.
-    if not bool(getattr(foci_cfg, "detect_in_sec_only", False)):
         return []
     min_ratio = float(getattr(foci_cfg, "min_spot_signal_to_control", 2.0))
 

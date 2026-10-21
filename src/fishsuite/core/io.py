@@ -453,6 +453,12 @@ def compute_focus_window(
     peak_offset = int(np.argmax(sub_scores))
     peak_z = peak_lo + peak_offset
     peak_score = float(focus_scores[peak_z])
+    # No usable score in the restricted range: search the whole [lo, hi].
+    peak_fallback = not np.isfinite(peak_score)
+    if peak_fallback and (peak_lo, peak_hi) != (lo, hi):
+        peak_lo, peak_hi = lo, hi
+        peak_z = lo + int(np.argmax(focus_scores[lo : hi + 1]))
+        peak_score = float(focus_scores[peak_z])
 
     # ─── Branch: fixed-N centered window ──────────────────────────────────
     # When fixed_n_slices > 0, return exactly N slices centered on peak_z,
@@ -514,6 +520,7 @@ def compute_focus_window(
             "central_fraction": float(central_fraction),
             "peak_search_lo": int(peak_lo),
             "peak_search_hi": int(peak_hi),
+            "peak_fallback_unrestricted": bool(peak_fallback),
         }
         return (int(ws), int(we)), diagnostics
 
@@ -585,6 +592,7 @@ def compute_focus_window(
         "central_fraction": float(central_fraction),
         "peak_search_lo": int(peak_lo),
         "peak_search_hi": int(peak_hi),
+        "peak_fallback_unrestricted": bool(peak_fallback),
     }
     return (int(ws), int(we)), diagnostics
 
@@ -1284,9 +1292,11 @@ def autodetect_channels(img: ImageWrapper) -> dict:
             out["ab"] = i
 
     # Layer 2: heuristic — DAPI = highest mean (bright diffuse)
-    if out["dapi"] == -1 and n > 0:
+    # over channels not already assigned to rna / ab.
+    _unassigned = [c for c in range(n) if c not in out.values()]
+    if out["dapi"] == -1 and _unassigned:
         means = []
-        for c in range(n):
+        for c in _unassigned:
             p = extract_channel(img, c, z_mode="maxproj")
             means.append((float(p.mean()), c))
         means.sort(reverse=True)
@@ -1469,6 +1479,15 @@ def discover_inputs(
     # Subfolder-mode
     children = sorted(p for p in input_dir.iterdir() if p.is_dir() and not p.name.startswith("_"))
     if children:
+        root_files = sorted(
+            f.name for f in input_dir.iterdir()
+            if f.is_file() and f.suffix.lower() in extensions and not f.name.startswith("_")
+        )
+        if root_files:
+            logging.warning(
+                "Skipping %d root-level image file(s) because subfolders exist: %s",
+                len(root_files), ", ".join(root_files),
+            )
         for sub in children:
             for f in sorted(sub.iterdir()):
                 if f.suffix.lower() in extensions and not f.name.startswith("_"):

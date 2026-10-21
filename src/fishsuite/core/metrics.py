@@ -180,6 +180,9 @@ def compute_coloc_metrics(
         a_thr = float(a_thr_override)
     elif thr_mode == "costes":
         r_thr, a_thr = _thr.costes_threshold(r.tolist(), a.tolist())
+        # Costes can fail to converge (inf); report NaN rather than zeros.
+        if not (np.isfinite(r_thr) and np.isfinite(a_thr)):
+            return _empty_metrics(n)
     else:
         r_thr = _thr.coloc_threshold(r.tolist(), mode=thr_mode, k_mad=k_mad, percentile=percentile)
         a_thr = _thr.coloc_threshold(a.tolist(), mode=thr_mode, k_mad=k_mad, percentile=percentile)

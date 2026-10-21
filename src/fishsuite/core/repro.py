@@ -62,13 +62,19 @@ def set_global_seeds(seed: int) -> Dict[str, bool]:
     dict[str, bool]
         Which backends were successfully seeded, e.g.::
 
-            {"python_random": True, "numpy": True, "pythonhashseed": True,
-             "torch": False, "torch_cuda": False, "torch_deterministic": False}
+            {"python_random": True, "numpy": True, "pythonhashseed": False,
+             "pythonhashseed_child_env": True, "torch": False,
+             "torch_cuda": False, "torch_deterministic": False}
+
+        ``pythonhashseed`` is always False: setting the env var cannot reseed
+        the running interpreter. ``pythonhashseed_child_env`` records that it
+        was exported for child processes.
     """
     seeded: Dict[str, bool] = {
         "python_random": False,
         "numpy": False,
         "pythonhashseed": False,
+        "pythonhashseed_child_env": False,
         "torch": False,
         "torch_cuda": False,
         "torch_deterministic": False,
@@ -94,8 +100,10 @@ def set_global_seeds(seed: int) -> Dict[str, bool]:
         pass
 
     try:
+        # Only child processes see this; the running interpreter's hash seed
+        # is fixed at startup, so "pythonhashseed" stays False.
         os.environ["PYTHONHASHSEED"] = str(seed)
-        seeded["pythonhashseed"] = True
+        seeded["pythonhashseed_child_env"] = True
     except Exception:
         pass
 
@@ -148,6 +156,17 @@ _VERSION_PKGS = [
 ]
 
 
+def _engine_repo():
+    """The checkout root containing this module, or None when it has no .git.
+
+    Git walks ancestors by default. An exported package nested inside an
+    unrelated checkout must not inherit that checkout's provenance.
+    Worktrees use a .git file, while ordinary checkouts use a directory.
+    """
+    repo = Path(__file__).resolve().parents[3]
+    return repo if (repo / ".git").exists() else None
+
+
 def engine_git_commit() -> str:
     """The commit of the fishsuite checkout this module is running from.
 
@@ -163,11 +182,8 @@ def engine_git_commit() -> str:
     """
     try:
         import subprocess
-        repo = Path(__file__).resolve().parents[3]
-        # Git walks ancestors by default. An exported package nested inside an
-        # unrelated checkout must not inherit that checkout's provenance.
-        # Worktrees use a .git file, while ordinary checkouts use a directory.
-        if not (repo / ".git").exists():
+        repo = _engine_repo()
+        if repo is None:
             return "unknown"
         def _git(*args: str) -> str:
             return subprocess.run(("git", "-C", str(repo)) + args,
@@ -187,10 +203,13 @@ def _source_identity() -> tuple[str, str, str]:
     import subprocess
 
     source_path = str(Path(fishsuite.__file__).resolve().parent)
+    repo = _engine_repo()
+    if repo is None:
+        return "UNKNOWN", "UNKNOWN", source_path
     try:
         def _git(*args: str) -> str:
             return subprocess.run(
-                ("git", "-C", source_path) + args,
+                ("git", "-C", str(repo)) + args,
                 capture_output=True, text=True, timeout=5, check=True,
             ).stdout.strip()
 

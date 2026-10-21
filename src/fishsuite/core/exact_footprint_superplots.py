@@ -12,15 +12,24 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import sys
 import textwrap
 from dataclasses import dataclass
+from functools import partial
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Sequence
 
 import numpy as np
 import pandas as pd
+
+from fishsuite.core.exact_footprint_common import (
+    bool_series,
+    fisher_z,
+    require_columns,
+    sha256_file,
+)
 
 
 ARM_ORDER = ("NT", "KD")
@@ -226,34 +235,8 @@ DEFAULT_ENDPOINT_FAMILIES: tuple[FamilySpec, ...] = (
 )
 
 
-def _require_columns(
-    frame: pd.DataFrame, columns: Iterable[str], *, table: str
-) -> None:
-    missing = sorted(set(columns).difference(frame.columns))
-    if missing:
-        raise FigureDataError(f"{table} is missing required columns: {missing}")
-
-
-def _parse_bool(series: pd.Series, *, column: str) -> pd.Series:
-    mapping = {
-        "true": True,
-        "false": False,
-        "1": True,
-        "0": False,
-        "yes": True,
-        "no": False,
-    }
-    result = series.map(
-        lambda value: (
-            value
-            if isinstance(value, (bool, np.bool_))
-            else mapping.get(str(value).strip().casefold())
-        )
-    )
-    if result.isna().any():
-        bad = sorted(set(series.loc[result.isna()].astype(str)))
-        raise FigureDataError(f"{column} contains non-boolean values: {bad}")
-    return result.astype(bool)
+_require_columns = partial(require_columns, error=FigureDataError)
+_parse_bool = partial(bool_series, error=FigureDataError)
 
 
 def _read_table(
@@ -269,8 +252,7 @@ def _read_table(
     frame = pd.read_csv(path)
     if frame.empty:
         raise FigureDataError(f"{table} is empty: {path}")
-    digest = hashlib.sha256(path.read_bytes()).hexdigest()
-    return frame, {"source": str(path.resolve()), "sha256": digest}
+    return frame, {"source": str(path.resolve()), "sha256": sha256_file(path)}
 
 
 def _blank(series: pd.Series) -> pd.Series:
@@ -376,7 +358,7 @@ def select_primary_correlation_inference(
     )
     conditional = _parse_bool(
         _missing_false(inference["conditional_descriptive"]),
-        column="correlation inference conditional_descriptive",
+        name="correlation inference conditional_descriptive",
     )
     candidate = inference.loc[
         inference["cohort"].astype(str).eq("sampled_primary")
@@ -418,7 +400,6 @@ def _standardize_nucleus_rows(nuclei: pd.DataFrame, endpoint: str) -> pd.DataFra
         nuclei,
         {
             "sampled_in_analysis",
-            "include",
             "is_control",
             "secondary_only",
             "arm",
@@ -434,10 +415,9 @@ def _standardize_nucleus_rows(nuclei: pd.DataFrame, endpoint: str) -> pd.DataFra
         table="nucleus endpoints",
     )
     keep = (
-        _parse_bool(nuclei["sampled_in_analysis"], column="sampled_in_analysis")
-        & _parse_bool(nuclei["include"], column="include")
-        & ~_parse_bool(nuclei["is_control"], column="is_control")
-        & ~_parse_bool(nuclei["secondary_only"], column="secondary_only")
+        _parse_bool(nuclei["sampled_in_analysis"], name="sampled_in_analysis")
+        & ~_parse_bool(nuclei["is_control"], name="is_control")
+        & ~_parse_bool(nuclei["secondary_only"], name="secondary_only")
         & nuclei["arm"].astype(str).isin(ARM_ORDER)
     )
     out = nuclei.loc[
@@ -487,7 +467,7 @@ def _standardize_fov_rows(fovs: pd.DataFrame, endpoint: str) -> pd.DataFrame:
     keep = (
         fovs["cohort"].astype(str).eq("sampled_primary")
         & fovs["endpoint"].astype(str).eq(endpoint)
-        & ~_parse_bool(fovs["is_control"], column="FOV is_control")
+        & ~_parse_bool(fovs["is_control"], name="FOV is_control")
         & fovs["arm"].astype(str).isin(ARM_ORDER)
     )
     out = fovs.loc[
@@ -537,7 +517,7 @@ def _standardize_set_rows(sets: pd.DataFrame, endpoint: str) -> pd.DataFrame:
         sets["cohort"].astype(str).eq("sampled_primary")
         & sets["endpoint"].astype(str).eq(endpoint)
         & sets["arm"].astype(str).isin(ARM_ORDER)
-        & _parse_bool(sets["complete_for_inference"], column="complete_for_inference")
+        & _parse_bool(sets["complete_for_inference"], name="complete_for_inference")
     )
     out = sets.loc[
         keep,
@@ -640,7 +620,6 @@ def build_correlation_source_data(
         nuclei,
         {
             "sampled_in_analysis",
-            "include",
             "is_control",
             "secondary_only",
             "arm",
@@ -702,33 +681,32 @@ def build_correlation_source_data(
         table="biological-set correlations",
     )
     nucleus_keep = (
-        _parse_bool(nuclei["sampled_in_analysis"], column="sampled_in_analysis")
-        & _parse_bool(nuclei["include"], column="include")
-        & ~_parse_bool(nuclei["is_control"], column="is_control")
-        & ~_parse_bool(nuclei["secondary_only"], column="secondary_only")
+        _parse_bool(nuclei["sampled_in_analysis"], name="sampled_in_analysis")
+        & ~_parse_bool(nuclei["is_control"], name="is_control")
+        & ~_parse_bool(nuclei["secondary_only"], name="secondary_only")
         & nuclei["arm"].astype(str).isin(ARM_ORDER)
         & _parse_bool(
             _missing_false(nuclei[nucleus_estimable]),
-            column=nucleus_estimable,
+            name=nucleus_estimable,
         )
     )
     fov_conditional = _parse_bool(
         _missing_false(fov_correlations["conditional_descriptive"]),
-        column="FOV conditional_descriptive",
+        name="FOV conditional_descriptive",
     )
     fov_estimable = _parse_bool(
-        _missing_false(fov_correlations["estimable"]), column="FOV estimable"
+        _missing_false(fov_correlations["estimable"]), name="FOV estimable"
     ) & _parse_bool(
         _missing_false(fov_correlations["fisher_estimable"]),
-        column="FOV fisher_estimable",
+        name="FOV fisher_estimable",
     )
     set_conditional = _parse_bool(
         _missing_false(set_correlations["conditional_descriptive"]),
-        column="set conditional_descriptive",
+        name="set conditional_descriptive",
     )
     set_complete = _parse_bool(
         _missing_false(set_correlations["complete_for_inference"]),
-        column="set complete_for_inference",
+        name="set complete_for_inference",
     )
     frames: list[pd.DataFrame] = []
     for method, value_column in nucleus_value_columns.items():
@@ -750,10 +728,8 @@ def build_correlation_source_data(
         nucleus = nucleus.rename(
             columns={nucleus_n_spots: "n_spots", value_column: "raw_value"}
         )
-        nucleus["inference_value_fisher_z"] = np.arctanh(
-            pd.to_numeric(nucleus["raw_value"], errors="coerce").clip(
-                -0.999999, 0.999999
-            )
+        nucleus["inference_value_fisher_z"] = fisher_z(
+            pd.to_numeric(nucleus["raw_value"], errors="coerce").to_numpy(float)
         )
         nucleus["n_fovs_total"] = np.nan
         nucleus["n_fovs_estimable"] = np.nan
@@ -972,40 +948,28 @@ def _panel_bounds(
     return low, top, bracket, star
 
 
-def _draw_panel(
-    ax: Any,
-    source: pd.DataFrame,
-    stat_row: pd.Series,
-    spec: PanelSpec,
-    panel_letter: str,
-    fs: Any,
-) -> None:
-    from matplotlib.patches import Rectangle
-    from matplotlib.ticker import MaxNLocator
+def _slide_marker(slide: object) -> str:
+    """Circle for the first slide, square otherwise; labels may be non-numeric."""
 
-    finite_source = source.loc[source["finite_value"]].copy()
-    values = pd.to_numeric(finite_source["plot_value"], errors="coerce").to_numpy(float)
-    y_min, y_max, bracket_y, star_y = _panel_bounds(
-        values, fraction=spec.effect_kind == "percentage_points"
-    )
-    centers = {"NT": 0.0, "KD": 1.0}
-    for arm in ARM_ORDER:
-        center = centers[arm]
+    match = re.search(r"\d+", str(slide))
+    return "o" if match is not None and int(match.group()) == 1 else "s"
+
+
+def _draw_arm_tiers(ax: Any, finite_source: pd.DataFrame, fs: Any, *, empty_message: str) -> None:
+    """Draw set IQR box, set mean, nucleus, FOV and set points for each arm."""
+
+    from matplotlib.patches import Rectangle
+
+    for arm, center in zip(ARM_ORDER, (0.0, 1.0), strict=True):
         color = ARM_COLORS[arm]
-        nuclei = finite_source.loc[
-            finite_source["arm"].eq(arm) & finite_source["tier"].eq("nucleus")
-        ].copy()
-        fovs = finite_source.loc[
-            finite_source["arm"].eq(arm) & finite_source["tier"].eq("fov_mean")
-        ].copy()
-        sets = finite_source.loc[
-            finite_source["arm"].eq(arm)
-            & finite_source["tier"].eq("biological_set_mean")
-        ].sort_values(["slide", "replicate"], kind="stable")
-        if sets.empty or fovs.empty or nuclei.empty:
-            raise FigureDataError(
-                f"endpoint {spec.endpoint!r} has an empty plotted tier for arm {arm}"
-            )
+        arm_rows = finite_source.loc[finite_source["arm"].eq(arm)]
+        nuclei = arm_rows.loc[arm_rows["tier"].eq("nucleus")]
+        fovs = arm_rows.loc[arm_rows["tier"].eq("fov_mean")]
+        sets = arm_rows.loc[arm_rows["tier"].eq("biological_set_mean")].sort_values(
+            ["slide", "replicate"], kind="stable"
+        )
+        if nuclei.empty or fovs.empty or sets.empty:
+            raise FigureDataError(empty_message.format(arm=arm))
         set_values = pd.to_numeric(sets["plot_value"], errors="coerce").to_numpy(float)
         q1, q3 = np.percentile(set_values, [25, 75])
         rgba = (*__import__("matplotlib").colors.to_rgb(color), 0.08)
@@ -1059,12 +1023,48 @@ def _draw_panel(
                 [x],
                 [float(row["plot_value"])],
                 color,
-                marker="o" if int(float(row["slide"])) == 1 else "s",
+                marker=_slide_marker(row["slide"]),
                 s=78.0,
                 alpha_fill=0.56,
                 lw=0.95,
                 zorder=6,
             )
+
+
+def _set_arm_tick_labels(ax: Any, finite_source: pd.DataFrame) -> None:
+    labels: list[str] = []
+    for arm in ARM_ORDER:
+        arm_rows = finite_source.loc[finite_source["arm"].eq(arm)]
+        counts = arm_rows["tier"].value_counts()
+        labels.append(
+            f"{ARM_LABELS[arm]}\n{int(counts.get('biological_set_mean', 0))} sets · "
+            f"{int(counts.get('fov_mean', 0))} FOVs · {int(counts.get('nucleus', 0))} nuclei"
+        )
+    ax.set_xticklabels(labels)
+    for label, arm in zip(ax.get_xticklabels(), ARM_ORDER, strict=True):
+        label.set_color(ARM_COLORS[arm])
+        label.set_fontweight("bold")
+
+
+def _draw_panel(
+    ax: Any,
+    source: pd.DataFrame,
+    stat_row: pd.Series,
+    spec: PanelSpec,
+    panel_letter: str,
+    fs: Any,
+) -> None:
+    from matplotlib.ticker import MaxNLocator
+
+    finite_source = source.loc[source["finite_value"]].copy()
+    values = pd.to_numeric(finite_source["plot_value"], errors="coerce").to_numpy(float)
+    y_min, y_max, bracket_y, star_y = _panel_bounds(
+        values, fraction=spec.effect_kind == "percentage_points"
+    )
+    _draw_arm_tiers(
+        ax, finite_source, fs,
+        empty_message=f"endpoint {spec.endpoint!r} has an empty plotted tier for arm {{arm}}",
+    )
     bracket_drop = max((y_max - y_min) * 0.018, np.finfo(float).eps)
     ax.plot(
         [0.0, 0.0, 1.0, 1.0],
@@ -1086,18 +1086,7 @@ def _draw_panel(
     ax.set_ylim(y_min, y_max)
     ax.set_xlim(-0.52, 1.52)
     ax.set_xticks([0, 1])
-    labels: list[str] = []
-    for arm in ARM_ORDER:
-        arm_rows = finite_source.loc[finite_source["arm"].eq(arm)]
-        counts = arm_rows["tier"].value_counts()
-        labels.append(
-            f"{ARM_LABELS[arm]}\n{int(counts.get('biological_set_mean', 0))} sets · "
-            f"{int(counts.get('fov_mean', 0))} FOVs · {int(counts.get('nucleus', 0))} nuclei"
-        )
-    ax.set_xticklabels(labels)
-    for label, arm in zip(ax.get_xticklabels(), ARM_ORDER, strict=True):
-        label.set_color(ARM_COLORS[arm])
-        label.set_fontweight("bold")
+    _set_arm_tick_labels(ax, finite_source)
     ax.yaxis.set_major_locator(MaxNLocator(nbins=6))
     ax.grid(axis="y", color="0.87", linewidth=0.45, zorder=0)
     ax.set_axisbelow(True)
@@ -1391,81 +1380,13 @@ def _draw_correlation_panel(
     panel_letter: str,
     fs: Any,
 ) -> None:
-    from matplotlib.patches import Rectangle
-
     finite = source.loc[
         source["correlation_method"].astype(str).eq(method) & source["finite_value"]
     ].copy()
-    for arm, center in zip(ARM_ORDER, (0.0, 1.0), strict=True):
-        color = ARM_COLORS[arm]
-        nuclei = finite.loc[finite["arm"].eq(arm) & finite["tier"].eq("nucleus")]
-        fovs = finite.loc[finite["arm"].eq(arm) & finite["tier"].eq("fov_mean")]
-        sets = finite.loc[
-            finite["arm"].eq(arm) & finite["tier"].eq("biological_set_mean")
-        ].sort_values(["slide", "replicate"], kind="stable")
-        if nuclei.empty or fovs.empty or sets.empty:
-            raise FigureDataError(
-                f"continuous {method} panel has an empty hierarchy tier for {arm}"
-            )
-        set_values = pd.to_numeric(sets["plot_value"], errors="coerce").to_numpy(float)
-        q1, q3 = np.percentile(set_values, [25, 75])
-        rgba = (*__import__("matplotlib").colors.to_rgb(color), 0.08)
-        ax.add_patch(
-            Rectangle(
-                (center - 0.40, q1),
-                0.80,
-                max(float(q3 - q1), np.finfo(float).eps),
-                facecolor=rgba,
-                edgecolor="0.68",
-                linewidth=0.45,
-                zorder=1,
-            )
-        )
-        ax.hlines(
-            float(set_values.mean()),
-            center - 0.40,
-            center + 0.40,
-            color="black",
-            linewidth=1.2,
-            zorder=2,
-        )
-        nucleus_keys = (
-            nuclei["image_key"].astype(str) + ":" + nuclei["nucleus_id"].astype(str)
-        )
-        fs.scatter_pts(
-            ax,
-            center - 0.22 + _stable_jitter(nucleus_keys, 0.13),
-            pd.to_numeric(nuclei["plot_value"]),
-            color,
-            s=8.0,
-            alpha_fill=0.18,
-            lw=0.22,
-            zorder=5,
-        )
-        fs.scatter_pts(
-            ax,
-            center + 0.035 + _stable_jitter(fovs["image_key"], 0.07),
-            pd.to_numeric(fovs["plot_value"]),
-            color,
-            marker="D",
-            s=28.0,
-            alpha_fill=0.66,
-            lw=0.6,
-            zorder=4,
-        )
-        set_x = center + 0.27 + np.linspace(-0.070, 0.070, len(sets))
-        for x, (_, row) in zip(set_x, sets.iterrows(), strict=True):
-            fs.scatter_pts(
-                ax,
-                [x],
-                [float(row["plot_value"])],
-                color,
-                marker="o" if int(float(row["slide"])) == 1 else "s",
-                s=78.0,
-                alpha_fill=0.56,
-                lw=0.95,
-                zorder=6,
-            )
+    _draw_arm_tiers(
+        ax, finite, fs,
+        empty_message=f"continuous {method} panel has an empty hierarchy tier for {{arm}}",
+    )
     ax.axhline(0.0, color="0.55", linestyle="--", linewidth=0.65, zorder=0)
     ax.plot(
         [0.0, 0.0, 1.0, 1.0],
@@ -1488,18 +1409,7 @@ def _draw_correlation_panel(
     ax.set_yticks([-1.0, -0.5, 0.0, 0.5, 1.0])
     ax.set_xlim(-0.52, 1.52)
     ax.set_xticks([0, 1])
-    labels: list[str] = []
-    for arm in ARM_ORDER:
-        arm_rows = finite.loc[finite["arm"].eq(arm)]
-        counts = arm_rows["tier"].value_counts()
-        labels.append(
-            f"{ARM_LABELS[arm]}\n{int(counts.get('biological_set_mean', 0))} sets · "
-            f"{int(counts.get('fov_mean', 0))} FOVs · {int(counts.get('nucleus', 0))} nuclei"
-        )
-    ax.set_xticklabels(labels)
-    for label, arm in zip(ax.get_xticklabels(), ARM_ORDER, strict=True):
-        label.set_color(ARM_COLORS[arm])
-        label.set_fontweight("bold")
+    _set_arm_tick_labels(ax, finite)
     ax.grid(axis="y", color="0.87", linewidth=0.45, zorder=0)
     ax.set_axisbelow(True)
     ylabel = (

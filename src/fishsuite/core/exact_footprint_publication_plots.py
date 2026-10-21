@@ -15,11 +15,12 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from fishsuite.core.exact_footprint_common import bool_series
+from fishsuite.core.exact_footprint_postrun import DEFAULT_RATIO_OF_RATIOS_SPECS
 from fishsuite.core.exact_footprint_superplots import (
     ARM_COLORS,
     ARM_LABELS,
     FigureDataError,
-    _parse_bool,
     _read_table,
     build_endpoint_source_data,
     select_primary_inference,
@@ -141,15 +142,8 @@ def _required_ratio_rows(ratios: pd.DataFrame) -> pd.DataFrame:
         raise FigureDataError(
             f"ratio-of-ratios inference is missing required columns: {missing}"
         )
-    pairs = (
-        ("threshold_positive_spots_per_nucleus_q95", "n_spots_all"),
-        (
-            "miat_footprint_mass_q95_positive_union_deduplicated",
-            "miat_footprint_mass_all_union_deduplicated",
-        ),
-    )
     selected: list[pd.DataFrame] = []
-    for numerator, denominator in pairs:
+    for numerator, denominator in DEFAULT_RATIO_OF_RATIOS_SPECS:
         rows = ratios.loc[
             ratios["cohort"].astype(str).eq("sampled_primary")
             & ratios["numerator_endpoint"].astype(str).eq(numerator)
@@ -303,9 +297,10 @@ def _render_summary(
         axes, groups, ("MIAT spots", "MIAT spot-pixel intensity"), strict=True
     ):
         frame = summary.set_index("measure").loc[list(measures)]
+        # Neutral fills: these bars are populations, not arms.
         axis.bar(
             (0, 1), frame["kd_nt_percent_remaining"],
-            color=(ARM_COLORS["NT"], ARM_COLORS["KD"]),
+            color=("0.55", "0.25"), edgecolor="black", linewidth=0.5,
         )
         axis.set_xticks((0, 1), ("All", "QKI-associated"))
         axis.set_ylim(0, max(110, float(frame["kd_nt_percent_remaining"].max()) * 1.2))
@@ -318,16 +313,13 @@ def _render_summary(
         0.5, 0.89, "KD/NT uses retained biological-set arm means. " + _Q95_DEFINITION,
         ha="center", va="top", fontsize=6.5,
     )
-    ratio_labels = {
-        (
-            "threshold_positive_spots_per_nucleus_q95",
-            "n_spots_all",
-        ): "Count RoR",
-        (
-            "miat_footprint_mass_q95_positive_union_deduplicated",
-            "miat_footprint_mass_all_union_deduplicated",
-        ): "MIAT spot-pixel intensity RoR",
-    }
+    ratio_labels = dict(
+        zip(
+            DEFAULT_RATIO_OF_RATIOS_SPECS,
+            ("Count RoR", "MIAT spot-pixel intensity RoR"),
+            strict=True,
+        )
+    )
     ratio_text = "; ".join(
         f"{ratio_labels[(str(row.numerator_endpoint), str(row.denominator_endpoint))]}: "
         f"ratio-of-ratios={float(row.ratio_of_ratios):.3g}, 95% CI "
@@ -374,9 +366,10 @@ def render_publication_plot_package(
         panel.endpoint for family in PUBLICATION_FAMILIES for panel in family.panels
     ]
     selected = select_primary_inference(inference_table, endpoints).copy()
-    complete_for_inference = _parse_bool(
+    complete_for_inference = bool_series(
         set_table["complete_for_inference"],
-        column="biological-set endpoint means complete_for_inference",
+        name="biological-set endpoint means complete_for_inference",
+        error=FigureDataError,
     )
     n_sets = (
         set_table.loc[

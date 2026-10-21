@@ -25,13 +25,13 @@ def cli():
 
 @cli.command()
 @click.option("--config", "-c", required=True, type=click.Path(exists=True, dir_okay=False),
-              help="Path to a fishsuite YAML config (or built-in preset).")
+              help="Path to a fishsuite YAML config.")
 @click.option("--input-dir", "-i", required=True, type=click.Path(exists=True, file_okay=False),
               help="Folder of images (or folder of subfolders).")
 @click.option("--output-dir", "-o", required=True, type=click.Path(file_okay=False),
               help="Where to write outputs.")
-@click.option("--parallel", "-p", default="auto",
-              help="Worker count: 'auto' (default) or an integer.")
+@click.option("--parallel", "-p", default=None, hidden=True,
+              help="Deprecated and ignored; images are processed serially.")
 @click.option("--resume", is_flag=True, help="Not implemented; use a new output directory.")
 @click.option("--dry-run", is_flag=True, help="Discover inputs and print plan; do not process.")
 @click.option("--verbose", "-v", is_flag=True, help="Print full tracebacks on per-image failures.")
@@ -44,7 +44,6 @@ def run(config, input_dir, output_dir, parallel, resume, dry_run, verbose):
         config_path=Path(config),
         input_dir=Path(input_dir),
         output_dir=Path(output_dir),
-        parallel=parallel,
         dry_run=dry_run,
         verbose=verbose,
     )
@@ -123,7 +122,10 @@ def native_figures(run_dir, groups_file, out):
                    'backfill image_manifest.csv; 0.13 with a WARNING only if neither is given.')
 def fig_panels(menu_dir, backfill_dir, run_dir, out_dir, arm, raw_dir, steps, rep_field, extra_linked, native_only, seed,
                display_ranges, px_um):
-    """Rebuild the locked basal MIAT x QKI figure gallery (A/B/R/C/D panels). Render only: no detection or thresholds."""
+    """Rebuild the locked basal RNA1 x partner figure gallery (e.g. MIAT RNA x QKI protein; A/B/R/C/D panels).
+
+    Render only: no detection or thresholds.
+    """
     from .figures.config import PanelRun
     from .figures.gallery import STEPS, build_gallery
     st = tuple(s.strip() for s in steps.split(',') if s.strip())
@@ -149,9 +151,8 @@ def fig_panels(menu_dir, backfill_dir, run_dir, out_dir, arm, raw_dir, steps, re
 
 @cli.command()
 def init():
-    """Interactive setup wizard (Phase-3 placeholder)."""
-    click.echo("fishsuite init: interactive setup wizard is a Phase-3 deliverable.")
-    click.echo("For now, copy a preset and edit it:")
+    """Print the paths of the built-in presets to copy and edit."""
+    click.echo("Copy one of these presets and edit it:")
     from .config import schema as _s
     preset_dir = Path(_s.__file__).parent / "presets"
     for p in sorted(preset_dir.glob("*.yaml")):
@@ -164,14 +165,21 @@ def init():
 @click.option("--output-dir", "-o", required=True, type=click.Path(file_okay=False))
 def preview(image_path, config, output_dir):
     """Run the pipeline on a single image (preview / debug)."""
+    import yaml
     from .runner import run_batch
     p = Path(image_path)
-    tmp_in = p.parent
+    out = Path(output_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    with open(config, "r", encoding="utf-8") as f:
+        data = yaml.safe_load(f) or {}
+    data["input_file_subset"] = [p.name]
+    preview_cfg = out / "preview_config.yaml"
+    with open(preview_cfg, "w", encoding="utf-8") as f:
+        yaml.safe_dump(data, f, sort_keys=False)
     summary = run_batch(
-        config_path=Path(config),
-        input_dir=tmp_in,
-        output_dir=Path(output_dir),
-        parallel=1,
+        config_path=preview_cfg,
+        input_dir=p.parent,
+        output_dir=out,
     )
     click.echo(f"Summary: {summary}")
 
@@ -216,7 +224,7 @@ def gui():
 #
 # These operate on a COMPLETED run output directory (the folder `run` wrote,
 # containing run_config.json / per_image_summary.csv / spot_metrics.csv /
-# masks/ / figures/). They REUSE the saved nuclei masks + MIAT spots from that
+# masks/ / figures/). They REUSE the saved nuclei masks + RNA1 spots from that
 # run - they never re-segment or re-detect and they do NOT touch the GPU.
 #
 # The underlying functions are imported lazily inside thin module-level
@@ -335,16 +343,17 @@ _BACKFILL_HELP = """\
 Backfill the extra colocalization products onto a COMPLETED run (CPU-only).
 
 \b
-CPU-only - does NOT use the GPU. Reuses the nuclei masks and the detected MIAT
-spots from a completed run; it re-reads only the QKI/protein channel pixels and
-recomputes the QKI-at-MIAT null, so it never re-segments or re-detects anything.
+CPU-only - does NOT use the GPU. Reuses the nuclei masks and the detected RNA1
+spots from a completed run; it re-reads only the partner (RNA2 or protein)
+channel pixels and recomputes the partner-at-RNA1 null (e.g. MIAT RNA x QKI
+protein), so it never re-segments or re-detects anything.
 
 \b
 It emits the products that older runs are missing:
   - coloc_null_draws.csv        (the 1000 pooled random-null draws)
   - coloc_null_summary.csv      (pooled enrichment / z / empirical-p per image)
-  - coloc_radial_profile.csv    (QKI enrichment in concentric rings around MIAT)
-  - a QKI enrichment montage PNG (figures/07_coloc/79_...png)
+  - coloc_radial_profile.csv    (partner enrichment in rings around RNA1 spots)
+  - a partner enrichment montage PNG (figures/07_coloc/79_...png)
 
 The source VSIs are found automatically from the folder the run recorded; pass
 --staging only if that is wrong or unavailable.
@@ -380,7 +389,7 @@ Examples:
 @click.option("--no-radial", is_flag=True,
               help="Skip writing coloc_radial_profile.csv.")
 @click.option("--no-montage", is_flag=True,
-              help="Skip rendering the QKI enrichment montage PNG.")
+              help="Skip rendering the partner enrichment montage PNG.")
 @click.option("--rotation", is_flag=True,
               help="ALSO compute the rotation 'proper background' null (keep-N "
                    "constellation redraw) -> coloc_rotation_null_summary.csv + "
@@ -388,7 +397,7 @@ Examples:
 def backfill(run_dir, staging, input_dir, seed, no_null_draws, no_radial,
              no_montage, rotation):
     run = Path(run_dir)
-    click.echo(f"[backfill] CPU-only - reusing saved masks + MIAT spots in {run}")
+    click.echo(f"[backfill] CPU-only - reusing saved masks + RNA1 spots in {run}")
     try:
         res = _backfill_run(
             run,
@@ -422,15 +431,17 @@ _WALKTHROUGH_HELP = """\
 Build the 8-panel publication "pipeline walkthrough" figure for a finished run.
 
 \b
-Assembles one labeled micrograph figure (DAPI -> segmentation -> MIAT FISH ->
-spot detection -> QKI IF -> QKI threshold -> MIAT-on-QKI -> merge) from the run's
-OWN per-step images. One panel (MIAT spots on the thresholded QKI field) is
-re-rendered from the QKI pixels (CPU; reuses the run's saved spots). A
-representative image and the output path are chosen automatically.
+Assembles one labeled micrograph figure (DAPI -> segmentation -> RNA1 FISH ->
+spot detection -> partner channel -> partner threshold -> RNA1-on-partner ->
+merge; e.g. MIAT RNA x QKI protein) from the run's OWN per-step images. One
+panel (RNA1 spots on the thresholded partner field) is re-rendered from the
+partner pixels (CPU; reuses the run's saved spots). A representative image and
+the output path are chosen automatically.
 
 \b
 Defaults:
-  --image   a representative image is auto-picked (the MIAT-OE image if present)
+  --image   a representative image is auto-picked (a key containing MIAT_OE if
+            present, else the first)
   --out     <run>/figures/07_coloc/79_pipeline_walkthrough.png
 
 \b
@@ -787,7 +798,7 @@ One-shot "just make my figures" - run ALL post-run utilities on a finished run.
 
 \b
 Runs, in order, on the given run directory:
-  1. backfill     (CPU; the coloc null draws + radial profile + QKI montage)
+  1. backfill     (CPU; the coloc null draws + radial profile + partner montage)
   2. walkthrough  (the 8-panel pipeline-walkthrough figure)
 
 CPU-only - does not use the GPU. Each step prints a progress line, and a final
@@ -881,7 +892,8 @@ def postrun(run_dir, staging, input_dir, image_key, seed):
 
 @cli.command()
 @click.option('--miat-qki', type=click.Path(exists=True, file_okay=False), default=None,
-              help='Report fixed-10 MIAT/QKI ratios from a persisted delivery data directory.')
+              help='Report fixed-10 RNA1/partner ratios (e.g. MIAT RNA x QKI protein) from a '
+                   'persisted delivery data directory.')
 @click.option('--miat-qki-count-report', type=click.Path(exists=True, file_okay=False), default=None,
               help='Separate COUNT localization report; never used as a ratio denominator.')
 @click.option("--run", "run_dir", required=False,
@@ -1012,10 +1024,12 @@ def report(run_dir, groups, groups_file, reference, group_order, well_from_image
     """Build the condition-versus-condition report for a finished run.
 
     Wells are the biological replicates and the condition GROUP is what gets
-    compared. Every gate is a Welch t on well means with Hedges g, a Holm
-    adjustment within its endpoint family, and the minimum detectable effect at
-    that number of wells. Figures carry the star from the RAW p and print the
-    adjusted p and the minimum detectable effect in the footnote.
+    compared. The headline test is a nucleus-level mixed model with the well as
+    a random effect, falling back to a Welch t on well means when the model
+    cannot be fitted; each gate carries Hedges g, a Holm adjustment within its
+    endpoint family, and the minimum detectable effect at that number of wells.
+    Figures carry the star from the RAW p and print the adjusted p and the
+    minimum detectable effect in the footnote.
 
     Writes REPORT.xlsx with plain sheet names, READOUT.md, figures/, per_well.csv,
     contrasts.csv, versions.txt and command.log. The run directory is read only.
@@ -1039,8 +1053,8 @@ def report(run_dir, groups, groups_file, reference, group_order, well_from_image
                                   make_figures=not no_figures)
         except (ValueError, AssertionError, FileNotFoundError) as exc:
             raise click.ClickException(str(exc)) from exc
-        click.echo(f"MIAT/QKI workbook: {result['xlsx']}")
-        click.echo(f"MIAT/QKI figures: {len(result['figures'])}")
+        click.echo(f"RNA1/partner workbook: {result['xlsx']}")
+        click.echo(f"RNA1/partner figures: {len(result['figures'])}")
         return
 
     if len(reason) != len(exclude_field):
@@ -1101,7 +1115,7 @@ def report(run_dir, groups, groups_file, reference, group_order, well_from_image
             exclude_fields=excludes,
             peak_floors=floors,
             caveat=caveat,
-            all_pairs=bool(all_pairs),
+            all_pairs=all_pairs,
             nucleus_filter=nucleus_filter,
             group_colors=color_key,
             sec_outlier_k=sec_outlier_k,
@@ -1163,7 +1177,7 @@ def report(run_dir, groups, groups_file, reference, group_order, well_from_image
               help="Source image tree. Default: the run's recorded input_dir.")
 @click.option("--window-px", type=int, default=None,
               help="Odd fit-window side in px. Default: the run's "
-                   "foci.size_fit_window_px (7).")
+                   "foci.size_fit_window_px (9).")
 @click.option("--limit-images", type=int, default=None,
               help="Fit only the first N images (smoke test).")
 def sizefit(run_dir, input_dir, window_px, limit_images):
@@ -1199,8 +1213,8 @@ def footprint_backfill(ctx):
 @cli.command("qki-assoc")
 @click.option("--run-dir", required=True, type=click.Path(exists=True, file_okay=False),
               help="Retained exact-footprint run with saved single-plane pixels and masks.")
-@click.option("--miat-min", required=True, type=float, help="Positive raw MIAT area threshold.")
-@click.option("--qki-min", required=True, type=float, help="Positive raw QKI threshold.")
+@click.option("--miat-min", required=True, type=float, help="Positive raw RNA1 area threshold.")
+@click.option("--qki-min", required=True, type=float, help="Positive raw partner threshold.")
 @click.option("--sensitivity", default="0.8,1.0,1.25", show_default=True,
               help="Comma-separated positive multipliers; all levels are reported.")
 @click.option("--n-null", default=200, show_default=True, type=click.IntRange(min=1))
@@ -1211,8 +1225,8 @@ def footprint_backfill(ctx):
               help="Restrict to manifest condition(s); repeatable. Default: every image.")
 @click.option("--objective-na", type=float, default=None,
               help="Objective NA for the Costes PSF. Default: read from each source image's OME metadata.")
-@click.option("--emission-nm-miat", type=float, default=None, help="MIAT emission wavelength (nm); see --objective-na.")
-@click.option("--emission-nm-qki", type=float, default=None, help="QKI emission wavelength (nm); see --objective-na.")
+@click.option("--emission-nm-miat", type=float, default=None, help="RNA1 emission wavelength (nm); see --objective-na.")
+@click.option("--emission-nm-qki", type=float, default=None, help="Partner emission wavelength (nm); see --objective-na.")
 @click.option("--nucleolus-sensitivity", default="", show_default=False,
               help="Comma-separated DAPI intra-nuclear percentiles (e.g. 20,25,30) for the nucleoplasm-mask sensitivity.")
 @click.option("--texture-null", is_flag=True, default=False,
@@ -1232,7 +1246,7 @@ def qki_assoc(run_dir, miat_min, qki_min, sensitivity, n_null, seed, n_costes, c
               objective_na, emission_nm_miat, emission_nm_qki, nucleolus_sensitivity, texture_null,
               texture_dapi_bins, texture_radial_bins, texture_min_positions, texture_method,
               texture_knn_k, rotation_upp, out):
-    """Single-plane MIAT/QKI area occupancy with exact-footprint placement nulls."""
+    """Single-plane RNA1/partner area occupancy (e.g. MIAT RNA x QKI protein) with exact-footprint placement nulls."""
     from .core.qki_association_postrun import run_qki_association
     from .core.texture_null import TextureNullParams
     try:
@@ -1250,7 +1264,7 @@ def qki_assoc(run_dir, miat_min, qki_min, sensitivity, n_null, seed, n_costes, c
             texture_null=texture, rotation_upp=rotation_upp)
     except (ValueError, OSError) as exc:
         raise click.ClickException(str(exc)) from exc
-    click.echo(f"Single-plane QKI association: {result}")
+    click.echo(f"Single-plane partner association: {result}")
 
 
 class _OrthoCommand(click.Command):
@@ -1268,8 +1282,8 @@ class _OrthoCommand(click.Command):
 @click.option('--punctum', type=click.Choice(['brightest', 'median']), default='brightest')
 @click.option('--half-width-um', type=click.FloatRange(min=0, min_open=True), default=None,
               help='Crop half-width override in µm; default is nucleus bounding box + 1.5 µm.')
-@click.option('--qki-min', type=float, default=None, help='Explicit user QKI analysis minimum to annotate.')
-@click.option('--miat-min', type=float, default=None, help='Explicit user MIAT analysis minimum to annotate.')
+@click.option('--qki-min', type=float, default=None, help='Explicit user partner analysis minimum to annotate.')
+@click.option('--miat-min', type=float, default=None, help='Explicit user RNA1 analysis minimum to annotate.')
 @click.option('--include-dapi', is_flag=True, default=False,
               help='Add a DAPI panel and DAPI-containing XY/XZ/YZ merges.')
 @click.option('--full-merge', is_flag=True, default=False,
@@ -1304,7 +1318,7 @@ def ortho(ctx, run_dir, config, k, metric, seed, punctum, half_width_um, qki_min
 
     Uses saved nucleus labels and source stacks; requires fixed manual RNA and
     antibody display bounds. Uses the recorded analysed plane; when absent,
-    falls back to the MIAT 5x5 mean maximum. Cross-checks run/header calibration.
+    falls back to the RNA1 5x5 mean maximum. Cross-checks run/header calibration.
     """
     from subprocess import list2cmdline
     from .report.ortho import render_run
@@ -1325,7 +1339,7 @@ def ortho(ctx, run_dir, config, k, metric, seed, punctum, half_width_um, qki_min
         raise click.ClickException(str(exc)) from exc
     click.echo(f"Wrote {len(selection)} orthogonal figures; "
                f"{int(selection.z_source.eq('miat_5x5_mean_argmax').sum())} used inferred Z "
-               "(MIAT 5x5 mean-intensity maximum).")
+               "(RNA1 5x5 mean-intensity maximum).")
 
 @cli.command("coupling")
 @click.option("--assoc-csv", required=True, type=click.Path(exists=True, dir_okay=False))
@@ -1337,7 +1351,7 @@ def ortho(ctx, run_dir, config, k, metric, seed, punctum, half_width_um, qki_min
 @click.option("--n-boot", default=2000, show_default=True, type=click.IntRange(min=1))
 @click.option("--out", required=True, type=click.Path(file_okay=False))
 def coupling(assoc_csv, treated, control, config, seed, n_boot, out):
-    """Descriptive well-level single-plane MIAT abundance/QKI-association report."""
+    """Descriptive well-level single-plane RNA1 abundance / partner-association report."""
     from .report.coupling import build_coupling
     try:
         result = build_coupling(assoc_csv, treated, control, out, config=config,

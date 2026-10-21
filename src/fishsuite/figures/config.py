@@ -26,6 +26,7 @@ class PanelRun:
     scratch_dir: Path | None = None
     display_ranges: dict | None = None   # {"miat"|"qki"|"dapi": (lo, hi)}; None = style.LV
     px_um: float | None = None   # --px-um override; else image_manifest.csv voxel_xy_nm; else style.PX_UM + WARNING
+    cell_line: str = ""   # optional FOV footer prefix; empty = omitted
     _saver: Saver | None = field(default=None, repr=False)
 
     def __post_init__(self):

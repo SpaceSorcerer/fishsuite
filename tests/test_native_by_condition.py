@@ -86,6 +86,17 @@ def test_frozen_run_requires_external_output(tmp_path, marker):
         regenerate(run, ConditionsCfg(groups={'WT':['a','b']}))
 
 
+def test_frozen_checks_only_run_and_its_parent(tmp_path):
+    from fishsuite.core.native_by_condition import _frozen
+    inner = tmp_path/'outer'/'inner'
+    inner.mkdir(parents=True)
+    run = tiny_run(inner)
+    (tmp_path/'outer'/'MANIFEST.in').write_text('unrelated')
+    assert not _frozen(run)
+    (inner/'MANIFEST_SHA256.tsv').write_text('frozen')
+    assert _frozen(run)
+
+
 def test_native_hook_archives_well_output_and_legacy_is_noop(tmp_path, monkeypatch):
     from fishsuite.core import native_by_condition as native
     run = tiny_run(tmp_path)

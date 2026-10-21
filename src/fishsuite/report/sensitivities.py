@@ -1,4 +1,4 @@
-"""Mixed-model headline and supplementary analyses; decision 2026-09-07."""
+"""Mixed-model headline and supplementary analyses."""
 from __future__ import annotations
 import re
 import warnings
@@ -6,7 +6,7 @@ import numpy as np
 import pandas as pd
 from .stats import welch
 
-DESCRIPTION = "decision 2026-09-07 after data inspection; Welch on well means remains reported"
+DESCRIPTION = "mixed-model headline chosen after data inspection; Welch on well means remains reported"
 METHODS = (['lbfgs', 'bfgs'], ['powell'], ['nm'])
 # Iteration caps bound one fit to about 10 s at about 100 nuclei (measured 2026-10-11: lbfgs ~36 ms,
 # Powell/NM ~2.2 ms per likelihood evaluation; Powell ~85 and NM ~4 evaluations per iteration).
@@ -423,7 +423,16 @@ STATS_GENERATION = 3  # 2 was issued by 4614346..708bc60 builds, which pre-date 
 SUPPORTED_GENERATIONS = (STATS_GENERATION,)
 STATS_GENERATION_COLUMN = 'fishsuite_stats_generation'
 STATS_COMMIT_COLUMN = 'fishsuite_stats_commit'
-STATS_COMMIT = MIXED_VALIDATION_COMMIT
+# Oldest commit whose stamped tables the gate accepts; the stamp itself names the commit that built the table.
+STATS_COMMIT_FLOOR = MIXED_VALIDATION_COMMIT
+
+
+def _build_commit():
+    from .provenance import reporter_commit
+    return reporter_commit() or STATS_COMMIT_FLOOR
+
+
+STATS_COMMIT = _build_commit()
 _STAT_TOKENS = {'p', 'pval', 'pvalue', 'holm', 'mde', 'ci', 'ci95', 'fdr', 'qvalue'}
 _SLIDE_CACHE = {'source_sheet', 'source_cell', 'value'}
 

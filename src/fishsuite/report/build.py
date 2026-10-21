@@ -73,12 +73,11 @@ def library_versions() -> Dict[str, str]:
 def _engine_head(repo: Optional[Path]) -> str:
     if repo is None:
         return "not supplied"
-    try:
-        r = subprocess.run(["git", "-C", str(repo), "rev-parse", "HEAD"],
-                           capture_output=True, text=True, timeout=20)
-        return r.stdout.strip() or f"git returned nothing ({r.stderr.strip()})"
-    except Exception as exc:                                   # noqa: BLE001
-        return f"could not read git HEAD: {type(exc).__name__}: {exc}"
+    return _prov.git_head(repo)
+
+
+def _reporter_commit() -> str:
+    return _prov.reporter_commit() or "not running from a fishsuite git checkout"
 
 
 
@@ -140,12 +139,34 @@ def load_groups_file(path: Path) -> dict:
 # ------------------------------------------------------------------ sheets
 
 
+def _comparisons(contrasts: Optional[pd.DataFrame], group_order: Sequence[str],
+                 reference: str) -> List[str]:
+    """The comparisons actually in the contrast table, else every group against the reference."""
+    if contrasts is not None and len(contrasts) and {"test_group", "reference_group"} <= set(contrasts):
+        pairs = contrasts[["test_group", "reference_group"]].drop_duplicates()
+        return [f"{t} minus {r}" for t, r in pairs.itertuples(index=False)]
+    return [f"{g} minus {reference}" for g in group_order if g != reference]
+
+
+def _tested_absolute(contrasts: Optional[pd.DataFrame],
+                     endpoints: Sequence[_ep.Endpoint]) -> List[str]:
+    """Absolute-intensity endpoints that are members of a Holm family in this report."""
+    if contrasts is not None and len(contrasts) and {"absolute_intensity", "in_holm_family"} <= set(contrasts):
+        hit = contrasts[contrasts["absolute_intensity"].fillna(False).astype(bool)
+                        & contrasts["in_holm_family"].fillna(False).astype(bool)]
+        return list(dict.fromkeys(hit["endpoint"]))
+    return [e.name for e in endpoints if e.absolute_intensity and not e.descriptive_only
+            and not e.excluded_from_holm]
+
+
 def readme_sheet(run_dir: Path, group_order: Sequence[str], reference: str,
                  well_to_group: Dict[str, str], endpoints: Sequence[_ep.Endpoint],
                  absent: Sequence[str], exclude_fields: Dict[str, str],
                  mde_note: str, native_figures: str, alpha: float,
                  gate_record: Optional[Dict[str, object]] = None,
-                 caveat: str = "", primary_endpoint: str = "") -> pd.DataFrame:
+                 caveat: str = "", primary_endpoint: str = "",
+                 contrasts: Optional[pd.DataFrame] = None,
+                 plot_style: str = "superplot") -> pd.DataFrame:
     rows: List[Tuple[str, str, str]] = []
 
     def add(section, item, text):
@@ -166,15 +187,17 @@ def readme_sheet(run_dir: Path, group_order: Sequence[str], reference: str,
                   for g in group_order) or "no groups were supplied")
     add("Design", "Reference group", reference)
     add("Design", "Comparisons",
-        "; ".join(f"{g} minus {reference}" for g in group_order if g != reference)
+        "; ".join(_comparisons(contrasts, group_order, reference))
         or "no comparison is possible with one group")
-    add('Statistics', 'Headline', 'Nucleus-level mixed model: fixed arm; random well and FOV within well. Decision 2026-09-07 after data inspection; Welch on well means remains reported.')
-    add('Statistics', 'Stars on figures', 'Raw mixed-model p; field-only and failed fits explicitly use Welch on well means. Holm, filters, thresholds, Hedges g and well-based MDE are in the workbook and slide notes.')
+    add('Statistics', 'Headline', 'Nucleus-level mixed model: fixed arm; random well and FOV within well. Chosen after data inspection; Welch on well means remains reported.')
+    add('Statistics', 'Stars on figures', _fig.star_source(plot_style) + ' Holm, filters, thresholds, Hedges g and well-based MDE are in the workbook and slide notes.')
+    tested_absolute = _tested_absolute(contrasts, endpoints)
     add("Statistics", "Multiplicity",
-        "Holm-Bonferroni step-down within an endpoint family, where a family is one "
-        "by-group sheet. Descriptive-only endpoints, absolute-intensity endpoints and "
-        "endpoints absent from the run are excluded from the family and say so in the "
-        "holm_exclusion_reason column.")
+        "Holm-Bonferroni step-down within an endpoint family and comparison, where a "
+        "family is one by-group sheet. Descriptive-only endpoints"
+        + ("" if tested_absolute else ", absolute-intensity endpoints")
+        + " and endpoints absent from the run are excluded from the family and say so "
+        "in the holm_exclusion_reason column.")
     add("Statistics", "Minimum detectable effect", mde_note)
     add("Statistics", "Tukey, which column to read",
         "TWO Tukey fits are reported and they are not interchangeable. The PRIMARY "
@@ -255,9 +278,13 @@ def readme_sheet(run_dir: Path, group_order: Sequence[str], reference: str,
     if caveat:
         add("What this is", "Caveat carried from the analysis record", caveat)
     add("Data handling", "Absolute intensity",
-        "Absolute intensity in arbitrary units is never comparable as a level claim "
-        "across sections, because laser power is retuned per section. Those endpoints "
-        "are reported as descriptive only and carry no multiplicity adjustment.")
+        ("These absolute-intensity endpoints are tested and enter their Holm family "
+         "because this report declares comparable acquisition: "
+         + ", ".join(tested_absolute) + ". Any other absolute intensity is descriptive only.")
+        if tested_absolute else
+        "Absolute intensity in arbitrary units is not comparable as a level claim "
+        "across sections when acquisition settings differ. Those endpoints are "
+        "reported as descriptive only and carry no multiplicity adjustment.")
     for ep in endpoints:
         if ep.note:
             add("Endpoint notes", ep.name, ep.note)
@@ -340,7 +367,7 @@ def provenance_sheet(data: dict, run_dir: Path, out_dir: Path,
 
     for k, v in library_versions().items():
         add(f"version {k}", v)
-    add("reporter commit", _engine_head(Path(__file__).resolve().parents[3]))
+    add("reporter commit", _reporter_commit())
     add("producing engine commit", _prov.producing_commit(run_dir))
     return pd.DataFrame(rows, columns=["Item", "Value"])
 
@@ -380,7 +407,7 @@ def build_readout(run_dir: Path, out_dir: Path, contrasts: pd.DataFrame,
                   well: pd.DataFrame, group_order: Sequence[str], reference: str,
                   sec: pd.DataFrame, absent: Sequence[str],
                   labels: Dict[str, str], alpha: float, caveat: str = "",
-                  primary_endpoint: str = "") -> str:
+                  primary_endpoint: str = "", plot_style: str = "superplot") -> str:
     """Ten plain lines, agnostic framing, first line the run path."""
     lines: List[str] = []
     lines.append(f"Run reported: {run_dir}")
@@ -412,7 +439,8 @@ def build_readout(run_dir: Path, out_dir: Path, contrasts: pd.DataFrame,
                          else "lower in")
             parts.append(
                 f"{r['endpoint_plain']}, mean {float(r['mean_test']):.4g} in "
-                f"{r['test_group']} against {float(r['mean_ref']):.4g} in {reference}, "
+                f"{r['test_group']} against {float(r['mean_ref']):.4g} in "
+                f"{r.get('reference_group', reference)}, "
                 f"{direction} {r['test_group']}, raw Welch p {fmt_p(r['p_welch'])} and "
                 f"Holm-adjusted {fmt_p(r['p_welch_holm_within_family'])}")
         lines.append("Headline endpoints, on well means: " + "; ".join(parts) + ".")
@@ -420,7 +448,7 @@ def build_readout(run_dir: Path, out_dir: Path, contrasts: pd.DataFrame,
         lines.append("No primary endpoint had a column in this run, so no headline "
                      "comparison is available.")
     lines.append(
-        "Every star on a figure is the RAW Welch p; the Holm-adjusted p and the "
+        _fig.star_source(plot_style) + " The Holm-adjusted p and the "
         "minimum detectable effect sit in that figure's footnote and in the Contrasts "
         "sheet, so neither the unadjusted nor the adjusted result is hidden.")
     gated = contrasts[contrasts["in_holm_family"]] if len(contrasts) else contrasts
@@ -428,9 +456,12 @@ def build_readout(run_dir: Path, out_dir: Path, contrasts: pd.DataFrame,
         if len(gated) else 0
     n_holm = int((pd.to_numeric(gated.get("p_welch_holm_within_family"),
                                 errors="coerce") < alpha).sum()) if len(gated) else 0
+    pairs = _comparisons(gated, group_order, reference) if len(gated) else []
     lines.append(
-        f"Across the {len(gated)} gated endpoint comparisons, {n_raw} reach raw "
-        f"p below {alpha:g} and {n_holm} survive Holm adjustment within their family.")
+        f"Across the {len(gated)} gated endpoint comparisons"
+        + (f" ({'; '.join(pairs)})" if pairs else "")
+        + f", {n_raw} reach raw Welch p below {alpha:g} and {n_holm} survive Holm "
+        "adjustment within their family.")
     mde = pd.to_numeric(gated.get("mde_hedges_g_at_family_alpha"),
                         errors="coerce").dropna() if len(gated) else pd.Series(dtype=float)
     if len(mde):
@@ -477,7 +508,7 @@ def build_report(run_dir: Path, out_dir: Optional[Path] = None,
                  peak_floors: Optional[Dict[str, float]] = None,
                  caveat: str = "",
                  primary_endpoint: str = "",
-                 all_pairs: bool = False,
+                 all_pairs: Optional[bool] = None,
                  nucleus_filter: str = "all",
                  group_colors: Optional[Dict[str, str]] = None,
                  sec_outlier_k: float = 0.0,
@@ -640,7 +671,8 @@ def build_report(run_dir: Path, out_dir: Optional[Path] = None,
     well = _agg.per_well_long(field)
     contrasts = _agg.build_contrasts(well, field, endpoints, absent, group_order_resolved,
                                      reference, labels, alpha,
-                                     all_pairs=all_pairs or len(group_order_resolved) > 2, nuclei=data["nuclei"])
+                                     all_pairs=(len(group_order_resolved) > 2 if all_pairs is None
+                                                else bool(all_pairs)), nuclei=data["nuclei"])
     if persisted is not None:
         contrasts = _agg.retain_descriptive_panel_policy(contrasts,added_endpoints)
     if dapi is not None:
@@ -680,7 +712,8 @@ def build_report(run_dir: Path, out_dir: Optional[Path] = None,
 
     sheets = {
         "Read me": readme_sheet(run_dir, group_order_resolved, reference, data["well_to_group"],
-                                endpoints, absent, exclude_fields, mde_note, native, alpha),
+                                endpoints, absent, exclude_fields, mde_note, native, alpha,
+                                contrasts=contrasts, plot_style=plot_style),
         "Spots per nucleus by group": _agg.family_sheet(contrasts, well, "detection",
                                                         group_order_resolved),
         "Nuclear fraction by group": _agg.family_sheet(contrasts, well, "localization",
@@ -768,8 +801,13 @@ def build_report(run_dir: Path, out_dir: Optional[Path] = None,
     if micrograph_slides == 'per-well':
         from .micrograph_slides import prepare_per_well_micrographs
         from .slides import append_per_well_micrographs
-        micro = prepare_per_well_micrographs(run_dir, out_dir/'micrographs_per_well', nuclei=data['nuclei'], group_order=group_order_resolved)
-        if resolved_deck is not None:
+        # Optional slides: an unsupported design is recorded, never fatal to the report.
+        try:
+            micro = prepare_per_well_micrographs(run_dir, out_dir/'micrographs_per_well', nuclei=data['nuclei'], group_order=group_order_resolved)
+        except (FileNotFoundError, ValueError) as exc:
+            micro = None
+            (out_dir/'MICROGRAPH_STATUS.md').write_text('Per-well micrographs unavailable: '+str(exc)+'\n', encoding='utf-8')
+        if micro is not None and resolved_deck is not None:
             append_per_well_micrographs(resolved_deck, sheets, micro)
     figs: List[dict] = []
     if make_figures:
@@ -797,7 +835,7 @@ def build_report(run_dir: Path, out_dir: Optional[Path] = None,
     stamp_statistics(contrasts, "contrasts.csv", fresh=True).to_csv(_prov.guard_output(out_dir / "contrasts.csv"), index=False)
     (out_dir / "READOUT.md").write_text(
         build_readout(run_dir, out_dir, contrasts, well, group_order_resolved, reference, sec,
-                      absent, labels, alpha, caveat, primary_endpoint),
+                      absent, labels, alpha, caveat, primary_endpoint, plot_style),
         encoding="utf-8")
 
     source = _prov.write_source_run(
@@ -813,7 +851,7 @@ def build_report(run_dir: Path, out_dir: Optional[Path] = None,
         "\n".join(f"{k}: {v}" for k, v in library_versions().items())
         + f"\nseed: {SEED}\nbuilt_utc: "
         + datetime.now(timezone.utc).isoformat(timespec="seconds") + "\n"
-        + f"reporter commit: {_engine_head(Path(__file__).resolve().parents[3])}\n"
+        + f"reporter commit: {_reporter_commit()}\n"
         + f"producing engine commit: {_prov.producing_commit(run_dir)}\n",
         encoding="utf-8")
     with open(out_dir / "command.log", "a", encoding="utf-8") as fh:
@@ -941,8 +979,8 @@ def render_figures(fig_dir: Path, run_dir: Path, data: dict,
 def run_coloc_standard_panel(run_dir: Path, out_dir: Path) -> Optional[dict]:
     """Call the standard colocalization panel when the run is a coloc run.
 
-    Brian's rule: every rna_rna or rna_protein report carries the standard panel
-    alongside any null-based enrichment.
+    Every rna_rna or rna_protein report carries the standard panel alongside any
+    null-based enrichment.
     """
     cfg_path = Path(run_dir) / "run_config.json"
     try:

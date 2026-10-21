@@ -27,16 +27,16 @@ SHEET_ORDER: List[str] = [
 SHEET_DESCRIPTION: Dict[str, str] = {
     'Micrograph panels': 'Four native publication PNGs per representative arm: all channels, partner plus RNA, partner alone, RNA alone. Absolute paths, SHA256, recorded manual display windows and configured wavelength LUTs are retained. No DAPI-only panel.',
     'FOV outlier sensitivity': 'Pre-specified sensitivity only; never applied to headline. Within each well and endpoint, flag leave-one-out |z| > 2.5 with at least 3 finite FOVs; sample SD of other FOVs; exclude at most one maximum per well. Zero SD yields signed infinity for a differing value, zero otherwise; ties use image name. Flag rows and well-mean Welch contrasts with and without exclusions.', 
-    'Ratio intervals': 'Fixed-10 MIAT/QKI: R = (A_KD/A_NT)/(T_KD/T_NT), using six matched well means per arm and within-arm A,T covariance. Marginal normal log-delta 95% intervals are not exact-test inversions or simultaneous intervals. All q95 ratio tests remain exploratory.',
-    'Retention sensitivity': 'Policy-specific plug-in normal R-MDE at 80% power, alpha .05 and .05/8, with SE and covariance. Detection thresholds around R=1 are not observed-CI limits, equivalence margins, or exact-permutation power.',
-    'Coverage': 'Fixed-10 policy-specific observed, candidate, usable and positive counts, with separate noncandidate, candidate-unusable, usable-negative and usable-positive states. Well coverage ratios have finite n, SD and arm t intervals; unknown calls are never negative biology.',
-    'COUNT localization': 'Separate COUNT all-eligible localization values copied from its own persisted report. Its population and detection differ from fixed-10 coloc; these values are forbidden as MIAT/QKI ratio denominators.',
-    'Ratio well values': 'Matched A,T well vectors with slide/arm IDs and original CSV row numbers. Nucleus means are averaged within FOV and FOV means equally within well; total T is not multiplied by the number of policies.',
-    'Nucleus roster': 'All four policy copies of the 370 fixed-10 nuclei, including four restored zero-spot nuclei per policy. Policy-specific observed/candidate/usable/q95 fields govern reconstruction; historical aliases are retained only as source data.',
-    'Assignments': 'All 400 assignments of three KD and three NT labels among six wells on each of two slides. A,T pairs move intact by well; two-sided abs(log R) uses >= observed minus 1e-12 and denominator 400. Original assignment file missing; enumeration reproduces every delivered R p-value.',
-    'Scalar contrasts': 'Ten exploratory scalar tests: two total MIAT endpoints and eight associated-pool endpoints, using raw Welch and Hedges g on six wells per arm, with a distinct Holm-ten family. Historical exact scalar p-values remain separately labelled.',
-    'Usable pool ratios': 'Coverage-matched sensitivity: positive A and usable-footprint T share support, preserving the full nucleus roster and equal-weight FOV/well hierarchy. Usable-support intensity mass is missing and remains NA with reason.',
-    'Historical union sensitivity': 'Separately sourced historical fixed-10 q95 union-deduplicated intensity sensitivity from pooled_Fig3. No union-deduplicated values are invented for the other policies.',
+    'Ratio intervals': 'Dataset-specific sheet (written only by `report --miat-qki`). R = (A_treated/A_control)/(T_treated/T_control), using matched well means per arm and within-arm A,T covariance. Marginal normal log-delta 95% intervals are not exact-test inversions or simultaneous intervals. All q95 ratio tests remain exploratory.',
+    'Retention sensitivity': 'Dataset-specific sheet (written only by `report --miat-qki`). Policy-specific plug-in normal R-MDE at 80% power, at alpha .05 and the family alpha, with SE and covariance. Detection thresholds around R=1 are not observed-CI limits, equivalence margins, or exact-permutation power.',
+    'Coverage': 'Dataset-specific sheet (written only by `report --miat-qki`). Policy-specific observed, candidate, usable and positive counts, with separate noncandidate, candidate-unusable, usable-negative and usable-positive states. Well coverage ratios have finite n, SD and arm t intervals; unknown calls are never negative biology.',
+    'COUNT localization': 'Dataset-specific sheet (written only by `report --miat-qki`). Separate COUNT all-eligible localization values copied from its own persisted report. Its population and detection differ from the coloc cohort; these values are never used as ratio denominators.',
+    'Ratio well values': 'Dataset-specific sheet (written only by `report --miat-qki`). Matched A,T well vectors with slide/arm IDs and original CSV row numbers. Nucleus means are averaged within FOV and FOV means equally within well; total T is not multiplied by the number of policies.',
+    'Nucleus roster': 'Dataset-specific sheet (written only by `report --miat-qki`). Every policy copy of the fixed nucleus roster, including restored zero-spot nuclei. Policy-specific observed/candidate/usable/q95 fields govern reconstruction; historical aliases are retained only as source data.',
+    'Assignments': 'Dataset-specific sheet (written only by `report --miat-qki`). Every assignment of the arm labels among the wells of each slide. A,T pairs move intact by well; two-sided abs(log R) uses >= observed minus 1e-12 and the number of assignments as denominator. Original assignment file missing; enumeration reproduces every delivered R p-value.',
+    'Scalar contrasts': 'Dataset-specific sheet (written only by `report --miat-qki`). Exploratory scalar tests on total and associated-pool endpoints, using raw Welch and Hedges g on well means, with their own Holm family. Historical exact scalar p-values remain separately labelled.',
+    'Usable pool ratios': 'Dataset-specific sheet (written only by `report --miat-qki`). Coverage-matched sensitivity: positive A and usable-footprint T share support, preserving the full nucleus roster and equal-weight FOV/well hierarchy. Usable-support intensity mass is missing and remains NA with reason.',
+    'Historical union sensitivity': 'Dataset-specific sheet (written only by `report --miat-qki`). Separately sourced historical q95 union-deduplicated intensity sensitivity. No union-deduplicated values are invented for the other policies.',
     'Source provenance': 'Absolute named input paths and SHA256 hashes. Source files are read only; the report does not rerun segmentation, detection or spatial nulls.',
     "Localization counts": "Localization per nucleus and assigned cell territory. Authoritative counts are reconciled with spot assignments; zero-total fractions remain NA.",
     "Localization unassigned": "Unassigned spots (source nucleus_id 0), excluded from localization per nucleus and assigned cell territory and tabulated separately by image.",
@@ -52,8 +52,8 @@ SHEET_DESCRIPTION: Dict[str, str] = {
         "How much signal each nucleus carries, compared between condition groups: "
         "puncta counted per nucleus, punctum size, and absolute intensity. One row per "
         "endpoint and comparison, with each well's own mean in its own column so the "
-        "replicates behind every test are visible. Absolute-intensity rows enter "
-        "their Holm family: same acquisition settings (acquirer); staining batch not controlled."),
+        "replicates behind every test are visible. Whether an absolute-intensity row "
+        "enters its Holm family is stated per row in in_holm_family and holm_exclusion_reason."),
     "Nuclear fraction by group": (
         "When DAPI correction is enabled, mask-only nuclear_spot_fraction is legacy_mask_only; use nuclear_spot_fraction_dapi. "
         "Where the signal sits rather than how much of it there is, compared between "
@@ -104,7 +104,7 @@ SHEET_DESCRIPTION: Dict[str, str] = {
 }
 
 
-SHEET_DESCRIPTION['Contrasts'] = ('Mixed-model headline decision 2026-09-07 after data inspection; Welch on well means remains reported. p_mixed / p_mixed_holm are nucleus-level mixed p and headline-family adjustment. p_headline / p_headline_holm also include explicitly labeled Welch fallbacks. p_welch retains the well-mean comparison. significant_holm_0p05 retains the legacy Welch Holm flag; significant_headline_holm_0p05 reports the mixed/fallback headline Holm flag. Endpoint thresholds, usability filters, Hedges g, Holm and well-based MDE are recorded in this workbook; MDE is not mixed-model power.')
+SHEET_DESCRIPTION['Contrasts'] = ('Mixed-model headline chosen after data inspection; Welch on well means remains reported. p_mixed / p_mixed_holm are nucleus-level mixed p and headline-family adjustment. p_headline / p_headline_holm also include explicitly labeled Welch fallbacks. p_welch retains the well-mean comparison. significant_holm_0p05 retains the legacy Welch Holm flag; significant_headline_holm_0p05 reports the mixed/fallback headline Holm flag. Endpoint thresholds, usability filters, Hedges g, Holm and well-based MDE are recorded in this workbook; MDE is not mixed-model power.')
 
 
 def _description(name: str) -> str:
@@ -122,11 +122,11 @@ SHEET_DESCRIPTION.update({
     'Coloc line profiles':'Persisted profile samples, with image, well, nuclear anchor and calibrated distance. No pixel resampling or new null draws.',
     'Coloc source cells':'Exact source workbook sheet/cell addresses and file SHA256 hashes, plus the frozen figure index. All source files are read only.',
     'Endpoint definitions':'Full endpoint map including total IF (descriptive, acquisition-qualified), nuclear-forward pairing, and distinct reverse signal/calls/pairing denominators. Whole-territory pairing retains its historical identity.',
-    'Multiplicity plan':'Frozen original members plus declared additions: detection 4 to 5 (A2); partner 22 to 27 (A3); localization unchanged. Observed call/pairing aliases are counted once. No pruning on p.',
+    'Multiplicity plan':'Holm family membership of every endpoint: frozen original members plus declared additions, with the reason for any exclusion. Observed call/pairing aliases are counted once. No pruning on p.',
     'Slide values':'Slide values resolved after workbook layout; each value names its source measurement/provenance sheet and cell. MEASURED direction follows the observed contrast.',
     'Figure sources':'Figure paths and SHA256 hashes, endpoints, cohort, filters and tests. Speaker notes resolve numeric values to workbook cells.',
     'Nucleus selection':'Retained labels are the starting population. Pre-area/pre-border candidates and exclusions remain missing. Endpoint usability masks act later.',
-    'Selection evidence':'Verbatim A0 nucleus-selection evidence and source hash, kept as provenance rather than an instruction to execute.',
+    'Selection evidence':'Verbatim nucleus-selection evidence and source hash, kept as provenance rather than an instruction to execute.',
     'Micrographs':'Exact persisted micrograph paths, hashes, image identities, planes and source pixel calibration. The native annotated scale bar is retained; its pixel length is checked against the source calibration. No new segmentation.',
 })
 

@@ -18,11 +18,38 @@ ASSOCIATION = ['obs_minus_null_frac_miat_spots_qki_pos', 'qki_at_spots_minus_nuc
 DIFFERENCE_SCALE_METRICS = {
     metric for metric in COLUMN_DEFINITIONS if metric.startswith('obs_minus_null_')
 } | {'qki_at_spots_minus_nuclear'} | set(DIFFERENCE_SCALE_NEW)
-PERMUTATION_NOTE = '2 v 2 wells: exact permutation has 6 allocations; smallest two-sided p = 0.333'
 NON_METRIC_COLUMNS = {
     'condition', 'well', 'image', 'nucleus_id', 'measurement_plane',
     'threshold_multiplier', 'well_from_image', 'n_null_effective', 'biological_set', 'slide',
 }
+
+
+def permutation_note(n_treated, n_control):
+    """Exact well-label permutation size and its smallest two-sided p, from the observed well counts."""
+    from math import comb
+    n_treated, n_control = int(n_treated), int(n_control)
+    if min(n_treated, n_control) < 1:
+        return f'{n_treated} v {n_control} wells: no exact permutation is possible'
+    total = comb(n_treated + n_control, n_treated)
+    floor = (2 if n_treated == n_control else 1) / total
+    return (f'{n_treated} v {n_control} wells: exact permutation has {total} allocations; '
+            f'smallest two-sided p = {floor:.3g}')
+
+
+def _design_text(baseline, treated, control):
+    """Observed wells per arm and fields per well, in words."""
+    arms = []
+    for arm in (treated, control):
+        rows = baseline[baseline.condition.eq(arm)]
+        fields = rows.groupby('well').image.nunique()
+        span = (f'{fields.min()}' if len(fields) and fields.min() == fields.max()
+                else f'{fields.min()} to {fields.max()}' if len(fields) else '0')
+        arms.append(f'{arm}: {rows.well.nunique()} wells, fields per well {span}')
+    return 'Design: ' + '; '.join(arms) + '. Wells are replicates; nuclei are not independent.'
+
+
+def _arm_wells(data, arm):
+    return int(data.loc[data.threshold_multiplier.eq(1.0) & data.condition.eq(arm), 'well'].nunique())
 
 
 def _metrics(data):
@@ -298,7 +325,7 @@ def _readme(data, per_well, metrics, treated, control, seed, n_boot):
     fallback_count = int(data.well_from_image.sum())
     entries = [
         ('measurement', 'All metrics are single-plane measurements; no 3D or MIP interpretation.'),
-        ('replicate_structure', 'Design: two wells per arm, one field per well. Wells are replicates; nuclei are not independent.'),
+        ('replicate_structure', _design_text(data[data.threshold_multiplier.eq(1.0)], treated, control)),
         ('contrast', f'Treated={treated}; control={control}; threshold_multiplier=1.0. Each well has equal weight, regardless of nucleus count.'),
         ('threshold_multipliers', levels),
         ('filters', 'Finite values per metric; N=0 retained for abundance and defined metrics. Undefined fractions at N=0 are excluded as NaN. No saturation exclusion. Missing values are not imputed; n_finite_<metric> and n_excluded_<metric> show retained and excluded nucleus counts.'),
@@ -307,7 +334,7 @@ def _readme(data, per_well, metrics, treated, control, seed, n_boot):
         ('bootstrap', f'Exploratory only, requiring at least 3 observed wells per arm; seed={seed}; n_boot={n_boot}. Resample wells within each arm, then nuclei within each sampled well, with replacement. 2.5 and 97.5 percentiles of treated minus control differences; not confirmatory confidence intervals.'),
         ('bootstrap_minimum_wells', 'with fewer than 3 wells per arm no interval is reported; read the individual well means'),
         ('bootstrap_missing', 'Intervals exclude nonfinite bootstrap differences; valid draw counts are shown. No interval when the original contrast is missing.'),
-        ('permutation_design_note', PERMUTATION_NOTE),
+        ('permutation_design_note', permutation_note(_arm_wells(data, treated), _arm_wells(data, control))),
         ('inference', 'No nucleus-level p-values, pooled correlations, or intervals on differences in r are calculated.'),
         ('ror_count', 'SECONDARY descriptive: (C treated/control)/(N treated/control), using arm means of well means of per-nucleus values. For pooled counts the identity is the ratio of QKI-positive fractions; this is not generally the ratio of means of per-nucleus fractions.'),
         ('ror_intensity', 'SECONDARY descriptive: (C treated/control)/(integrated_nuclear_miat treated/control), using arm means of well means.'),
@@ -376,7 +403,7 @@ def summarize(df, treated, control, seed=0, n_boot=2000):
     contrast['exploratory_boot_lo'], contrast['exploratory_boot_hi'] = lower, upper
     contrast['exploratory_boot_valid_draws'] = counts
     contrast['exploratory_boot_na_reason'] = reasons
-    contrast['permutation_design_note'] = PERMUTATION_NOTE
+    contrast['permutation_design_note'] = permutation_note(_arm_wells(data, treated), _arm_wells(data, control))
     sensitivity = pd.DataFrame({'metric': metrics})
     for level in sorted(data.threshold_multiplier.unique()):
         level_contrast = _contrast(per_well, metrics, treated, control, level)

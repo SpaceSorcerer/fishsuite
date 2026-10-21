@@ -14,7 +14,9 @@ def test_set_global_seeds_returns_dict():
     # Core backends always seed in this env.
     assert seeded["python_random"] is True
     assert seeded["numpy"] is True
-    assert seeded["pythonhashseed"] is True
+    # The env var only reaches child processes; the running interpreter is not reseeded.
+    assert seeded["pythonhashseed"] is False
+    assert seeded["pythonhashseed_child_env"] is True
     # torch keys are present regardless of whether torch is importable.
     for k in ("torch", "torch_cuda", "torch_deterministic"):
         assert k in seeded

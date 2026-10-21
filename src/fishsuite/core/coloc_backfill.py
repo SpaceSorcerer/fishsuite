@@ -66,6 +66,7 @@ import pandas as pd
 # Reuse the engine's null math — SINGLE SOURCE OF TRUTH. Duplicating it would
 # break the bit-for-bit reproduction contract.
 from .modes.rna_rna import (
+    RADIAL_NULL_SEED_OFFSET,
     _disk_stencil,
     _annulus_stencils,
     _partner_null_for_nucleus,
@@ -123,8 +124,9 @@ def _compute_coloc_extras_for_image(
         given); observed MIAT spots inside a nucleolus are dropped;
       * ``_partner_null_for_nucleus`` gives the observed disk-mean QKI at the
         spots + the (n_null,) null distribution; pooled spot-count-weighted;
-      * ``_radial_profile_for_nucleus`` (own rng, same seed, separate stream —
-        byte-identical to the engine) gives per-ring obs/null.
+      * ``_radial_profile_for_nucleus`` (own rng seeded ``seed +
+        RADIAL_NULL_SEED_OFFSET``, as the engine) gives per-ring obs and the
+        per-iteration null, pooled spot-weighted across nuclei per ring.
 
     Parameters
     ----------
@@ -158,11 +160,12 @@ def _compute_coloc_extras_for_image(
     if do_rad:
         stencils = _annulus_stencils(list(radial_bins_px))
         n_rings = len(stencils)
-        radial_rng = np.random.default_rng(int(seed))
+        # Same seed offset as the engine, so the radial draws match it.
+        radial_rng = np.random.default_rng(int(seed) + RADIAL_NULL_SEED_OFFSET)
         r_obs = np.zeros(n_rings, dtype=np.float64)
-        r_nm = np.zeros(n_rings, dtype=np.float64)
-        r_nsd = np.zeros(n_rings, dtype=np.float64)
         r_w = np.zeros(n_rings, dtype=np.float64)
+        # Spot-weighted per-iteration null vector per ring, pooled across nuclei.
+        r_pool = np.zeros((n_rings, n_null), dtype=np.float64)
 
     # ---- rotation "proper background" accumulators (own rng stream) --------
     # 2026-06-19 Brian: retrofit the rotation null for OLD runs. Rotates each
@@ -225,15 +228,16 @@ def _compute_coloc_extras_for_image(
                 n_nuclei_used += 1
 
         if do_rad:
-            rad = _radial_profile_for_nucleus(
-                qki_f, scy, scx, nys, nxs, stencils, n_null, radial_rng
+            rad, rad_null = _radial_profile_for_nucleus(
+                qki_f, scy, scx, nys, nxs, stencils, n_null, radial_rng,
+                return_null_stats=True,
             )
-            for ri, (ro, rnm, rnsd, rnsp) in enumerate(rad):
+            for ri, (ro, _rnm, _rnsd, rnsp) in enumerate(rad):
                 if rnsp > 0 and ro == ro:  # finite observed
                     r_obs[ri] += ro * rnsp
-                    r_nm[ri] += rnm * rnsp
-                    r_nsd[ri] += rnsd * rnsp
                     r_w[ri] += rnsp
+                    if rad_null[ri].size == n_null:
+                        r_pool[ri] += rad_null[ri] * rnsp
 
         if do_rot:
             cy0 = float(scy.mean())
@@ -293,8 +297,11 @@ def _compute_coloc_extras_for_image(
             if w <= 0:
                 continue
             o = r_obs[ri] / w
-            nm = r_nm[ri] / w
-            nsd = r_nsd[ri] / w
+            # Pooled null per ring (as the engine): SD of the pooled null,
+            # not a mean of per-nucleus SDs.
+            vec = r_pool[ri] / w
+            nm = float(vec.mean())
+            nsd = float(vec.std(ddof=1)) if vec.size > 1 else 0.0
             radial_rows.append(
                 {
                     "ring_idx": ri,
@@ -613,7 +620,7 @@ def _resolve_mask_path(masks_dir: Path, image_name: str, condition: str) -> Opti
     """Resolve the saved ``*__nuclei_label_mask.tif`` for this image.
 
     The mask base is the image stem with spaces->underscores and the run's common
-    leading prefix stripped (e.g. ``UD-MIAT-FISH-QKI-IF-g2-no Dox_03`` ->
+    leading prefix stripped (e.g. ``Exp-A-g2-no Dox_03`` ->
     ``g2-no_Dox_03``). We match by: the sanitized image stem ENDSWITH the mask's
     middle ``__``-token, preferring the candidate whose leading token matches the
     sanitized condition and whose middle token is longest (most specific).
@@ -635,7 +642,8 @@ def _resolve_mask_path(masks_dir: Path, image_name: str, condition: str) -> Opti
             mid, condtok = core, ""
         if not mid:
             continue
-        if stem_us.endswith(mid) or mid in stem_us:
+        # Suffix match only: a bare substring would bind image _10 to mask _1.
+        if stem_us.endswith(mid):
             score = len(mid) + (10_000 if (cond_san and condtok == cond_san) else 0)
             if score > best_score:
                 best_score = score

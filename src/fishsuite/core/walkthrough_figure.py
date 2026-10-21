@@ -122,13 +122,17 @@ def render_panel_g(
     pixel_um = resolve_pixel_um(recorded=pixel_um, where="walkthrough panel G")
     qki = np.asarray(qki_2d, dtype=np.float64)
     thr = float(threshold)
-    disp = np.ma.masked_less(qki, thr)            # sub-threshold -> masked (black)
+    if np.isfinite(thr):
+        disp = np.ma.masked_less(qki, thr)        # sub-threshold -> masked (black)
+    else:                                         # no threshold: show the whole field
+        disp = np.ma.masked_invalid(qki)
 
     if vmin is None:
-        vmin = thr
+        finite_q = qki[np.isfinite(qki)]
+        vmin = thr if np.isfinite(thr) else (float(finite_q.min()) if finite_q.size else 0.0)
     if vmax is None:
         finite = qki[np.isfinite(qki)]
-        vmax = float(np.percentile(finite, 99.5)) if finite.size else thr + 1.0
+        vmax = float(np.percentile(finite, 99.5)) if finite.size else vmin + 1.0
     if not (vmax > vmin):
         vmax = vmin + 1.0
 
@@ -164,7 +168,7 @@ def render_panel_g(
 def _resolve_image_key(run_dir, image_key: Optional[str] = None) -> str:
     """Resolve the panel-prefix ``image_key``. If given, pass through. Otherwise
     discover the per-image prefixes from ``pipeline_walkthrough/*__step01_*.png``
-    and prefer the OE g2-Dox image (its prefix contains ``MIAT_OE``)."""
+    and take the first in sorted order."""
     if image_key:
         return image_key
     wk = Path(run_dir) / "pipeline_walkthrough"
@@ -177,8 +181,7 @@ def _resolve_image_key(run_dir, image_key: Optional[str] = None) -> str:
         raise FileNotFoundError(
             f"no '*__step01_*.png' panels under {wk}; cannot infer image_key"
         )
-    oe = [k for k in prefixes if "MIAT_OE" in k]
-    return sorted(oe)[0] if oe else sorted(prefixes)[0]
+    return sorted(prefixes)[0]
 
 
 def _match_image_row(per_image: pd.DataFrame, image_key: str):
@@ -231,11 +234,14 @@ def _find_panel_file(run_dir, candidates: List[Dict[str, Any]]) -> Optional[Path
     return None
 
 
-def _panel_specs(image_key: str, rna_tok: Optional[str], prot_tok: Optional[str]
+def _panel_specs(image_key: str, rna_tok: Optional[str], prot_tok: Optional[str],
+                 rna_label: str = "RNA1", partner_label: str = "partner",
                  ) -> List[Dict[str, Any]]:
     """Ordered A-H panel definitions: letter, title, and either ``image``
-    candidate specs (compose an existing PNG) or ``render_g`` (render panel G)."""
+    candidate specs (compose an existing PNG) or ``render_g`` (render panel G).
+    Titles use the run's channel labels (generic fallbacks otherwise)."""
     k = image_key
+    r, p = rna_label, partner_label
     prot_req = {"require": [prot_tok]} if prot_tok else {
         "require_any": ["qki", "561", "magenta"]}
     rna_excl = [rna_tok] if rna_tok else ["miat", "640"]
@@ -251,22 +257,22 @@ def _panel_specs(image_key: str, rna_tok: Optional[str], prot_tok: Optional[str]
         {"letter": "B", "title": "Nucleus segmentation (Cellpose)", "kind": "image",
          "candidates": [{"subdir": "pipeline_walkthrough",
                          "pattern": f"{k}__step03_*.png"}]},
-        {"letter": "C", "title": "MIAT RNA-FISH (640)", "kind": "image",
+        {"letter": "C", "title": f"{r} RNA-FISH", "kind": "image",
          "candidates": [{"subdir": "publication_images",
                          "pattern": f"{k}__*_yellow.png", "exclude": ["merge"]}]},
-        {"letter": "D", "title": "MIAT spot detection (BigFISH LoG)", "kind": "image",
+        {"letter": "D", "title": f"{r} spot detection (BigFISH LoG)", "kind": "image",
          "candidates": [{"subdir": "pipeline_walkthrough",
                          "pattern": f"{k}__step07_*.png"}]},
-        {"letter": "E", "title": "QKI immunofluorescence (561)", "kind": "image",
+        {"letter": "E", "title": f"{p} signal", "kind": "image",
          "candidates": [{"subdir": "publication_images",
                          "pattern": f"{k}__*_magenta.png", "exclude": ["merge"]}]},
-        {"letter": "F", "title": "QKI intensity layer (thresholded)", "kind": "image",
+        {"letter": "F", "title": f"{p} intensity layer (thresholded)", "kind": "image",
          "candidates": [{"subdir": "pipeline_walkthrough",
                          "pattern": f"{k}__step06_*threshold_on_signal*.png",
                          "exclude": rna_excl, **prot_req}]},
-        {"letter": "G", "title": "MIAT spots on thresholded QKI", "kind": "render_g",
+        {"letter": "G", "title": f"{r} spots on thresholded {p}", "kind": "render_g",
          "candidates": []},
-        {"letter": "H", "title": "Merge: MIAT + QKI", "kind": "image",
+        {"letter": "H", "title": f"Merge: {r} + {p}", "kind": "image",
          "candidates": [{"subdir": "publication_images",
                          "pattern": f"{k}__merge_*.png", **merge_filter},
                         {"subdir": "pipeline_walkthrough",
@@ -313,9 +319,9 @@ def _recompute_qki_plane(cfg, vsi_path):
 
 
 def _resolve_qki_threshold(row, run_dir, image_value, rc: dict) -> float:
-    """QKI display floor: ``protein_threshold_value`` from the per_image row;
+    """Partner display floor: ``protein_threshold_value`` from the per_image row;
     else a per-image ``thresholds.csv`` lookup; else ``manual_antibody_min`` from
-    run_config; else 1250.0."""
+    run_config; else NaN (panel G then shows the unthresholded field)."""
     if row is not None:
         v = row.get("protein_threshold_value")
         if v is not None and v == v:  # not NaN
@@ -330,7 +336,11 @@ def _resolve_qki_threshold(row, run_dir, image_value, rc: dict) -> float:
         pass
     out = rc.get("config_resolved", {}).get("output", {}) if rc else {}
     v = out.get("manual_antibody_min")
-    return float(v) if v is not None else 1250.0
+    if v is not None:
+        return float(v)
+    warnings.warn(f"panel G: no partner threshold recorded for {image_value}; "
+                  f"showing the unthresholded field.", UserWarning)
+    return float("nan")
 
 
 def _load_miat_spots(run_dir, image_value) -> np.ndarray:
@@ -442,13 +452,19 @@ def _build_walkthrough_fig(run_dir, staging_dir=None, input_dir=None,
                           f"disambiguation degraded.", UserWarning)
 
     rna_tok = prot_tok = None
+    rna_label, partner_label = "RNA1", "partner"
     if cfg is not None:
         rna_tok = sanitize_condition_for_filename(
             getattr(cfg.channels, "rna_label", "") or "") or None
         prot_tok = sanitize_condition_for_filename(
             getattr(cfg.channels, "antibody_label", "") or "") or None
+        rna_label = str(getattr(cfg.channels, "rna_label", "") or rna_label)
+        partner_attr = ("antibody_label"
+                        if getattr(cfg.channels, "analysis_mode", "") == "rna_protein"
+                        else "rna2_label")
+        partner_label = str(getattr(cfg.channels, partner_attr, "") or partner_label)
 
-    specs = _panel_specs(image_key, rna_tok, prot_tok)
+    specs = _panel_specs(image_key, rna_tok, prot_tok, rna_label, partner_label)
 
     # figure-level label
     label = image_key
@@ -478,6 +494,8 @@ def _build_walkthrough_fig(run_dir, staging_dir=None, input_dir=None,
                 g_inputs["spots_xy"], vmax=g_inputs["vmax"],
                 pixel_um=g_inputs["pix_um"], scalebar_um=SCALEBAR_UM_DEFAULT,
             )
+            if not np.isfinite(g_inputs["threshold"]):
+                title = f"{title}\n(no threshold recorded; unthresholded)"
             _annotate_panel(ax, letter, title)
             statuses.append({"letter": letter, "title": title,
                              "status": "rendered", "path": None})
@@ -500,7 +518,7 @@ def _build_walkthrough_fig(run_dir, staging_dir=None, input_dir=None,
         statuses.append({"letter": letter, "title": title,
                          "status": "ok", "path": str(found)})
 
-    fig.suptitle(f"MIAT×QKI RNA-FISH pipeline — {label}",
+    fig.suptitle(f"{rna_label} + {partner_label} pipeline walkthrough — {label}",
                  fontsize=15, fontweight="bold", y=0.99)
     fig.tight_layout(rect=(0, 0, 1, 0.965))
     return fig, statuses
@@ -510,8 +528,7 @@ def build_walkthrough_figure(run_dir, staging_dir=None, input_dir=None,
                              image_key=None, out_path=None) -> str:
     """Build + save the pipeline-walkthrough composite PNG; return its path.
 
-    ``image_key`` defaults to the OE g2-Dox image if present (else the first
-    image). ``out_path`` defaults to
+    ``image_key`` defaults to the first image prefix in sorted order. ``out_path`` defaults to
     ``<run_dir>/figures/07_coloc/79_pipeline_walkthrough.png``. Panels are located
     by the image_key prefix; any missing panel self-skips with a warning.
     """
@@ -541,9 +558,9 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     ap = argparse.ArgumentParser(
         prog="python -m fishsuite.core.walkthrough_figure",
-        description="Build the publication MIATxQKI pipeline-walkthrough composite "
-                    "figure (8 panels, including the rendered MIAT-spots-on-"
-                    "thresholded-QKI panel G) from a run's own step images.",
+        description="Build the publication pipeline-walkthrough composite "
+                    "figure (8 panels, including the rendered RNA1-spots-on-"
+                    "thresholded-partner panel G) from a run's own step images.",
     )
     ap.add_argument("--run-dir", required=True, help="run output dir")
     ap.add_argument("--staging", default=None,
@@ -551,7 +568,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                          "defaults to input_dir / run_config input_dir")
     ap.add_argument("--input", default=None, help="alt source dir for VSIs")
     ap.add_argument("--image", default=None,
-                    help="panel-prefix image_key (default: OE g2-Dox if present)")
+                    help="panel-prefix image_key (default: first in sorted order)")
     ap.add_argument("--out", default=None, help="output PNG path override")
     args = ap.parse_args(argv)
 

@@ -674,3 +674,26 @@ def test_prepare_renderer_audits_uses_only_recorded_qc_and_parity_evidence():
         prepare_renderer_audits(
             manifest, nucleus_metrics, reconciliation, bad_parity
         )
+
+
+def test_threshold_sensitivity_counts_unusable_separately_from_below_floor():
+    """Catches below-floor spots being counted as null-unusable."""
+
+    from fishsuite.core.exact_footprint_figures import _threshold_sensitivity_rows
+
+    labels = ["threshold_positive", "threshold_negative", "unusable", "below_miat_floor"]
+    spots = pd.DataFrame(
+        {
+            "image_key": ["a.vsi"] * 4,
+            "nucleus_id": [1] * 4,
+            **{f"population_label_q{q}": labels for q in (90, 95, 99)},
+        }
+    )
+    manifest = pd.DataFrame(
+        [{"slide": 1, "arm": "NT", "image_key": "A.vsi", "nucleus_uid": "a.vsi:nucleus:1",
+          "nucleus_id": 1, "selection_role": "representative"}]
+    )
+    rows = _threshold_sensitivity_rows(manifest, spots)
+    assert rows["n_unusable"].tolist() == [1, 1, 1]
+    assert rows["n_below_floor"].tolist() == [1, 1, 1]
+    assert rows["association_fraction_among_usable"].tolist() == [0.5, 0.5, 0.5]

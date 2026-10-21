@@ -10,7 +10,7 @@ supplied.
 
   (a) UNIT — ``coloc_threshold(..., mode="costes", vals_other=...)`` runs the
       regression and differs from MAD; without ``vals_other`` it falls back to
-      MAD; ``mad``/``percentile`` ignore ``vals_other`` (byte-identical).
+      costes_threshold's scaled-MAD fallback; ``mad``/``percentile`` ignore ``vals_other`` (byte-identical).
   (b) CALL SITE — ``_compute_pixel_coloc_thr`` (the exact per-image site
       ``run_one`` uses) fires real Costes when the partner channel is passed and
       differs from the MAD result on a correlated pair.
@@ -52,10 +52,12 @@ def test_costes_with_partner_runs_regression_not_mad():
 
 
 def test_costes_without_partner_falls_back_to_mad():
-    """No paired channel -> single-channel MAD fallback (unchanged behavior)."""
+    """No paired channel -> the same scaled-MAD fallback costes_threshold uses."""
     r, _ = _correlated_pair(seed=1)
+    med = _thr.median(r.tolist())
+    m = _thr.mad(r.tolist(), center=med)
     assert _thr.coloc_threshold(r.tolist(), mode="costes") == pytest.approx(
-        _thr.coloc_threshold(r.tolist(), mode="mad")
+        med + 2.0 * 1.4826 * m
     )
 
 
@@ -76,7 +78,7 @@ def test_costes_mismatched_length_falls_back_to_mad():
     r, a = _correlated_pair(seed=3)
     v = _thr.coloc_threshold(r.tolist(), mode="costes", vals_other=a[:-5].tolist())
     assert math.isfinite(v)
-    assert v == pytest.approx(_thr.coloc_threshold(r.tolist(), mode="mad"))
+    assert v == pytest.approx(_thr.coloc_threshold(r.tolist(), mode="costes"))
 
 
 # ===========================================================================

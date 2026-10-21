@@ -89,9 +89,13 @@ def test_one_nucleus_per_fov_is_not_validated():
     assert np.isnan(out['sensitivity_mixed_p'])
 
 
-def test_lbfgs_nonconvergence_is_rescued_by_another_optimizer():
-    data = _frame('iid', seed=4)  # seed chosen 2026-10-11: lbfgs nonconverged, Powell PD
-    assert not _statsmodels(data, 'lbfgs/bfgs').converged
+def test_lbfgs_nonconvergence_is_rescued_by_another_optimizer(monkeypatch):
+    from fishsuite.report import sensitivities as S
+    # Force lbfgs/bfgs non-convergence through the module's own iteration cap.
+    monkeypatch.setitem(S.MAXITER, 'lbfgs', 1)
+    data = _frame('iid', seed=4)
+    if _statsmodels(data, 'lbfgs/bfgs').converged:
+        pytest.skip('lbfgs/bfgs converged within one iteration on this statsmodels')
     out = mixed_model(data, 'KO', 'WT')
     assert out['sensitivity_mixed_validation'] == 'validated'
     assert out['sensitivity_mixed_optimizer'] in {'powell', 'nm'}

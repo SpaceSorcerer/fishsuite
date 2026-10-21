@@ -25,7 +25,8 @@ def build_fov(run, field_id, channels=("merge", "DAPI", "MIAT", "QKI", "merge_MI
         ax.plot([x1 - L, x1], [y, y], color='white', lw=2, solid_capstyle='butt')
         ax.text(x1 - L / 2, y - h * .025, "20 µm", color='white', ha='center', va='bottom', fontsize=6)
         fig.text(.5, .965, f"{run.arm}, field {fld}: {LABEL[chname]}", ha='center', fontsize=7)
-        footer(fig, [f"H9 hESC; analysed plane z = {P['z0'] + 1} (1-based). {display_note(run_lv(run))}"])
+        cell = getattr(run, "cell_line", "")
+        footer(fig, [f"{cell + '; ' if cell else ''}analysed plane z = {P['z0'] + 1} (1-based). {display_note(run_lv(run))}"])
         run.saver.save(fig, f"A_FOV_{tag}_field{fld}_{chname}")
 
 

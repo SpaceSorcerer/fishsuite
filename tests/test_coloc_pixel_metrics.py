@@ -461,3 +461,34 @@ def test_nucleoplasm_sensitivity_recomputes_mask_per_percentile():
     row = table.set_index("percentile").loc[25]
     assert row.pearson_r_nucleoplasm == pytest.approx(expected["pearson"], abs=1e-12)
     assert row.spearman_rho_nucleoplasm == pytest.approx(expected["spearman"], abs=1e-12)
+
+
+# ------------------------------------------- edge cases (review fixes)
+def test_upp_non_finite_observed_scores_nan_and_is_left_out_of_summary():
+    draws = np.array([[1.0, 1.0], [2.0, 2.0], [3.0, 3.0], [4.0, 4.0]])
+    u = cpm.uniform_position_percentile(np.array([np.nan, 2.5]), draws, np.random.default_rng(0))
+    assert np.isnan(u[0]) and u[1] == pytest.approx(2 / 4)
+    s = cpm.upp_summary(u, 4)
+    assert s["n_spots_upp"] == 1
+    assert s["mean_uniform_position_percentile_qki"] == pytest.approx(0.5)
+
+
+def test_object_coloc_without_objects_reports_nan_overlap():
+    r = cpm.object_coloc(np.zeros((20, 20)), np.ones((20, 20), bool), np.array([[6.0, 6.0]]),
+                         [(np.array([6]), np.array([6]))], qki_floor=500, pixel_um=1.0)
+    assert r["na_reason_object_coloc"] == "NO_QKI_OBJECTS"
+    assert np.isnan(r["frac_miat_spots_on_qki_object"])
+    assert np.isnan(r["median_nn_dist_um_miat_to_qki_object"])
+
+
+def test_acf_radial_counts_each_unordered_pair_once(monkeypatch):
+    monkeypatch.setattr(cpm, "MIN_PIXELS", 1)
+    # A 1 x 3 row: lag 0 has 3 self-pairs, lag 1 has 2 unordered pairs, lag 2 has 1.
+    mask = np.zeros((5, 5), bool)
+    mask[2, 1:4] = True
+    x = np.zeros((5, 5)); x[2, 1:4] = [1.0, 2.0, 4.0]
+    _r, acf, pairs, _reason = cpm.acf_radial(x, mask, max_radius=2, min_pairs=1)
+    assert pairs.tolist() == [3, 2, 1]
+    v = x[2, 1:4] - x[2, 1:4].mean()
+    var = float((v ** 2).mean())
+    assert acf[1] == pytest.approx((v[0] * v[1] + v[1] * v[2]) / 2 / var)

@@ -52,6 +52,10 @@ from .rna_only import (
     ImageResult, _safe_float, _median, _resolve_thresh_intensity_floor,
 )
 from . import register_mode
+from . import _zplanes
+
+# Seed offset of the radial-profile null RNG relative to partner_null_seed.
+RADIAL_NULL_SEED_OFFSET = 505
 
 
 # ---------------------------------------------------------------------------
@@ -629,9 +633,16 @@ def _radial_profile_for_nucleus(
     stencils: list,
     n_null: int,
     rng: np.random.Generator,
-) -> list:
+    *,
+    return_null_stats: bool = False,
+):
     """Per-nucleus radial coloc profile: one ``(obs_mean, null_mean, null_sd,
     n_spots)`` tuple per concentric ring in ``stencils``.
+
+    With ``return_null_stats=True`` the return is ``(rows, null_by_ring)``:
+    ``rows`` is the list above and ``null_by_ring`` holds one ``(n_null,)``
+    per-iteration null vector per ring (empty when the ring or the nucleus has
+    nothing to sample), for pooling across nuclei per iteration.
 
     For each ring (annulus offset mask), ``obs_mean`` is the mean over this
     nucleus's rna1 spots of [mean partner intensity in the ring around the spot];
@@ -645,15 +656,20 @@ def _radial_profile_for_nucleus(
     n_sp = int(spot_cys.size)
     npix = int(nuc_ys.size)
     if n_sp == 0 or npix == 0:
-        return [(float("nan"), float("nan"), float("nan"), 0) for _ in stencils]
+        rows = [(float("nan"), float("nan"), float("nan"), 0) for _ in stencils]
+        if return_null_stats:
+            return rows, [np.empty(0, dtype=np.float64) for _ in stencils]
+        return rows
     # One shared draw of random in-nucleus centers reused for every ring.
     idx = rng.integers(0, npix, size=n_null * n_sp)
     rcy = nuc_ys[idx]
     rcx = nuc_xs[idx]
     out = []
+    nulls = []
     for (dy, dx) in stencils:
         if dy.size == 0:
             out.append((float("nan"), float("nan"), float("nan"), n_sp))
+            nulls.append(np.empty(0, dtype=np.float64))
             continue
         obs_vals = _disk_means_at(partner_2d, spot_cys, spot_cxs, dy, dx)
         obs_stat = float(obs_vals.mean())
@@ -662,6 +678,9 @@ def _radial_profile_for_nucleus(
         nmean = float(null_stats.mean())
         nsd = float(null_stats.std(ddof=1)) if null_stats.size > 1 else 0.0
         out.append((obs_stat, nmean, nsd, n_sp))
+        nulls.append(null_stats)
+    if return_null_stats:
+        return out, nulls
     return out
 
 
@@ -941,6 +960,7 @@ def _compute_pixel_coloc_thr(
     precomputed: Optional[float],
     bigfish_auto_thr: float,
     img2d_other: Optional[np.ndarray] = None,
+    costes_thr: Optional[float] = None,
 ) -> float:
     """Compute (or accept the pre-scan) pixel-coloc threshold for ONE channel.
 
@@ -953,6 +973,11 @@ def _compute_pixel_coloc_thr(
     the identical ``labels > 0`` mask and hand it to ``coloc_threshold`` as
     ``vals_other``. It is ignored for mad/percentile (those paths stay
     byte-identical whether or not a partner channel is supplied).
+
+    ``costes_thr`` is this channel's half of ONE joint Costes regression
+    (see :func:`_costes_pair_thresholds`). When given in costes mode it is used
+    directly so both channels share one regression; NaN means the pair could
+    not be resolved and the MAD fallback is used.
     """
     _scope = getattr(pc_cfg, "threshold_scope", "per_image") if pc_cfg is not None else "per_image"
     if (
@@ -971,7 +996,10 @@ def _compute_pixel_coloc_thr(
             # Costes needs the PAIRED partner intensities at the same nuclear
             # pixels; mad/percentile leave this None (unchanged behavior).
             vals_other = None
-            if (
+            if pc_cfg.threshold_mode == "costes" and costes_thr is not None:
+                if math.isfinite(costes_thr) and costes_thr > 0:
+                    return float(costes_thr)
+            elif (
                 pc_cfg.threshold_mode == "costes"
                 and img2d_other is not None
                 and img2d_other.shape == img2d.shape
@@ -997,6 +1025,55 @@ def _compute_pixel_coloc_thr(
         return float(threshold_otsu(img2d))
     except Exception:
         return float(np.percentile(img2d, 99.0))
+
+
+def _costes_pair_thresholds(
+    img_a: np.ndarray, img_b: np.ndarray, labels: np.ndarray, *, pc_cfg,
+) -> Tuple[Optional[float], Optional[float]]:
+    """Run ONE Costes regression on the paired nuclear pixels of two channels.
+
+    Returns ``(thr_a, thr_b)`` from the same regression, or ``(None, None)``
+    when the mode is not costes or there is nothing to regress. Unresolved
+    regressions come back as NaN.
+    """
+    if (
+        pc_cfg is None
+        or pc_cfg.threshold_mode != "costes"
+        or img_a.shape != img_b.shape
+        or int(labels.max()) <= 0
+    ):
+        return None, None
+    m = labels > 0
+    try:
+        ta, tb = _thr.costes_threshold(
+            img_a[m].astype(np.float64).tolist(),
+            img_b[m].astype(np.float64).tolist(),
+        )
+    except Exception:
+        return float("nan"), float("nan")
+    ta, tb = float(ta), float(tb)
+    if not (math.isfinite(ta) and math.isfinite(tb)):
+        return float("nan"), float("nan")
+    return ta, tb
+
+
+def _in_cell_paired_counts(df: Optional[pd.DataFrame], paired_col: str) -> Tuple[int, int]:
+    """Return ``(paired, total)`` over the in-cell rows of one channel's spots.
+
+    Numerator and denominator come from the same spot set (in_nucleus OR
+    in_cytoplasm), so ``paired / total`` is a fraction in [0, 1].
+    """
+    if df is None or len(df) == 0:
+        return 0, 0
+    if "in_nucleus" in df.columns and "in_cytoplasm" in df.columns:
+        in_cell = (df["in_nucleus"].astype(bool) | df["in_cytoplasm"].astype(bool)).to_numpy()
+    else:
+        in_cell = np.ones(len(df), dtype=bool)
+    total = int(in_cell.sum())
+    if paired_col not in df.columns:
+        return 0, total
+    flags = pd.to_numeric(df[paired_col], errors="coerce").fillna(0).to_numpy() > 0
+    return int((flags & in_cell).sum()), total
 
 
 def _spot_coords_um(spots_df: pd.DataFrame, voxel_xy_um: float, voxel_z_um: float) -> np.ndarray:
@@ -1077,210 +1154,11 @@ def _filter_spots_by_floor(
 
 def prepare_segmentation_planes(img, path, cfg) -> Dict[str, Any]:
     dapi_idx, rna_idx, rna2_idx = _resolve_channels(cfg, img)
-
-    z_mode = cfg.z_stack.mode
-    z_start = cfg.z_stack.start_slice
-    z_end = cfg.z_stack.end_slice
-    # 2026-05-22 Brian: per-image z-window override. If the current image's
-    # file name matches a key in cfg.z_stack.file_overrides, use that
-    # image-specific start_slice / end_slice instead of the batch default.
-    _file_overrides = getattr(cfg.z_stack, "file_overrides", {}) or {}
-    _img_name = Path(path).name
-    if _img_name in _file_overrides:
-        _ovr = _file_overrides[_img_name]
-        if "start_slice" in _ovr:
-            z_start = int(_ovr["start_slice"])
-        if "end_slice" in _ovr:
-            z_end = int(_ovr["end_slice"])
-        try:
-            from rich.console import Console as _C
-            _C().print(f"  [dim]z-override: {_img_name} → start={z_start}, end={z_end}[/dim]")
-        except Exception:
-            pass
-    if z_start is not None and z_start > img.n_z:
-        z_start = 1
-    if z_end is not None and z_end > img.n_z:
-        z_end = img.n_z
-
-    # 2026-05-18 Brian: autofocus mode now LOCKS all channels to DAPI's
-    # picked focal plane. Previously each channel ran autofocus independently
-    # — DAPI picked slice 42, RNA1 picked 38, RNA2 picked 45 — and spot xy
-    # from a different physical plane than the nuclear mask led to
-    # mis-assignment of nuclear-edge spots to cytoplasm.
-    # 2026-05-24 Brian: autofocus_maxproj — per-image DAPI focus-window
-    # detection, then MIP that window for all channels. Replaces per-image
-    # file_overrides for datasets with field-to-field focus drift.
-    dapi_autofocus_z: Optional[int] = None
-    # 2026-07-05 Brian: RNA-anchored single-plane autofocus (opt-in). Gated
-    # per-image audit columns for per_image_summary; EMPTY (and thus CSV
-    # byte-identical) unless autofocus_channel != "dapi".
-    _z_af_extra: Dict[str, Any] = {}
-    if z_mode == "autofocus":
-        _af_channel = str(getattr(cfg.z_stack, "autofocus_channel", "dapi")).lower()
-        _af_iw = bool(getattr(cfg.z_stack, "autofocus_intensity_weighted", False))
-        if _af_channel == "joint":
-            # ── JOINT multi-channel plane pick (2026-07-18 Brian). ONE plane
-            # jointly in focus for DAPI + RNA1 + RNA2 (partner); all channels
-            # read at it -> coloc-safe. Preserves the one-plane invariant. ──
-            _reduce = str(
-                getattr(cfg.z_stack, "autofocus_joint_reduce", "product")
-            ).lower()
-            _picked_z, _joint_diag = _io.resolve_joint_autofocus_plane(
-                img, dapi_idx, rna_idx, partner_idx=rna2_idx,
-                z_start=z_start, z_end=z_end,
-                intensity_weighted=_af_iw, reduce=_reduce,
-                central_fraction=float(
-                    getattr(cfg.z_stack, "focus_central_fraction", 0.0)
-                ),
-                min_intensity_frac=float(
-                    getattr(cfg.z_stack, "focus_min_intensity_frac_of_peak", 0.0)
-                ),
-                nuclear_mask=bool(
-                    getattr(cfg.z_stack, "autofocus_joint_nuclear_mask", False)
-                ),
-            )
-            dapi_autofocus_z = int(_picked_z)
-            dapi_2d = _io.extract_channel_at_z(img, dapi_idx, z_1indexed=dapi_autofocus_z)
-            rna_2d = _io.extract_channel_at_z(img, rna_idx, z_1indexed=dapi_autofocus_z)
-            rna2_2d = _io.extract_channel_at_z(img, rna2_idx, z_1indexed=dapi_autofocus_z)
-            _z_af_extra = {
-                "z_autofocus_mode": "joint",
-                "z_autofocus_channel_used": "joint",
-                "z_plane": int(dapi_autofocus_z),
-                "z_autofocus_joint_reduce": _reduce,
-                "nuclear_mask_used": bool(_joint_diag.get("nuclear_mask_used", False)),
-                "nuclear_mask_coverage": round(
-                    float(_joint_diag.get("nuclear_mask_coverage", 0.0)), 4
-                ),
-            }
-            try:
-                for _cn, _cv in _joint_diag.get("per_channel_focus_score", {}).items():
-                    _z_af_extra[f"joint_focus_{_cn}"] = round(float(_cv), 4)
-            except Exception:
-                pass
-            try:
-                from rich.console import Console as _C
-                _C().print(
-                    f"  [dim]z-joint({_reduce}): {Path(path).name} → all channels @ "
-                    f"joint plane z={dapi_autofocus_z}[/dim]"
-                )
-            except Exception:
-                pass
-        elif _af_channel not in ("rna", "auto"):
-            # ── LOCKED default DAPI-anchor path — unchanged ──────────────────
-            dapi_autofocus_z, dapi_2d = _io.extract_channel_autofocus_with_idx(
-                img, dapi_idx, z_start=z_start, z_end=z_end,
-                intensity_weighted=_af_iw,
-            )
-            rna_2d = _io.extract_channel_at_z(img, rna_idx, z_1indexed=dapi_autofocus_z)
-            rna2_2d = _io.extract_channel_at_z(img, rna2_idx, z_1indexed=dapi_autofocus_z)
-            try:
-                from rich.console import Console as _C
-                _C().print(
-                    f"  [dim]z-lock: {Path(path).name} → all channels @ DAPI plane "
-                    f"z={dapi_autofocus_z}[/dim]"
-                )
-            except Exception:
-                pass
-        else:
-            # ── RNA-anchored (or auto) single-plane pick. ONE plane; all
-            # channels (DAPI seg + RNA + antibody) read at it -> coloc-safe. ──
-            _picked_z, _ch_used, _af_diag = _io.resolve_autofocus_plane(
-                img, dapi_idx=dapi_idx, rna_idx=rna_idx,
-                z_start=z_start, z_end=z_end,
-                autofocus_channel=_af_channel, intensity_weighted=_af_iw,
-                auto_rna_quality_min=float(
-                    getattr(cfg.z_stack, "autofocus_auto_rna_quality_min", 3.0)
-                ),
-            )
-            dapi_autofocus_z = int(_picked_z)
-            dapi_2d = _io.extract_channel_at_z(img, dapi_idx, z_1indexed=dapi_autofocus_z)
-            rna_2d = _io.extract_channel_at_z(img, rna_idx, z_1indexed=dapi_autofocus_z)
-            rna2_2d = _io.extract_channel_at_z(img, rna2_idx, z_1indexed=dapi_autofocus_z)
-            _z_af_extra = {
-                "z_autofocus_mode": _af_channel,
-                "z_autofocus_channel_used": _ch_used,
-                "z_plane": int(dapi_autofocus_z),
-            }
-            if _af_channel == "auto":
-                _q = _af_diag.get("rna_quality_score", float("nan"))
-                _z_af_extra["z_autofocus_rna_quality_score"] = (
-                    round(float(_q), 4) if _q == _q else float("nan")
-                )
-                _z_af_extra["z_autofocus_rna_quality_min"] = float(
-                    _af_diag.get("rna_quality_min", float("nan"))
-                )
-            # RNA signal-quality at the CHOSEN plane (focusability + SNR).
-            try:
-                _qual = _io.rna_plane_quality(rna_2d)
-                _z_af_extra["rna_focus_score"] = round(float(_qual["focus_score"]), 4)
-                _z_af_extra["rna_dynamic_range"] = round(float(_qual["dynamic_range"]), 4)
-            except Exception:
-                pass
-            try:
-                from rich.console import Console as _C
-                _C().print(
-                    f"  [dim]z-anchor({_af_channel}): {Path(path).name} → all "
-                    f"channels @ {_ch_used.upper()} plane z={dapi_autofocus_z}[/dim]"
-                )
-            except Exception:
-                pass
-    elif z_mode == "autofocus_maxproj":
-        (afm_zs, afm_ze), afm_diag, dapi_2d = _io.extract_dapi_focus_window(
-            img, dapi_idx,
-            metric=cfg.z_stack.focus_metric,
-            threshold_frac=float(cfg.z_stack.focus_threshold_frac),
-            min_slices=int(cfg.z_stack.focus_window_min_slices),
-            max_slices=int(cfg.z_stack.focus_window_max_slices),
-            z_start=z_start, z_end=z_end,
-            fixed_n_slices=int(getattr(cfg.z_stack, "focus_window_fixed_n_slices", 0)),
-            min_intensity_frac_of_peak=float(getattr(cfg.z_stack, "focus_min_intensity_frac_of_peak", 0.0)),
-            intensity_weighted=bool(getattr(cfg.z_stack, "autofocus_intensity_weighted", False)),
-            central_fraction=float(getattr(cfg.z_stack, "focus_central_fraction", 0.0)),
-        )
-        rna_2d = _io.extract_channel_in_z_range(
-            img, rna_idx,
-            z_start_1indexed=afm_zs, z_end_1indexed=afm_ze,
-            project="maxproj",
-        )
-        rna2_2d = _io.extract_channel_in_z_range(
-            img, rna2_idx,
-            z_start_1indexed=afm_zs, z_end_1indexed=afm_ze,
-            project="maxproj",
-        )
-        try:
-            from rich.console import Console as _C
-            _C().print(
-                f"  [dim][autofocus_maxproj] {Path(path).name}: "
-                f"focus peak at z={afm_diag['peak_z']+1}, "
-                f"window=[{afm_zs},{afm_ze}] "
-                f"({afm_ze - afm_zs + 1} slices)[/dim]"
-            )
-        except Exception:
-            pass
-    else:
-        dapi_2d = _io.extract_channel(img, dapi_idx, z_mode=z_mode, z_start=z_start, z_end=z_end)
-        if dapi_2d.ndim != 2:
-            dapi_2d = dapi_2d.max(axis=0)
-        rna_2d = _io.extract_channel(img, rna_idx, z_mode=z_mode, z_start=z_start, z_end=z_end)
-        if rna_2d.ndim != 2:
-            rna_2d = rna_2d.max(axis=0)
-        rna2_2d = _io.extract_channel(img, rna2_idx, z_mode=z_mode, z_start=z_start, z_end=z_end)
-        if rna2_2d.ndim != 2:
-            rna2_2d = rna2_2d.max(axis=0)
-    return {
-        "dapi_idx": dapi_idx,
-        "rna_idx": rna_idx,
-        "rna2_idx": rna2_idx,
-        "z_mode": z_mode,
-        "z_start": z_start,
-        "z_end": z_end,
-        "dapi_autofocus_z": dapi_autofocus_z,
-        "_z_af_extra": _z_af_extra,
-        "dapi_2d": dapi_2d,
-        "rna_2d": rna_2d,
-        "rna2_2d": rna2_2d,
-    }
+    planes = _zplanes.extract_planes(
+        img, path, cfg, dapi_idx=dapi_idx, rna_idx=rna_idx, rna2_idx=rna2_idx,
+    )
+    planes.update(dapi_idx=dapi_idx, rna_idx=rna_idx, rna2_idx=rna2_idx)
+    return planes
 
 
 def segmentation_params(cfg, nuclear_size) -> Dict[str, Any]:
@@ -1399,6 +1277,7 @@ def run_one(
         flag is meaningless unless rna2 is the antibody channel.
     """
     t0 = time.time()
+    path = Path(path)
     img = _io.read_image(path)
     nuclear_pixel_nm = _safe_float(cfg.foci.bigfish_voxel_size_nm)
     if not (math.isfinite(nuclear_pixel_nm) and nuclear_pixel_nm > 0):
@@ -1430,33 +1309,7 @@ def run_one(
     # detect and mask LARGE bright artifacts (dust, fluorescent debris,
     # sensor blowouts). Applied to RNA channels only; DAPI left alone
     # (bright DAPI clusters can be real heterochromatin).
-    _speck_min = int(getattr(cfg.foci, "mask_dust_specks_min_size_px", 0) or 0)
-    if _speck_min > 0:
-        try:
-            from ..image_preprocess import mask_dust_specks
-            _speck_thr = float(getattr(cfg.foci, "mask_dust_specks_threshold_mad", 50.0))
-            _speck_repl = str(getattr(cfg.foci, "mask_dust_specks_replacement", "median"))
-            rna_2d_clean, n_specks_rna, npx_rna = mask_dust_specks(
-                rna_2d, min_speck_size_px=_speck_min,
-                brightness_threshold_mad=_speck_thr, replacement=_speck_repl,
-            )
-            rna2_2d_clean, n_specks_rna2, npx_rna2 = mask_dust_specks(
-                rna2_2d, min_speck_size_px=_speck_min,
-                brightness_threshold_mad=_speck_thr, replacement=_speck_repl,
-            )
-            rna_2d = rna_2d_clean
-            rna2_2d = rna2_2d_clean
-            if n_specks_rna > 0 or n_specks_rna2 > 0:
-                try:
-                    from rich.console import Console as _C
-                    _C().print(
-                        f"  [dim]dust-speck mask: rna1 {n_specks_rna} specks ({npx_rna} px), "
-                        f"rna2 {n_specks_rna2} specks ({npx_rna2} px) replaced w/ median[/dim]"
-                    )
-                except Exception:
-                    pass
-        except Exception as _exc:
-            print(f"  WARN: dust speck masking failed: {type(_exc).__name__}: {_exc}")
+    rna_2d, rna2_2d = _zplanes.mask_dust_specks_planes(cfg, rna_2d, rna2_2d)
 
     voxel_xy_nm = _safe_float(img.voxel_xy_nm)
     # Whether the IMAGE declared a real lateral pixel size. When it did not, the
@@ -1596,27 +1449,26 @@ def run_one(
             vx = voxel_xy_nm
         if vz <= 0:
             vz = voxel_z_nm
-        try:
-            df_ = _spots.detect_spots(
-                rna_img,
-                backend=cfg.foci.backend,
-                voxel_xy_nm=float(vx),
-                voxel_z_nm=float(vz),
-                spot_radius_nm=float(params["bigfish_spot_radius_nm"]),
-                spot_radius_z_nm=float(params["bigfish_spot_radius_z_nm"]),
-                threshold_multiplier=float(params["threshold_multiplier"]),
-                # 2026-09-03: per-channel FIXED LoG threshold. resolved_for()
-                # falls back to the shared cfg.foci.threshold_override when the
-                # channel override is unset, so this is the legacy value unless
-                # a channel carries its own.
-                threshold=params["threshold_override"],
-                log_threshold=cfg.foci.log_threshold,
-                log_spot_radius_px=cfg.foci.log_spot_radius_px,
-            )
-            thr_ = float(df_["threshold_used"].iloc[0]) if len(df_) else float("nan")
-            return df_, thr_
-        except Exception:
-            return pd.DataFrame(), float("nan")
+        # Detector errors propagate so the runner records a failed image
+        # instead of a silent zero-spot result.
+        df_ = _spots.detect_spots(
+            rna_img,
+            backend=cfg.foci.backend,
+            voxel_xy_nm=float(vx),
+            voxel_z_nm=float(vz),
+            spot_radius_nm=float(params["bigfish_spot_radius_nm"]),
+            spot_radius_z_nm=float(params["bigfish_spot_radius_z_nm"]),
+            threshold_multiplier=float(params["threshold_multiplier"]),
+            # 2026-09-03: per-channel FIXED LoG threshold. resolved_for()
+            # falls back to the shared cfg.foci.threshold_override when the
+            # channel override is unset, so this is the legacy value unless
+            # a channel carries its own.
+            threshold=params["threshold_override"],
+            log_threshold=cfg.foci.log_threshold,
+            log_spot_radius_px=cfg.foci.log_spot_radius_px,
+        )
+        thr_ = float(df_["threshold_used"].iloc[0]) if len(df_) else float("nan")
+        return df_, thr_
 
     spots1_df, thr1_val = _detect(_rna_2d_det, rna1_params)
     # Detection saw the scaled plane, so ``intensity_peak`` came off it. Put the
@@ -1717,6 +1569,34 @@ def run_one(
                     f"spots below floor={float(rna2_floor):.1f}"
                 )
 
+    # ---- "Exploded speck" outlier filter (off by default) -----------------
+    # Drop spots whose peak is more than N x the per-channel p95 of peaks in
+    # this image (dust / debris far brighter than any real spot). Runs before
+    # stratification so per-nucleus counts and image totals share one set.
+    _max_ratio = float(getattr(cfg.foci, "max_peak_over_p95_ratio", 0.0) or 0.0)
+    if _max_ratio > 0:
+        for _lbl in ("rna1", "rna2"):
+            _df = spots1_df if _lbl == "rna1" else spots2_df
+            if not len(_df) or "intensity_peak" not in _df.columns:
+                continue
+            _pk = _df["intensity_peak"].astype(float)
+            _keep = _pk <= (float(np.percentile(_pk, 95)) * _max_ratio + 1e-9)
+            _dropped = int((~_keep).sum())
+            _df = _df.loc[_keep].reset_index(drop=True)
+            if _lbl == "rna1":
+                spots1_df = _df
+            else:
+                spots2_df = _df
+            if _dropped > 0:
+                try:
+                    from rich.console import Console as _C
+                    _C().print(
+                        f"  [dim]speck filter: dropped {_dropped} {_lbl} spots with "
+                        f"peak > {_max_ratio}× per-image p95 (absurd outliers)[/dim]"
+                    )
+                except Exception:
+                    pass
+
     # Stratify spots vs nuclei / cytoplasm — same call as rna_only
     if cyt_labels is not None:
         if len(spots1_df) > 0:
@@ -1749,15 +1629,23 @@ def run_one(
 
     # ---- Pixel-coloc thresholds (independent per channel) ------------------
     pc_cfg = getattr(cfg, "pixel_coloc", None)
+    # Costes: one regression on the paired pixels gives both thresholds.
+    _costes1 = _costes2 = None
+    if not (
+        getattr(pc_cfg, "threshold_scope", "per_image") == "batch"
+        and all(t is not None and t == t and t > 0
+                for t in (precomputed_rna_threshold, precomputed_rna2_threshold))
+    ):
+        _costes1, _costes2 = _costes_pair_thresholds(rna_2d, rna2_2d, labels, pc_cfg=pc_cfg)
     rna_thr_value = _compute_pixel_coloc_thr(
         rna_2d, labels, pc_cfg=pc_cfg,
         precomputed=precomputed_rna_threshold, bigfish_auto_thr=thr1_val,
-        img2d_other=rna2_2d,
+        img2d_other=rna2_2d, costes_thr=_costes1,
     )
     rna2_thr_value = _compute_pixel_coloc_thr(
         rna2_2d, labels, pc_cfg=pc_cfg,
         precomputed=precomputed_rna2_threshold, bigfish_auto_thr=thr2_val,
-        img2d_other=rna_2d,
+        img2d_other=rna_2d, costes_thr=_costes2,
     )
     rna_pos_mask = (rna_2d >= rna_thr_value).astype(np.uint8) * 255
     rna2_pos_mask = (rna2_2d >= rna2_thr_value).astype(np.uint8) * 255
@@ -2246,11 +2134,14 @@ def run_one(
         # _radial_stencils / _radial_bins_um_used, so the per-nucleus and
         # per-image column sets derive from ONE list and cannot drift apart.
         _radial_suffixes = radial_column_suffixes(_radial_bins_um_used)
-        _radial_rng = np.random.default_rng(_null_seed)
+        # Offset seed: the radial draws must not repeat the position null's.
+        _radial_rng = np.random.default_rng(_null_seed + RADIAL_NULL_SEED_OFFSET)
         _radial_obs_num = np.zeros(_n_rings, dtype=np.float64)
         _radial_nullmean_num = np.zeros(_n_rings, dtype=np.float64)
         _radial_nullsd_num = np.zeros(_n_rings, dtype=np.float64)
         _radial_w_den = np.zeros(_n_rings, dtype=np.float64)
+        # Spot-weighted per-iteration null vector per ring, pooled across nuclei.
+        _radial_null_pool = np.zeros((_n_rings, _null_n), dtype=np.float64)
 
     # 2026-06-19 Brian: rotation/translation "proper background" setup. SEPARATE
     # RNG streams (seed offsets) so toggling these never perturbs the position /
@@ -2278,6 +2169,8 @@ def run_one(
         _rot_w_den = 0.0
         _rot_pool = np.zeros(_rot_n, dtype=np.float64)
         _rot_n_nuclei_used = 0
+        _rot_unpl_num = 0.0
+        _rot_unpl_den = 0.0
     if compute_partner_anchored_rotation:
         # One RNG PAIR per sampled field, all distinct from the rna1-anchored
         # streams (+101 / +404) and from each other, so no combination of these
@@ -2612,7 +2505,7 @@ def run_one(
             n_cy = int(cyt_spot_mask.sum())
             tot = n_in + n_cy
             nuc_frac = (n_in / float(tot)) if tot > 0 else float("nan")
-            density = (tot / area_um2) if area_um2 > 0 else float("nan")
+            density = (n_in / area_um2) if area_um2 > 0 else float("nan")
             if tot > 0 and "intensity_peak" in sub.columns:
                 ipeaks = sub["intensity_peak"].astype(float)
                 m_ = float(ipeaks.mean())
@@ -2843,6 +2736,7 @@ def run_one(
         rna2_rotation_assoc_fraction_at_rna1_spots = float("nan")
         rotation_null_usable = False
         rotation_median_retention = float("nan")
+        rotation_frac_unplaceable = float("nan")
         # Partner-anchored rotation null (2026-09-03; per sampled field
         # 2026-09-04). NaN/False unless the feature is on AND this nucleus has
         # partner spots.
@@ -2913,9 +2807,10 @@ def run_one(
                     if compute_partner_radial:
                         # Per-ring (obs, null_mean, null_sd, n_spots); accumulate
                         # spot-count-weighted into the per-(image, ring) rollup.
-                        _rad = _radial_profile_for_nucleus(
+                        _rad, _rad_null = _radial_profile_for_nucleus(
                             _rna2_2d_f, _scy, _scx, _nys, _nxs,
                             _radial_stencils, _null_n, _radial_rng,
+                            return_null_stats=True,
                         )
                         # Keep this nucleus's own profile for the per-nucleus
                         # columns (2026-08-10). Previously the loop consumed
@@ -2929,6 +2824,8 @@ def run_one(
                                 _radial_nullmean_num[_ri] += _rnm * _rnsp
                                 _radial_nullsd_num[_ri] += _rnsd * _rnsp
                                 _radial_w_den[_ri] += _rnsp
+                                if _rad_null[_ri].size == _null_n:
+                                    _radial_null_pool[_ri] += _rad_null[_ri] * _rnsp
                     if compute_partner_rotation:
                         # ROTATION "proper background": rotate this nucleus's spot
                         # CONSTELLATION about its OWN centroid (keep-N redraw),
@@ -2945,6 +2842,8 @@ def run_one(
                         )
                         rotation_null_usable = bool(_rot["usable"])
                         rotation_median_retention = float(_rot["median_retention"])
+                        # Share of keep-N draws left at the observed position.
+                        rotation_frac_unplaceable = float(_rot["frac_unplaceable"])
                         _rns = _rot["null_stats"]
                         if _rns.size:
                             _rnm2 = float(_rns.mean())
@@ -2980,6 +2879,8 @@ def run_one(
                                 _rot_w_den += _n_sp_rot
                                 _rot_pool += _rns * _n_sp_rot
                                 _rot_n_nuclei_used += 1
+                                _rot_unpl_num += rotation_frac_unplaceable * _n_sp_rot
+                                _rot_unpl_den += _n_sp_rot
                     if compute_partner_translation:
                         _tr = _translation_null_for_nucleus(
                             _rna2_2d_f, _scy, _scx, _samp_mask, _nys, _nxs,
@@ -3322,6 +3223,7 @@ def run_one(
             nuc_row["rna2_rotation_null_p_at_rna1_spots"] = rna2_rotation_null_p_at_rna1_spots
             nuc_row["rna2_rotation_assoc_fraction_at_rna1_spots"] = rna2_rotation_assoc_fraction_at_rna1_spots
             nuc_row["rotation_median_retention"] = rotation_median_retention
+            nuc_row["rotation_frac_unplaceable"] = rotation_frac_unplaceable
             nuc_row["rotation_null_usable"] = rotation_null_usable
         # GATED partner-anchored rotation columns (default OFF -> absent, so the
         # OFF path stays byte-equivalent). rna_protein's rna2->protein relabel
@@ -3546,6 +3448,17 @@ def run_one(
     # off, so the key set is absent exactly as before.
     radial_pooled_img_cols: Dict[str, Any] = {}
     if compute_partner_radial:
+        # Pooled null per ring from the pooled per-iteration vector, so the
+        # pooled z uses the SD of the pooled null (not a mean of per-nucleus
+        # SDs). The numerators stay spot-weighted sums for the code below.
+        for _ri in range(_n_rings):
+            _w = float(_radial_w_den[_ri])
+            if _w > 0:
+                _vec = _radial_null_pool[_ri] / _w
+                _radial_nullmean_num[_ri] = float(_vec.mean()) * _w
+                _radial_nullsd_num[_ri] = (
+                    float(_vec.std(ddof=1)) if _vec.size > 1 else 0.0
+                ) * _w
         radial_pooled_img_cols = radial_pooled_per_image_columns(
             _radial_obs_num, _radial_nullmean_num, _radial_nullsd_num,
             _radial_w_den, _radial_suffixes,
@@ -3745,39 +3658,8 @@ def run_one(
     # Per-nucleus and per-cell aggregations already filter implicitly; this
     # cleans up the top-level total_spots_rna1/rna2 counts in
     # per_image_summary.csv and removes the floaters from spot_metrics.csv.
-    # ---- "Exploded speck" outlier filter (off by default; tighter rule) ---
-    # 2026-05-21 Brian: drop ONLY spots whose peak intensity is wildly
-    # above the bulk of the rest. Compares per-image, per-channel peak vs
-    # the 95th-percentile of peaks in that same image+channel. If a spot
-    # is > N× the p95, it's an "absurd" outlier — much brighter than even
-    # the brightest 5% of REAL spots — and is treated as a dust speck.
-    # Does NOT drop based on absolute intensity (real spots can be very
-    # bright) or FWHM (real biology can be small).
-    _max_ratio = float(getattr(cfg.foci, "max_peak_over_p95_ratio", 0.0) or 0.0)
-    if _max_ratio > 0 and len(spots_out_df) and "spot_peak_intensity" in spots_out_df.columns:
-        grp_keys = [k for k in ("image", "channel") if k in spots_out_df.columns]
-        if grp_keys:
-            _before = len(spots_out_df)
-            pk = spots_out_df["spot_peak_intensity"].astype(float)
-            p95 = spots_out_df.groupby(grp_keys)["spot_peak_intensity"].transform(
-                lambda s: float(np.percentile(s, 95)) if len(s) > 0 else 0.0
-            )
-            _keep = pk <= (p95 * _max_ratio + 1e-9)
-            spots_out_df = spots_out_df.loc[_keep, :].reset_index(drop=True)
-            _after = len(spots_out_df)
-            _dropped = _before - _after
-            if _dropped > 0:
-                try:
-                    from rich.console import Console as _C
-                    _C().print(
-                        f"  [dim]speck filter: dropped {_dropped} spots with "
-                        f"peak > {_max_ratio}× per-image p95 (absurd outliers)[/dim]"
-                    )
-                except Exception:
-                    pass
-            # Mirror to channel-specific dataframes
-            _mirror_to_channel_frames()
-
+    # (The "exploded speck" outlier filter runs on the per-channel frames
+    # before stratification; see above.)
     _drop_floaters = getattr(cfg.foci, "drop_floater_spots", True)
     if _drop_floaters and len(spots_out_df) and "in_nucleus" in spots_out_df.columns and "in_cytoplasm" in spots_out_df.columns:
         _before = len(spots_out_df)
@@ -3874,6 +3756,8 @@ def run_one(
         _n_ghost_excluded = len(_gset)
         if len(nuclei_df) and "nucleus_id" in nuclei_df.columns:
             nuclei_df = nuclei_df[~nuclei_df["nucleus_id"].isin(_gset)].reset_index(drop=True)
+        if len(morph_df) and "cell_id" in morph_df.columns:
+            morph_df = morph_df[~morph_df["cell_id"].isin(_gset)].reset_index(drop=True)
         if labels is not None and labels.size:
             labels = labels.copy()
             labels[np.isin(labels, list(_gset))] = 0
@@ -3912,21 +3796,13 @@ def run_one(
     # for audit, but the headline totals must match what the per-nucleus
     # metrics count (and what the QC overlay now displays) so the dashboards
     # are consistent end-to-end.
-    def _in_cell_count(df: pd.DataFrame) -> int:
-        if df is None or len(df) == 0:
-            return 0
-        if "in_nucleus" in df.columns and "in_cytoplasm" in df.columns:
-            return int((df["in_nucleus"].astype(bool) | df["in_cytoplasm"].astype(bool)).sum())
-        return int(len(df))
-    total_spots1 = _in_cell_count(spots1_df)
-    total_spots2 = _in_cell_count(spots2_df)
+    paired1_total, total_spots1 = _in_cell_paired_counts(spots1_df, f"paired_at_{pair_suffix}")
+    paired2_total, total_spots2 = _in_cell_paired_counts(spots2_df, f"paired_at_{pair_suffix}")
     # Also track raw detection counts (incl. floaters) for transparency.
     total_spots1_raw = int(len(spots1_df))
     total_spots2_raw = int(len(spots2_df))
     n_floaters_rna1 = total_spots1_raw - total_spots1
     n_floaters_rna2 = total_spots2_raw - total_spots2
-    paired1_total = int(np.asarray(paired1, dtype=int).sum()) if paired1.size else 0
-    paired2_total = int(np.asarray(paired2, dtype=int).sum()) if paired2.size else 0
     img_paired_frac_1 = (paired1_total / float(total_spots1)) if total_spots1 > 0 else float("nan")
     img_paired_frac_2 = (paired2_total / float(total_spots2)) if total_spots2 > 0 else float("nan")
 
@@ -4271,6 +4147,9 @@ def run_one(
             per_image["rna2_pooled_rotation_null_mean_at_rna1_spots"] = round(pooled_rot_mean, 3) if pooled_rot_mean == pooled_rot_mean else float("nan")
             per_image["rna2_mean_rotation_assoc_fraction_at_rna1_spots"] = round(pooled_rot_assoc, 4) if pooled_rot_assoc == pooled_rot_assoc else float("nan")
             per_image["n_nuclei_partner_rotation_null"] = int(_rot_n_nuclei_used)
+            per_image["rotation_frac_unplaceable"] = (
+                round(_rot_unpl_num / _rot_unpl_den, 6) if _rot_unpl_den > 0 else float("nan")
+            )
             per_image["partner_rotation_n"] = int(_rot_n)
             per_image["partner_rotation_disk_px"] = float(_rot_disk_px)
         # GATED PARTNER-ANCHORED rotation per-image pooled rollup (default OFF).
@@ -4736,149 +4615,16 @@ def collect_nuclear_rna_pixels(path, *, cfg) -> Tuple[np.ndarray, np.ndarray, np
         )
     except ValueError as exc:
         raise ValueError(f"{Path(path).name}: {exc}") from exc
-    dapi_idx, rna_idx, rna2_idx = _resolve_channels(cfg, img)
-
-    z_mode = cfg.z_stack.mode
-    z_start = cfg.z_stack.start_slice
-    z_end = cfg.z_stack.end_slice
-    # 2026-05-22 Brian: per-image z-window override. If the current image's
-    # file name matches a key in cfg.z_stack.file_overrides, use that
-    # image-specific start_slice / end_slice instead of the batch default.
-    _file_overrides = getattr(cfg.z_stack, "file_overrides", {}) or {}
-    _img_name = Path(path).name
-    if _img_name in _file_overrides:
-        _ovr = _file_overrides[_img_name]
-        if "start_slice" in _ovr:
-            z_start = int(_ovr["start_slice"])
-        if "end_slice" in _ovr:
-            z_end = int(_ovr["end_slice"])
-        try:
-            from rich.console import Console as _C
-            _C().print(f"  [dim]z-override: {_img_name} → start={z_start}, end={z_end}[/dim]")
-        except Exception:
-            pass
-    if z_start is not None and z_start > img.n_z:
-        z_start = 1
-    if z_end is not None and z_end > img.n_z:
-        z_end = img.n_z
-
-    # 2026-05-18 Brian: autofocus mode now LOCKS all channels to DAPI's
-    # picked focal plane. Previously each channel ran autofocus independently
-    # — DAPI picked slice 42, RNA1 picked 38, RNA2 picked 45 — and spot xy
-    # from a different physical plane than the nuclear mask led to
-    # mis-assignment of nuclear-edge spots to cytoplasm.
-    # 2026-05-24 Brian: autofocus_maxproj — per-image DAPI focus-window
-    # detection, then MIP that window for all channels. Replaces per-image
-    # file_overrides for datasets with field-to-field focus drift.
-    dapi_autofocus_z: Optional[int] = None
-    if z_mode == "autofocus" and str(
-        getattr(cfg.z_stack, "autofocus_channel", "dapi")
-    ).lower() == "joint":
-        # 2026-07-18 Brian: joint prescan pick MUST mirror run_one so the pooled
-        # batch-threshold RNA pixels are collected from the SAME plane the main
-        # pass analyzes. (rna/auto anchors are NOT wired into the prescan — they
-        # keep using the DAPI-locked plane below — but joint is, for coloc parity.)
-        _picked_z, _ = _io.resolve_joint_autofocus_plane(
-            img, dapi_idx, rna_idx, partner_idx=rna2_idx,
-            z_start=z_start, z_end=z_end,
-            intensity_weighted=bool(getattr(cfg.z_stack, "autofocus_intensity_weighted", False)),
-            reduce=str(getattr(cfg.z_stack, "autofocus_joint_reduce", "product")).lower(),
-            central_fraction=float(getattr(cfg.z_stack, "focus_central_fraction", 0.0)),
-            min_intensity_frac=float(getattr(cfg.z_stack, "focus_min_intensity_frac_of_peak", 0.0)),
-            nuclear_mask=bool(getattr(cfg.z_stack, "autofocus_joint_nuclear_mask", False)),
-        )
-        dapi_autofocus_z = int(_picked_z)
-        dapi_2d = _io.extract_channel_at_z(img, dapi_idx, z_1indexed=dapi_autofocus_z)
-        rna_2d = _io.extract_channel_at_z(img, rna_idx, z_1indexed=dapi_autofocus_z)
-        rna2_2d = _io.extract_channel_at_z(img, rna2_idx, z_1indexed=dapi_autofocus_z)
-        try:
-            from rich.console import Console as _C
-            _C().print(
-                f"  [dim]z-joint (prescan): {Path(path).name} → all channels @ "
-                f"joint plane z={dapi_autofocus_z}[/dim]"
-            )
-        except Exception:
-            pass
-    elif z_mode == "autofocus":
-        dapi_autofocus_z, dapi_2d = _io.extract_channel_autofocus_with_idx(
-            img, dapi_idx, z_start=z_start, z_end=z_end,
-            intensity_weighted=bool(getattr(cfg.z_stack, "autofocus_intensity_weighted", False)),
-        )
-        rna_2d = _io.extract_channel_at_z(img, rna_idx, z_1indexed=dapi_autofocus_z)
-        rna2_2d = _io.extract_channel_at_z(img, rna2_idx, z_1indexed=dapi_autofocus_z)
-        try:
-            from rich.console import Console as _C
-            _C().print(
-                f"  [dim]z-lock (prescan): {Path(path).name} → all channels @ DAPI "
-                f"plane z={dapi_autofocus_z}[/dim]"
-            )
-        except Exception:
-            pass
-    elif z_mode == "autofocus_maxproj":
-        (afm_zs, afm_ze), afm_diag, dapi_2d = _io.extract_dapi_focus_window(
-            img, dapi_idx,
-            metric=cfg.z_stack.focus_metric,
-            threshold_frac=float(cfg.z_stack.focus_threshold_frac),
-            min_slices=int(cfg.z_stack.focus_window_min_slices),
-            max_slices=int(cfg.z_stack.focus_window_max_slices),
-            z_start=z_start, z_end=z_end,
-            fixed_n_slices=int(getattr(cfg.z_stack, "focus_window_fixed_n_slices", 0)),
-            min_intensity_frac_of_peak=float(getattr(cfg.z_stack, "focus_min_intensity_frac_of_peak", 0.0)),
-            intensity_weighted=bool(getattr(cfg.z_stack, "autofocus_intensity_weighted", False)),
-            central_fraction=float(getattr(cfg.z_stack, "focus_central_fraction", 0.0)),
-        )
-        rna_2d = _io.extract_channel_in_z_range(
-            img, rna_idx,
-            z_start_1indexed=afm_zs, z_end_1indexed=afm_ze,
-            project="maxproj",
-        )
-        rna2_2d = _io.extract_channel_in_z_range(
-            img, rna2_idx,
-            z_start_1indexed=afm_zs, z_end_1indexed=afm_ze,
-            project="maxproj",
-        )
-        try:
-            from rich.console import Console as _C
-            _C().print(
-                f"  [dim][autofocus_maxproj] {Path(path).name}: "
-                f"focus peak at z={afm_diag['peak_z']+1}, "
-                f"window=[{afm_zs},{afm_ze}] "
-                f"({afm_ze - afm_zs + 1} slices)[/dim]"
-            )
-        except Exception:
-            pass
-    else:
-        dapi_2d = _io.extract_channel(img, dapi_idx, z_mode=z_mode, z_start=z_start, z_end=z_end)
-        if dapi_2d.ndim != 2:
-            dapi_2d = dapi_2d.max(axis=0)
-        rna_2d = _io.extract_channel(img, rna_idx, z_mode=z_mode, z_start=z_start, z_end=z_end)
-        if rna_2d.ndim != 2:
-            rna_2d = rna_2d.max(axis=0)
-        rna2_2d = _io.extract_channel(img, rna2_idx, z_mode=z_mode, z_start=z_start, z_end=z_end)
-        if rna2_2d.ndim != 2:
-            rna2_2d = rna2_2d.max(axis=0)
-
-    seg_params = dict(
-        min_area=nuclear_size.min_area_px,
-        max_area=nuclear_size.max_area_px,
-        prob_threshold=cfg.nuclei.prob_threshold,
-        nms_threshold=cfg.nuclei.nms_threshold,
-        n_tiles=cfg.nuclei.n_tiles,
-        stardist_model=cfg.nuclei.stardist_model,
-        stardist_gauss_sigma=cfg.nuclei.stardist_gauss_sigma,
-        stardist_postprocess=cfg.nuclei.stardist_postprocess,
-        stardist_postprocess_dilate_px=cfg.nuclei.stardist_postprocess_dilate_px,
-        stardist_postprocess_otsu_sigma=cfg.nuclei.stardist_postprocess_otsu_sigma,
-        stardist_postprocess_mask_closing_px=cfg.nuclei.stardist_postprocess_mask_closing_px,
-        label_smoothing_radius_px=cfg.nuclei.label_smoothing_radius_px,
-        diameter=nuclear_size.native_diameter_px,
-        flow_threshold=cfg.nuclei.cellpose_flow_threshold,
-        cellprob_threshold=cfg.nuclei.cellpose_cellprob_threshold,
-        cellpose_model_type=cfg.nuclei.cellpose_model_type,
-        cellpose_preclip_dapi_otsu=cfg.nuclei.cellpose_preclip_dapi_otsu,
-        cellpose_downsample_factor=cfg.nuclei.cellpose_downsample_factor,
-        cellpose_device=getattr(cfg.nuclei, "cellpose_device", "cpu"),
+    # Same planes and dust-speck masking as run_one, so the pooled pixels and
+    # the cached labels come from exactly what the main pass analyzes.
+    planes = prepare_segmentation_planes(img, path, cfg)
+    dapi_2d = planes["dapi_2d"]
+    rna_2d, rna2_2d = _zplanes.mask_dust_specks_planes(
+        cfg, planes["rna_2d"], planes["rna2_2d"],
     )
+    del planes
+
+    seg_params = segmentation_params(cfg, nuclear_size)
     labels = _seg.segment_nuclei(dapi_2d, backend=cfg.nuclei.backend, params=seg_params)
     if cfg.nuclei.exclude_border:
         labels = _seg.exclude_border_labels(labels, margin_px=nuclear_size.border_margin_px)

@@ -1766,3 +1766,45 @@ def test_cli_accepts_repeated_image_keys_and_phase1_only():
     )
     assert args.image_key == ["KD_1_17.vsi", "control42.vsi"]
     assert args.phase1_only
+    # The cohort design check is opt-in; the old skip flag still parses.
+    assert not args.check_design
+    legacy = _build_parser().parse_args(["--run", "run", "--skip-design-check"])
+    assert legacy.skip_design_check and not legacy.check_design
+
+
+def test_zero_spot_image_first_keeps_one_nucleus_csv_schema(tmp_path):
+    run, hierarchy_path, planes = _write_synthetic_completed_run(tmp_path)
+    # The zero-spot image is listed first, so its fragment is combined first.
+    _append_synthetic_image(run, hierarchy_path, image="aaa_zero.vsi", with_spots=False)
+    for table in (run / "per_image_summary.csv", hierarchy_path, run / "nuclei_metrics.csv"):
+        frame = pd.read_csv(table)
+        frame.iloc[::-1].to_csv(table, index=False)
+    config = json.loads((run / "run_config.json").read_text(encoding="utf-8"))
+    config["config_resolved"]["input_file_subset"].reverse()
+    (run / "run_config.json").write_text(json.dumps(config), encoding="utf-8")
+
+    def plane_reader(_path, *, selected_z_1based, channel_indices):
+        return planes, {
+            "selected_z_1based": 5, "selected_z_0based": 4, "n_z": 9,
+            "voxel_xy_nm": 100.0, "voxel_z_nm": 300.0,
+            "height_px": 15, "width_px": 15, "plane_lock_pass": True,
+        }
+
+    output = tmp_path / "zero-first-output"
+    run_exact_footprint_backfill(
+        run, hierarchy_path, output,
+        parameters=ExactFootprintParameters(miat_floor_raw=50, n_null=3),
+        plane_reader=plane_reader,
+        nucleolus_builder=lambda _rc, labels, _dapi, _voxel: np.zeros_like(labels),
+        validate_expected_design=False,
+    )
+    fragments = sorted((output / "_checkpoints").glob("*/nucleus_final.csv"))
+    headers = {path.read_text(encoding="utf-8").splitlines()[0] for path in fragments}
+    assert len(fragments) == 2 and len(headers) == 1
+    nuclei = pd.read_csv(output / "nucleus_exact_footprint_metrics.csv")
+    stem = "corr_all_detected_exact_valid_raw"
+    zero = nuclei.loc[nuclei["image_key"].eq("aaa_zero.vsi")].iloc[0]
+    assert zero[f"{stem}_n_spots"] == 0
+    assert not bool(zero[f"{stem}_estimable"])
+    populated = nuclei.loc[nuclei["image_key"].eq("field.vsi")].iloc[0]
+    assert populated[f"{stem}_n_spots"] == 3

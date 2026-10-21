@@ -29,7 +29,6 @@ from .core.excel_report import (
     write_raw_data_workbook,
 )
 from .core.modes import get_mode
-from .core.parallel import auto_n_workers
 
 
 _console = Console()
@@ -57,45 +56,6 @@ def _make_output_dirs(output_dir: Path, cfg: FishsuiteConfig) -> Dict[str, Path]
 # Group label given to sec-only images. They are a detection-floor control and
 # are never a biological condition group.
 _REPORT_SEC_ONLY_GROUP = "Secondary-only"
-
-
-def _write_by_group_figures(output_dir: Path, cfg) -> int:
-    """SuperPlots of this run's own data, one panel per condition GROUP.
-
-    Wells are the replicate points inside their group: nuclei are shaded by well,
-    field means are open circles, well means are the tested diamonds. Drawn from
-    the run's own CSVs by the same code path ``fishsuite report`` uses, so the
-    numbers on a run figure and on a report figure cannot drift apart.
-    Returns the number of PNGs written.
-    """
-    from .report import aggregate as _ragg
-    from .report import build as _rbuild
-    from .report import endpoints as _rep
-    from .report import figures as _rfig
-
-    groups = {str(g): [str(w) for w in (m or [])]
-              for g, m in (getattr(cfg.conditions, "groups", None) or {}).items()}
-    specs = [f"{g}={','.join(m)}" for g, m in groups.items() if m]
-    well_to_group, declared = _ragg.parse_groups(specs)
-    declared = cfg.conditions.resolved_group_order() or declared
-    data = _ragg.load_run(Path(output_dir), well_to_group, {})
-    order = _ragg.resolve_group_order(data["labels"], declared)
-    if len(order) < 1:
-        return 0
-    labels = _rep.channel_labels(data["cfg"])
-    endpoints, absent = _rep.resolve(data["nuclei"], data["per_image"])
-    field = _ragg.per_field_long(data["nuclei"], data["per_image"], endpoints,
-                                 data["labels"], int(cfg.conditions.min_nuclei_for_stats))
-    well = _ragg.per_well_long(field)
-    contrasts = _ragg.build_contrasts(well, field, endpoints, absent, order, order[0],
-                                      labels)
-    per_nuc = data["nuclei"]
-    per_nuc = per_nuc[~per_nuc["secondary_only"]] if "secondary_only" in per_nuc else per_nuc
-    out = Path(output_dir) / "figures" / "by_group"
-    made = _rbuild.render_figures(out, Path(output_dir), data, endpoints, absent, well,
-                                  field, per_nuc, contrasts, order, order[0], {},
-                                  labels, _rbuild.ALPHA)
-    return len(list(out.glob("*.png"))) if out.is_dir() else len(made)
 
 
 def _stem_with_condition(stem: str, condition: str | None) -> str:
@@ -575,12 +535,14 @@ def run_batch(
     input_dir: Path,
     output_dir: Path,
     *,
-    parallel: str | int = "auto",
+    parallel: str | int | None = None,
     dry_run: bool = False,
     verbose: bool = False,
 ) -> dict:
     """End-to-end batch run.
 
+    ``parallel`` is accepted for backward compatibility and ignored: the
+    per-image pass is serial (``parallel.seg_workers`` controls the pre-scan).
     Returns a dict with summary stats.
     """
     cfg = FishsuiteConfig.from_yaml(config_path)
@@ -755,12 +717,6 @@ def run_batch(
     if dry_run:
         _console.print("[yellow]--dry-run set, exiting before processing.[/yellow]")
         return dict(n_images=len(images))
-
-    if isinstance(parallel, str) and parallel.lower() == "auto":
-        n_workers = auto_n_workers()
-    else:
-        n_workers = max(1, int(parallel))
-    _console.print(f"Parallel workers: [bold]{n_workers}[/bold]")
 
     # Reset batch contrast cache so a prior run's running-max floor/ceil
     # cannot leak into this run's publication / QC renders. Mirrors Fiji's
@@ -1012,8 +968,15 @@ def run_batch(
             or cfg.output.manual_rna2_min is None or cfg.output.manual_rna2_max is None
         )
     )
-    if (
+    # The pre-scan also feeds the analysis/spot contrast floors, so it must
+    # run whenever either floor toggle is on, not only for publication images.
+    _need_batch_contrast = bool(
         cfg.output.save_publication_images
+        or getattr(cfg.output, "apply_pub_contrast_floor_to_spots", False)
+        or getattr(cfg.output, "apply_pub_contrast_floor_to_analysis", False)
+    )
+    if (
+        _need_batch_contrast
         and (_pub_mode in ("auto_batch", "reference_image") or _manual_needs_autobatch)
         and len(images) > 0
     ):
@@ -1284,7 +1247,7 @@ def run_batch(
     # and FALL BACK to the auto_batch percentile for that channel (which
     # the block above already populated). DAPI + antibody are unaffected.
     if (
-        cfg.output.save_publication_images
+        _need_batch_contrast
         and _pub_mode == "reference_image"
         and len(images) > 0
     ):
@@ -1762,6 +1725,7 @@ def run_batch(
                     f"over {len(_fvals)} images"
                 )
         _strip_prefix = _compute_common_filename_prefix([im.path.stem for im in images])
+        from .core.segmentation import SamplingShortfallError
         task = progress.add_task("Processing images", total=len(images))
         for i, dimg in enumerate(images):
             progress.update(task, description=f"[{i+1}/{len(images)}] {dimg.path.name}")
@@ -2522,6 +2486,9 @@ def run_batch(
                             f"{_tb.format_exc()}"
                         )
 
+            except SamplingShortfallError:
+                # sampling.on_short == "fail" aborts the whole run.
+                raise
             except Exception as e:
                 import traceback
                 tb = traceback.format_exc()
@@ -2587,20 +2554,20 @@ def run_batch(
         spots_df = annotate_frame(spots_df, hierarchy)
         morph_df = annotate_frame(morph_df, hierarchy)
 
-    per_image_df.to_csv(output_dir / f"{prefix}per_image_summary.csv", index=False)
-    nuclei_df.to_csv(output_dir / f"{prefix}nuclei_metrics.csv", index=False)
-    spots_df.to_csv(output_dir / f"{prefix}spot_metrics.csv", index=False)
-    morph_df.to_csv(output_dir / f"{prefix}cell_morphology.csv", index=False)
+    per_image_df.to_csv(output_dir / "per_image_summary.csv", index=False)
+    nuclei_df.to_csv(output_dir / "nuclei_metrics.csv", index=False)
+    spots_df.to_csv(output_dir / "spot_metrics.csv", index=False)
+    morph_df.to_csv(output_dir / "cell_morphology.csv", index=False)
 
     # NATIVE coloc-figure CSVs — written ONLY when the gating flags produced
     # carriers (default OFF -> no file -> byte-identical to legacy runs).
     if coloc_null_draws_dfs:
         pd.concat(coloc_null_draws_dfs, ignore_index=True).to_csv(
-            output_dir / f"{prefix}coloc_null_draws.csv", index=False
+            output_dir / "coloc_null_draws.csv", index=False
         )
     if coloc_radial_dfs:
         pd.concat(coloc_radial_dfs, ignore_index=True).to_csv(
-            output_dir / f"{prefix}coloc_radial_profile.csv", index=False
+            output_dir / "coloc_radial_profile.csv", index=False
         )
         # 2026-08-10: mean ± 95% CI profile figure, drawn from the PER-NUCLEUS
         # radial columns (one nucleus = one observation) rather than from the
@@ -2619,7 +2586,7 @@ def run_batch(
             from .core.radial_profile_figure import plot_radial_profile_ci
 
             _rad_png = plot_radial_profile_ci(
-                nuclei_df, output_dir / f"{prefix}coloc_radial_profile_ci.png",
+                nuclei_df, output_dir / "coloc_radial_profile_ci.png",
                 restrict_to_sampled=bool(
                     _sampling_rs.get("enabled")
                     and _sampling_rs.get("apply_to_rollups", True)
@@ -2633,11 +2600,11 @@ def run_batch(
             )
     if coloc_rotation_null_dfs:
         pd.concat(coloc_rotation_null_dfs, ignore_index=True).to_csv(
-            output_dir / f"{prefix}coloc_rotation_null.csv", index=False
+            output_dir / "coloc_rotation_null.csv", index=False
         )
 
     thr_df = pd.DataFrame(threshold_rows)
-    thr_df.to_csv(output_dir / f"{prefix}thresholds.csv", index=False)
+    thr_df.to_csv(output_dir / "thresholds.csv", index=False)
 
     _run_start_utc = datetime.fromtimestamp(
         t_start, tz=timezone.utc,
@@ -2652,7 +2619,6 @@ def run_batch(
         run_start_utc=datetime.fromtimestamp(t_start, tz=timezone.utc).isoformat(),
         run_end_utc=datetime.now(tz=timezone.utc).isoformat(),
         runtime_s=round(time.time() - t_start, 2),
-        n_workers=n_workers,
         config_path=str(config_path),
         preset_sha256=_preset_sha256,
         config_resolved=cfg.model_dump(mode="json"),
@@ -2777,7 +2743,7 @@ def run_batch(
     # flattened JSON straight off disk.
     try:
         _fallback_cols = write_analysis_summary_workbook(
-            out_path=output_dir / f"{prefix}analysis_summary.xlsx",
+            out_path=output_dir / "analysis_summary.xlsx",
             per_image_df=per_image_df,
             nuclei_df=nuclei_df,
             spots_df=spots_df,
@@ -2795,7 +2761,7 @@ def run_batch(
             z_start=int(cfg.z_stack.start_slice or 0),
             z_end=int(cfg.z_stack.end_slice or 0),
             images=images,
-            n_workers=int(n_workers),
+            n_workers=1,
         )
         if _fallback_cols:
             _console.print(
@@ -2814,7 +2780,7 @@ def run_batch(
     # ---- Excel companion: raw-data workbook -------------------------------
     try:
         write_raw_data_workbook(
-            out_path=output_dir / f"{prefix}analysis_raw_data.xlsx",
+            out_path=output_dir / "analysis_raw_data.xlsx",
             per_image_df=per_image_df,
             nuclei_df=nuclei_df,
             spots_df=spots_df,

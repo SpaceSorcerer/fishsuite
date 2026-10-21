@@ -13,11 +13,15 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from fishsuite.core.exact_footprint_common import (
+    median_mad, parse_bool as _explicit_bool, q95_call_masks,
+    require_columns as _require_columns, robust_distance,
+    sha256_file as _sha256_file,
+)
 from fishsuite.core.exact_footprint_figures import (
-    PRIMARY_DISPLAY_WINDOWS, _draw_overlay_specs, _explicit_bool, _pyplot,
-    _qc_pass, _require_columns, _sha256_file, _show_gray_qki, _show_rgb,
-    build_call_overlay_specs, load_selected_plane, nucleus_square_crop,
-    render_channel_rgb,
+    PRIMARY_DISPLAY_WINDOWS, _draw_overlay_specs, _pyplot, _qc_pass,
+    _show_gray_qki, _show_rgb, build_call_overlay_specs, load_selected_plane,
+    nucleus_square_crop, render_channel_rgb,
 )
 
 _PANELS = ("DAPI", "MIAT", "QKI", "merge", "q95 overlay")
@@ -54,22 +58,6 @@ def _condition(arm: object) -> str:
     raise ValueError(f"unsupported publication condition: {arm!r}")
 
 
-def _central_distance(values: pd.Series) -> tuple[pd.Series, float, float]:
-    numeric = pd.to_numeric(values, errors="coerce")
-    finite = numeric.loc[np.isfinite(numeric)]
-    if finite.empty:
-        return pd.Series(np.nan, index=values.index, dtype=float), np.nan, np.nan
-    median = float(np.median(finite))
-    mad = float(np.median(np.abs(finite - median)))
-    if mad == 0:
-        result = pd.Series(np.nan, index=values.index, dtype=float)
-        finite_mask = np.isfinite(numeric)
-        result.loc[finite_mask & numeric.eq(median)] = 0.0
-        result.loc[finite_mask & ~numeric.eq(median)] = np.inf
-        return result, median, mad
-    return (numeric - median).abs() / mad, median, mad
-
-
 def _field_audit(images: pd.DataFrame, spots: pd.DataFrame, nuclei: pd.DataFrame) -> pd.DataFrame:
     _require_columns(images, {"image_key", "image", "slide", "arm", "biological_set", "is_control", "secondary_only", "selected_z_1based", "voxel_xy_nm", "miat_channel_index", "qki_channel_index", "dapi_channel_index", "plane_lock_pass", "mask_qc_pass", "footprint_parity_pass", "population_reconciliation_pass", "image_qc_status"}, table="image audit")
     _require_columns(spots, {"image_key", "nucleus_id", "spot_uid", "null_usable", "qki_threshold_positive_q95", "stored_in_nucleolus", "qki_footprint_enrichment_vs_nucleoplasm"}, table="corrected spot table")
@@ -90,10 +78,7 @@ def _field_audit(images: pd.DataFrame, spots: pd.DataFrame, nuclei: pd.DataFrame
         roster = nuclei.loc[nuclei["image_key"].eq(key) & nuclei["nucleus_qc_status"].map(_qc_pass)]
         roster_ids = set(pd.to_numeric(roster["nucleus_id"], errors="coerce").dropna().astype(int))
         group = spots.loc[spots["image_key"].eq(key) & pd.to_numeric(spots["nucleus_id"], errors="coerce").isin(roster_ids)]
-        usable = group["null_usable"].map(_explicit_bool) if len(group) else pd.Series(dtype=bool)
-        calls = pd.Series(False, index=group.index, dtype=bool)
-        if usable.any():
-            calls.loc[usable] = group.loc[usable, "qki_threshold_positive_q95"].map(_explicit_bool)
+        usable, positive, _ = q95_call_masks(group)
         nonnucleolar = ~group["stored_in_nucleolus"].map(_explicit_bool) if len(group) else pd.Series(dtype=bool)
         n_usable = int(usable.sum())
         qki = pd.to_numeric(group.loc[usable, "qki_footprint_enrichment_vs_nucleoplasm"], errors="coerce")
@@ -106,7 +91,7 @@ def _field_audit(images: pd.DataFrame, spots: pd.DataFrame, nuclei: pd.DataFrame
             or _explicit_bool(image["secondary_only"])
         )
         row = dict(image)
-        row.update({"condition": "CONTROL" if is_control else _condition(image["arm"]), "source_image": image["image"], "eligible": bool(not is_control and all(passed.values()) and _qc_pass(image["image_qc_status"]) and len(roster) > 0 and n_usable > 0), "n_qc_passing_nuclei": int(len(roster)), "n_usable_q95": n_usable, "n_q95_positive": int((usable & calls).sum()), "association_fraction_q95": int((usable & calls).sum()) / n_usable if n_usable else np.nan, "non_nucleolar_spots_per_qc_nucleus": float(nonnucleolar.sum() / len(roster)) if len(roster) else np.nan, "median_qki_enrichment_vs_nucleoplasm": float(qki.median()) if qki.notna().any() else np.nan})
+        row.update({"condition": "CONTROL" if is_control else _condition(image["arm"]), "source_image": image["image"], "eligible": bool(not is_control and all(passed.values()) and _qc_pass(image["image_qc_status"]) and len(roster) > 0 and n_usable > 0), "n_qc_passing_nuclei": int(len(roster)), "n_usable_q95": n_usable, "n_q95_positive": int(positive.sum()), "association_fraction_q95": int(positive.sum()) / n_usable if n_usable else np.nan, "non_nucleolar_spots_per_qc_nucleus": float(nonnucleolar.sum() / len(roster)) if len(roster) else np.nan, "median_qki_enrichment_vs_nucleoplasm": float(qki.median()) if qki.notna().any() else np.nan})
         records.append(row)
     return pd.DataFrame(records)
 
@@ -134,17 +119,7 @@ def _select_nuclei_for_fields(
                     nucleus_id
                 )
             ]
-            usable = (
-                group["null_usable"].map(_explicit_bool)
-                if len(group)
-                else pd.Series(dtype=bool)
-            )
-            calls = pd.Series(False, index=group.index, dtype=bool)
-            if usable.any():
-                calls.loc[usable] = group.loc[
-                    usable, "qki_threshold_positive_q95"
-                ].map(_explicit_bool)
-            positive = usable & calls
+            usable, positive, negative = q95_call_masks(group)
             nonnucleolar = (
                 ~group["stored_in_nucleolus"].map(_explicit_bool)
                 if len(group)
@@ -163,7 +138,7 @@ def _select_nuclei_for_fields(
                     "n_scoped_spots": int(len(group)),
                     "n_null_usable": int(usable.sum()),
                     "n_q95_positive": int(positive.sum()),
-                    "n_q95_negative": int((usable & ~calls).sum()),
+                    "n_q95_negative": int(negative.sum()),
                     "n_q95_unusable": int(len(group) - usable.sum()),
                     "association_fraction_q95_nucleus": (
                         float(positive.sum() / usable.sum())
@@ -189,7 +164,8 @@ def _select_nuclei_for_fields(
             "association_fraction_q95_nucleus",
             "log1p_non_nucleolar_spots",
         ):
-            distance, median, mad = _central_distance(audit[metric])
+            median, mad = median_mad(audit[metric])
+            distance = pd.Series(robust_distance(audit[metric], median, mad), index=audit.index)
             audit[f"field_median_{metric}"] = median
             audit[f"field_mad_{metric}"] = mad
             audit[f"nucleus_distance_{metric}"] = distance
@@ -214,6 +190,10 @@ def select_publication_micrograph_examples(image_audit: pd.DataFrame, spots: pd.
     """Select three condition-relative central fields per arm, distinct sets first."""
     if int(representatives_per_arm) != 3:
         raise ValueError("final publication package requires exactly 3 examples per arm")
+    # Normalise image keys once so field and nucleus lookups agree.
+    for frame, table in ((image_audit, "image audit"), (spots, "corrected spot table"), (nuclei, "nucleus QC roster")):
+        _require_columns(frame, {"image_key"}, table=table)
+    image_audit, spots, nuclei = (frame.assign(image_key=frame["image_key"].astype(str).str.casefold()) for frame in (image_audit, spots, nuclei))
     fields = _field_audit(image_audit, spots, nuclei)
     metrics = ("association_fraction_q95", "non_nucleolar_spots_per_qc_nucleus", "median_qki_enrichment_vs_nucleoplasm")
     fields["condition_centrality_distance"] = np.nan
@@ -224,7 +204,8 @@ def select_publication_micrograph_examples(image_audit: pd.DataFrame, spots: pd.
             raise ValueError(f"{condition} has fewer than 3 valid candidates")
         total = pd.Series(0.0, index=candidates.index)
         for metric in metrics:
-            distance, median, mad = _central_distance(candidates[metric])
+            median, mad = median_mad(candidates[metric])
+            distance = pd.Series(robust_distance(candidates[metric], median, mad), index=candidates.index)
             fields.loc[index, f"condition_median_{metric}"] = median
             fields.loc[index, f"condition_mad_{metric}"] = mad
             fields.loc[candidates.index, f"condition_distance_{metric}"] = distance
@@ -348,17 +329,12 @@ def render_publication_micrograph_package(selected_planes_h5: str | Path, image_
             margin_um=_CROP_MARGIN_UM,
         )
         scoped = table.loc[table["image_key"].eq(key) & pd.to_numeric(table["nucleus_id"], errors="coerce").eq(nucleus_id)].copy()
-        usable = scoped["null_usable"].map(_explicit_bool)
-        calls = pd.Series(False, index=scoped.index, dtype=bool)
-        if usable.any():
-            calls.loc[usable] = scoped.loc[
-                usable, "qki_threshold_positive_q95"
-            ].map(_explicit_bool)
+        usable, positive, negative = q95_call_masks(scoped)
         scoped_counts = {
             "n_scoped_spots": int(len(scoped)),
             "n_null_usable": int(usable.sum()),
-            "n_q95_positive": int((usable & calls).sum()),
-            "n_q95_negative": int((usable & ~calls).sum()),
+            "n_q95_positive": int(positive.sum()),
+            "n_q95_negative": int(negative.sum()),
             "n_q95_unusable": int(len(scoped) - usable.sum()),
         }
         for column, value in scoped_counts.items():

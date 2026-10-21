@@ -14,7 +14,8 @@ from openpyxl.utils import get_column_letter, coordinate_to_tuple
 from .aggregate import ReportInputError
 from .sensitivities import (mixed_p_text, mixed_validated, mixed_value, headline_holm_value,
                             check_writable, require_current_rows, require_validated_slide_cache,
-                            LegacyStatisticsError, REBUILD_MESSAGE, table_block)
+                            LegacyStatisticsError, REBUILD_MESSAGE, table_block,
+                            WELCH_HEADLINE, MIXED_HEADLINE)
 from . import figures
 from .provenance import guard_output, sha256
 
@@ -137,10 +138,30 @@ def validate_deck(workbook: Path, spec: dict) -> list:
     return resolved
 
 
+def _headline_tests(contrasts, names, reference):
+    """The headline test each contrast row behind a figure reports, as the bracket shows it."""
+    rows = contrasts[contrasts['endpoint'].isin(list(names))] if len(contrasts) and names else contrasts.iloc[:0]
+    if 'reference_group' in rows:
+        rows = rows[rows['reference_group'] == reference]
+    if not len(rows):
+        return 'no contrast'
+    def test(r):
+        if figures._flag(r.get('descriptive_only', False)):
+            return 'descriptive, no test'
+        value = r.get('headline_test', np.nan)
+        if pd.isna(value):
+            value = MIXED_HEADLINE if mixed_validated(r) else WELCH_HEADLINE
+        return str(value)
+    tests = {str(r['endpoint']): test(r) for _, r in rows.iterrows()}
+    if len(set(tests.values())) == 1:
+        return next(iter(tests.values()))
+    return '; '.join(f'{k}: {v}' for k, v in tests.items())
+
+
 NOTES_TRAILER_DEFAULTS = {
     'replicate_unit': 'Nuclei are measurement units, FOVs are technical replicates, and well means are biological replicates',
     'headline_statistic': 'the headline is the nucleus-level mixed model',
-    'decision_line': 'Mixed-model headline decision 2026-09-07 after data inspection; Welch on well means remains reported. Student and FOV Welch are sensitivities.',
+    'decision_line': 'Mixed-model headline chosen after data inspection; Welch on well means remains reported. Student and FOV Welch are sensitivities.',
     'no_contrast_line': 'No endpoint contrast is displayed on this slide.',
 }
 
@@ -625,7 +646,7 @@ def prepare_deck(template: dict, sheets: dict, out_dir: Path, data: dict,
             figure_rows.append(dict(slide=slide_no,**asset,source_sheet='Contrasts' if names else 'Micrographs',
                                     source_cells=';'.join(f'{r["sheet"]}!{r["cell"]}' for r in refs),
                                     endpoints=';'.join(names),filter='all retained; endpoint finite/usability masks',
-                                    test='two-sided Welch on well means'))
+                                    test=_headline_tests(contrasts, names, ctx.reference)))
         # Non-figure text is workbook material too: no untraced scientific literals.
         if item.get('body'):
             values.append(dict(slide=slide_no,endpoint='',label='readout',value=item['body'],

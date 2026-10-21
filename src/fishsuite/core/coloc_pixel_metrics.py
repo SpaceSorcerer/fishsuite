@@ -38,6 +38,7 @@ def uniform_position_percentile(observed, null_draws, rng: np.random.Generator) 
     uniform on {0, ..., #{d_ik = o_i}}; u_i = R_i / K. If the observed spot is
     exchangeable with its K uniform-position placements, R_i is uniform on
     {0..K} exactly, ties included (a mid-rank would pile tied spots at 0.5).
+    A non-finite observed value scores NaN.
     """
     observed = np.asarray(observed, dtype=float)
     draws = np.asarray(null_draws, dtype=float)
@@ -48,7 +49,9 @@ def uniform_position_percentile(observed, null_draws, rng: np.random.Generator) 
     below = np.count_nonzero(draws < observed[None, :], axis=0)
     ties = np.count_nonzero(draws == observed[None, :], axis=0)
     jitter = rng.integers(0, ties + 1) if observed.size else np.zeros(0, dtype=int)
-    return (below + jitter) / draws.shape[0]
+    u = (below + jitter) / draws.shape[0]
+    u[~np.isfinite(observed)] = np.nan
+    return u
 
 
 def upp_chance_ge(k: int, cutoff: float) -> float:
@@ -59,6 +62,7 @@ def upp_chance_ge(k: int, cutoff: float) -> float:
 
 def upp_summary(u: np.ndarray, k: int) -> dict:
     u = np.asarray(u, dtype=float)
+    u = u[np.isfinite(u)]  # unscored (NaN) spots are left out
     out = dict(mean_uniform_position_percentile_qki=np.nan, frac_spots_upp_ge_0p90=np.nan,
                frac_spots_upp_ge_0p75=np.nan, n_spots_upp=int(u.size), chance_mean_upp=0.5,
                chance_frac_spots_upp_ge_0p90=upp_chance_ge(k, UPP_CUTOFFS[0]) if k else np.nan,
@@ -239,6 +243,8 @@ def acf_radial(x, mask, *, max_radius: int = ACF_MAX_RADIUS_PX, min_pairs: int =
     ACF(d) = sum over in-mask pairs (x_p - m)(x_{p+d} - m) / (n_pairs(d) * var),
     m and var over the mask. Radial bin k = round(|d|); each bin is
     pair-count weighted and kept only when it has >= ``min_pairs`` pairs.
+    Pairs are unordered: only one half-plane of lags is counted (the ACF is
+    symmetric, so the bin value is unchanged).
     Returns (radii, acf, pairs, reason).
     """
     from scipy.signal import correlate
@@ -272,8 +278,9 @@ def acf_radial(x, mask, *, max_radius: int = ACF_MAX_RADIUS_PX, min_pairs: int =
     window_num[y0 - cy + r:y1 - cy + r, x0 - cx + r:x1 - cx + r] = num[y0:y1, x0:x1]
     window_cnt[y0 - cy + r:y1 - cy + r, x0 - cx + r:x1 - cx + r] = cnt[y0:y1, x0:x1]
     bins = np.rint(np.hypot(dy, dx)).astype(int)
+    half_plane = (dy > 0) | ((dy == 0) & (dx >= 0))
     for radius in radii:
-        sel = (bins == radius) & (window_cnt > 0)
+        sel = (bins == radius) & (window_cnt > 0) & half_plane
         total = float(window_cnt[sel].sum())
         pairs[radius] = int(total)
         if total >= min_pairs:
@@ -526,6 +533,7 @@ def object_coloc(qki, mask, centres, footprints, *, qki_floor, pixel_um) -> dict
     (n, 2) spot centroids (y, x) in px; ``footprints`` holds one (y_px, x_px) integer pair per spot, or
     None where the footprint is unknown. Returns the fraction of spots WITH a footprint that touch any
     object, and the median distance (um) from every spot centroid to the nearest object centroid.
+    Both are NaN (``NO_QKI_OBJECTS``) when the nucleus has no object.
     """
     from scipy import ndimage
     from scipy.spatial import cKDTree
@@ -543,12 +551,12 @@ def object_coloc(qki, mask, centres, footprints, *, qki_floor, pixel_um) -> dict
     if len(centres) == 0:
         out["na_reason_object_coloc"] = "NO_SPOTS"
         return out
-    if known:
-        out["frac_miat_spots_on_qki_object"] = float(np.mean(
-            [bool((comp[np.asarray(y, int), np.asarray(x, int)] > 0).any()) for y, x in known]))
     if n_obj == 0:
         out["na_reason_object_coloc"] = "NO_QKI_OBJECTS"
         return out
+    if known:
+        out["frac_miat_spots_on_qki_object"] = float(np.mean(
+            [bool((comp[np.asarray(y, int), np.asarray(x, int)] > 0).any()) for y, x in known]))
     objects = np.asarray(ndimage.center_of_mass(np.ones(comp.shape), comp, np.arange(1, n_obj + 1)))
     out["median_nn_dist_um_miat_to_qki_object"] = float(np.median(cKDTree(objects).query(centres)[0]) * px)
     return out

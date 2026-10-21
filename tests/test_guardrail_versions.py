@@ -24,7 +24,8 @@ def test_versions_records_imported_source_identity(tmp_path, monkeypatch, status
     assert any(l.startswith("fishsuite_git_commit: " + "a" * 40) for l in lines)
     assert f"fishsuite_git_dirty: {dirty}" in lines
     assert f"fishsuite_source_path: {package_dir.resolve()}" in lines
-    expected_prefix = ["git", "-C", str(package_dir.resolve())]
+    # git runs in the same guarded checkout engine_git_commit uses.
+    expected_prefix = ["git", "-C", str(repro._engine_repo())]
     assert expected_prefix + ["rev-parse", "HEAD"] in [call[0] for call in calls]
     assert expected_prefix + ["status", "--porcelain", "--untracked-files=no"] in [call[0] for call in calls]
     assert all(kwargs["timeout"] <= 10 for command, kwargs in calls if command[0] == "git")

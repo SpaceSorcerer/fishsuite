@@ -40,6 +40,17 @@ def test_condition_relative_selection_is_three_per_arm_distinct_and_auditable():
     assert not bool(audit.loc["nt_failed_parity.vsi", "eligible"])
 
 
+def test_selection_matches_image_keys_case_insensitively_across_tables():
+    """Catches field audit casefolding keys that nucleus selection does not."""
+    from fishsuite.core.exact_footprint_publication_micrographs import select_publication_micrograph_examples
+    images, spots, nuclei = _selection_tables()
+    spots["image_key"] = spots["image_key"].str.upper()
+    nuclei["image_key"] = nuclei["image_key"].str.upper()
+    selected = select_publication_micrograph_examples(images, spots, nuclei)
+    assert len(selected.manifest) == 6
+    assert selected.manifest["image_key"].eq(selected.manifest["image_key"].str.casefold()).all()
+
+
 def test_omission_control_is_excluded_before_condition_normalization():
     """Catches a valid OMISSION arm raising before its control flag is applied."""
     from fishsuite.core.exact_footprint_publication_micrographs import (

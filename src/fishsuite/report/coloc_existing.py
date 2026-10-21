@@ -447,10 +447,6 @@ def integrate_panel(data: dict, panel: ExistingPanel, endpoints: list) -> tuple:
             raise ReportInputError(f'frozen registry member missing: {record["name"]}')
         for attr in ('family', 'descriptive_only', 'absolute_intensity', 'excluded_from_holm', 'usability_flag'):
             expected = record[attr]
-            # A20 explicitly amends intensity test eligibility. Every other
-            # frozen registry property and every nucleus/alias check still binds.
-            if record['absolute_intensity'] and attr in ('descriptive_only','excluded_from_holm'):
-                expected = False if attr=='descriptive_only' else ''
             if getattr(old, attr) != expected:
                 raise ReportInputError(f'frozen registry membership changed: {old.name}/{attr}')
     added = ep.a3_endpoints(panel.tables['per_well'].columns)

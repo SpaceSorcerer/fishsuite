@@ -1,6 +1,6 @@
 """Source-run linkage for a report folder.
 
-Brian could not tell which fishsuite run produced a delivery, so every report
+A reader cannot otherwise tell which fishsuite run produced a delivery, so every report
 folder carries the answer in three redundant forms:
 
 1. ``SOURCE_RUN.md`` at the top, naming the run and everything needed to find it
@@ -87,6 +87,41 @@ def producing_commit(run_dir: Path) -> str:
                 if re.fullmatch(r'[0-9a-fA-F]{40}', value.strip()):
                     return value.strip()
     return 'missing from run'
+
+
+def git_head(repo: Path) -> str:
+    """HEAD of ``repo``, or a short reason when git cannot read it."""
+    try:
+        r = subprocess.run(["git", "-C", str(repo), "rev-parse", "HEAD"],
+                           capture_output=True, text=True, timeout=20)
+        return r.stdout.strip() or f"git returned nothing ({r.stderr.strip()})"
+    except Exception as exc:                                   # noqa: BLE001
+        return f"could not read git HEAD: {type(exc).__name__}: {exc}"
+
+
+def reporter_commit() -> Optional[str]:
+    """Commit of the fishsuite checkout running this code, ``-dirty`` when it has local
+    changes; None when this code is not running from its own git checkout."""
+    import re
+    root = Path(__file__).resolve().parents[3]
+    if not (root / "src" / "fishsuite").is_dir():
+        return None
+    try:
+        top = subprocess.run(["git", "-C", str(root), "rev-parse", "--show-toplevel"],
+                             capture_output=True, text=True, timeout=20)
+        # An enclosing repository that is not this checkout says nothing about this code.
+        if top.returncode or Path(top.stdout.strip()).resolve() != root:
+            return None
+        head = git_head(root)
+        if not re.fullmatch(r"[0-9a-f]{40}", head):
+            return None
+        status = subprocess.run(["git", "-C", str(root), "status", "--porcelain"],
+                                capture_output=True, text=True, timeout=60)
+        if status.returncode:
+            return None
+        return head + ("-dirty" if status.stdout.strip() else "")
+    except Exception:                                          # noqa: BLE001
+        return None
 
 
 def sha256(path: Path) -> str:

@@ -13,8 +13,9 @@ Rules this module enforces, from the ``rnaseq-figure-style`` skill and the
 * SuperPlots are dots over means: nuclei shaded BY WELL inside their condition
   group, field means as open circles, WELL means as the tested diamonds, and a
   heavy line at the mean of the well means.
-* The star comes from the RAW Welch p. The Holm-adjusted p and the minimum
-  detectable effect are printed in the footnote, never hidden.
+* The p value behind the star depends on the plot style (``star_source``). The
+  Holm-adjusted p and the minimum detectable effect are printed in the
+  footnote, never hidden.
 """
 from __future__ import annotations
 
@@ -259,6 +260,31 @@ def save(fig, out_dir: Path, stem: str, manifest: List[dict], description: str,
 # ------------------------------------------------------------------- context
 
 
+STAR_LEGEND = "**** below 1e-4, *** below 0.001, ** below 0.01, * below 0.05, ns otherwise."
+
+
+def star_test(plot_style: str) -> str:
+    """The test behind the figure stars for a plot style."""
+    if plot_style == "replicate-simple":
+        return ("nucleus-level mixed model, Welch t on well means where the mixed fit "
+                "is not validated")
+    return "Welch t on well means"
+
+
+def star_source(plot_style: str) -> str:
+    """One sentence naming the p value the figure stars of a plot style come from."""
+    if plot_style == "replicate-simple":
+        return ("Stars come from the raw nucleus-level mixed-model p; where the mixed fit "
+                "is field-only or not validated, the bracket uses the raw Welch p on well "
+                "means and is labelled Welch (well means).")
+    return "Stars come from the raw Welch p on well means."
+
+
+def _flag(value) -> bool:
+    """A stored boolean flag, read the same whether it is a bool, number or string."""
+    return bool(pd.notna(value)) and str(value).strip().lower() in ("true", "1", "1.0")
+
+
 def validate_plot_options(plot_style: str, technical_layer: str) -> None:
     if plot_style not in ("superplot", "replicate-simple"):
         raise ValueError("plot_style must be superplot or replicate-simple")
@@ -295,9 +321,12 @@ class FigureContext:
         self.colors = group_colors(self.group_order, color_overrides)
         self.thresholds = self._threshold_text(thresholds)
         self.segmentation = self._segmentation_text(cfg, self.run_dir)
-        self.banner = (f"Run {self.run_name} | {self.thresholds} | {self.segmentation} | "
-                       "replicate unit: the well | test: Welch t on well means")
+        self.banner = self._banner_text()
         self.filt = self._filter_text()
+
+    def _banner_text(self) -> str:
+        return (f"Run {self.run_name} | {self.thresholds} | {self.segmentation} | "
+                f"replicate unit: the well | test: {star_test(self.plot_style)}")
 
     @staticmethod
     def _threshold_text(thr: Optional[pd.DataFrame]) -> str:
@@ -378,14 +407,14 @@ class FigureContext:
               if self.excluded_fields else "; no field excluded")
         return (f"Filter: {self._nucleus_filter_text()}, except "
                 f"where an endpoint states the engine usability flag it applies"
-                f"{ex}. Gate: Welch t on well means at alpha {self.alpha:g}; "
+                f"{ex}. Gate: {star_test(self.plot_style)} at alpha {self.alpha:g}; "
                 f"reference group {self.reference}.")
 
     def footer(self, extra: str = "") -> str:
         base = (f"Produced by fishsuite report from run {self.run_path}. "
                 f"{self.thresholds}. {self.segmentation}. Replicate unit: the well "
                 f"(fields of view are technical replicates; nuclei are the measurement "
-                f"unit). Test: Welch t on well means.")
+                f"unit). Test: {star_test(self.plot_style)}.")
         note = getattr(self, 'localization_note', '')
         if note:
             base += '\n' + note
@@ -521,7 +550,7 @@ def draw_superplot(ax, ctx: FigureContext, endpoint: str, well: pd.DataFrame,
         ax.set_yticks(np.arange(0, 101, 20))
 
     # Brackets: every non-reference group against the reference. The star is the
-    # RAW Welch p; the Holm-adjusted value goes in the footnote.
+    # raw Welch p; the Holm-adjusted value goes in the footnote.
     ref_x = order.index(ctx.reference) if ctx.reference in order else 0
     p_lines: List[str] = []
     level = 0
@@ -529,14 +558,24 @@ def draw_superplot(ax, ctx: FigureContext, endpoint: str, well: pd.DataFrame,
         if group == ctx.reference:
             continue
         r = crow[crow["test_group"] == group] if len(crow) else crow
+        if len(r) and "reference_group" in r:
+            r = r[r["reference_group"] == ctx.reference]
         if not len(r):
             continue
         r0 = r.iloc[0]
         p_raw = r0.get("p_welch", np.nan)
+        row_star = top + (0.13 + 0.13 * level) * span
+        if _flag(r0.get("descriptive_only", False)):
+            ax.text((ref_x + xi) / 2, row_star, "descriptive, no test", ha="center",
+                    va="bottom", fontsize=6.0 if compact else 7.5, color="black", zorder=9)
+            p_lines.append(f"{group} vs {ctx.reference}: descriptive, no test "
+                           f"(raw Welch p {fmt_p(p_raw)} for information only).")
+            ax.set_ylim(bot - 0.08 * span, row_star + 0.17 * span)
+            level += 1
+            continue
         p_holm = r0.get("p_welch_holm_within_family", np.nan)
         mde = r0.get("mde_hedges_g_at_family_alpha", np.nan)
         g = r0.get("hedges_g", np.nan)
-        row_star = top + (0.13 + 0.13 * level) * span
         if fraction_scale(endpoint) == 100 and 'minus_shuffle' not in endpoint:
             row_star = min(row_star, 92 - 8 * level)
         ax.plot([ref_x, ref_x, xi, xi],
@@ -583,8 +622,7 @@ def draw_superplot(ax, ctx: FigureContext, endpoint: str, well: pd.DataFrame,
         if have_nuc else
         "Open circles are field means; diamonds are WELL means, the tested points; the "
         "heavy line is the mean of the well means.")
-    star_line = ("Stars come from the RAW Welch p on well means: **** below 1e-4, "
-                 "*** below 0.001, ** below 0.01, * below 0.05, ns otherwise.")
+    star_line = star_source("superplot")[:-1] + ": " + STAR_LEGEND
     n_line = "n per group: " + "; ".join(
         f"{g} {n_well_by_group.get(g, 0)} wells"
         + (f", {n_nuc_by_group.get(g, 0)} nuclei" if have_nuc else "")
@@ -848,8 +886,10 @@ def draw_replicate_simple(ax, ctx: FigureContext, endpoint: str, well: pd.DataFr
         definition = next((e for e in (*ENDPOINTS, *RATIO_ENDPOINTS, *a3_endpoints([endpoint]))
                            if e.name == endpoint), None)
         absolute = bool(r.get('absolute_intensity', False) or (definition and definition.absolute_intensity))
-        descriptive = not absolute and bool(r.get('descriptive_only', False) or (definition and definition.descriptive_only))
-        if absolute:
+        # The contrast row carries the test membership the build declared.
+        flag = r.get('descriptive_only', np.nan)
+        descriptive = _flag(flag) if pd.notna(flag) else bool(definition and definition.descriptive_only)
+        if absolute and not descriptive:
             from .endpoints import INTENSITY_CAVEAT
             details.append(INTENSITY_CAVEAT)
         if descriptive:
@@ -1058,10 +1098,11 @@ def render_localization(ctx: FigureContext, well: pd.DataFrame, field: pd.DataFr
     # value is recalculated for a change in plot style or percent display units.
     view = copy(ctx)
     view.plot_style = 'replicate-simple'
+    view.banner = view._banner_text()
     view.localization_note = ('Per nucleus and assigned cell territory. Nuclear fraction displayed ×100; stored as 0–1. '
         'Detection Holm and family-alpha MDE include the added cytoplasmic test; amended, not baseline parity.')
     view.filt = (f'Filter: all retained nuclei; zero counts retained; zero-total fraction NA; '
-                 f'no added peak/nucleus gates. Test: two-sided well-mean Welch; alpha {ctx.alpha:g}.')
+                 f'no added peak/nucleus gates. Test: {star_test(view.plot_style)}; alpha {ctx.alpha:g}.')
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     for key in ['per_nucleus', 'unassigned', 'checks', 'territory']:
@@ -1155,7 +1196,7 @@ def render_localization(ctx: FigureContext, well: pd.DataFrame, field: pd.DataFr
     for k, (name, color) in enumerate(luts):
         canvas.text(.06 + k * .27, .16, '■', color=color, fontsize=9)
         canvas.text(.076 + k * .27, .16, name, fontsize=7)
-    footer = ('Two-sided Welch on well means; replicate unit: well.\n'
+    footer = (star_source(view.plot_style) + ' Replicate unit: well.\n'
               + '\n'.join(foots) + f'\nRun: {ctx.run_path}')
     stamp_foot(canvas, footer, size=5.4, y=.025)
     save(canvas, out_dir / "composites", 'FIG_LOCALIZATION', manifests,
@@ -1510,9 +1551,8 @@ def composite_main(ctx: FigureContext, specs: Sequence[dict], panels: List[dict]
         + (f"; {chr(ord('A') + n_sp)} representative micrographs." if has_img else ".")
         + "\nDots are nuclei shaded by WELL within their condition group; open circles "
           "are field means; diamonds are WELL means, the tested points; the heavy line "
-          "is the mean of the well means.\nStars come from the RAW Welch p on well "
-          "means: **** below 1e-4, *** below 0.001, ** below 0.01, * below 0.05, ns "
-          "otherwise. The Holm-adjusted p and the minimum detectable effect for every "
+          "is the mean of the well means.\n" + star_source(ctx.plot_style) + " " + STAR_LEGEND
+        + " The Holm-adjusted p and the minimum detectable effect for every "
           "panel are on that panel's standalone figure and in the Contrasts sheet.\n"
         + "\n".join(x for x in foots if x))
     if ctx.plot_style == 'replicate-simple':
