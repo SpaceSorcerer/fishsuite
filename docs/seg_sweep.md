@@ -1,20 +1,27 @@
 # Nuclear diameter sweep
 
-Run `fishsuite seg-sweep -c <preset.yaml> -i <input directory> --diameters-um 9,11,13 --max-images-per-condition 1 --seed 0 --out <new directory>`.
+Use `fishsuite seg-sweep` before a run to choose the nuclear diameter for Cellpose:
 
-This QC command supports Cellpose in `rna_only`, `rna_rna` and `rna_protein` modes. It uses the run's discovery, explicit input subset, channel mapping, plane preparation, segmentation wrapper and border filter. Nested traversal is opt-in via `conditions.recursive_discovery: true`, enabled only in the new UD OE preset. The default preserves the legacy flat-or-one-level discovery, including omission of root-level files when subfolders exist. Recursive folder keys use forward slashes on every platform, and excluded/underscore-prefixed directories are pruned. Unmatched filenames raise when `strict_filenames` is enabled, before subset selection.
+```bash
+fishsuite seg-sweep -c my_experiment.yaml -i raw/my_experiment --diameters-um 9,11,13 \
+    --max-images-per-condition 1 --seed 0 --out results/seg_sweep_01
+```
 
-Within each condition, names and paths are sorted, then permuted by the seeded NumPy generator; the first N images are selected. The same images are used for all diameters. Only `expected_diameter_um` is changed in each copied nuclei configuration. The model receives `diameter_um / (pixel_size_um * downsample_factor)`; the wrapper receives native diameter and performs the downsampling division once. The preset's Cellpose device and all remaining segmentation settings are preserved.
+It supports Cellpose in `rna_only`, `rna_rna` and `rna_protein` modes, and uses the same discovery, input subset, channel mapping, plane preparation, segmentation wrapper and border filter as a run. Discovery follows the `conditions` settings described in [Organising your images](../README.md#organising-your-images).
 
-XY scale uses the same positive configured voxel override, otherwise image metadata, as the analysis path. Missing or nonpositive scale is an error. One image is opened at a time. Only rendered row rasters and scalar area measurements persist between images.
+Within each condition, images are sorted and then shuffled with the seed; the first N are used, and the same images are used for every diameter. Only `nuclei.expected_diameter_um` changes between columns. The model receives `diameter_um / (pixel_size_um * downsample_factor)`. The preset's Cellpose device and other segmentation settings are kept.
 
-Outputs:
+The pixel size comes from `foci.bigfish_voxel_size_nm` when it is positive, otherwise from image metadata. A missing pixel size is an error. Images are opened one at a time.
 
-- `seg_sweep_contact_sheet.png`: 600 dpi, images in rows and diameters in columns. DAPI is grey with one shared range, using valid preset manual DAPI levels or the first selected plane's range. The actual range is recorded. Blue outlines are retained nuclei, orange are area exclusions and magenta are border exclusions. Every panel has a physical scale bar and model-input diameter.
-- `seg_sweep_summary.csv`: image-relative path, condition, diameter, model-input pixels, retained/small/large/border counts, retained median area, area IQR and median equivalent diameter. Empty populations have blank size statistics. Areas are native-mask pixels multiplied by XY scale squared.
-- `seg_sweep_area_hist.png`: retained-area distributions with common bins and axes, at 600 dpi.
-- `command.log` and `versions.txt`: invocation, effective arguments, seed, fixed display range and software versions.
+## Outputs
 
-Area exclusions include the vendor wrapper's post-model minimum-area filter and the final native-mask area filter. Optional diagnostics observe model outputs without altering model inputs or returned masks; the vendor source remains unchanged. Objects rejected internally by the Cellpose model before it returns a label mask cannot be displayed. Ghost rejection and fixed-number nucleus sampling occur later in the full analysis and are not part of this segmentation QC.
+- `seg_sweep_contact_sheet.png`: 600 dpi, images in rows and diameters in columns. DAPI is grey with one shared display range (the preset's manual DAPI levels if valid, otherwise the first plane's range; the range used is recorded). Blue outlines are kept nuclei, orange are area exclusions, magenta are border exclusions. Every panel has a scale bar and the model-input diameter.
+- `seg_sweep_summary.csv`: image path, condition, diameter, model-input pixels, kept, small, large and border counts, median kept area, area IQR and median equivalent diameter. Areas are mask pixels times pixel area.
+- `seg_sweep_area_hist.png`: kept-area distributions on common bins and axes.
+- `command.log` and `versions.txt`: the command, arguments, seed, display range and software versions.
 
-The UD OE preset's diameter and display levels remain provisional. Set the production MIAT fixed LoG threshold from the QC threshold table, then use the declared analysis and exact-footprint downstream processing chain. This command does not select the final diameter or run association analysis.
+Area exclusions include the segmentation wrapper's minimum-area filter and the final area filter. Objects the Cellpose model rejects internally before returning a mask cannot be shown. Ghost rejection and fixed-N sampling happen later in a full run and are not part of this check.
+
+## Using the result
+
+Pick the diameter whose kept nuclei match real nuclei without splits or merges, set `nuclei.expected_diameter_um` in your preset, and run. The sweep does not choose the diameter for you.
