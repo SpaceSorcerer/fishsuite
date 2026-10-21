@@ -1,6 +1,6 @@
 """coloc_backfill — CPU re-read QKI-at-MIAT coloc backfill for trusted runs.
 
-2026-06-06 Brian. The trusted MIAT x QKI run was produced BEFORE the native
+The trusted MIAT x QKI run was produced BEFORE the native
 coloc-extra outputs existed, so it lacks ``coloc_null_draws.csv`` (the 1000
 pooled null draws), ``coloc_radial_profile.csv`` and a QKI montage. Re-running on
 the GPU is undesirable. This module re-reads ONLY the QKI (antibody) channel
@@ -168,7 +168,7 @@ def _compute_coloc_extras_for_image(
         r_pool = np.zeros((n_rings, n_null), dtype=np.float64)
 
     # ---- rotation "proper background" accumulators (own rng stream) --------
-    # 2026-06-19 Brian: retrofit the rotation null for OLD runs. Rotates each
+    # Retrofit the rotation null for OLD runs. Rotates each
     # nucleus's spot constellation about its OWN centroid (keep-N redraw), pools
     # spot-count-weighted over rot-USABLE nuclei (full-length keep-N null -> pools
     # per-iteration exactly like the position null). Separate rng (seed offset) so

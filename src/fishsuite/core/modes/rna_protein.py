@@ -1,10 +1,10 @@
 """rna_protein — RNA-FISH + antibody/protein full two-channel analysis.
 
-2026-05-28 Brian: UPGRADED from the old Phase-2 stub (which ran rna_only +
+UPGRADED from the old Phase-2 stub (which ran rna_only +
 per-nucleus pixel coloc only). The PROTEIN/antibody channel is now analyzed at
 the SAME depth ``rna_rna`` gives its 2nd RNA channel:
 
-  * BigFISH spot detection on the protein channel (Brian wants to try spotting
+  * BigFISH spot detection on the protein channel (for example, spotting
     XRN2), with per-spot diameter, peak intensity, stratification.
   * Per-nucleus protein metrics: spot counts (nuclear / cytoplasmic), per-spot
     intensity mean / total / median / CV, N/C ratio (mean- and total-based),
@@ -211,7 +211,7 @@ def run_one(
         # runner from the batch pre-pass; None unless
         # foci.rna_pedestal_normalize is on.
         rna_pedestal_factor=rna_pedestal_factor,
-        # 2026-06-05 Brian: the rna2 slot here IS the antibody/protein channel.
+        # The rna2 slot here IS the antibody/protein channel.
         # When cfg.foci.detect_antibody_spots is False, rna_rna SKIPS rna2
         # spot detection (diffuse QKI IF carpet fix). The flag rides on the
         # shim's foci; rna2_is_antibody=True scopes the skip to rna_protein
@@ -228,7 +228,7 @@ def run_one(
     res.thresholds = _relabel_dict(res.thresholds)
     res.extra = _relabel_dict(res.extra)
     res.extra["mode"] = "rna_protein"
-    # 2026-06-06 Brian: NATIVE coloc-figure carriers ride in extra as DataFrames.
+    # NATIVE coloc-figure carriers ride in extra as DataFrames.
     # Route their COLUMNS through the same rna2->protein relabel so they stay
     # consistent with per_image_summary (protein_*). Their current column sets
     # carry no rna2 token (this is a defensive no-op), but it future-proofs the

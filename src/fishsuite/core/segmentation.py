@@ -223,7 +223,7 @@ def segment_nuclei(
     # backend's internal filter. The backend uses a coarse floor (1/2 of
     # user's value, min 250) so it doesn't drop labels that label smoothing
     # would otherwise round UP above the user's threshold. The final filter
-    # is applied AFTER smoothing below — see Brian's Run R2 regression where
+    # is applied AFTER smoothing below — see the Run R2 regression where
     # backend-side min_area=12000 dropped 305 labels that smoothing would
     # have lifted into compliance.
     _user_min_area = float(p.get("min_area", 250))
@@ -257,7 +257,7 @@ def segment_nuclei(
     )
     if backend == "cellpose" and kwargs["cellpose_device"].lower() in ("cuda", "gpu"):
         _install_cuda_cellpose_route()
-    # 2026-05-25: cellpose speed lever (no CUDA on Brian's AMD GPU). cpsam
+    # Cellpose speed lever (no CUDA on AMD GPUs). cpsam
     # runtime scales ~quadratically with pixel count, and H9 DAPI at
     # 0.065 µm/px is heavily oversampled for segmentation (nuclei ~200 px).
     # Downsample by `cellpose_downsample_factor`, segment on the smaller grid

@@ -295,7 +295,7 @@ def _sample_partner_local_intensity(
 ) -> np.ndarray:
     """Per-spot mean RAW intensity of the PARTNER channel in a disk.
 
-    2026-05-29 Brian — intensity-based, spot-centric, FLOOR-ROBUST coloc.
+    Intensity-based, spot-centric, FLOOR-ROBUST coloc.
     For each detected spot (with 'y_px','x_px' columns) we sample the RAW
     pixel intensities of ``partner_2d`` in a disk of radius ``radius_px``
     centered at the spot centroid and return the per-spot MEAN.
@@ -402,7 +402,7 @@ def _sample_qki_at_miat_footprint(
     """Per-spot partner (QKI) mean over each rna1 (MIAT) spot's EXACT half-max
     footprint — the FWHM-based, SIZE-SCALING replacement for a fixed disk.
 
-    2026-07-07 Brian (spec _SPEC_association_analysis_2026-07-06.md). For every
+    Spec: _SPEC_association_analysis_2026-07-06.md. For every
     rna1 (MIAT) spot we define the punctum's footprint from the MIAT channel
     ITSELF so it scales with the spot's real extent, then average the partner
     (QKI/protein) channel over exactly those footprint pixels:
@@ -685,7 +685,7 @@ def _radial_profile_for_nucleus(
 
 
 # ===========================================================================
-# ROTATION / TRANSLATION "PROPER BACKGROUND" NULLS (2026-06-19, Brian)
+# ROTATION / TRANSLATION "PROPER BACKGROUND" NULLS
 # ---------------------------------------------------------------------------
 # Spatial-structure-PRESERVING, registration-DESTROYING nulls for the spot-
 # centric partner-intensity statistic. Where ``_partner_null_for_nucleus``
@@ -696,8 +696,8 @@ def _radial_profile_for_nucleus(
 # means the partner is concentrated at the spots BEYOND a shared compartment.
 #
 # Native port of the adversarially-validated prototype ``rotation_null_prototype
-# .py`` (F:\\Image Analysis Work\\MIAT-QKI-Coloc\\UD\\_QKI_association_proper_
-# background_2026-06-18). They REUSE the engine's exact ``_disk_means_at`` disk
+# .py`` (from the source run directory).
+# They REUSE the engine's exact ``_disk_means_at`` disk
 # statistic so the rotation/position/translation nulls are directly comparable.
 # ===========================================================================
 def _rotate_pts(oy, ox, cy0, cx0, angle_deg):
@@ -1119,7 +1119,7 @@ def _filter_spots_by_floor(
     """Drop spots whose peak intensity (sampled from ``image_2d`` at the spot
     xy) is below ``floor``. Returns the filtered dataframe.
 
-    2026-05-20 Brian/Sam: this implements
+    This implements
     ``output.apply_pub_contrast_floor_to_spots``. We prefer the existing
     ``intensity_peak`` column populated by ``spots._spots_to_dataframe`` (the
     canonical peak-intensity value sampled at the spot's exact xy at detection
@@ -1242,7 +1242,7 @@ def run_one(
         rna2 channels respectively — bypassing the per-image median+k*MAD
         computation. Each channel has its OWN pooled pre-scan.
     analysis_floors : dict or None
-        2026-05-20 Brian/Sam: per-channel floor values (keys ``"rna"`` and
+        Per-channel floor values (keys ``"rna"`` and
         ``"rna2"``) resolved from the publication-image contrast pipeline
         (manual / auto_batch / reference_image). Used by TWO independent
         flags:
@@ -1264,7 +1264,7 @@ def run_one(
         above-floor analysis columns are NaN, and the spot filter is a
         no-op for that channel.
     rna2_is_antibody : bool
-        2026-06-05 Brian: set True ONLY by ``rna_protein.run_one`` (which
+        Set True ONLY by ``rna_protein.run_one`` (which
         maps the diffuse antibody/protein channel into the rna2 slot). When
         True AND ``cfg.foci.detect_antibody_spots`` is False, the rna2
         (antibody) channel is NOT BigFISH spot-detected — an EMPTY spot set
@@ -1305,7 +1305,7 @@ def run_one(
     del planes
 
     # ---- Image-level dust speck removal (optional) -------------------------
-    # 2026-05-21 Brian: before any spot detection / per-pixel quantification,
+    # Before any spot detection / per-pixel quantification,
     # detect and mask LARGE bright artifacts (dust, fluorescent debris,
     # sensor blowouts). Applied to RNA channels only; DAPI left alone
     # (bright DAPI clusters can be real heterochromatin).
@@ -1434,7 +1434,7 @@ def run_one(
         _rna_2d_det = rna_2d
 
     def _detect(rna_img: np.ndarray, params: Dict[str, Any]) -> Tuple[pd.DataFrame, float]:
-        # 2026-05-21 Brian: previously sec-only images were skipped entirely
+        # Previously sec-only images were skipped entirely
         # (returned empty DataFrame). That artificially produced 0 spots in
         # negative controls, masking any genuine autofluorescence and
         # preventing the controls from validating the detection pipeline.
@@ -1487,7 +1487,7 @@ def run_one(
             0, rna_2d.shape[1] - 1,
         )
         spots1_df["intensity_peak"] = rna_2d[_pdy, _pdx].astype(float)
-    # 2026-06-05 Brian: diffuse-antibody opt-out. In rna_protein mode
+    # Diffuse-antibody opt-out. In rna_protein mode
     # (rna2_is_antibody=True), when cfg.foci.detect_antibody_spots is False the
     # antibody/protein channel is treated as a DIFFUSE INTENSITY channel: skip
     # BigFISH spot detection and produce an EMPTY spot set (the same empty-frame
@@ -1506,7 +1506,7 @@ def run_one(
     else:
         spots2_df, thr2_val = _detect(rna2_2d, rna2_params)
 
-    # ---- QKI antibody specificity floor (per-channel, Brian 2026-07-04) -----
+    # ---- QKI antibody specificity floor (per-channel) -----
     # Absolute per-channel minimum spot PEAK-intensity floor
     # (foci.<chan>_overrides.min_spot_peak_intensity), fully decoupled from the
     # display/pub-contrast floor. Applied right after BigFISH detection and
@@ -1536,7 +1536,7 @@ def run_one(
                 f"min_spot_peak_intensity={float(_msi2):.1f}"
             )
 
-    # ---- Pub-contrast floor as HARD spot-detection floor (Brian/Sam 2026-05-20) ----
+    # ---- Pub-contrast floor as HARD spot-detection floor ----
     # When ``output.apply_pub_contrast_floor_to_spots`` is True AND the caller
     # (batch runner) passed in resolved per-channel floors via the
     # ``analysis_floors`` kwarg, drop spots whose peak intensity is below the
@@ -1732,7 +1732,7 @@ def run_one(
             fallback_diam_um=rna2_default_spot_diameter_um,
         )
 
-    # ---- Intensity-based, spot-centric, FLOOR-ROBUST coloc (Brian 2026-05-29)
+    # ---- Intensity-based, spot-centric, FLOOR-ROBUST coloc
     # For each spot, sample the RAW local intensity of the OTHER channel in a
     # disk of radius = the pipeline's nominal spot radius (bigfish_spot_radius_nm
     # / voxel) on the SAME z-locked plane. Direction:
@@ -1742,7 +1742,7 @@ def run_one(
     # (the "partner" is whatever the row's own ``channel`` is NOT). It is RAW
     # (never floored), so it is robust to manual_antibody_min / pub-contrast
     # floor changes — complementing the binary Manders/pairing metrics.
-    # GATED (Brian 2026-05-29): this per-spot sampling HANGS the parallel
+    # GATED: this per-spot sampling HANGS the parallel
     # per-image worker pool (works single-process only). Until the hang is
     # fixed it is OFF by default via ``cfg.foci.compute_partner_intensity``.
     # When False the ``partner_local_mean_intensity`` column is never produced,
@@ -1769,7 +1769,7 @@ def run_one(
                 rna_2d, spots2_df, rna2_partner_disk_radius_px,
             )
 
-    # ---- MIAT x QKI ASSOCIATION: footprint-based per-spot QKI (Brian 2026-07-07)
+    # ---- MIAT x QKI ASSOCIATION: footprint-based per-spot QKI
     # GATED behind cfg.foci.compute_footprint_enrichment (default OFF -> byte-
     # equivalent). For each rna1 (MIAT) spot, sample the partner (rna2 / QKI)
     # intensity over the spot's EXACT half-max (FWHM) footprint (size-scaling,
@@ -1829,7 +1829,7 @@ def run_one(
                 )
             spots1_df["qki_footprint_enrichment"] = _enr
 
-    # ---- REAL per-spot SIZE: 2-D Gaussian + constant background (Brian 2026-09-04)
+    # ---- REAL per-spot SIZE: 2-D Gaussian + constant background
     # ADDITIVE. ``spot_diameter_um`` above is a second-moment estimate on a fixed
     # 9x9 crop and is bounded by that crop (see spot_size.py for the numbers), so
     # it cannot resolve a real size range. This block fits an actual Gaussian on
@@ -1879,7 +1879,7 @@ def run_one(
 
     paired_col = f"paired_fraction_at_{pair_suffix}"
 
-    # ---- Pub-contrast floor as analysis floor (Brian/Sam 2026-05-20) ------
+    # ---- Pub-contrast floor as analysis floor ------
     # When ``output.apply_pub_contrast_floor_to_analysis`` is True AND the
     # caller (batch runner) passed in resolved per-channel floors via the
     # ``analysis_floors`` kwarg, we ALSO compute per-pixel intensity sums
@@ -1896,7 +1896,7 @@ def run_one(
     have_floor_rna1 = apply_floor and (floor_rna1 is not None) and (floor_rna1 == floor_rna1)
     have_floor_rna2 = apply_floor and (floor_rna2 is not None) and (floor_rna2 == floor_rna2)
     # Pre-compute the above-floor images once per channel. ``np.clip`` of
-    # ``img - floor`` to 0 is the operation Sam's eye is doing on the pub
+    # ``img - floor`` to 0 is the operation the eye does on the pub
     # image when she sets the B&C min. Numerically:
     #   nuclear_above_floor_intensity_rna1 = sum_{p in nuclear_mask} max(rna_2d[p] - floor_rna1, 0)
     rna_above_floor = None
@@ -1910,7 +1910,7 @@ def run_one(
             rna2_2d.astype(np.float64) - float(floor_rna2), 0.0, None
         )
 
-    # ---- Thresholded RNA intensity in compartments (2026-06-02 Brian) ------
+    # ---- Thresholded RNA intensity in compartments ------
     # Independent of apply_pub_contrast_floor_to_analysis (above): a THIRD
     # intensity measurement integrating RAW intensities of >=floor pixels,
     # per compartment, for BOTH channels. Floors default to each channel's
@@ -1922,7 +1922,7 @@ def run_one(
     rna2_thresh_floor = _resolve_thresh_intensity_floor(cfg, analysis_floors, "rna2")
 
     # ---- Per-nucleus RANDOM-POSITION NULL for partner-at-rna1 coloc ---------
-    # 2026-06-05 Brian: PIPELINE-NATIVE proper coloc statistic. GATED behind
+    # PIPELINE-NATIVE proper coloc statistic. GATED behind
     # cfg.foci.compute_partner_null_enrichment (requires compute_partner_intensity
     # so the partner channel is the one being sampled). For each nucleus the
     # partner (rna2 / QKI) intensity at the rna1 (MIAT) spots is compared to the
@@ -1938,7 +1938,7 @@ def run_one(
         compute_partner_intensity
         and bool(getattr(cfg.foci, "compute_partner_null_enrichment", False))
     )
-    # 2026-06-06 Brian: PIPELINE-NATIVE radial QKI-around-MIAT profile (separate
+    # PIPELINE-NATIVE radial QKI-around-MIAT profile (separate
     # downstream figure). Sweeps concentric annuli around each rna1 spot; reuses
     # the SAME per-nucleus sampling block (nucleolus-excluded mask, same seed /
     # n) as the disk null but with its OWN rng so toggling it never perturbs the
@@ -1948,7 +1948,7 @@ def run_one(
         compute_partner_intensity
         and bool(getattr(cfg.foci, "compute_partner_radial_profile", False))
     )
-    # 2026-06-19 Brian: rotation "proper background" null (+ optional translation
+    # Rotation "proper background" null (+ optional translation
     # companion). Reuses the SAME per-nucleus sampling block (mask, spots, disk
     # stencil) as the disk null but rotates the spot CONSTELLATION about its own
     # centroid (keep-N redraw). Each null family gets its OWN seed-derived RNG so
@@ -1957,7 +1957,7 @@ def run_one(
         compute_partner_intensity
         and bool(getattr(cfg.foci, "compute_partner_rotation_null", False))
     )
-    # 2026-09-03 Brian: PARTNER-ANCHORED rotation null — the reciprocal of the
+    # PARTNER-ANCHORED rotation null — the reciprocal of the
     # rna1-anchored null: the CONSTELLATION is this nucleus's rna2/antibody
     # spots and the SAMPLED FIELD is the rna1 plane. It reuses the SAME
     # ``_rotation_null_for_nucleus`` with the same disk radius / n / seed root /
@@ -1978,7 +1978,7 @@ def run_one(
             "compute_partner_rotation_null) -> the partner-anchored rotation "
             "columns will NOT be emitted."
         )
-    # 2026-09-04 Brian: WHICH FIELD the partner-anchored null samples.
+    # WHICH FIELD the partner-anchored null samples.
     # "rna" (default) = the rna1 plane, the 2026-09-03 behaviour. "dapi" = the
     # DAPI plane, a SIGNAL-FREE REFERENCE for the same estimator: DAPI carries
     # no RNA-probe signal, so whatever enrichment comes back from it is what
@@ -2143,7 +2143,7 @@ def run_one(
         # Spot-weighted per-iteration null vector per ring, pooled across nuclei.
         _radial_null_pool = np.zeros((_n_rings, _null_n), dtype=np.float64)
 
-    # 2026-06-19 Brian: rotation/translation "proper background" setup. SEPARATE
+    # rotation/translation "proper background" setup. SEPARATE
     # RNG streams (seed offsets) so toggling these never perturbs the position /
     # radial draws (byte-identical pooled-null contract). The disk stencil is the
     # same _null_dy/_null_dx as the position null (computed when compute_partner_null
@@ -2320,7 +2320,7 @@ def run_one(
             sum_rna2_intensity = float(rna2_vals.sum())
             dapi_mean = float(dapi_vals.mean())
             # ---- Per-nucleus MASK (Manders-style) colocalization ----------
-            # 2026-05-28 Brian: bidirectional pixel-mask coloc on the rna ×
+            # Bidirectional pixel-mask coloc on the rna ×
             # rna2 pixel pair WITHIN this nucleus mask, on the SAME shared
             # DAPI-locked plane the rest of the analysis uses. This is the
             # Manders/correlation view (DROPPED when rna_protein was routed
@@ -2398,10 +2398,10 @@ def run_one(
             cytoplasmic_above_floor_rna2 = float("nan")
 
         # ---- Thresholded RNA intensity, per compartment, BOTH channels -----
-        # (2026-06-02 Brian). Same threshold-and-integrate as rna_only, applied
+        # Same threshold-and-integrate as rna_only, applied
         # to rna1 (rna_2d) AND rna2 (rna2_2d) at their respective floors. In
         # rna_protein mode rna2_2d is the antibody channel, so this is also the
-        # protein-channel mirror Brian asked for.
+        # protein-channel mirror.
         _empty_thresh = dict(
             thresh_total_intensity=float("nan"),
             thresh_mean_intensity=float("nan"),
@@ -2459,7 +2459,7 @@ def run_one(
         )
 
         # "Cell" = nucleus + cytoplasm (matches rna_only semantics for the
-        # mean_cell_total_peak_intensity metric Brian wants for both channels).
+        # mean_cell_total_peak_intensity metric reported for both channels).
         cell_area_px = int(nucleus_area_px) + int(cyto_area_px)
         cell_total_intensity_rna1 = sum_rna_intensity + sum_rna_intensity_cyto
         cell_total_intensity_rna2 = sum_rna2_intensity + sum_rna2_intensity_cyto
@@ -2472,7 +2472,7 @@ def run_one(
         rna2_nc_ratio = _nc(rna2_mean, rna2_cytoplasmic_mean)
 
         # N/C ratio of TOTAL pixel-sum intensity (not the mean-based ratio
-        # above). Brian's figure suite plots both — the total-ratio is more
+        # above). Downstream figures plot both; the total-ratio is more
         # robust when nucleus and cytoplasm have very different areas.
         def _nc_total(n_sum, c_sum):
             if c_sum and c_sum > 0 and not math.isnan(c_sum):
@@ -2607,7 +2607,7 @@ def run_one(
         rna2_enrichment_at_rna1_spots = _enrichment(rna2_local_mean_at_rna1_spots, rna2_mean)
         rna1_enrichment_at_rna2_spots = _enrichment(rna1_local_mean_at_rna2_spots, rna_mean)
 
-        # ---- MIAT x QKI ASSOCIATION metrics (per nucleus) (Brian 2026-07-07) --
+        # ---- MIAT x QKI ASSOCIATION metrics (per nucleus) --
         # Continuous, floor-robust QKI-at-MIAT association (spec 2026-07-06):
         #   qki_assoc_ratio_continuous = mean over THIS nucleus's MIAT spots of
         #       qki_footprint_enrichment (the average QKI fold-enrichment at the
@@ -2627,8 +2627,8 @@ def run_one(
         coloc_moc = float("nan")
         coloc_icq = float("nan")
         qki_at_miat_foci_enrichment = float("nan")
-        # MIAT x QKI CAPACITY (sponge-capacity) per-nucleus scalars (Brian 2026-07-08;
-        # see the CAPACITY block further down). Default NaN so they are always defined.
+        # MIAT x QKI CAPACITY (sponge-capacity) per-nucleus scalars
+        # (see the CAPACITY block further down). Default NaN so they are always defined.
         qki_associated_with_miat = float("nan")
         miat_mass_nuclear = float("nan")
         capacity_qki_at_miat = float("nan")
@@ -2663,7 +2663,7 @@ def run_one(
                     qki_at_miat_foci_enrichment = float(
                         rna2_2d[_foci_pix].astype(np.float64).mean() / rna2_mean
                     )
-            # ---- MIAT x QKI CAPACITY (sponge-capacity) per nucleus (Brian 2026-07-08) --
+            # ---- MIAT x QKI CAPACITY (sponge-capacity) per nucleus --
             # The EXTENSIVE (mass-based) sponge test: how much QKI is associated with
             # this nucleus's MIAT, the integrated MIAT signal, and the FRACTION of nuclear
             # QKI captured. Restricted to this nucleus's NUCLEAR MIAT (rna1) spots so
@@ -2719,7 +2719,7 @@ def run_one(
                         capacity_qki_at_miat = float(qki_associated_with_miat / sum_rna2_intensity)
 
         # ---- Per-nucleus RANDOM-POSITION NULL (partner @ rna1 spots) --------
-        # 2026-06-05 Brian. observed = mean over THIS nucleus's rna1 (MIAT)
+        # observed = mean over THIS nucleus's rna1 (MIAT)
         # spots of [disk-mean partner (rna2/QKI) intensity]; null = same #spots
         # at random in-nucleus positions x partner_null_n, disk-sampled. The
         # nucleus's sampling pixels are the nucleus mask, MINUS nucleoli when
@@ -2908,7 +2908,7 @@ def run_one(
                                     _tr_z_num += rna2_translation_null_z_at_rna1_spots * _n_sp_tr
                                 _tr_w_den += _n_sp_tr
                                 _tr_n_nuclei_used += 1
-            # ---- PARTNER-ANCHORED ROTATION NULL (2026-09-03, Brian) --------
+            # ---- PARTNER-ANCHORED ROTATION NULL --------
             # Reciprocal of the rna1-anchored null above: CONSTELLATION = this
             # nucleus's rna2/antibody spots, SAMPLED FIELD = the rna1 plane.
             # Same ``_rotation_null_for_nucleus``, same disk stencil, same n /
@@ -3062,7 +3062,7 @@ def run_one(
             f"paired_spot_count_rna1_at_{pair_suffix}": int(a1["paired_count"]),
             f"paired_spot_count_rna2_at_{pair_suffix}": int(a2["paired_count"]),
             # ---- Per-nucleus MASK (Manders-style) colocalization ----------
-            # 2026-05-28 Brian: bidirectional pixel-mask coloc (Manders M1/M2 +
+            # Bidirectional pixel-mask coloc (Manders M1/M2 +
             # correlation/overlap), additive to the spot-spot view above. From
             # ``compute_coloc_metrics`` on (rna1, rna2) within this nucleus,
             # thresholded at the run's rna_thr_value / rna2_thr_value.
@@ -3106,12 +3106,12 @@ def run_one(
             "coloc_min_frac_rna1": _cm["min_frac_r"],
             "coloc_min_frac_rna2": _cm["min_frac_a"],
             # ---- Intensity-based, spot-centric, FLOOR-ROBUST coloc ---------
-            # 2026-05-29 Brian. GATED behind cfg.foci.compute_partner_intensity
+            # GATED behind cfg.foci.compute_partner_intensity
             # (default OFF; see sampling block above). When OFF these columns
             # are NOT emitted, so the per-nucleus output is byte-equivalent to
             # the pre-feature path. When ON they are injected just below.
             # ---- Per-CELL (nucleus + cytoplasm) intensity totals -----------
-            # Brian wants total RNA intensity per nucleus AND per cell for
+            # Total RNA intensity per nucleus AND per cell for
             # BOTH channels. "_cell_" = nucleus + voronoi cytoplasm.
             "cell_total_intensity_rna1": cell_total_intensity_rna1,
             "cell_total_intensity_rna2": cell_total_intensity_rna2,
@@ -3119,7 +3119,7 @@ def run_one(
             "sum_rna_intensity_cyto": sum_rna_intensity_cyto,
             "sum_rna2_intensity_cyto": sum_rna2_intensity_cyto,
             # ---- N/C ratios of TOTAL intensity (pixel sum) ----------------
-            # Brian's figure suite requires both the mean-based N/C ratio
+            # Downstream figures require both the mean-based N/C ratio
             # (above) AND the total-intensity N/C ratio. The total ratio is
             # less sensitive to area mismatches between nucleus + cytoplasm.
             "nuclear_total_intensity_rna1": sum_rna_intensity,
@@ -3128,7 +3128,7 @@ def run_one(
             "cytoplasmic_total_intensity_rna2": sum_rna2_intensity_cyto,
             "nc_ratio_total_intensity_rna1": nc_ratio_total_intensity_rna1,
             "nc_ratio_total_intensity_rna2": nc_ratio_total_intensity_rna2,
-            # ---- Above-floor intensity variants (Brian/Sam 2026-05-20) ----
+            # ---- Above-floor intensity variants ----
             # Pixels below the publication-image contrast floor (per channel)
             # are clipped to zero before summing — same threshold the eye
             # uses to judge nuclear-vs-cytoplasmic signal in the pub render.
@@ -3149,7 +3149,7 @@ def run_one(
                 else {}
             ),
             # ---- Active TS + mature mRNA proxies --------------------------
-            # Brian's exon/intron design: active TS = nuclear + paired spot
+            # Exon/intron design: active TS = nuclear + paired spot
             # (a co-localized punctum at the gene locus). Mature mRNA =
             # cytoplasmic spots in the primary channel.
             "n_nuclear_rna1_rna2_overlap_per_nucleus": int(n_active_tss),
@@ -3302,7 +3302,7 @@ def run_one(
         })
 
     # ---- Per-image pooled random-position-null rollup ----------------------
-    # 2026-06-05 Brian. Spot-count-weighted pool of the per-nucleus observed
+    # Spot-count-weighted pool of the per-nucleus observed
     # stat + null distribution (matching qki_at_miat_null_ALLARMS_tm1.0.py):
     #   obs_pool   = sum(obs_n * n_sp_n) / sum(n_sp_n)
     #   null_pool  = sum(null_stats_n * n_sp_n) / sum(n_sp_n)  (per iteration)
@@ -3327,7 +3327,7 @@ def run_one(
         pooled_null_p_empirical = float(
             (np.sum(_np_pool >= _obs_pool) + 1) / (_null_n + 1)
         )
-        # 2026-06-06 Brian: surface the pooled null vector + pooled observed for
+        # Surface the pooled null vector + pooled observed for
         # the downstream null-distribution overlay. Reuses the SAME _np_pool /
         # _obs_pool computed above (NO recompute) -> ~zero cost. Gated; default
         # OFF -> the key is never added to extra (byte-identical carrier).
@@ -3343,7 +3343,7 @@ def run_one(
             )
 
     # ---- Per-image pooled ROTATION "proper background" rollup --------------
-    # 2026-06-19 Brian. Spot-count-weighted pool over rot-USABLE nuclei (keep-N
+    # Spot-count-weighted pool over rot-USABLE nuclei (keep-N
     # null is full-length so it pools per-iteration exactly like the position
     # null): enrichment = obs_pool/mean(null_pool); z = (obs-mean)/sd; empirical p
     # = (#{null_pool >= obs_pool}+1)/(n+1). Translation (when on) pools the per-
@@ -3438,7 +3438,7 @@ def run_one(
         pooled_tr_z = float(_tr_z_num / _tr_w_den)
 
     # ---- Per-image pooled radial QKI-around-MIAT profile -------------------
-    # 2026-06-06 Brian. Spot-count-weighted pool of the per-nucleus per-ring
+    # Spot-count-weighted pool of the per-nucleus per-ring
     # (obs, null_mean, null_sd) into one row per (image, ring). enrichment =
     # obs/null_mean; z = (obs-null_mean)/null_sd. Only built when the feature
     # is on AND at least one ring accumulated spots.
@@ -3651,7 +3651,7 @@ def run_one(
                 spots2_df = mirrored
 
     # ---- Drop floater spots (optional, default True) -----------------------
-    # 2026-05-21 Brian: spots with in_nucleus=False AND in_cytoplasm=False
+    # Spots with in_nucleus=False AND in_cytoplasm=False
     # are bare-field detections (off any segmented cell). Typically
     # autofluorescence/junk the LoG kernel found between cells. Drop them
     # so the spots_df + downstream counts only reflect within-cell signal.
@@ -3682,7 +3682,7 @@ def run_one(
         _mirror_to_channel_frames()
 
     # ---- Nucleolus + chromatin (optional) ----------------------------------
-    # 2026-05-21 Brian: when cfg.nucleolus.enabled, detect DAPI-low subnuclear
+    # When cfg.nucleolus.enabled, detect DAPI-low subnuclear
     # regions and add nucleolus / chromatin columns to nuclei_df + spots_df.
     # Pure-additive: no existing columns are removed or renamed; if disabled
     # this block is a no-op.
@@ -3791,7 +3791,7 @@ def run_one(
         ].reset_index(drop=True)
 
     # ---- Per-image summary -------------------------------------------------
-    # 2026-05-22 Brian: image-level total_spots_rna1/rna2 report only in-cell
+    # Image-level total_spots_rna1/rna2 report only in-cell
     # spots (in_nucleus OR in_cytoplasm). Floaters still live in spot_metrics
     # for audit, but the headline totals must match what the per-nucleus
     # metrics count (and what the QC overlay now displays) so the dashboards
@@ -3874,7 +3874,7 @@ def run_one(
         # N/C-ratio image-level rollups, both channels
         mean_nc_total_1, med_nc_total_1, _ = _img_stats("nc_ratio_total_intensity_rna1")
         mean_nc_total_2, med_nc_total_2, _ = _img_stats("nc_ratio_total_intensity_rna2")
-        # ---- Above-floor intensity image-level rollups (Brian/Sam) -----
+        # ---- Above-floor intensity image-level rollups -----
         # Only computed when the per-nucleus columns exist (i.e. when
         # apply_pub_contrast_floor_to_analysis is True). When the floor was
         # unavailable per-channel, _img_stats already returns NaN for an
@@ -3997,7 +3997,7 @@ def run_one(
             "frac_nuclear_rna1": frac_nuclear_image_1,
             "frac_nuclear_rna2": frac_nuclear_image_2,
             # ---- Per-CELL (nucleus + cytoplasm) total RNA intensity ------
-            # These are the columns Brian explicitly asked for: total RNA
+            # These are the columns reporting total RNA
             # intensity per cell for BOTH channels, with mean/median/CV.
             "mean_cell_total_peak_intensity_rna1": round(mean_cell_int_1, 2) if mean_cell_int_1 == mean_cell_int_1 else float("nan"),
             "median_cell_total_peak_intensity_rna1": round(med_cell_int_1, 2) if med_cell_int_1 == med_cell_int_1 else float("nan"),
@@ -4022,7 +4022,7 @@ def run_one(
             "median_nc_ratio_total_intensity_rna1": round(med_nc_total_1, 4) if med_nc_total_1 == med_nc_total_1 else float("nan"),
             "mean_nc_ratio_total_intensity_rna2": round(mean_nc_total_2, 4) if mean_nc_total_2 == mean_nc_total_2 else float("nan"),
             "median_nc_ratio_total_intensity_rna2": round(med_nc_total_2, 4) if med_nc_total_2 == med_nc_total_2 else float("nan"),
-            # ---- Above-floor intensity rollups (Brian/Sam 2026-05-20) -----
+            # ---- Above-floor intensity rollups -----
             # Same channel-resolved pub-image floor as the per-nucleus
             # columns above. Only emitted when
             # output.apply_pub_contrast_floor_to_analysis is True.
@@ -4529,7 +4529,7 @@ def run_one(
         pair_distance_um=pair_um,
         mode="rna_rna",
     )
-    # 2026-06-06 Brian: NATIVE coloc-figure carriers — added ONLY when the
+    # NATIVE coloc-figure carriers — added ONLY when the
     # gating flags are on (defaults OFF -> keys absent -> byte-identical extra).
     if coloc_null_draws_df is not None:
         _extra["coloc_null_draws"] = coloc_null_draws_df
@@ -4538,7 +4538,7 @@ def run_one(
     if coloc_rotation_null_df is not None:
         _extra["coloc_rotation_null"] = coloc_rotation_null_df
 
-    # 2026-07-18 Brian: record the chosen single-plane autofocus z for EVERY
+    # Record the chosen single-plane autofocus z for EVERY
     # single-plane autofocus run — including the default "dapi" and the new
     # "joint" anchors (previously only "rna"/"auto" emitted it). ``dapi_autofocus_z``
     # is set only in the single-plane ``autofocus`` z-mode branch (None for
@@ -4548,7 +4548,7 @@ def run_one(
             per_image["z_plane"] = int(dapi_autofocus_z)
         except Exception:
             pass
-    # 2026-07-05 Brian: RNA-/joint-anchored-autofocus audit columns. Added ONLY
+    # RNA-/joint-anchored-autofocus audit columns. Added ONLY
     # when autofocus_channel != "dapi" (else _z_af_extra is empty -> the richer
     # columns stay absent). Covers BOTH the main (n>0) and no-nuclei fallback
     # paths since both converge on this single ``per_image`` variable.

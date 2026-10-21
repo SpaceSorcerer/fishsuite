@@ -514,7 +514,7 @@ def render_ortho_figure(stack_czyx, center_zyx, half_width_px=None, *, nucleus_m
         label = f'z = {z+1} (displayed)'
         xy.text(.96, .055, label, transform=xy.transAxes, color='#8ba6c4',
                 fontsize=7, ha='right', va='bottom', clip_on=True)
-    # Nuclear outline on every nucleus-level panel (Brian 2026-09-30): the 2-D mask contour on each XY panel
+    # Nuclear outline on every nucleus-level panel: the 2-D mask contour on each XY panel
     # (merge and single channels); on XZ / YZ the mask is 2-D, so its edges along the section row / column are
     # drawn as lines through the whole z window.
     # 2026-09-30 fix: XZ/YZ edges are the outline's x / y EXTENT (bounding box = the XY outline projected), not the

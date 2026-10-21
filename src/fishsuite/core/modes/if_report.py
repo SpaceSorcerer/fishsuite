@@ -2,7 +2,7 @@
 workbook for the ``if_intensity`` mode.
 
 Ported verbatim from the LOCKED panQKI standalone ``03_figures.py`` (SuperPlot
-Prism cosmetics + Okabe-Ito + LUT-by-wavelength micrographs + "Sam's floor"
+Prism cosmetics + Okabe-Ito + LUT-by-wavelength micrographs + "shared display floor"
 shared display ranges) and ``04_build_excel.py`` (explorable workbook). All
 cosmetics are locked; only parameters are sourced from ``cfg`` (fig_seed,
 pixel_size, ceiling/floor percentiles, scalebar). Imported by ``if_intensity``.
@@ -256,7 +256,7 @@ def make_superplots(fig_dir, per_well, per_nucleus, stats, per_secondary, pooled
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# Shared-display-range micrographs ("Sam's floor")
+# Shared-display-range micrographs ("shared display floor")
 # ═══════════════════════════════════════════════════════════════════════════
 def _seconly_wells_for(plate, genotype, secondary):
     return sorted(
@@ -296,7 +296,7 @@ def _focus_scores(stack):
 def _windowed_maxproj(dstack, qstack, frac):
     """Central in-focus windowed max-projection: keep the central `frac` of
     planes centered on the sharpest DAPI plane (searched within the central
-    band). Brian's improvement over a muddy full-stack max."""
+    band). An improvement over a muddy full-stack max."""
     dstack = np.asarray(dstack, np.float32)
     qstack = np.asarray(qstack, np.float32)
     if dstack.ndim == 2:

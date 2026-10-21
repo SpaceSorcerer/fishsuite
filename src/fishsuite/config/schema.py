@@ -35,7 +35,7 @@ class ConditionsCfg(_ConfigBlock):
     exclude_subfolders: List[str] = Field(default_factory=list)
     sec_only_folders: List[str] = Field(default_factory=list)
     sec_only_files: List[str] = Field(default_factory=list)
-    # 2026-05-31 Brian: FLAT-folder, filename-encoded condition assignment.
+    # FLAT-folder, filename-encoded condition assignment.
     # An ORDERED list of ``[substring, condition_label]`` pairs. For datasets
     # acquired into a single flat folder where the condition lives in the file
     # NAME (e.g. ``H9-...-NT_02.vsi`` vs ``H9-...-MIAT-KD_05.vsi``) — flat-mode
@@ -56,7 +56,7 @@ class ConditionsCfg(_ConfigBlock):
         default_factory=list,
         description="Accepted, not applied by the run; only `fishsuite coupling` reads it.")
     min_nuclei_for_stats: int = 6
-    # 2026-09-04 Brian: CONDITION GROUPS. A condition (above) is one WELL. A
+    # CONDITION GROUPS. A condition (above) is one WELL. A
     # group is the condition several wells belong to, and is what gets compared.
     # ``{group_label: [condition_label, ...]}``, e.g.
     #   groups:
@@ -144,7 +144,7 @@ class ChannelsCfg(_ConfigBlock):
     # blue, yellow, cyan, magenta, green, red, orange, gray, fire.
     # Unknown names fall back to gray. See
     # ``output.lut_name_to_weights`` for the full lookup.
-    # 2026-05-14 Brian: standard wavelength→color convention is
+    # Standard wavelength→color convention is
     #   647/Cy5  → yellow   (RNA1 typical)
     #   561/Cy3  → magenta  (RNA2 typical)
     #   488      → green    (antibody/protein typical)
@@ -165,7 +165,7 @@ class ZStackCfg(_ConfigBlock):
     single_slice: int = 0   # mode 'single': fixed 1-indexed plane; 0 = start_slice, else mid-stack
     start_slice: Optional[int] = None
     end_slice: Optional[int] = None
-    # 2026-05-22 Brian: per-image z-window overrides. Keys are full file
+    # Per-image z-window overrides. Keys are full file
     # names (matched against Path(image).name). Values are dicts that may
     # contain start_slice and/or end_slice — those override the batch
     # defaults above for that specific image. Useful when one image has
@@ -177,7 +177,7 @@ class ZStackCfg(_ConfigBlock):
     #       start_slice: 15
     #       end_slice: 49
     #
-    # 2026-05-25 Brian: per-channel z (rna_only mode). In ADDITION to
+    # Per-channel z (rna_only mode). In ADDITION to
     # start_slice/end_slice (which apply to the chosen z_mode for ALL
     # channels) and single_slice (the fixed DAPI plane), a file_override
     # may carry rna_start_slice + rna_end_slice (1-indexed, inclusive).
@@ -196,7 +196,7 @@ class ZStackCfg(_ConfigBlock):
     #       rna_end_slice: 20
     file_overrides: Dict[str, Dict[str, Any]] = Field(default_factory=dict)
 
-    # ─── single-plane "autofocus" mode metric (2026-05-28 Brian) ───────────
+    # ─── single-plane "autofocus" mode metric ───────────
     # ONLY affects ``mode == "autofocus"`` (the single-plane pick used by
     # rna_only / rna_rna / rna_protein for the DAPI z-lock). Does NOT touch
     # autofocus_maxproj (which uses ``focus_metric`` above + a window walk).
@@ -216,7 +216,7 @@ class ZStackCfg(_ConfigBlock):
     # True for thick stacks (the BIN1 d8 cMyo presets do).
     autofocus_intensity_weighted: bool = False
 
-    # ─── RNA-anchored single-plane autofocus (2026-07-05 Brian) ────────────
+    # ─── RNA-anchored single-plane autofocus ────────────
     # ONLY affects ``mode == "autofocus"`` (the single-plane pick used by
     # rna_rna / rna_protein to z-lock every channel to ONE optical section).
     # Does NOT touch autofocus_maxproj, single, maxproj, or 3d.
@@ -236,7 +236,7 @@ class ZStackCfg(_ConfigBlock):
     #      spot-callability at the RNA-best plane) and RNA-anchor when it clears
     #      ``autofocus_auto_rna_quality_min``, else fall back to DAPI-anchor.
     #      The channel actually used is recorded per-image (``z_autofocus_channel_used``).
-    #   "joint" (2026-07-18 Brian) — pick the SINGLE plane that is jointly in
+    #   "joint" — pick the SINGLE plane that is jointly in
     #      focus for DAPI AND rna AND rna2 (the partner, e.g. QKI-IF or 7SK) at
     #      once, rather than anchoring on one channel. For each z the per-channel
     #      focus score is computed, each channel's focus-vs-z curve is normalized
@@ -261,7 +261,7 @@ class ZStackCfg(_ConfigBlock):
     # remain populated only for the non-"dapi" anchors.
     autofocus_channel: Literal["dapi", "rna", "auto", "joint"] = "dapi"
 
-    # ─── Joint (multi-channel) autofocus reducer (2026-07-18 Brian) ────────────
+    # ─── Joint (multi-channel) autofocus reducer ────────────
     # ONLY consulted when ``autofocus_channel == "joint"``. Selects how the
     # per-channel, self-peak-normalized focus scores at a given z are combined
     # into the single joint score that is maximized over z:
@@ -276,7 +276,7 @@ class ZStackCfg(_ConfigBlock):
     #      More tolerant of one very sharp channel than "product".
     autofocus_joint_reduce: Literal["product", "geomean", "min"] = "product"
 
-    # ─── Nuclear-masked joint scoring (2026-07-19 Brian) ───────────────────────
+    # ─── Nuclear-masked joint scoring ───────────────────────
     # ONLY consulted when ``autofocus_channel == "joint"``. When True, each
     # channel's per-slice focus score is computed ONLY over pixels inside a
     # DAPI-derived nuclear-region mask, so cytoplasmic signal (e.g. MIAT's
@@ -301,7 +301,7 @@ class ZStackCfg(_ConfigBlock):
     # Only consulted when ``autofocus_channel == "auto"``. Default 3.0.
     autofocus_auto_rna_quality_min: float = 3.0
 
-    # ─── autofocus_maxproj mode parameters (2026-05-24 Brian) ──────────────
+    # ─── autofocus_maxproj mode parameters ──────────────
     # When ``mode == "autofocus_maxproj"`` the runner computes a per-image
     # in-focus DAPI z-window using ``focus_metric`` on the DAPI channel,
     # then MIPs JUST THAT WINDOW for ALL channels (DAPI + RNA1 + RNA2).
@@ -348,7 +348,7 @@ class ZStackCfg(_ConfigBlock):
     # threshold).
     focus_window_max_slices: int = 0
 
-    # ─── Fixed-N centered focus window (2026-05-24 Brian) ──────────────────
+    # ─── Fixed-N centered focus window ──────────────────
     # When > 0, AUTOFOCUS_MAXPROJ uses a FIXED-N centered window instead
     # of the FWHM-style (variable-N) window. The window is exactly this
     # many slices wide, centered on the peak-focus slice. Symmetric +/-
@@ -360,7 +360,7 @@ class ZStackCfg(_ConfigBlock):
     # width differences.
     focus_window_fixed_n_slices: int = 0
 
-    # ─── Min-intensity pre-filter (2026-05-24 v7 Brian) ───────────────────
+    # ─── Min-intensity pre-filter ───────────────────
     # Before computing focus scores, EXCLUDE z-slices whose mean DAPI
     # intensity is below ``focus_min_intensity_frac_of_peak * max_slice_mean``.
     # Guards against the failure mode where noisy/empty edge slices have
@@ -373,7 +373,7 @@ class ZStackCfg(_ConfigBlock):
     # brightest slice in the stack to be considered for focus scoring".
     focus_min_intensity_frac_of_peak: float = 0.0
 
-    # ─── Central-fraction peak guard (2026-05-31 Brian) ───────────────────
+    # ─── Central-fraction peak guard ───────────────────
     # autofocus_maxproj robustness guard. When in (0, 1], the focus-PEAK
     # search is restricted to the central this-fraction of the (outer-
     # bounded) stack — e.g. 0.6 keeps only the middle 60% of slices eligible
@@ -602,7 +602,7 @@ class FociChannelOverrideCfg(_ConfigBlock):
     channel's analyzed spot set. Voxel-size / backend / LoG knobs stay shared
     to keep the override set small and the YAML readable.
 
-    2026-09-03 Brian: ``threshold_override`` moved OUT of the shared-only set.
+    ``threshold_override`` moved OUT of the shared-only set.
     The antibody/protein channel often needs its OWN fixed BigFISH LoG
     threshold, and pinning the shared ``FociCfg.threshold_override`` would pin
     the RNA channel too. When this field is None the shared value still applies
@@ -616,14 +616,14 @@ class FociChannelOverrideCfg(_ConfigBlock):
     # BigFISH wrapper); kept here for full per-channel parity with the Fiji
     # launcher so a single fishsuite YAML can drive both backends.
     min_sep_px: Optional[int] = None
-    # 2026-07-04 Brian: per-channel ABSOLUTE minimum spot PEAK-intensity floor,
+    # Per-channel ABSOLUTE minimum spot PEAK-intensity floor,
     # fully decoupled from the display/pub-contrast floor (manual_*_min) and from
     # output.apply_pub_contrast_floor_to_spots. When set, spots in THIS channel
     # with peak intensity < value are dropped right after BigFISH detection,
     # before stratification/pairing. None = no floor (current behavior, byte-
     # identical). Used to enforce an antibody specificity floor.
     min_spot_peak_intensity: Optional[float] = None
-    # 2026-09-03 Brian: per-channel FIXED BigFISH LoG detection threshold.
+    # Per-channel FIXED BigFISH LoG detection threshold.
     # None => inherit the shared ``FociCfg.threshold_override`` (which may
     # itself be None => per-image auto threshold). Set it on
     # ``antibody_overrides`` to pin the antibody channel while the RNA channel
@@ -658,7 +658,7 @@ class FociCfg(_ConfigBlock):
     # as in the sample, i.e. no discrimination at all. ADVISORY ONLY — it warns and
     # emits the three rate columns, and never reinterprets a declared channel.
     min_spot_signal_to_control: float = 2.0
-    # 2026-05-22 Brian: ALL post-detection spot filters OFF. NoMIP testing
+    # ALL post-detection spot filters OFF. NoMIP testing
     # showed the floater filter dropped 70-87% of legitimate cytoplasmic
     # Exons because Voronoi cytoplasm (40 px max expansion) doesn't reach
     # the mature-mRNA halo at distance. BigFISH LoG + manual contrast floor
@@ -681,7 +681,7 @@ class FociCfg(_ConfigBlock):
     # ``channels.rna2`` in rna_rna.
     rna_overrides: FociChannelOverrideCfg = Field(default_factory=FociChannelOverrideCfg)
     rna2_overrides: FociChannelOverrideCfg = Field(default_factory=FociChannelOverrideCfg)
-    # 2026-05-28 Brian: per-channel overrides for the PROTEIN/antibody channel
+    # Per-channel overrides for the PROTEIN/antibody channel
     # (used by rna_protein mode, which now spot-detects the antibody channel at
     # the same depth rna_rna gives rna2). When a field is None the shared
     # FociCfg value is used — so legacy rna_protein presets without this block
@@ -691,7 +691,7 @@ class FociCfg(_ConfigBlock):
     # larger spot radius for diffuse XRN2 puncta) without touching rna2 in any
     # rna_rna preset.
     antibody_overrides: FociChannelOverrideCfg = Field(default_factory=FociChannelOverrideCfg)
-    # 2026-05-29 Brian: intensity-based, spot-centric, FLOOR-ROBUST coloc.
+    # Intensity-based, spot-centric, FLOOR-ROBUST coloc.
     # When True, the two-channel (rna_rna / rna_protein) pipeline samples each
     # spot's RAW partner-channel local intensity (column
     # ``partner_local_mean_intensity``) and emits the per-nucleus
@@ -703,7 +703,7 @@ class FociCfg(_ConfigBlock):
     # Manders/Pearson/pairing coloc only); figures 74_/75_ self-skip on the
     # absent columns while 70-73 still generate.
     compute_partner_intensity: bool = False
-    # 2026-06-05 Brian: spot-detect the antibody/protein channel? RNA_PROTEIN
+    # Spot-detect the antibody/protein channel? RNA_PROTEIN
     # MODE ONLY. DEFAULT TRUE = existing behavior, completely unchanged: the
     # antibody channel (mapped into the rna_rna ``rna2`` slot) is BigFISH
     # spot-detected exactly as before. Set FALSE to treat the antibody channel
@@ -719,7 +719,7 @@ class FociCfg(_ConfigBlock):
     # targets) ALWAYS spot-detects both channels regardless of this value, and
     # the rna1 channel is never affected.
     detect_antibody_spots: bool = True
-    # 2026-06-05 Brian: PIPELINE-NATIVE proper colocalization statistic — the
+    # PIPELINE-NATIVE proper colocalization statistic — the
     # per-nucleus RANDOM-POSITION NULL for "partner intensity at rna1 spots".
     # The existing ``compute_partner_intensity`` enrichment (observed / whole-
     # nucleus mean) has NO null model and NO error bar — washed out (~1.0) for a
@@ -759,7 +759,7 @@ class FociCfg(_ConfigBlock):
     # When nucleolus is NOT enabled this is a no-op and the null uses the whole
     # nucleus (current/legacy behavior). DEFAULT FALSE.
     exclude_nucleolus_from_partner_null: bool = False
-    # 2026-06-06 Brian: PIPELINE-NATIVE coloc-figure outputs (downstream "make
+    # PIPELINE-NATIVE coloc-figure outputs (downstream "make
     # coloc clear" null-overlay + radial partner profile). All DEFAULT FALSE/empty
     # carrier -> emitted ONLY via the empty-default ImageResult.extra dict, so
     # the per_image / nuclei / spots tables stay byte-identical (BIN1 / H9
@@ -780,7 +780,7 @@ class FociCfg(_ConfigBlock):
     partner_radial_bins_um: List[float] = Field(
         default_factory=lambda: [0.25, 0.5, 0.75, 1.0]
     )
-    # 2026-06-19 Brian: PIPELINE-NATIVE rotation "proper background" null — a
+    # PIPELINE-NATIVE rotation "proper background" null — a
     # STRICTER companion to the random-position null above. Where the position
     # null randomizes spot POSITIONS (and is inflated when the partner and the
     # rna1 spots merely SHARE a nuclear compartment), the rotation null rotates
@@ -841,7 +841,7 @@ class FociCfg(_ConfigBlock):
     # compute_partner_rotation_null. DEFAULT FALSE -> the key is never added to
     # extra (byte-identical carrier).
     save_partner_rotation_null_draws: bool = False
-    # 2026-09-03 Brian: SECOND rotation null, anchored on the PARTNER
+    # SECOND rotation null, anchored on the PARTNER
     # (rna2 / antibody) spots with the RNA1 channel as the sampled field — the
     # reciprocal of the rna1-anchored null above. Requires
     # ``compute_partner_intensity`` AND ``compute_partner_rotation_null`` (it is
@@ -856,7 +856,7 @@ class FociCfg(_ConfigBlock):
     # DEFAULT FALSE -> the columns are never emitted and the output is
     # byte-equivalent to the pre-feature path.
     compute_partner_anchored_rotation_null: bool = False
-    # 2026-09-04 Brian: WHICH FIELD the partner-anchored rotation null samples.
+    # WHICH FIELD the partner-anchored rotation null samples.
     # "rna"  -> the rna1 plane (the 2026-09-03 behaviour, unchanged default).
     # "dapi" -> the DAPI plane. DAPI carries no RNA-probe signal, so the same
     #           enrichment machinery run on it is a SIGNAL-FREE REFERENCE: it
@@ -874,7 +874,7 @@ class FociCfg(_ConfigBlock):
     # ``rotation_null_usable_dapi_at_rna2_spots``, plus the per-image pooled
     # rollup, all relabelled ``rna2`` -> ``protein`` by rna_protein.
     partner_anchored_null_sample_field: Literal["rna", "dapi", "both"] = "rna"
-    # 2026-09-04 Brian: restrict the partner-anchored CONSTELLATION to anchors
+    # Restrict the partner-anchored CONSTELLATION to anchors
     # whose centre lies INSIDE the nucleus label. The observed statistic is
     # computed over every anchor wherever it lies, while the keep-N rotation
     # redraw forces every null anchor into ``nucleus minus nucleolus``; an
@@ -898,7 +898,7 @@ class FociCfg(_ConfigBlock):
     # When on, ``n_partner_anchors_at_rna2_spots`` records the anchor count the
     # null actually used, per nucleus. Default False -> byte-identical output.
     partner_anchored_null_nuclear_anchors_only: bool = False
-    # 2026-09-04 Brian: PER-IMAGE PEDESTAL NORMALISATION of the rna1 plane
+    # PER-IMAGE PEDESTAL NORMALISATION of the rna1 plane
     # BEFORE LoG detection. A fixed absolute ``threshold_override`` is only
     # comparable across images when their background pedestals are; in the
     # QKI x BIN1-intron acquisition the in-nucleus 561 median spans 403-1056
@@ -924,7 +924,7 @@ class FociCfg(_ConfigBlock):
     # implemented; it is a named Literal so a future statistic is an additive
     # change and every run records which one it used.
     rna_pedestal_stat: Literal["nuclear_median"] = "nuclear_median"
-    # 2026-09-05 Brian: UPPER BOUND on the per-image pedestal factor. None = no
+    # UPPER BOUND on the per-image pedestal factor. None = no
     # clamp (the 2026-09-04 behaviour). When set, the applied factor is
     # min(raw_factor, this), so a field brighter than the reference can still be
     # scaled DOWN onto it while a field dimmer than the reference is left alone
@@ -940,7 +940,7 @@ class FociCfg(_ConfigBlock):
     # Both values are recorded per image in thresholds.csv: rna_pedestal_factor
     # is what was APPLIED, rna_pedestal_factor_raw is what the medians implied.
     rna_pedestal_factor_max: Optional[float] = None
-    # 2026-07-07 Brian: PIPELINE-NATIVE RNA1 x partner ASSOCIATION metrics (e.g.
+    # PIPELINE-NATIVE RNA1 x partner ASSOCIATION metrics (e.g.
     # MIAT RNA x QKI protein; column names keep the qki_/miat_ prefixes).
     # Continuous, floor-robust, AT-THE-PUNCTUM replacements for a binary
     # "partner-associated RNA1 spots" count (which conflated abundance with
@@ -984,7 +984,7 @@ class FociCfg(_ConfigBlock):
     # contributes 0 to the gated per-nucleus ratio. Units = raw partner-channel
     # intensity (same scale as ``qki_at_miat_footprint``). DEFAULT None.
     assoc_qki_floor: Optional[float] = None
-    # 2026-09-04 Brian: REAL per-spot size measurement. ``spot_diameter_um`` /
+    # REAL per-spot size measurement. ``spot_diameter_um`` /
     # ``spot_fwhm_px`` / ``spot_area_px`` come from a second-moment estimator on
     # a fixed 9x9 crop (``rna_rna._measure_spot_diameter_um``), which is bounded
     # by the crop (hard ceiling FWHM 6.08 px, floor 1.18 px) and therefore
@@ -1054,7 +1054,7 @@ class FociCfg(_ConfigBlock):
                 if ov.min_sep_px is not None
                 else int(self.min_sep_px)
             ),
-            # 2026-07-04 Brian: per-channel absolute spot peak-intensity floor.
+            # Per-channel absolute spot peak-intensity floor.
             # No shared FociCfg fallback (there is no FociCfg-level field) —
             # unset override => None => no floor (byte-identical legacy path).
             "min_spot_peak_intensity": (
@@ -1062,7 +1062,7 @@ class FociCfg(_ConfigBlock):
                 if ov.min_spot_peak_intensity is not None
                 else None
             ),
-            # 2026-09-03 Brian: per-channel fixed LoG threshold, falling back to
+            # Per-channel fixed LoG threshold, falling back to
             # the SHARED FociCfg.threshold_override (itself possibly None => the
             # per-image auto threshold). An unset channel override therefore
             # reproduces the legacy shared-value path exactly.
@@ -1097,7 +1097,7 @@ class NucleolusCfg(_ConfigBlock):
     min_area_um2: float = 1.0  # smallest acceptable nucleolus
     max_area_frac_of_nucleus: float = 0.6  # safety cap
     closing_radius_px: int = 2  # morphological smoothing
-    # 2026-05-22 Brian: require nucleoli to sit at least N pixels from the
+    # Require nucleoli to sit at least N pixels from the
     # nucleus border. Nucleoli are typically central; this rejects edge
     # artifacts (peripheral low-DAPI rings, mask-boundary effects).
     # 5 px ≈ 0.65 µm at 0.13 µm/px. For typical 60-100 px cardiomyocyte
@@ -1112,13 +1112,13 @@ class OutputCfg(_ConfigBlock):
     save_per_image_csv: bool = True
     save_masks: bool = True
     save_publication_images: bool = True
-    # 2026-05-18 Brian: stop emitting a .tif next to every .png by default —
+    # Stop emitting a .tif next to every .png by default —
     # cuts publication_images directory size roughly in half. Turn on only
     # when you need 16-bit TIFs for figure assembly in Illustrator/Fiji.
     save_publication_tifs: bool = False
 
     # ─── Pub-image contrast strategy (Fiji parity: PUB_IMG_CONTRAST_MODE) ──
-    # 2026-05-18 Brian: three modes for choosing the floor/ceil applied to
+    # Three modes for choosing the floor/ceil applied to
     # each publication-image channel render:
     #   - "auto_batch"     : run a pre-scan over every non-sec-only image,
     #                        pool raw pixels per channel, compute ONE
@@ -1138,7 +1138,7 @@ class OutputCfg(_ConfigBlock):
     #                        channel pair is None, that channel falls back to
     #                        auto_per_image percentiles — so you can pin one
     #                        channel and leave the rest automatic.
-    #   - "reference_image": Sam-style per-channel tuning. For each RNA
+    #   - "reference_image": reference-image per-channel tuning. For each RNA
     #                        channel, a single reference image is named (e.g.
     #                        a KO image for the introns probe, a WT image for
     #                        the exons probe). On that reference image we
@@ -1169,7 +1169,7 @@ class OutputCfg(_ConfigBlock):
     # floor sits much lower).
     pub_contrast_floor_pct: float = 98.0   # FISH channels — clip background
     pub_contrast_ceil_pct: float = 99.9
-    # 2026-05-22 Brian: bumped DAPI floor percentile from p10 → p40.
+    # Bumped DAPI floor percentile from p10 → p40.
     # Images with diffuse high-background DAPI (e.g. CAMK2D KO_9, TRANK1
     # sec-only KO_15/17/18) showed background in QC overlays because p10
     # picks up the background tail. p40 clips it without losing
@@ -1177,7 +1177,7 @@ class OutputCfg(_ConfigBlock):
     pub_contrast_dapi_floor_pct: float = 40.0
     pub_contrast_dapi_ceil_pct: float = 99.9
 
-    # 2026-05-18 Brian: auto_batch / auto_per_image floor for RNA-class
+    # Auto_batch / auto_per_image floor for RNA-class
     # channels (RNA1, RNA2, antibody) felt a hair too low — diffuse cytoplasmic
     # background still showed. This bump multiplies the auto-computed floor
     # by (1 + bump/100) AFTER percentile selection, ONLY for RNA-class
@@ -1200,7 +1200,7 @@ class OutputCfg(_ConfigBlock):
     manual_antibody_min: Optional[float] = None
     manual_antibody_max: Optional[float] = None
 
-    # ─── reference_image mode params (Sam-style per-channel tuning) ────────
+    # ─── reference_image mode params (reference-image per-channel tuning) ────────
     # The reference image is referenced by basename (matched against the
     # discovered images' Path.name). RNA1 reference: pick the image where
     # RNA1 nuclear puncta should be crisp and cytoplasm dark (e.g. a KO
@@ -1226,7 +1226,7 @@ class OutputCfg(_ConfigBlock):
     manual_rna2_ceil_region: Literal["cytoplasm", "nucleus", "all"] = "cytoplasm"
     manual_rna2_ceil_pct: float = 99.5
 
-    # 2026-05-20 Brian's PI Sam: apply the publication-image contrast floor
+    # Apply the publication-image contrast floor
     # (resolved from manual / auto_batch / reference_image mode) as a hard
     # threshold on per-pixel intensity quantification too. When True, the
     # per-nucleus / per-cell intensity columns get an "above-floor" variant
@@ -1235,7 +1235,7 @@ class OutputCfg(_ConfigBlock):
     # signal. The raw (no-floor) columns remain present for back-compat.
     apply_pub_contrast_floor_to_analysis: bool = False
 
-    # 2026-05-20 Brian: ALSO filter detected spots by the pub-image contrast
+    # ALSO filter detected spots by the pub-image contrast
     # floor. When True, BigFISH still does its LoG-based detection (unchanged),
     # but spots whose peak intensity falls below the channel's resolved floor
     # are dropped post-detection. Useful when the visual floor is the user's
@@ -1243,7 +1243,7 @@ class OutputCfg(_ConfigBlock):
     # the same cut.
     apply_pub_contrast_floor_to_spots: bool = False
 
-    # ─── Thresholded RNA intensity in compartments (2026-06-02 Brian) ──────
+    # ─── Thresholded RNA intensity in compartments ──────
     # A THIRD intensity measurement, distinct from spot-based intensities
     # (rna_spot_total_peak_intensity) AND from the raw whole-nucleus pixel sum
     # (sum_rna_intensity, which has NO floor). For each nucleus, integrate the
@@ -1280,7 +1280,7 @@ class OutputCfg(_ConfigBlock):
     # (manual_rna2_min / manual_antibody_min).
     rna2_intensity_threshold: Optional[float] = None
 
-    # 2026-05-25 Brian: configurable publication / QC scale bar. These flow
+    # Configurable publication / QC scale bar. These flow
     # into the output module's render globals at run start (runner.run_batch
     # sets output.SCALEBAR_UM / output.SCALEBAR_FONT_PX from these). Defaults
     # match the historical module constants so legacy configs render byte-
@@ -1335,7 +1335,7 @@ class QcCfg(_ConfigBlock):
     # flagged ``low_focus``. Default 0.0 -> focus NEVER flags (opt-in).
     qc_min_focus_score: float = 0.0
 
-    # ─── RNA1 over-detection guard (2026-07-05 Brian, bulletproofing) ───────
+    # ─── RNA1 over-detection guard ───────
     # ADVISORY-ONLY. Flags images whose RNA1 spots-per-nucleus is implausibly
     # high, which is the classic symptom of an out-of-focus dim RNA channel
     # collapsing the BigFISH auto-threshold into thousands of noise "spots"
@@ -1404,7 +1404,7 @@ class IfIntensityCfg(_ConfigBlock):
     low_nuc_flag: int = Field(3, description="Accepted, not applied.")
     pixel_size_um: float = 0.0      # 0 = read from image metadata
 
-    # ---- shared-display micrographs ("Sam's floor") ----------------------
+    # ---- shared-display micrographs ("shared display floor") ----------------------
     display_ceiling_pct: float = 99.5   # vmax from the SIGNAL (WT-primary) wells
     display_floor_pct: float = 50.0     # vmin from the secondary-only wells
     scalebar_um: float = 20.0
@@ -1432,7 +1432,7 @@ class IfIntensityCfg(_ConfigBlock):
         default_factory=lambda: {"647": 5000.0, "568": 3500.0}
     )
     pub_ceiling_pct: float = 99.5      # vmax = this pct of the WT-primary signal
-    # 2026-07-05 Brian: EXPLICIT signal ceiling (vmax) override, per secondary
+    # EXPLICIT signal ceiling (vmax) override, per secondary
     # and/or per (secondary, source). Keys may be bare ``"647"`` (both sources)
     # or source-scoped ``"647:single_plane"`` (that source only; the more-
     # specific key wins). When a secondary/source has an entry here it OVERRIDES
@@ -1441,14 +1441,14 @@ class IfIntensityCfg(_ConfigBlock):
     # ``"SEC:source"`` key syntax. Default empty = percentile ceiling for all
     # (byte-identical legacy).
     pub_display_ceilings: Dict[str, float] = Field(default_factory=dict)
-    # 2026-07-05 Brian: FIXED DAPI display range (vmin/vmax) applied to the DAPI
-    # channel across ALL panels (so DAPI is not over-exposed; Brian's target is a
+    # FIXED DAPI display range (vmin/vmax) applied to the DAPI
+    # channel across ALL panels (so DAPI is not over-exposed; the target is a
     # fixed ceiling ~8000). When BOTH are None, per-image DAPI min-max
     # normalization as before (legacy). One-sided is allowed — the unset side
     # falls back to the per-image min / max.
     pub_dapi_floor: Optional[float] = None
     pub_dapi_ceiling: Optional[float] = None
-    # 2026-07-05 Brian: compute each panel's signal ceiling from THAT image's own
+    # Compute each panel's signal ceiling from THAT image's own
     # ``pub_ceiling_pct`` percentile instead of the shared WT-primary ceiling.
     # Slightly non-rigorous (breaks cross-panel brightness comparability) — a
     # fallback when a shared ceiling clips or washes out individual panels. An

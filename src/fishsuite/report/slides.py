@@ -28,7 +28,7 @@ def _literal_number(text, identifiers=()):
 def _literal_number_cached(text, identifiers):
     # Gene labels such as BIN1 and RNASEH2B are identities, not numeric claims.
     text = str(text)
-    # Sam's question identifiers are ordering labels, not measured quantities.
+    # Question identifiers are ordering labels, not measured quantities.
     text = re.sub(r'^(?:1b|[1-4])\.\s+', '', text)
     for identifier in sorted(set(identifiers), key=len, reverse=True):
         text = re.sub(r'(?<!\w)' + re.escape(identifier) + r'(?!\w)', '', text)
