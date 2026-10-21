@@ -118,7 +118,8 @@ def xz_section(sub, cy):
 
 def build_linked_set(run, field_id, nucleus_id, rep_distance, label="", mix=False, R_PX=2.0, stem_suffix=None,
                      z_window_um=10.5, write_params=True, channel_labels=("MIAT-640", "QKI-561"), qki_min=1050,
-                     miat_min=500, arm_color=None, b4_floors=None, profile_strip_um=0.5):
+                     miat_min=500, arm_color=None, b4_floors=None, profile_strip_um=None,
+                     profile_strip_agg=None):
     """Render B1-B4 for <arm> field <field_id>, nucleus <nucleus_id>; returns the params dict (also written as JSON).
 
     channel_labels / qki_min / miat_min / arm_color default to the locked basal values (two-condition datasets pass
@@ -126,11 +127,11 @@ def build_linked_set(run, field_id, nucleus_id, rep_distance, label="", mix=Fals
     horizontal line on its own B4 axis (MIAT solid-dash gold, QKI dash magenta).
     mix=True renders MIAT x QKI merges only (no DAPI) for B1/B3/B2 with suffix _merge_MIATxQKI; B4 and params are skipped.
     stem_suffix overrides the B1 stem tail (round 1 used ``_box`` without the nucleus id for field 15 nucleus 11).
-    profile_strip_um: width of the perpendicular strip averaged by the B2 and B4 profiles (0.195 = the former 3 px at
-    0.065 µm/px); recorded in params["line"].
+    profile_strip_um / profile_strip_agg: perpendicular strip width and 'mean' (default) or 'max' across it for the B2
+    and B4 profiles; recorded in params["line"] and the footers. None = the legacy 3-px mean, output unchanged.
     """
     from pathlib import Path
-    from fishsuite.core.ortho_profile import fixed_z_window, line_profile, nucleus_crop, render_ortho_figure, strip_width_px
+    from fishsuite.core.ortho_profile import fixed_z_window, line_profile, nucleus_crop, render_ortho_figure, resolve_profile_strip
 
     saver = run.saver
     tag = run.arm.replace(" ", "")
@@ -143,7 +144,7 @@ def build_linked_set(run, field_id, nucleus_id, rep_distance, label="", mix=Fals
     my, mx, on, L = G["my"], G["mx"], G["on"], G["line"]
     P0, P1 = L["P0"], L["P1"]
     ys, xs = np.nonzero(mask)
-    W_PX = strip_width_px(profile_strip_um, px)
+    W_PX, AGG, STRIP = resolve_profile_strip(profile_strip_um, profile_strip_agg, px)
     mk_id = int(G["mark"].spot_id)
 
     stack = read_stack(run, G["key"])
@@ -215,13 +216,13 @@ def build_linked_set(run, field_id, nucleus_id, rep_distance, label="", mix=Fals
                               show_scale_bars=True, show_z_slice_labels=True, show_cross_section=True,
                               z_range=(zz0, zz1), z_crop_note=f"fixed {z_window_um:g} µm effective z window (display only)",
                               axial_scale_note="GLOX n≈1.333 / oil n=1.518; first-order correction",
-                              profile_strip_um=profile_strip_um)
+                              profile_strip_um=profile_strip_um, profile_strip_agg=profile_strip_agg)
     saver.save(fig, f"B2_nucleus_ortho_{tag}_field{FLD}_nuc{NID}_fishsuite{SFX}")
     if mix:
         return None
 
     # B4: line profile
-    dist, vals = line_profile(np.stack([P["miat"], P["qki"], P["dapi"]]), P0, P1, width_px=W_PX, pixel_size_um=px)
+    dist, vals = line_profile(np.stack([P["miat"], P["qki"], P["dapi"]]), P0, P1, width_px=W_PX, pixel_size_um=px, agg=AGG)
     prof = pd.DataFrame(dict(distance_um=dist, miat=vals[0], qki=vals[1], dapi=vals[2]))
     data = run.data
     data.mkdir(parents=True, exist_ok=True)
@@ -248,12 +249,13 @@ def build_linked_set(run, field_id, nucleus_id, rep_distance, label="", mix=Fals
     ax3.set_ylabel("DAPI (raw a.u.)", color=LINE_DAPI)
     h = sum((a.get_legend_handles_labels()[0] for a in (ax, ax2, ax3)), [])
     fig.legend(h, [x.get_label() for x in h], loc='upper center', ncol=3, frameon=False, fontsize=6, bbox_to_anchor=(.42, 1.0))
-    footer(fig, [f"{run.arm} field {FLD} nucleus {NID}{LBL}; profile sampled over a {profile_strip_um:g} µm wide strip, analysed plane z = {z0 + 1}. Triangles = MIAT puncta "
+    footer(fig, [f"{run.arm} field {FLD} nucleus {NID}{LBL}; {'profile ' + STRIP if STRIP else '3-px-wide line'}, analysed plane z = {z0 + 1}. Triangles = MIAT puncta "
                  f"on the line (n = {len(on)}; black = marked punctum). n = 1 line, illustrative."], width=95)
     saver.save(fig, f"B4_line_profile_{tag}_field{FLD}_nuc{NID}")
 
     params = params_dict(G, FLD, NID, label, R_PX, (zz0, zz1), chk)
-    params["line"].update(profile_strip_um=float(profile_strip_um), profile_width_px=W_PX)
+    if STRIP:
+        params["line"].update(profile_strip_um=float(profile_strip_um), profile_strip_agg=AGG, profile_width_px=W_PX)
     if write_params:
         (data / f"B_linked_params_field{FLD}_nuc{NID}.json").write_text(json.dumps(params, indent=1, default=float))
     return params

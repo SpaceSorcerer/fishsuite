@@ -72,8 +72,13 @@ def ortho_sections(stack_czyx, center_zyx, half_width_px):
                 yz=stack_czyx[:,z0:z1,y0:y1,x])
 
 
-def line_profile(plane_cyx, p0, p1, width_px=3, *, pixel_size_um):
-    """Mean across a perpendicular strip; return distance_um and C-by-N values."""
+_STRIP_AGG = {'mean': (np.mean, 'mean'), 'max': (np.max, 'maximum')}
+
+
+def line_profile(plane_cyx, p0, p1, width_px=3, *, pixel_size_um, agg='mean'):
+    """Mean (or ``agg='max'`` maximum) across a perpendicular strip; return distance_um and C-by-N values."""
+    if agg not in _STRIP_AGG:
+        raise ValueError("agg must be 'mean' or 'max'")
     if np.ndim(plane_cyx) != 3 or width_px < 1 or int(width_px) != width_px:
         raise ValueError('Expected CYX plane and positive integer profile width')
     if not np.isfinite(pixel_size_um) or pixel_size_um <= 0:
@@ -82,7 +87,7 @@ def line_profile(plane_cyx, p0, p1, width_px=3, *, pixel_size_um):
         if len(p) != 2 or not np.isfinite(p).all() or any(v < 0 or v > n-1 for v,n in zip(p,plane_cyx.shape[1:])):
             raise ValueError('Profile endpoint outside plane')
     values = np.stack([_profile_line(p.astype(float),p0,p1,linewidth=width_px,
-                                     order=1,mode='constant',reduce_func=np.mean)
+                                     order=1,mode='constant',reduce_func=_STRIP_AGG[agg][0])
                        for p in plane_cyx])
     distance = np.linspace(0, math.dist(p0,p1)*pixel_size_um,values.shape[1])
     return distance, values
@@ -93,6 +98,21 @@ def strip_width_px(strip_um, pixel_size_um):
     if not (np.isfinite(strip_um) and strip_um > 0 and np.isfinite(pixel_size_um) and pixel_size_um > 0):
         raise ValueError('Profile strip width and pixel size must be finite and positive')
     return max(1, int(round(strip_um/pixel_size_um)))
+
+
+def resolve_profile_strip(profile_strip_um, profile_strip_agg, pixel_size_um, profile_width_px=None):
+    """(width_px, agg, footer phrase). No strip set = legacy 3 px mean, no phrase (pre-2026-10-20 output)."""
+    if profile_strip_um is None:
+        if profile_strip_agg is not None:
+            raise ValueError('profile_strip_agg needs profile_strip_um')
+        return (3 if profile_width_px is None else profile_width_px), 'mean', None
+    if profile_width_px is not None:
+        raise ValueError('Give profile_width_px or profile_strip_um, not both')
+    agg = 'mean' if profile_strip_agg is None else profile_strip_agg
+    if agg not in _STRIP_AGG:
+        raise ValueError("profile_strip_agg must be 'mean' or 'max'")
+    return (strip_width_px(profile_strip_um, pixel_size_um), agg,
+            f'sampled over a {float(profile_strip_um):g} µm wide strip, {_STRIP_AGG[agg][1]} across the strip')
 
 
 def default_line(nucleus_mask, center_zyx):
@@ -288,7 +308,7 @@ _OUTLINE_COLOR = '#8ba6c4'
 def render_ortho_figure(stack_czyx, center_zyx, half_width_px=None, *, nucleus_mask,
                         pixel_size_um, z_step_um, display_levels,
                         line_endpoints=None, qki_min=None, miat_min=None, run_dir='',
-                        profile_width_px=None, profile_strip_um=0.5, analysed_plane_z=None, arm='', arm_color='#595959',
+                        profile_width_px=None, profile_strip_um=None, profile_strip_agg=None, analysed_plane_z=None, arm='', arm_color='#595959',
                         image='', nucleus_id=None, metric='', metric_value=None, arm_median=None,
                         include_dapi=False, full_merge=None, dapi_display_level=None,
                         channel_labels=('MIAT', 'QKI'), dapi_label='DAPI',
@@ -317,9 +337,10 @@ def render_ortho_figure(stack_czyx, center_zyx, half_width_px=None, *, nucleus_m
     ``crosshairs``: 'single' (default) = one dotted crosshair, on the XY merge
     only; 'none' = no crosshair lines; 'all' = legacy crosshair on XY, XZ and YZ.
     ``profile_line_style``: 'dotted' (default) or 'solid' for the measured line.
-    Profile sampling: mean across a perpendicular strip ``profile_strip_um`` wide
-    (default 0.5 µm → ``strip_width_px``); an explicit ``profile_width_px`` wins.
-    The strip is not drawn; the measured line keeps its own drawn weight.
+    Profile sampling: default (no strip set) = the legacy 3-px mean, output unchanged.
+    ``profile_strip_um`` sets a perpendicular strip width (→ ``strip_width_px``) and
+    ``profile_strip_agg`` 'mean' (default) or 'max' across it; both are then stated in
+    the footer. The strip is not drawn; the measured line keeps its own drawn weight.
     """
     import matplotlib.pyplot as plt
     import textwrap
@@ -385,13 +406,10 @@ def render_ortho_figure(stack_czyx, center_zyx, half_width_px=None, *, nucleus_m
         endpoints = ((y,max(x0,p0[1])), (y,min(x1-1,p1[1])))
     else:
         endpoints = line_endpoints
-    if profile_width_px is None:
-        profile_width_px = strip_width_px(profile_strip_um, pixel_size_um)
-        strip_um = float(profile_strip_um)
-    else:
-        strip_um = profile_width_px*pixel_size_um
+    profile_width_px, strip_agg, strip_phrase = resolve_profile_strip(
+        profile_strip_um, profile_strip_agg, pixel_size_um, profile_width_px)
     distance,values = line_profile(stack_czyx[:,z],*endpoints,width_px=profile_width_px,
-                                   pixel_size_um=pixel_size_um)
+                                   pixel_size_um=pixel_size_um,agg=strip_agg)
     label0, label1 = (str(channel_labels[0]), str(channel_labels[1]))
     profile_label0, profile_label1 = ((str(profile_labels[0]), str(profile_labels[1]))
                                       if profile_labels is not None else (label0, label1))
@@ -432,8 +450,8 @@ def render_ortho_figure(stack_czyx, center_zyx, half_width_px=None, *, nucleus_m
         'Display min–max: ' + '; '.join(level_text) + ' | Merge: ' + ', '.join(merge_text) +
         ' | Pixels drawn nearest-neighbour (no interpolation); all image panels at '
         f'{scale:.3f} in per µm, lateral and axial.',
-        "Profiles normalised to each channel's own min–max along this line (display only); "
-        f"sampled over a {strip_um:g} µm wide strip.",
+        "Profiles normalised to each channel's own min–max along this line (display only)" +
+        (f"; {strip_phrase}." if strip_phrase else "."),
         'Nucleus outline: 2-D segmentation mask contour on XY panels; on XZ/YZ its x / y extent (the XY '
         'outline projected), drawn through the z window (the mask has no z extent).',
     ]
@@ -677,7 +695,8 @@ def render_ortho_figure(stack_czyx, center_zyx, half_width_px=None, *, nucleus_m
         z_range_0based=(int(z0), int(z1)), n_z_total=int(stack_czyx.shape[1]),
         section_zyx_0based=(int(z), int(y), int(x)), interpolation='nearest',
         axial_data_aspect=float(axial_aspect), crosshairs=crosshairs, profile_line_style=profile_line_style,
-        profile_width_px=int(profile_width_px), profile_strip_um=strip_um,
+        profile_width_px=int(profile_width_px), profile_strip_agg=strip_agg,
+        profile_strip_um=None if profile_strip_um is None else float(profile_strip_um),
         profile_strip_um_sampled=float(profile_width_px*pixel_size_um),
         channel_labels=(label0, label1), display_levels=display,
         scale_bars_um=dict(lateral=lateral_bar, lateral_y=lateral_bar_y, axial=axial_bar),
