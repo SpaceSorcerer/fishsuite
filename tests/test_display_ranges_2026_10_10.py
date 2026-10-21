@@ -27,6 +27,7 @@ class _Saver:
 
 class _Run:
     arm = "VPR noDox"
+    cell_line = "H9 hESC"   # the recorded render carried this footer prefix; it is now a run field
 
     def __init__(self, **kw):
         self.saver = _Saver()
