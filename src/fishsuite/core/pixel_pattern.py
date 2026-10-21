@@ -690,21 +690,21 @@ def _write_excel(df, welch, rad, swe, foci_band, xlsx: Path, *, chan_labels):
     ]})
     xlsx.parent.mkdir(parents=True, exist_ok=True)
     with pd.ExcelWriter(xlsx, engine="openpyxl") as xw:
-        readme.to_excel(xw, "How_to_read", index=False, startrow=0)
-        legend.to_excel(xw, "How_to_read", index=False, startrow=len(readme) + 3)
-        df.to_excel(xw, "per_nucleus", index=False)
+        readme.to_excel(xw, sheet_name="How_to_read", index=False, startrow=0)
+        legend.to_excel(xw, sheet_name="How_to_read", index=False, startrow=len(readme) + 3)
+        df.to_excel(xw, sheet_name="per_nucleus", index=False)
         from fishsuite.report.sensitivities import stamp_statistics
-        stamp_statistics(welch, "nt_vs_condition_welch", fresh=True).to_excel(xw, "nt_vs_condition_welch", index=False)
+        stamp_statistics(welch, "nt_vs_condition_welch", fresh=True).to_excel(xw, sheet_name="nt_vs_condition_welch", index=False)
         if not rad.empty:
             radt = rad.groupby(["channel", "cond2"])[DBINS].mean().reset_index()
             radt.columns = ["channel", "condition"] + [f"depthbin_{b}_edge0_center1" for b in range(10)]
-            radt.to_excel(xw, "radial_profile", index=False)
+            radt.to_excel(xw, sheet_name="radial_profile", index=False)
         if not swe.empty:
             swcols = [c for c in swe.columns if c.startswith(("partner_at_rna1_d", "rna1_at_partner_d"))]
             swt = swe.groupby("cond2")[swcols].mean().reset_index()
-            swt.to_excel(xw, "intensity_sweep", index=False)
+            swt.to_excel(xw, sheet_name="intensity_sweep", index=False)
         if foci_band is not None:
-            foci_band.to_excel(xw, "foci_band", index=False)
+            foci_band.to_excel(xw, sheet_name="foci_band", index=False)
     wb = load_workbook(xlsx)
     for ws in wb.worksheets:
         ws.freeze_panes = "A2"

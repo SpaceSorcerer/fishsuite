@@ -15,7 +15,7 @@ from .provenance import sha256
 from .sensitivities import (require_current_statistics, require_current_book, read_stats_csv, read_stats_excel,
                             stamp_statistics, unstamp, fresh_since, stored_flag, stored_mixed_flag,
                             LegacyStatisticsError, REBUILD_MESSAGE, mixed_p_text,
-                            mixed_validated, mixed_value, with_mixed_alias, stored_flag, MIXED_ALIAS)
+                            mixed_validated, mixed_value, with_mixed_alias, MIXED_ALIAS)
 
 DECISION = ('Mixed-model headline decision 2026-09-07 after data inspection; '
             'Welch on well means remains reported. Nucleus-level linear mixed model: '

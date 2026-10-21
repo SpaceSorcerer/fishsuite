@@ -2910,7 +2910,7 @@ def run_batch(
         message = f'Measurements saved in {output_dir}, but CONDITION FIGURES INCOMPLETE. See _downstream_plots.log and condition_output_status.json; retry native-figures into a new output directory.'
         if not failures:
             raise RuntimeError(message)
-        _console.print(f"[red]{message}[/red]")
+        _console.print(f"[red]{message}[/red]", soft_wrap=True)
 
     # Grouped native output is finalized by the downstream module using the
     # report renderer; no additional, competing by_group plots are emitted.
