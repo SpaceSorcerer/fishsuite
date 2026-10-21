@@ -1,4 +1,4 @@
-"""walkthrough_figure — publication PIPELINE-WALKTHROUGH composite (Brian, 2026-06-07).
+"""walkthrough_figure — publication PIPELINE-WALKTHROUGH composite.
 
 A single, clean, labeled 8-panel figure that "shows how the MIAT x QKI RNA-FISH
 pipeline works" using the pipeline's OWN per-step microscope PNGs (already

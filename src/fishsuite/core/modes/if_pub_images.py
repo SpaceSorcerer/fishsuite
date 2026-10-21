@@ -1,7 +1,7 @@
 """if_pub_images — native publication-image renderer for the ``if_intensity`` mode.
 
 Faithful port of the LOCKED panQKI standalone ``pub_images.py``
-(``F:\\Image Analysis Work\\MIAT-QKI-Coloc\\WT-QKI-KO_2026_07_01\\_scripts\\pub_images.py``)
+(from the source run's ``_scripts`` directory)
 folded into fishsuite so the publication images are produced NATIVELY by the mode
 (and regenerable from a finished run WITHOUT the GPU) rather than by a one-off
 script. The display math is reproduced verbatim; only the parameters are sourced
@@ -199,7 +199,7 @@ def _dapi01(dapi, dapi_lo=None, dapi_hi=None):
     When NEITHER bound is given, per-image min-max (``_norm``) exactly as before
     (byte-identical back-compat). When a fixed bound is supplied, use a fixed
     window; the unset side falls back to the per-image min / max — so passing
-    only a fixed ceiling (Brian's ``--dapi-ceiling 8000``) caps over-exposure
+    only a fixed ceiling (e.g. ``--dapi-ceiling 8000``) caps over-exposure
     without moving the per-image black point.
     """
     if dapi_lo is None and dapi_hi is None:

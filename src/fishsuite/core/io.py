@@ -342,7 +342,7 @@ def compute_focus_window(
         focus peak toward the bright AND sharp nuclear plane instead of a
         noise-driven dim edge plane, which is exactly the failure the plain
         mean-normalized Laplacian variance hit on near-flat / noisy focus
-        profiles (2026-05-31 Brian: the H9 33-plane DAPI stacks picked
+        profiles (the H9 33-plane DAPI stacks picked
         z=33/z=1 edges under the unweighted metric). Mirrors the
         single-plane ``autofocus`` z-mode's intensity weighting so
         ``autofocus_maxproj`` and ``autofocus`` use the SAME per-slice score.
@@ -418,7 +418,7 @@ def compute_focus_window(
             s *= slice_means[z]
         focus_scores.append(s)
 
-    # 2026-05-24 v7 Brian: min-intensity pre-filter. Disqualify slices whose
+    # Min-intensity pre-filter. Disqualify slices whose
     # mean DAPI intensity is below ``min_intensity_frac_of_peak * max_slice_mean``
     # by overwriting their focus_score with -inf BEFORE peak search. Guards
     # against noisy/empty edge slices (top/bottom of stack) that score
@@ -612,8 +612,8 @@ def _autofocus_plane_with_idx(
       * default (``intensity_weighted=False``): ``var(laplace(plane/mean))`` —
         the legacy mean-normalized Laplacian variance (Pertuz et al. 2013).
       * ``intensity_weighted=True``: ``var(laplace(plane/mean)) * mean`` — the
-        same sharpness term WEIGHTED by the plane mean intensity. 2026-05-28
-        Brian: on thick (~16µm, nz≈79) d8 cMyo stacks the focus profile is
+        same sharpness term WEIGHTED by the plane mean intensity.
+        On thick (~16µm, nz≈79) d8 cMyo stacks the focus profile is
         near-flat across the cell-containing depth, so the unweighted score at
         a badly out-of-focus HIGH plane is only ~1.0–1.2× the in-focus score —
         noise then tips the pick to garbage upper planes (measured DAPI picks
@@ -812,7 +812,7 @@ def extract_channel_at_z(
 
 
 def rna_plane_quality(plane: np.ndarray) -> dict:
-    """Signal-quality readout for a single 2D RNA plane (2026-07-05 Brian).
+    """Signal-quality readout for a single 2D RNA plane.
 
     A per-image gauge of whether the RNA channel at the chosen focal plane
     carries *callable* single-molecule signal — used both to REPORT (per-image
@@ -1368,7 +1368,7 @@ def discover_inputs(
         ``sec_only=True``.
     sec_only_files : list of filename substrings flagged ``sec_only=True``.
     filename_conditions : optional ORDERED list of ``[substring, condition]``
-        pairs (2026-05-31 Brian). For FLAT folders whose CONDITION is encoded
+        pairs. For FLAT folders whose CONDITION is encoded
         in the FILENAME (e.g. ``..._NT_02.vsi`` vs ``..._MIAT-KD_05.vsi``)
         there is otherwise no way to assign distinct non-sec conditions
         (flat-mode gives every file the single ``subfolder_conditions[""]``

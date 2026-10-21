@@ -94,7 +94,7 @@ def auto_n_workers(
     Formula: ``min(physical_cores - 2, by_memory, cap)`` — leaves 2 cores
     for OS / UI / StarDist internal threading, capped at 12 to avoid
     cache contention on numeric LoG kernels.
-    On Brian's box (12 physical / 24 logical / 128 GB):
+    On a reference box (12 physical / 24 logical / 128 GB):
       by_cpu = 12 - 2 = 10
       by_memory = ~110 / 2 = 55
       cap = 12

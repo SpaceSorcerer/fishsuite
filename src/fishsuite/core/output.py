@@ -55,7 +55,7 @@ import pandas as pd
 
 DAPI_FLOOR_PCT = 10.0
 DAPI_CEIL_PCT = 99.9
-# 2026-05-18 Brian: previous 80.0/99.5 showed too much diffuse background in
+# Previous 80.0/99.5 showed too much diffuse background in
 # the FISH channels — image looked noisy/grainy and the spots didn't pop.
 # Tightening floor to 98 clips out the diffuse cytoplasmic/extracellular
 # background; ceiling stays high so the brightest single-molecule spots are
@@ -73,7 +73,7 @@ RNA2_CEIL_PCT = 99.9
 SCALEBAR_UM = 50.0  # all-in-one + publication + walkthrough
 POPOUT_SCALEBAR_UM = 5.0
 
-# Scale-bar geometry — 2026-05-14 Brian: bigger + thicker so the bar reads
+# Scale-bar geometry: bigger + thicker so the bar reads
 # clearly in publication figures (was 12 px / 28 pt — too small for the
 # 2304x2304 H9 images and barely visible when figures are scaled down).
 # Fiji-side sizes raised to match in Coloc_Analysis.py.
@@ -84,7 +84,7 @@ SCALEBAR_FONT_PX = 32
 NUC_OUTLINE_WIDTH_PX = 2
 SPOT_MARKER_RADIUS_PX = 3  # base size; scales by spot_diameter when available
 
-# 2026-06-02 Brian: called-spot markers drawn OVER the RNA signal (walkthrough
+# Called-spot markers drawn OVER the RNA signal (walkthrough
 # step07 spots-on-DAPI + step08 spots-on-RNA-threshold) use CYAN so they are
 # clearly distinct from the yellow MIAT-640 RNA threshold/signal and from every
 # channel LUT in use (MIAT-640=yellow, DAPI=blue, 561=magenta, 488=green).
@@ -656,7 +656,7 @@ def draw_spot_markers(
 ) -> np.ndarray:
     """Draw open circles around each (x_px, y_px) spot.
 
-    2026-05-18 Brian: previously every spot was a fixed-``radius`` circle
+    Previously every spot was a fixed-``radius`` circle
     (default 4 px), so the QC overlays read as a sea of identical dots —
     "why are all of the spots the same size?". The detector returns
     per-spot size information; convey it visually.
@@ -674,7 +674,7 @@ def draw_spot_markers(
         ``"auto"`` (default) — tries ``"diameter"`` first, then falls back
             to ``"intensity"``, then to the fixed ``radius`` baseline.
 
-    The intent is variability, not absolute calibration — Brian needs to
+    The intent is variability, not absolute calibration; users need to
     *see* that the pipeline detected spots of different sizes / brightness."""
     if spots is None or len(spots) == 0:
         return rgb_u8.copy()
@@ -870,8 +870,8 @@ def render_all_in_one_qc(
     rgb = merge_rgb_additive([dapi_b, rna_y])
     rgb_u8 = _to_uint8(rgb)
     rgb_u8 = draw_nuclei_outlines(rgb_u8, labels, color=(255, 255, 255), width_px=NUC_OUTLINE_WIDTH_PX)
-    # 2026-05-18 Brian: per-spot sizing (see rna_rna branch comment).
-    # 2026-05-22 Brian: filter QC markers to in-cell spots only (see rna_rna).
+    # Per-spot sizing (see rna_rna branch comment).
+    # Filter QC markers to in-cell spots only (see rna_rna).
     if spots is not None and len(spots) and {"in_nucleus", "in_cytoplasm"} <= set(spots.columns):
         spots = spots.loc[spots["in_nucleus"].astype(bool) | spots["in_cytoplasm"].astype(bool), :]
     rgb_u8 = draw_spot_markers(rgb_u8, spots, color=(255, 255, 0), radius=4, thickness=2,
@@ -911,16 +911,16 @@ def render_all_in_one_qc_rna_rna(
     rna_label: Optional[str] = None,
     rna2_label: Optional[str] = None,
     dapi_label: Optional[str] = None,
-    # 2026-05-19 Brian: both RNA channel colors are now configurable. The
+    # Both RNA channel colors are now configurable. The
     # preset's `channels.rna_lut` / `rna2_lut` drive these via the runner.
     rna_color: Tuple[int, int, int] = (255, 255, 0),   # default yellow
     rna_lut_weights: Tuple[float, float, float] = (1.0, 1.0, 0.0),
     rna2_color: Tuple[int, int, int] = (255, 0, 255),  # default magenta
     rna2_lut_weights: Tuple[float, float, float] = (1.0, 0.0, 1.0),
-    # 2026-05-21 Brian: optional manual floor/ceil overrides for visual
+    # Optional manual floor/ceil overrides for visual
     # parity with publication_images/. When ANY override is supplied for a
     # channel (both floor AND ceil), the percentile path is skipped for
-    # that channel. Lets the runner pass Sam's manual contrast (or the
+    # that channel. Lets the runner pass a manual contrast (or the
     # auto-batch-derived contrast) into QC overlays so the QC images look
     # consistent with what gets delivered to the PI.
     dapi_floor_override: Optional[float] = None,
@@ -971,7 +971,7 @@ def render_all_in_one_qc_rna_rna(
     rgb = merge_rgb_additive([dapi_b, rna_layer, rna2_layer])
     rgb_u8 = _to_uint8(rgb)
     rgb_u8 = draw_nuclei_outlines(rgb_u8, labels, color=(255, 255, 255), width_px=NUC_OUTLINE_WIDTH_PX)
-    # 2026-05-22 Brian: QC overlay should only mark spots that contribute to
+    # QC overlay should only mark spots that contribute to
     # the per-nucleus biology metrics. Spots outside both the nucleus and
     # the Voronoi cytoplasm ("floaters") get filtered before drawing — they
     # still live in spot_metrics.csv for audit but shouldn't visually inflate
@@ -1017,19 +1017,19 @@ def save_walkthrough_bundle_rna_rna(
     spots1: Optional[pd.DataFrame] = None,
     spots2: Optional[pd.DataFrame] = None,
     cyt_labels: Optional[np.ndarray] = None,
-    # 2026-05-19 Brian: BOTH RNA colors configurable. Driven by preset
+    # BOTH RNA colors configurable. Driven by preset
     # channels.rna_lut / rna2_lut via runner.py.
     rna_color: Tuple[int, int, int] = (255, 255, 0),   # default yellow
     rna_lut_weights: Tuple[float, float, float] = (1.0, 1.0, 0.0),
     rna2_color: Tuple[int, int, int] = (255, 0, 255),  # default magenta
     rna2_lut_weights: Tuple[float, float, float] = (1.0, 0.0, 1.0),
-    # 2026-05-19 Brian: filename-embedded channel labels for the per-step
+    # Filename-embedded channel labels for the per-step
     # PNG paths. Defaults match the legacy generic names so callers that
     # don't supply labels render the same as before this helper grew them.
     rna_label: Optional[str] = None,
     rna2_label: Optional[str] = None,
     dapi_label: Optional[str] = None,
-    # 2026-05-22 Brian: optional manual floor/ceil overrides so walkthrough
+    # Optional manual floor/ceil overrides so walkthrough
     # steps use the same contrast as publication renders. When BOTH floor and
     # ceil are supplied for a channel the percentile/_resolve path is skipped.
     dapi_floor_override: Optional[float] = None,
@@ -1038,7 +1038,7 @@ def save_walkthrough_bundle_rna_rna(
     rna_ceil_override: Optional[float] = None,
     rna2_floor_override: Optional[float] = None,
     rna2_ceil_override: Optional[float] = None,
-    # 2026-06-05 Brian: whether the display floor (rna*_floor_override) is the
+    # Whether the display floor (rna*_floor_override) is the
     # ACTUAL spot-detection gate. True (legacy default) ⇒ the floor IS the gate
     # (apply_pub_contrast_floor_to_spots=True, e.g. BIN1/H9 v3 presets): the
     # step05/06 floor-mask panels are meaningful and rendered exactly as before.
@@ -1068,8 +1068,8 @@ def save_walkthrough_bundle_rna_rna(
                    with paired spots circled in white (paired_at_<X>um
                    column == 1). Only emitted when both spots dfs supplied.
       Step 09:     Active TSS overlay — nuclear paired RNA1 spots highlighted
-                   (in_nucleus == 1 AND paired_at_<X>um == 1). Brian's
-                   active-transcription proxy. Only emitted with spots1.
+                   (in_nucleus == 1 AND paired_at_<X>um == 1). The
+                   The active-transcription proxy. Only emitted with spots1.
       Step 10:     Cytoplasm / cell mask overlay (cytoplasm boundaries in
                    green, nucleus boundaries in white). Only emitted when
                    cyt_labels supplied.
@@ -1089,7 +1089,7 @@ def save_walkthrough_bundle_rna_rna(
     _dapi_fn = sanitize_label_for_filename(dapi_label, default="DAPI")
 
     # Step 01: Raw DAPI grayscale
-    # 2026-05-22 Brian: use override contrast when supplied so walkthrough
+    # Use override contrast when supplied so walkthrough
     # steps match publication renders exactly (mirrors render_all_in_one_qc_rna_rna pattern).
     if dapi_floor_override is not None and dapi_ceil_override is not None:
         df = float(dapi_floor_override)
@@ -1118,7 +1118,7 @@ def save_walkthrough_bundle_rna_rna(
     # Resolve per-channel display ranges up front so steps 04+, 07+, 08, 09,
     # and 11 can all share them. Mirrors the publication renderer's batch
     # coordination (each channel under its own batch_key).
-    # 2026-05-22 Brian: when floor+ceil overrides are supplied skip the
+    # When floor+ceil overrides are supplied skip the
     # percentile/_resolve path so walkthrough images match pub renders exactly.
     if rna_floor_override is not None and rna_ceil_override is not None:
         rna1_f = float(rna_floor_override)
@@ -1138,7 +1138,7 @@ def save_walkthrough_bundle_rna_rna(
         )
 
     # Step 04a/b + step 05a/b + step 06a/b per channel
-    # 2026-05-20 Brian: step05/06 now use ``rf`` (the pub-image / manual
+    # step05/06 now use ``rf`` (the pub-image / manual
     # contrast FLOOR) as the threshold so the walkthrough mask matches
     # what the eye sees and what the analysis quantifies. Previously this
     # used the pixel-coloc MAD threshold (~280 for BIN1) which is much
@@ -1156,7 +1156,7 @@ def save_walkthrough_bundle_rna_rna(
         p4 = walk_dir / f"{stem}__step04_{suffix}_raw.png"
         save_png(s04, p4); out.append(p4)
 
-        # 2026-06-05 Brian: HONEST detection panel. When the display floor is
+        # HONEST detection panel. When the display floor is
         # NOT the spot-detection gate (floor_is_spot_gate=False, e.g. MIAT-QKI
         # where apply_pub_contrast_floor_to_spots=false and spots come from
         # BigFISH LoG), thresholding the channel at the low cosmetic display
@@ -1203,7 +1203,7 @@ def save_walkthrough_bundle_rna_rna(
         # the walkthrough mirrors what the PI sees. Correct when the floor IS
         # the spot gate, or for a diffuse channel with no spots.
         pos = np.asarray(rna) >= float(rf)
-        # 2026-06-03 Brian: burn the gate onto the threshold panels (mirrors the
+        # Burn the gate onto the threshold panels (mirrors the
         # rna_only path's _thr_title). Without it a legitimately-filled diffuse
         # channel (e.g. the XRN2 protein, abundant nucleoplasmic) reads as
         # "un-thresholded" even though it IS gated at rf. Display-only label.
@@ -1295,7 +1295,7 @@ def save_walkthrough_bundle_rna_rna(
     # without the white ring.
     if (spots1 is not None and len(spots1) > 0) or (spots2 is not None and len(spots2) > 0):
         dapi_b = apply_lut(dapi, 0.0, 0.3, 1.0, floor=df, ceil=dc)
-        # 2026-05-28 Brian: honor rna_lut_weights for the RNA1 layer (was
+        # Honor rna_lut_weights for the RNA1 layer (was
         # hardcoded yellow, dropping the configured color from the composite —
         # e.g. magenta BIN1-introns vanished in rna_protein/rna_rna merges).
         # Byte-identical for the default rna_lut=yellow case (weights (1,1,0)).
@@ -1347,7 +1347,7 @@ def save_walkthrough_bundle_rna_rna(
         save_png(s08, p); out.append(p)
 
     # Step 09: Active TSS — nuclear paired spots in the primary RNA channel.
-    # Brian's active-transcription proxy: a transcript is "actively
+    # Active-transcription proxy: a transcript is "actively
     # transcribed" if it has a paired partner in the partner channel AND
     # sits inside the nucleus. We require both columns in spots1.
     if spots1 is not None and len(spots1) > 0:
@@ -1403,7 +1403,7 @@ def save_walkthrough_bundle_rna_rna(
     # emitted (last panel of the walkthrough; mirrors Fiji's
     # save_publication_images_rna_rna __merge_all_DAPI_RNA1_RNA2 visual).
     dapi_b = apply_lut(dapi, 0.0, 0.3, 1.0, floor=df, ceil=dc)
-    # 2026-05-28 Brian: honor rna_lut_weights for RNA1 (was hardcoded yellow,
+    # Honor rna_lut_weights for RNA1 (was hardcoded yellow,
     # so step11_merge_all dropped the configured RNA1 color — magenta
     # BIN1-introns disappeared from the all-channel merge). Byte-identical for
     # the default rna_lut=yellow case (weights (1,1,0)).
@@ -1492,7 +1492,7 @@ def save_publication_images_bundle(
     rna_lut: Optional[str] = None,
     rna2_lut: Optional[str] = None,
     antibody_lut: Optional[str] = None,
-    # 2026-05-18 Brian: post-percentile floor bump (multiplicative) for
+    # Post-percentile floor bump (multiplicative) for
     # RNA-class channels (rna, rna2, antibody). Only applied when the
     # auto-percentile path is taken (no caller-supplied floor override).
     # DAPI is exempt — its histogram structure differs. Set 0.0 to
@@ -1565,7 +1565,7 @@ def save_publication_images_bundle(
         if floor_override is not None:
             f = float(floor_override)
         elif bump_rna_floor and rna_floor_bump_pct > 0 and f > 0:
-            # 2026-05-18 Brian: auto-per-image floor bump for RNA-class
+            # Auto-per-image floor bump for RNA-class
             # channels. Multiplies the percentile-derived floor by
             # (1 + bump/100). Bypassed when the runner supplied an
             # explicit floor_override (auto_batch / manual modes).
@@ -1650,9 +1650,9 @@ def save_publication_images_bundle(
         p_png = pub_dir / f"{stem}__{suffix}.png"
         save_png(u, p_png)
         saved.append(p_png)
-        # 2026-05-18 Brian: gated by OutputCfg.save_publication_tifs — default
+        # Gated by OutputCfg.save_publication_tifs — default
         # off so we don't double the publication_images directory size with
-        # 16-bit TIFs Brian rarely opens. Flip on for figure assembly in
+        # 16-bit TIFs that are rarely opened. Flip on for figure assembly in
         # Illustrator / Fiji where 16-bit dynamic range matters.
         if save_tifs:
             p_tif = pub_dir / f"{stem}__{suffix}.tif"
@@ -1714,12 +1714,12 @@ def save_walkthrough_bundle(
     sec_only: bool = False,
     spots: Optional[pd.DataFrame] = None,
     cyt_labels: Optional[np.ndarray] = None,
-    # 2026-05-19 Brian: filename-embedded channel labels. Defaults match the
+    # Filename-embedded channel labels. Defaults match the
     # legacy generic names so callers that don't pass labels render the same
     # filenames as before.
     rna_label: Optional[str] = None,
     dapi_label: Optional[str] = None,
-    # 2026-06-02 Brian: when the RNA spot floor is active
+    # When the RNA spot floor is active
     # (output.apply_pub_contrast_floor_to_spots=True), the *actual* gate that
     # decides which detected spots survive is ``output.manual_rna_min`` — NOT
     # the pixel-coloc MAD threshold encoded in ``rna_pos_mask``. The MAD
@@ -2082,13 +2082,13 @@ def save_nuclei_popouts(
     n_per_image: int = 1,
     padding_px: int = 30,
     scalebar_um: float = POPOUT_SCALEBAR_UM,
-    # 2026-05-22 Brian: Fix A — contrast overrides so popout PNGs use the
+    # Fix A — contrast overrides so popout PNGs use the
     # same floors/ceils as publication renders instead of per-image percentiles.
     dapi_floor: Optional[float] = None,
     dapi_ceil: Optional[float] = None,
     rna_floor: Optional[float] = None,
     rna_ceil: Optional[float] = None,
-    # 2026-05-22 Brian: Fix B — rna2 channel support so rna_rna mode popouts
+    # Fix B — rna2 channel support so rna_rna mode popouts
     # show both RNA channels (Exons yellow + Introns magenta). Default None
     # keeps rna_only mode working exactly as before.
     rna2: Optional[np.ndarray] = None,
@@ -2131,7 +2131,7 @@ def save_nuclei_popouts(
     candidates = candidates[: max(1, n_per_image)]
     saved: List[Path] = []
     h, w = labels.shape
-    # 2026-05-22 Brian: Fix A — use override contrast when supplied so popout
+    # Fix A — use override contrast when supplied so popout
     # PNGs match publication renders. Falls back to per-image percentile when
     # no override is given (backward compatible with rna_only callers).
     df = dapi_floor if dapi_floor is not None else _percentile(dapi, DAPI_FLOOR_PCT)
@@ -2158,7 +2158,7 @@ def save_nuclei_popouts(
         lbl_crop = labels[y0:y1, x0:x1]
         dapi_b = apply_lut(d_crop, 0.0, 0.3, 1.0, floor=df, ceil=dc)
         rna_y = apply_lut(r_crop, 1.0, 1.0, 0.0, floor=rf, ceil=rc)
-        # 2026-05-22 Brian: Fix B — blend rna2 (Introns/magenta) when supplied.
+        # Fix B — blend rna2 (Introns/magenta) when supplied.
         crop_layers = [dapi_b, rna_y]
         if rna2 is not None:
             r2_crop = rna2[y0:y1, x0:x1]

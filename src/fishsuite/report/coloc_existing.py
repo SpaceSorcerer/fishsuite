@@ -202,7 +202,7 @@ def render_simple_coloc(nuclei, fields, wells, contrasts, out_dir, rna, partner,
             base_setter(variant)
             if variant=='full':
                 # Full axis: ceiling at the metric's maximum; the floor is 0 unless the data
-                # themselves go below 0 (Brian 2026-09-08: never draw a theoretical -1 for
+                # themselves go below 0 (never draw a theoretical -1 for
                 # all-positive r / ICQ).
                 theo_lo,hi=(-1.,1.) if metric.startswith('pearson') else (-.5,.5) if metric.startswith('li_') else (0.,1.)
                 old_lo,old_hi=ax.get_ylim()

@@ -14,7 +14,7 @@ import numpy as np
 from .. import io as _io
 
 # file_overrides keys the RNA modes honour; anything else gets a warning.
-OVERRIDE_KEYS = ("start_slice", "end_slice", "rna_start_slice", "rna_end_slice")
+OVERRIDE_KEYS = ("single_slice", "start_slice", "end_slice", "rna_start_slice", "rna_end_slice")
 
 
 def _dim(msg: str) -> None:
@@ -48,7 +48,12 @@ def extract_planes(
     z_end = zc.end_slice
     img_name = Path(path).name
     ovr = (getattr(zc, "file_overrides", {}) or {}).get(img_name) or {}
+    if z_mode == "single" and int(getattr(zc, "single_slice", 0) or 0) > 0:
+        # A fixed plane (1-indexed); 0 keeps the start_slice / mid-stack rule.
+        z_start = z_end = int(zc.single_slice)
     if ovr:
+        if z_mode == "single" and ovr.get("single_slice"):
+            z_start = z_end = int(ovr["single_slice"])
         if "start_slice" in ovr:
             z_start = int(ovr["start_slice"])
         if "end_slice" in ovr:

@@ -1,7 +1,7 @@
 """rna_only — per-nucleus FISH spot count, intensity, N/C stratification.
 
 Outputs Fiji-pipeline-compatible row dicts (per_image_summary / nuclei_metrics /
-spot_metrics / cell_morphology / thresholds) so downstream tools (Brian's
+spot_metrics / cell_morphology / thresholds) so downstream tools (e.g.
 combine_to_xlsx.py, single_condition_plots.py, R scripts) can consume the
 fishsuite output transparently.
 """
@@ -31,7 +31,7 @@ from . import _zplanes
 def _resolve_thresh_intensity_floor(cfg, analysis_floors, channel: str) -> float:
     """Resolve the thresholded-intensity floor for ``channel`` ('rna'|'rna2').
 
-    Precedence (2026-06-02 Brian — see OutputCfg.rna_intensity_threshold):
+    Precedence (see OutputCfg.rna_intensity_threshold):
       1. cfg.output.<channel>_intensity_threshold when set and > 0 (explicit pin).
       2. the spot floor the runner forwarded via analysis_floors[channel]
          (the resolved pub-contrast floor / manual_<channel>_min).
@@ -373,7 +373,7 @@ def run_one(
             )
 
     # ---- Pub-contrast floor as HARD spot-detection floor -------------------
-    # rna_only parity with rna_rna (2026-05-25 Brian): when
+    # rna_only parity with rna_rna: when
     # output.apply_pub_contrast_floor_to_spots is True AND the runner forwarded
     # the resolved RNA floor via analysis_floors, drop spots whose peak
     # intensity is below the floor — BEFORE stratification so every per-nucleus
@@ -401,7 +401,7 @@ def run_one(
     # on a small crop around each spot center (see _measure_spot_diameter_um
     # above). The previous behavior — reporting the configured BigFISH spot
     # radius doubled, i.e. a single constant per image — was an error noted
-    # by Brian; the resulting ``spot_diameter_um`` column had no variability,
+    # earlier; the resulting ``spot_diameter_um`` column had no variability,
     # which broke spot-size figures (figures/25,26).
     spot_radius_xy_nm = float(rna_params["bigfish_spot_radius_nm"])
     spot_radius_z_nm = float(rna_params["bigfish_spot_radius_z_nm"])
@@ -449,22 +449,22 @@ def run_one(
     # Pixel-coloc threshold — matches Fiji's Coloc_Analysis.coloc_threshold()
     # design: collect RAW (unpreprocessed) RNA pixel values from within
     # nuclei and compute the MAD-based threshold = median + k_mad * MAD.
-    # Confirmed against F:\Image Analysis Work\image-analysis-pipeline\
+    # Confirmed against the reference Fiji pipeline
     # fiji_scripts\Coloc_Pipeline.py (line 682, 752, 760-761): Fiji uses
     # rna2d.convertToFloatProcessor() directly — NO rolling-ball, NO blur,
     # NO median filter applied before the threshold. Spot detection has its
     # own preprocessing (RNA_DETECT_ROLLINGBALL) but it is NEVER applied to
     # the pixel-coloc threshold.
     #
-    # 2026-05-11: Brian's eye-check observation that the previous threshold
+    # Eye-check observation that the previous threshold
     # was "too permissive in some, too critical in others" was because the
     # old code used BigFISH's spot-detection threshold (which adapts to LoG
     # response per image) rather than the per-image MAD over RAW nuclear
     # pixels. Switching to the Fiji-style MAD on raw nuclear pixels matches
-    # what Brian's manual Fiji runs do.
+    # what manual Fiji runs do.
     #
     # threshold_scope:
-    #   'per_image' (H9 default per Brian 2026-05-11): each image gets its
+    #   'per_image' (H9 default): each image gets its
     #     own median+k_mad*MAD from its own nuclear pixels — adapts to
     #     out-of-focus haze that varies field-to-field.
     #   'batch': a pooled threshold across all images (not done at the
@@ -534,7 +534,7 @@ def run_one(
         rp_df = pd.DataFrame(columns=["label"])
     rp_by_id = {int(r["label"]): r for r in rp_df.to_dict(orient="records")}
 
-    # ---- Thresholded RNA intensity in compartments (2026-06-02 Brian) ------
+    # ---- Thresholded RNA intensity in compartments ------
     # Resolve the settable floor for this measurement ONCE per image (defaults
     # to the spot floor when unset/0). Applied to the SAME RNA plane used for
     # spot detection (rna_2d, the objective-window MIP). Per-nucleus values are
@@ -657,7 +657,7 @@ def run_one(
             if (rna_cytoplasmic_mean and rna_cytoplasmic_mean > 0
                 and not math.isnan(rna_cytoplasmic_mean)) else float("nan")
 
-        # ---- Thresholded RNA intensity, per compartment (2026-06-02 Brian) --
+        # ---- Thresholded RNA intensity, per compartment --
         # Threshold-and-integrate: sum/mean/area/fraction of pixels whose RAW
         # RNA value >= rna_thresh_floor, computed SEPARATELY for nucleus and
         # cytoplasm. Pixel-thresholding (diffuse + punctate), independent of
@@ -881,7 +881,7 @@ def run_one(
                 "nucleus_id": nid_at,
                 "x_px": x_px,
                 "y_px": y_px,
-                # 2026-05-25 Brian: surface in_nucleus / in_cytoplasm flags on
+                # Surface in_nucleus / in_cytoplasm flags on
                 # the per-spot rows (rna_rna already does this). Needed by the
                 # nucleolus subnuclear-region classifier and Excel Section G,
                 # which gate nucleolar counts on in_nucleus. Pure-additive.
@@ -939,7 +939,7 @@ def run_one(
     morph_df = pd.DataFrame(morph_rows)
 
     # ---- Nucleolus + chromatin (optional) ----------------------------------
-    # 2026-05-25 Brian: rna_only parity with rna_rna. When cfg.nucleolus.enabled,
+    # rna_only parity with rna_rna. When cfg.nucleolus.enabled,
     # detect DAPI-low subnuclear regions (nucleoli) and add nucleolus / chromatin
     # columns to nuclei_df + spots_out_df. SINGLE-RNA adaptation: rna_rna runs
     # classify on rna1 AND rna2; rna_only has one RNA channel (spots_out_df), so
@@ -1100,7 +1100,7 @@ def run_one(
             tcv = float("nan")
 
         # Per-image mean of the per-nucleus thresholded-intensity values
-        # (2026-06-02 Brian). Plain mean over finite per-nucleus values.
+        # Plain mean over finite per-nucleus values.
         def _col_mean(col: str) -> float:
             if col not in nuclei_df.columns:
                 return float("nan")
@@ -1267,12 +1267,12 @@ def run_one(
         dapi_mask=dapi_mask,
         rna_pos_mask=rna_pos_mask,
         voxel_xy_nm=voxel_xy_nm,
-        # 2026-05-25 Brian: rna_only parity — expose nucleolus labels so the
+        # rna_only parity — expose nucleolus labels so the
         # runner's generic nucleolus-overlay step (runner.py ~L1668) renders
         # <prefix><stem>__nucleolus_overlay.png into the nucleolus_overlay/ dir.
         # None when cfg.nucleolus.enabled is False (overlay step is skipped).
         nucleolus_labels=nucleolus_labels_for_qc,
-        # 2026-05-28 Brian: DAPI's autofocus-picked 1-indexed plane (only set
+        # DAPI's autofocus-picked 1-indexed plane (only set
         # when z_mode == "autofocus"; None otherwise). The rna_protein wrapper
         # reads this to lock the antibody channel to the SAME plane.
         dapi_autofocus_z=dapi_autofocus_z,

@@ -1,7 +1,7 @@
 """if_intensity — plate-level immunofluorescence antibody-validation intensity mode.
 
 Faithful port of the LOCKED panQKI WT-vs-QKI-KO standalone pipeline
-(``F:\\Image Analysis Work\\MIAT-QKI-Coloc\\WT-QKI-KO_2026_07_01\\_scripts\\``:
+(the standalone ``_scripts`` directory:
 ``config.py`` / ``01_segment_nuclei.py`` / ``02_quantify.py`` / ``03_figures.py`` /
 ``04_build_excel.py``). The math/logic below is ported verbatim from those scripts;
 the only change is that every parameter is sourced from ``cfg`` (``cfg.if_intensity``,

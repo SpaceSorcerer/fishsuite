@@ -58,7 +58,7 @@ PALETTE_CYCLE = [OKABE_ITO["grey"], OKABE_ITO["purple"], OKABE_ITO["sky"],
 # Locked condition colours, in two scopes that must not be confused.
 #
 # TWO_GROUP_IMAGING applies ONLY to a two-group d8 cardiomyocyte WT-versus-KO set:
-# Brian's per-paper BIN1 pair. Applying it to a multi-group set silently recolours
+# a per-paper BIN1 pair. Applying it to a multi-group set silently recolours
 # WT and QKI-KO away from the key that set's own figures already use, which is what
 # happened to the five-line exon/intron report on 2026-09-04.
 TWO_GROUP_IMAGING = {

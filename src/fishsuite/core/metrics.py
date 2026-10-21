@@ -58,7 +58,7 @@ def compute_thresholded_compartment_intensity(
 ) -> Dict[str, float]:
     """Threshold-and-integrate one compartment's RNA-channel intensity.
 
-    The THIRD intensity measurement (2026-06-02 Brian), distinct from the
+    The THIRD intensity measurement, distinct from the
     spot-based intensities and from the raw whole-compartment pixel sum
     (``sum_rna_intensity``, which applies no floor). For the pixels inside
     ``mask`` whose RAW value in ``image_2d`` is ``>= floor``, returns:

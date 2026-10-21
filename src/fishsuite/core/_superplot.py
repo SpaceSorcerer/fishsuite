@@ -1,6 +1,6 @@
 """Shared SuperPlot drawer for the post-run analysis subcommands.
 
-Brian's group comparisons are drawn with ONE locked SuperPlot recipe
+Group comparisons are drawn with ONE locked SuperPlot recipe
 (``analysis.single_condition_plots._superplot_into_axes`` in the main
 image-analysis-pipeline tree): per-unit dots jittered around each condition,
 LARGE per-replicate MEAN markers (means = circles) with a dark edge, a violin

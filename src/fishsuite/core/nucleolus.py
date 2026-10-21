@@ -5,7 +5,7 @@ chromatin texture metrics. Pure functions — designed to be called
 optionally after nuclear segmentation, with no dependencies on the rest
 of the pipeline.
 
-Biology rationale (Brian 2026-05-21):
+Biology rationale:
   - Nucleoli appear as DAPI-low islands inside nuclei (the dense rRNA
     machinery excludes DNA). Useful as a fourth compartment alongside
     nucleus / cytoplasm — splicing/transcription spots inside vs outside
@@ -43,7 +43,7 @@ class NucleolusParams:
     # Morphological closing (in pixels) to smooth nucleolus boundaries
     # before final mask. 0 disables.
     closing_radius_px: int = 2
-    # 2026-05-22 Brian: minimum distance (in pixels) of nucleolus pixels
+    # Minimum distance (in pixels) of nucleolus pixels
     # from the nucleus border. Nucleoli are typically central; this
     # rejects DAPI-low regions touching the edge (boundary artifacts,
     # peripheral chromatin rings). 5 px ≈ 0.65 µm at 0.13 µm/px.
@@ -97,7 +97,7 @@ def detect_nucleoli(
     else:
         se = None
 
-    # 2026-05-22 Brian: erode the nucleus mask by min_border_distance_px
+    # Erode the nucleus mask by min_border_distance_px
     # so nucleolus candidates can ONLY arise away from the nuclear edge.
     # Real nucleoli are typically central; edge DAPI-low regions are
     # usually boundary artifacts or adjacent-cell bleed-through.

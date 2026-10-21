@@ -61,7 +61,7 @@ _REPORT_SEC_ONLY_GROUP = "Secondary-only"
 def _stem_with_condition(stem: str, condition: str | None) -> str:
     """Compose ``<condition_sanitized>__<stem>`` for per-image output files.
 
-    2026-05-22 Brian: condition FIRST so files sort by condition when
+    Condition FIRST so files sort by condition when
     browsing the directory (WT_1, WT_2, KO_3, KO_4 ... grouped together).
 
     Examples:
@@ -566,7 +566,7 @@ def run_batch(
         _console.print(
             f"[yellow]Global seed lock skipped ({_seed_err})[/yellow]"
         )
-    # 2026-05-25 Brian: per-preset scale-bar length + label font. The render
+    # Per-preset scale-bar length + label font. The render
     # functions read these as output-module constants; the per-image pass is
     # serial single-process so setting them once here is safe and propagates
     # everywhere (all-in-one QC, publication images, walkthrough). Defaults
@@ -610,7 +610,7 @@ def run_batch(
             f"[yellow]Run-metadata write skipped ({_meta_err})[/yellow]"
         )
 
-    # 2026-07-03 Brian: IF-intensity antibody-validation mode. This is a
+    # IF-intensity antibody-validation mode. This is a
     # plate-level pipeline (per-well signal routing, exposure gate, fold-over-
     # secondary-only, cross-condition Welch stats, shared-display micrographs)
     # that does NOT fit the per-image spots contract of the FISH modes. Divert
@@ -753,7 +753,7 @@ def run_batch(
     rna_pedestal_reference: float | None = None
     rna_pedestal_factor_by_path: Dict[str, float] = {}
     pc_cfg = getattr(cfg, "pixel_coloc", None)
-    # 2026-05-28 Brian: rna_protein is a TWO-channel mode (RNA + protein) and
+    # rna_protein is a TWO-channel mode (RNA + protein) and
     # pools BOTH channels in the batch pre-scan, exactly like rna_rna pools
     # rna + rna2. ``is_rna_rna`` here means "two-channel batch pre-scan".
     is_rna_rna = (cfg.channels.analysis_mode in ("rna_rna", "rna_protein"))
@@ -937,7 +937,7 @@ def run_batch(
     # cache in core/output.py, which is order-dependent and biased by the
     # first image processed. The runner stores the computed values in
     # ``run_config.json`` under "batch_contrast" so downstream tooling /
-    # Brian's manual audits can read back exactly what was applied.
+    # manual audits can read back exactly what was applied.
     #
     # Manual mode: skip the pre-scan, apply the user-typed
     # ``manual_*_min/max`` values verbatim per image.
@@ -948,16 +948,16 @@ def run_batch(
     # at the end of run_batch can always read it (manual / auto_per_image
     # modes still populate this string).
     _pub_mode = getattr(cfg.output, "pub_contrast_mode", "auto_batch")
-    # 2026-05-20 Brian/Sam: reference_image mode runs the same auto_batch
+    # reference_image mode runs the same auto_batch
     # whole-batch pre-scan first to populate dapi + antibody fallback floor/
     # ceil values; the per-channel RNA values are then OVERWRITTEN below by
     # the reference-image computation. This keeps DAPI sensible without
     # requiring the user to also pin manual_dapi_min/max (though they can,
     # and those pins take precedence in the per-image render branch).
-    # 2026-05-21 Brian: also run the auto_batch pre-scan in MANUAL mode
+    # Also run the auto_batch pre-scan in MANUAL mode
     # when any of manual_dapi_min/max, manual_rna_min/max, manual_rna2_min/max
     # are unset. Lets users pin RNA channels manually but get a consistent
-    # auto-batch DAPI (Sam-style "auto per image" but applied uniformly
+    # auto-batch DAPI (reference-image style "auto per image" but applied uniformly
     # across the batch — fixes the DAPI inconsistency from pinning to a
     # single reference value that doesn't fit every image).
     _manual_needs_autobatch = (
@@ -1081,7 +1081,7 @@ def run_batch(
                     r2i = _clamp(r2i) if _need_rna2 else -1
                     abi = _clamp(abi) if _need_ab else -1
 
-                    # 2026-05-18 Brian: lock pre-scan pool to DAPI's
+                    # Lock pre-scan pool to DAPI's
                     # autofocus z so the pooled pixels match the slice that
                     # will actually be rendered + analyzed downstream. Without
                     # this, the pool mixes RNA-autofocus-z pixels into the
@@ -1089,7 +1089,7 @@ def run_batch(
                     # DAPI-autofocus-z — auto_batch min/max ends up calibrated
                     # to a different plane than the one the user sees.
                     dapi_z_lock: Optional[int] = None
-                    # 2026-05-24 Brian: autofocus_maxproj pre-scan — compute
+                    # autofocus_maxproj pre-scan — compute
                     # the per-image DAPI focus window once and MIP it for all
                     # channels, so the pooled pixel histogram matches the
                     # per-image render's anatomy.
@@ -1202,7 +1202,7 @@ def run_batch(
                     f"({e}); falling back to per-image[/yellow]"
                 )
                 continue
-            # 2026-05-18 Brian: bump the auto floor for RNA-class channels
+            # Bump the auto floor for RNA-class channels
             # (RNA1, RNA2, antibody) by pub_contrast_rna_floor_bump_pct.
             # DAPI is exempt — its histogram structure is different
             # (bright nuclei against dark background) and the 10/99.9
@@ -1222,11 +1222,11 @@ def run_batch(
                 f"n_pixels={pooled.size:,}"
             )
 
-    # ---- Reference-image (Sam-style) pub-image contrast override ----------
+    # ---- Reference-image pub-image contrast override ----------
     # When ``output.pub_contrast_mode == "reference_image"``, override the
     # RNA1 / RNA2 (floor, ceil) values in batch_contrast with values
     # computed from a per-channel REFERENCE IMAGE + REGION. This replicates
-    # Sam's (Brian's PI's) manual B&C tuning:
+    # manual B&C tuning:
     #
     #   * Introns probe (typically RNA1 / 640): tune on a KO image. Floor
     #     just above the cytoplasmic noise tail so cytoplasm clips to black,
@@ -1306,7 +1306,7 @@ def run_batch(
                 """Compute (floor, ceil) on a single reference image.
 
                 Returns None on any failure (caller falls back to
-                batch_contrast / auto_batch). Logs verbosely so Brian can
+                batch_contrast / auto_batch). Logs verbosely so users can
                 audit what region + percentile produced what value.
                 """
                 dimg = _by_name.get(ref_name)
@@ -1463,7 +1463,7 @@ def run_batch(
                         f"'{ref_name}' ({e}) — falling back to auto_batch.[/yellow]"
                     )
                     return None
-                # 2026-05-21 Brian: ONLY fall back when ceil ≤ floor (truly
+                # ONLY fall back when ceil ≤ floor (truly
                 # broken / inverted range). The original "ceil ≤ floor × 1.2"
                 # heuristic fired surprisingly under percentile tweaks
                 # (e.g. asking for Exons ceil p99.9 produced ceil < floor*1.2
@@ -1547,7 +1547,7 @@ def run_batch(
                         "not set — RNA2 will use auto_batch fallback.[/yellow]"
                     )
 
-            # 2026-05-21 Brian/Sam: Manual override for DAPI / antibody when
+            # Manual override for DAPI / antibody when
             # reference_image mode is set but the user pinned explicit values.
             # The reference_image fields (manual_rna_reference_image etc.) only
             # apply to RNA1/RNA2, so DAPI + antibody default to the auto_batch
@@ -1588,7 +1588,7 @@ def run_batch(
                 except (TypeError, ValueError):
                     pass
 
-    # ---- Manual-mode batch_contrast population (2026-05-20 Brian/Sam) -------
+    # ---- Manual-mode batch_contrast population -------
     # When ``output.pub_contrast_mode == "manual"``, the auto_batch and
     # reference_image pre-scan branches above are skipped, so batch_contrast
     # stays empty. That breaks two downstream consumers:
@@ -1638,7 +1638,7 @@ def run_batch(
     spots_dfs: List[pd.DataFrame] = []
     morph_dfs: List[pd.DataFrame] = []
     threshold_rows: List[dict] = []
-    # 2026-06-06 Brian: optional NATIVE coloc-figure carriers (default OFF ->
+    # Optional NATIVE coloc-figure carriers (default OFF ->
     # these stay empty -> no extra CSV written -> byte-identical output).
     coloc_null_draws_dfs: List[pd.DataFrame] = []
     coloc_radial_dfs: List[pd.DataFrame] = []
@@ -1681,7 +1681,7 @@ def run_batch(
         TimeRemainingColumn(),
         console=_console,
     ) as progress:
-        # 2026-05-21 Brian: auto-strip the common leading prefix from all
+        # Auto-strip the common leading prefix from all
         # input filenames so per-image outputs use short, readable names.
         # e.g. "TRANK1-CAMK2D-WT-KO_10_6ADVMLE fast" -> "10_6ADVMLE_fast".
         # ---- rna1 PEDESTAL REFERENCE (2026-09-04) -------------------------
@@ -1731,7 +1731,7 @@ def run_batch(
             progress.update(task, description=f"[{i+1}/{len(images)}] {dimg.path.name}")
             raw_stem = _simplify_stem(dimg.path.stem, _strip_prefix)
             # Embed the (sanitized) condition into every per-image output
-            # filename so Brian doesn't have to cross-reference an image
+            # filename so users don't have to cross-reference an image
             # number against the conditions table to know what condition
             # _10 belongs to. Top-level master CSVs already carry the
             # 'condition' column and are NOT renamed.
@@ -1794,7 +1794,7 @@ def run_batch(
                     if _plan is not None:
                         _mode_kwargs["sampling_unit_key"] = _plan[0]
                         _mode_kwargs["sampling_n_alloc"] = _plan[1]
-                # 2026-05-20 Brian/Sam: forward the resolved per-channel pub-
+                # Forward the resolved per-channel pub-
                 # image contrast floor as a hard quantification floor when
                 # output.apply_pub_contrast_floor_to_analysis is True. The
                 # floor values come from the batch_contrast dict the runner
@@ -1805,7 +1805,7 @@ def run_batch(
                 # ALSO forward when apply_pub_contrast_floor_to_spots is True
                 # — same dict, separate downstream effect (filters detected
                 # spots whose peak intensity falls below the channel's floor).
-                # 2026-06-02 Brian: ALWAYS forward for the supported modes so the
+                # ALWAYS forward for the supported modes so the
                 # thresholded-intensity feature can DEFAULT its floor to the
                 # resolved spot floor (the pub-contrast RNA floor) even when both
                 # apply_pub_contrast_floor_to_* toggles are OFF. The modes treat
@@ -1979,7 +1979,7 @@ def run_batch(
                     # Resolve channel labels (display only — defaults match
                     # the legacy generic role names so back-compat is preserved).
                     _ch = cfg.channels
-                    # 2026-05-28 Brian: rna_protein labels its 2nd channel as
+                    # rna_protein labels its 2nd channel as
                     # the PROTEIN (antibody) — drive the QC overlay's 2nd-channel
                     # label + LUT from antibody_label / antibody_lut so the
                     # overlay reads e.g. "XRN2", not "RNA2".
@@ -1994,7 +1994,7 @@ def run_batch(
                         if rna2 is not None:
                             spots1 = qc.get("spots1", pd.DataFrame())
                             spots2 = qc.get("spots2", pd.DataFrame())
-                            # 2026-05-19 Brian: pass BOTH channel LUT colors
+                            # Pass BOTH channel LUT colors
                             # through so QC overlay markers / fills match the
                             # preset's rna_lut / rna2_lut (was hardcoding
                             # yellow for RNA1 regardless of LUT).
@@ -2022,10 +2022,10 @@ def run_batch(
                                 int(_rna2_w[1] * 255),
                                 int(_rna2_w[2] * 255),
                             )
-                            # 2026-05-21 Brian: pass batch_contrast values
+                            # Pass batch_contrast values
                             # into the QC overlay so RNA channels match
                             # publication_images/.
-                            # 2026-05-22 Brian: DAPI specifically uses
+                            # DAPI specifically uses
                             # PER-IMAGE auto contrast in QC overlays. Some
                             # batches (e.g. CAMK2D) have nuclear DAPI
                             # medians varying 10× across images — a single
@@ -2038,7 +2038,7 @@ def run_batch(
                             # comparability.
                             _qc_df, _qc_dc = None, None  # per-image auto
                             _qc_rf, _qc_rc = batch_contrast.get("rna", (None, None))
-                            # 2026-05-28 Brian: rna_protein's 2nd-channel QC
+                            # rna_protein's 2nd-channel QC
                             # contrast is the antibody channel's.
                             _qc_r2f, _qc_r2c = batch_contrast.get(
                                 "antibody" if _is_rna_protein else "rna2", (None, None)
@@ -2096,7 +2096,7 @@ def run_batch(
                     protein_2d = qc.get("antibody_2d")
                     if protein_2d is None:
                         protein_2d = qc.get("protein_2d")
-                    # 2026-05-28 Brian: rna_protein loads the antibody channel
+                    # rna_protein loads the antibody channel
                     # into rna_rna's rna2 slot, so qc carries it under BOTH
                     # rna2_2d AND antibody_2d. The PROTEIN render path
                     # (protein=, antibody_label/lut) is canonical for the 2nd
@@ -2134,7 +2134,7 @@ def run_batch(
                             _abf = cfg.output.manual_antibody_min
                             _abc = cfg.output.manual_antibody_max
                         elif _pub_mode == "reference_image":
-                            # Sam-style: rna / rna2 floor+ceil come from the
+                            # Reference-image style: rna / rna2 floor+ceil come from the
                             # per-channel reference-image computation that
                             # populated batch_contrast in the pre-scan. DAPI
                             # + antibody come from the auto_batch fallback
@@ -2178,7 +2178,7 @@ def run_batch(
                             rna_ceil_pct=float(cfg.output.pub_contrast_ceil_pct),
                             rna2_floor_pct=float(cfg.output.pub_contrast_floor_pct),
                             rna2_ceil_pct=float(cfg.output.pub_contrast_ceil_pct),
-                            # 2026-05-18 Brian: post-percentile floor bump
+                            # Post-percentile floor bump
                             # for RNA-class channels (auto_per_image path).
                             # auto_batch path applies the bump inside the
                             # pre-scan; this only affects per-image renders
@@ -2200,7 +2200,7 @@ def run_batch(
                         )
 
                 # Pipeline walkthrough — emitted for both real and sec-only
-                # images (Brian 2026-05-14: sec-only no-probe controls still
+                # images (sec-only no-probe controls still
                 # need walkthrough PNGs so QC reviewers can inspect the
                 # nuclear segmentation + background-level "threshold" the
                 # same way as real images). sec_only=True is propagated to
@@ -2227,7 +2227,7 @@ def run_batch(
                 if all(x is not None for x in (dapi, rna, labels, dmask, rmask)):
                     if rna2 is not None and rmask2 is not None:
                         _ch_wk = cfg.channels
-                        # 2026-05-19 Brian: pass BOTH RNA LUT colors through.
+                        # Pass BOTH RNA LUT colors through.
                         _rna_lut_wk = (
                             getattr(_ch_wk, "rna_lut", None) or "yellow"
                         )
@@ -2239,7 +2239,7 @@ def run_batch(
                             int(_rna_w_wk[1] * 255),
                             int(_rna_w_wk[2] * 255),
                         )
-                        # 2026-05-28 Brian: rna_protein → 2nd-channel walkthrough
+                        # rna_protein → 2nd-channel walkthrough
                         # panel uses the antibody LUT (e.g. green for XRN2).
                         _is_rp_wk = (cfg.channels.analysis_mode == "rna_protein")
                         _rna2_lut_wk = (
@@ -2255,12 +2255,12 @@ def run_batch(
                             int(_rna2_w_wk[1] * 255),
                             int(_rna2_w_wk[2] * 255),
                         )
-                        # 2026-05-22 Brian: pull pub contrast for walkthrough
+                        # Pull pub contrast for walkthrough
                         # the same way callout figures do (manual or auto_batch).
                         _wk_df = _wk_dc = _wk_rf = _wk_rc = _wk_r2f = _wk_r2c = None
                         try:
                             _wk_pm = getattr(cfg.output, "pub_contrast_mode", "auto_batch")
-                            # 2026-05-28 Brian: rna_protein's 2nd-channel contrast
+                            # rna_protein's 2nd-channel contrast
                             # is the antibody channel's (manual_antibody_* /
                             # batch_contrast["antibody"]), not rna2's.
                             if _wk_pm == "manual":
@@ -2282,7 +2282,7 @@ def run_batch(
                                 )
                         except Exception:
                             pass
-                        # 2026-06-05 Brian: is the display floor (rna*_floor_override)
+                        # Is the display floor (rna*_floor_override)
                         # the ACTUAL spot-detection gate? Only when
                         # apply_pub_contrast_floor_to_spots is on. When off (e.g.
                         # MIAT-QKI: low cosmetic MIAT floor, spots from BigFISH
@@ -2305,7 +2305,7 @@ def run_batch(
                             rna_lut_weights=_rna_w_wk,
                             rna2_color=_rna2_color_wk,
                             rna2_lut_weights=_rna2_w_wk,
-                            # 2026-05-19 Brian: filename-embedded labels so
+                            # Filename-embedded labels so
                             # step04_<rna_label>_raw.png reflects the preset.
                             # 2026-05-28: rna_protein → 2nd-channel label is the
                             # antibody label (e.g. XRN2), not "RNA2".
@@ -2326,7 +2326,7 @@ def run_batch(
                         )
                     else:
                         _ch_wk2 = cfg.channels
-                        # 2026-06-02 Brian: when the RNA spot floor is the
+                        # When the RNA spot floor is the
                         # active spot gate (apply_pub_contrast_floor_to_spots),
                         # render the step05/06/08 threshold panels at the floor
                         # (manual_rna_min) — not the pixel-coloc MAD mask, which
@@ -2350,7 +2350,7 @@ def run_batch(
                             sec_only=bool(dimg.sec_only),
                             spots=_spots_rna_only,
                             cyt_labels=cyt,
-                            # 2026-05-19 Brian: filename-embedded labels for
+                            # Filename-embedded labels for
                             # rna_only mode walkthroughs (rna_rna already
                             # threads labels through).
                             rna_label=getattr(_ch_wk2, "rna_label", None),
@@ -2366,7 +2366,7 @@ def run_batch(
                     labels = qc.get("labels")
                     vx = float(qc.get("voxel_xy_nm", 65.0))
                     if dapi is not None and rna is not None and labels is not None:
-                        # 2026-05-22 Brian: reuse the same _cb_* contrast values
+                        # Reuse the same _cb_* contrast values
                         # computed below for save_nuclei_callout_figure so the
                         # individual popout PNGs also use pub contrast. rna2 is
                         # passed so rna_rna mode shows both channels.
@@ -2376,7 +2376,7 @@ def run_batch(
                         _pop_df = _pop_dc = _pop_rf = _pop_rc = _pop_r2f = _pop_r2c = None
                         try:
                             _pop_pm = getattr(cfg.output, "pub_contrast_mode", "auto_batch")
-                            # 2026-05-28 Brian: rna_protein → 2nd-channel popout
+                            # rna_protein → 2nd-channel popout
                             # contrast is the antibody channel's.
                             _is_rp_pop = (cfg.channels.analysis_mode == "rna_protein")
                             if _pop_pm == "manual":
@@ -2410,7 +2410,7 @@ def run_batch(
                             rna2=qc.get("rna2_2d"),
                             rna2_floor=_pop_r2f, rna2_ceil=_pop_r2c,
                         )
-                        # 2026-05-22 Brian: combined main-image + popout figure
+                        # Combined main-image + popout figure
                         # with red boxes showing where each crop came from.
                         # Pull contrast floors/ceils from the same source the
                         # publication images use so the callout panels look
@@ -2455,7 +2455,7 @@ def run_batch(
                                 f"{type(_exc).__name__}: {_exc}[/yellow]"
                             )
 
-                # 2026-05-22 Brian: nucleolus QC overlay — moved OUTSIDE
+                # Nucleolus QC overlay — moved OUTSIDE
                 # the sec_only gate so sec-only images also get overlays
                 # (useful for visually confirming negative controls).
                 qc_obj = res.qc
@@ -2661,7 +2661,7 @@ def run_batch(
         SAVE_PUBLICATION_IMAGES=cfg.output.save_publication_images,
         SAVE_PUBLICATION_TIFS=cfg.output.save_publication_tifs,
         # Pub-image contrast — record the strategy used + the per-channel
-        # absolute (floor, ceil) actually applied so Brian / downstream
+        # absolute (floor, ceil) actually applied so users / downstream
         # tooling can read back what contrast each PNG was rendered with
         # without having to inspect the image histograms. Empty dict in
         # manual / auto_per_image modes (no batch-wide values were computed).
@@ -2670,7 +2670,7 @@ def run_batch(
         PUB_CONTRAST_CEIL_PCT=float(cfg.output.pub_contrast_ceil_pct),
         PUB_CONTRAST_DAPI_FLOOR_PCT=float(cfg.output.pub_contrast_dapi_floor_pct),
         PUB_CONTRAST_DAPI_CEIL_PCT=float(cfg.output.pub_contrast_dapi_ceil_pct),
-        # 2026-05-18 Brian: post-percentile floor bump for RNA-class
+        # Post-percentile floor bump for RNA-class
         # channels (rna, rna2, antibody). Applied AFTER the
         # pub_contrast_floor_pct percentile selection. 0 = disabled.
         PUB_CONTRAST_RNA_FLOOR_BUMP_PCT=float(
@@ -2681,7 +2681,7 @@ def run_batch(
             for k, v in batch_contrast.items()
         },
         # Channel labels — promote to top-level fields so downstream tooling
-        # (Fiji parity, Brian's plotting scripts) can read the human names
+        # (Fiji parity, plotting scripts) can read the human names
         # without having to walk into config_resolved.channels.
         CHANNEL_DAPI_LABEL=getattr(cfg.channels, "dapi_label", "DAPI"),
         CHANNEL_RNA_LABEL=getattr(cfg.channels, "rna_label", "RNA1"),

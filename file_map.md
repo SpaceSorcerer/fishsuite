@@ -392,3 +392,4 @@ nuclear-column / report-layer work. Both branches were fast-forwarded into `main
 | `tests/test_report_holm_and_star_provenance.py` | Default registry leaves absolute intensities descriptive, three-group superplot bracket, descriptive-only stars, star provenance text by plot style, Holm family key, permutation floor, coupling permutation note. |
 | `tests/test_gui_config_roundtrip.py` | Qt-free tests: preset keys survive the GUI config overlay, every shipped preset round-trips, z-stack and if_intensity readiness, discovery cache, stop during downstream, optional FOV footer cell line. |
 | `tests/test_exact_footprint_common.py` | Strict boolean parser, Fisher-z boundary rule, zero-MAD distance policy. |
+| `tests/test_single_slice_mode.py` | z_stack.mode "single" honours `single_slice` (config and per-file override) and keeps the mid-stack default when it is 0. |
