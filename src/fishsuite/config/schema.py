@@ -162,7 +162,7 @@ class ChannelsCfg(_ConfigBlock):
 
 class ZStackCfg(_ConfigBlock):
     mode: Literal["single", "maxproj", "autofocus", "autofocus_maxproj", "3d"] = "autofocus"
-    single_slice: int = 0
+    single_slice: int = 0   # mode 'single': fixed 1-indexed plane; 0 = start_slice, else mid-stack
     start_slice: Optional[int] = None
     end_slice: Optional[int] = None
     # 2026-05-22 Brian: per-image z-window overrides. Keys are full file

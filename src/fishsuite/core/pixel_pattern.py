@@ -60,6 +60,7 @@ import pandas as pd
 
 # Reuse the backfill resolution helpers -- SINGLE SOURCE OF TRUTH for how a
 # completed run's raw VSI / saved masks / nucleoli are located + read.
+from .pixel_size import warn_undeclared_voxel
 from .coloc_backfill import (
     _resolve_plain_vsi,
     _resolve_mask_path,
@@ -369,7 +370,11 @@ def pixelpattern_run(
             if labels.shape != ref_shape:
                 print(f"  WARN {image_name}: mask shape {labels.shape} != {ref_shape}; skip")
                 continue
-            voxel_xy_nm = float(img.voxel_xy_nm) if (img.voxel_xy_nm == img.voxel_xy_nm and img.voxel_xy_nm > 0) else 130.0
+            if img.voxel_xy_nm == img.voxel_xy_nm and img.voxel_xy_nm > 0:
+                voxel_xy_nm = float(img.voxel_xy_nm)
+            else:
+                voxel_xy_nm = 130.0
+                warn_undeclared_voxel(image_name, voxel_xy_nm)
             pixel_um = voxel_xy_nm / 1000.0
             nucleolus_labels = _build_nucleolus_labels(cfg, labels, dapi_2d, voxel_xy_nm)
 
