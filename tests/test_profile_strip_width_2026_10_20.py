@@ -231,3 +231,27 @@ def test_linked_set_strip_footer_and_params(tmp_path, strip, agg, npx):
     assert f"(display only); {phrase}." in b2._ortho_geometry["footer"] and b2._ortho_geometry["profile_width_px"] == npx
     assert any(f"profile {phrase}" in t.get_text() for t in _fig(run, "B4_").findobj(Text))
     assert _fig(run, "B3_").axes[0].lines[0].get_linewidth() == .8       # B3 drawn line untouched
+
+
+def _section_axes_clean(fig):
+    axes = {a.get_label(): a for a in fig.axes}
+    for key in ("xz", "yz"):
+        ax = axes[key]
+        assert len(ax.get_xticks()) == 0 and len(ax.get_yticks()) == 0
+        assert not [l for l in ax.lines if l.get_label() == "analysed plane"]
+        assert all(l.get_clip_on() for l in ax.lines if not l.get_label().startswith("scale bar"))
+
+
+def test_b2_section_axes_have_no_outside_ticks(tmp_path):
+    """2026-10-21: no unlabelled analysed-plane ticks beside XZ / YZ when the z label sits on the XY merge."""
+    stack = _synthetic()
+    for kw in (dict(), dict(profile_strip_um=1.0, profile_strip_agg="max")):
+        fig = _render(stack, LINES["oblique"], analysed_plane_z=6, show_z_slice_labels=True, **kw)
+        _section_axes_clean(fig)
+        assert any(t.get_text() == "z = 7" for t in {a.get_label(): a for a in fig.axes}["xy"].texts)
+        plt.close(fig)
+    run, _ = _linked(tmp_path, profile_strip_um=1.0, profile_strip_agg="max")
+    _section_axes_clean(_fig(run, "B2_"))
+    fig = _render(stack, LINES["oblique"], analysed_plane_z=6)          # labelled ticks kept on the default path
+    assert len([l for a in fig.axes for l in a.lines if l.get_label() == "analysed plane"]) == 2
+    plt.close(fig)

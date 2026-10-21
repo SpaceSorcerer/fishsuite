@@ -527,11 +527,13 @@ def render_ortho_figure(stack_czyx, center_zyx, half_width_px=None, *, nucleus_m
         label = f'z = {int(analysed_plane_z)+1}'
         if z0 <= analysed_plane_z < z1:
             local_z = analysed_plane_z-z0
-            xz.plot([1.01,1.04],[local_z]*2,color='#526d88',lw=1.5,label='analysed plane',
-                    transform=xz.get_yaxis_transform(),clip_on=False)
-            yz.plot([local_z]*2,[-.005,-.02],color='#526d88',lw=1.5,
-                    label='analysed plane',transform=yz.get_xaxis_transform(),clip_on=False)
+            # Outside ticks only with their own 'z = N' labels; with show_z_slice_labels the label is on the
+            # XY merge and the ticks would be unlabelled marks beside XZ / YZ (removed 2026-10-21).
             if not show_z_slice_labels:
+                xz.plot([1.01,1.04],[local_z]*2,color='#526d88',lw=1.5,label='analysed plane',
+                        transform=xz.get_yaxis_transform(),clip_on=False)
+                yz.plot([local_z]*2,[-.005,-.02],color='#526d88',lw=1.5,
+                        label='analysed plane',transform=yz.get_xaxis_transform(),clip_on=False)
                 xz.text(1.055,local_z,label,color='#526d88',fontsize=7,va='center',ha='left',rotation=90,
                         transform=xz.get_yaxis_transform(),clip_on=False)
                 yz.text(local_z,-.026,label,color='#526d88',fontsize=7,ha='center',va='top',
