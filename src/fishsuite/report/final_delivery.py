@@ -215,7 +215,7 @@ def finalize(out,prior,run,panel):
                 if replacement.is_file():
                     sl.shapes.add_picture(str(replacement),shape.left,shape.top,shape.width,shape.height)
                     shape._element.getparent().remove(shape._element)
-    full.save(out/'Sam_RNASEH2B_BIN1_full.pptx')
+    full.save(out/'report_deck_full.pptx')
     for name in ['METHODS.md','FAMILY_AMENDMENTS.md']:
         text=(out/name).read_text(encoding='utf-8') if (out/name).is_file() else ''
         while text.startswith(DECISION):
@@ -224,7 +224,7 @@ def finalize(out,prior,run,panel):
         (out/name).write_text(DECISION+'\n\n'+text,encoding='utf-8')
     lineage=f'Run: {run}\nPanel: {panel}\nPrior floor comparison: {prior}/nucleus_floor_comparison.csv\n'
     shutil.copyfile(panel,out/'data/coloc_standard_panel_floor4000.xlsx')
-    (out/'README.md').write_text('v5: floor-4000 report and same-floor standard colocalization panel.\nStart with REPORT.xlsx and report_deck.pptx; full-scale variant: Sam_RNASEH2B_BIN1_full.pptx.\n'+DECISION+'\n'+lineage,encoding='utf-8')
+    (out/'README.md').write_text('v5: floor-4000 report and same-floor standard colocalization panel.\nStart with REPORT.xlsx and report_deck.pptx; full-scale variant: report_deck_full.pptx.\n'+DECISION+'\n'+lineage,encoding='utf-8')
     (out/'READOUT.md').write_text(DECISION+'\n\n'+'\n'.join(lines)+'\n'+lineage,encoding='utf-8')
     (out/'versions.txt').write_text((run/'versions.txt').read_text(encoding='utf-8')+'\nreporter: '+build._reporter_commit()+'\n'+lineage,encoding='utf-8')
     import sys
