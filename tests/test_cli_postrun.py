@@ -1,4 +1,4 @@
-"""CLI layer for the post-run utilities (Brian, 2026-06-18).
+"""CLI layer for the post-run utilities.
 
 The two post-run utilities — ``coloc_backfill`` (CPU re-read of QKI coloc extras
 onto a finished run) and ``walkthrough_figure`` (the 8-panel pipeline-walkthrough

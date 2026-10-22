@@ -5,7 +5,7 @@ Draws a teal fish silhouette with bright punctate "spots" overlaid on its body
 shape, the fish becomes a memorable mascot for the suite). Saves a multi-size
 .ico that Windows uses for the Desktop shortcut + taskbar icon.
 
-Run once: produces ``E:\\Claude\\fishsuite\\assets\\fishsuite.ico``.
+Run once from the repository root: produces ``assets/fishsuite.ico``.
 """
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ from pathlib import Path
 from PIL import Image, ImageDraw
 
 ICON_SIZES = [16, 32, 48, 64, 128, 256]
-OUT_DIR = Path(r"E:\Claude\fishsuite\assets")
+OUT_DIR = Path(__file__).resolve().parent
 OUT_PNG = OUT_DIR / "fishsuite_256.png"
 OUT_ICO = OUT_DIR / "fishsuite.ico"
 

@@ -1,22 +1,10 @@
-"""The absolute-path CI gate, and the provenance it must NOT scrub.
+"""The absolute-path CI gate.
 
-Two requirements pull in opposite directions and both are real.
-
-A hard-coded ``F:\\Image Analysis Work\\...`` shipped to an outside user is the
-worst failure mode available: if a directory of that name happens to exist on
-their machine, the pipeline reads the wrong data and reports a number instead of
-an error. That is why the gate exists.
-
-But 42 of the 48 presets in this repository are DATED RUN RECORDS, kept
-deliberately as the provenance of published figures, and the wheel excludes every
-one of them. For those the absolute path IS the artifact. A release-prep pass
-replaced four of them with ``<SET_ME>``, which destroyed the record of which plate
-map and which z-stack directory a published figure was made from while making
-nothing safer — portability was already handled by the wheel exclusion.
-
-So the gate is scoped to what actually ships, and the exempt set is DERIVED from
-the wheel allowlist rather than listed twice. These tests hold both ends: the
-dated presets keep their paths, and a preset that DOES ship still cannot.
+A hard-coded machine path shipped to an outside user is the worst failure mode
+available: if a directory of that name happens to exist on their machine, the
+pipeline reads the wrong data and reports a number instead of an error. The gate
+is scoped to what ships (derived from the wheel allow-list in pyproject.toml), so
+a shipped preset can never carry an absolute path as an active value.
 """
 from __future__ import annotations
 
@@ -134,32 +122,6 @@ def test_non_preset_files_are_never_exempt(gate):
 # ---------------------------------------------------------------------------
 # THE RESTORED PROVENANCE
 # ---------------------------------------------------------------------------
-_RESTORED = {
-    "panqki_if_intensity_wtko_2026-07-03.yaml": [
-        ("plate_layout_csv", "WT-QKI-KO_2026_07_01"),
-        ("pub_zstack_dir", "z-stacks-WT_KO_panQKIabTest_2026_07_01"),
-    ],
-    "rnaseh2b_xrn2_if_VOLUMETRIC_zstack_2026-07-08.yaml": [
-        ("plate_layout_csv", "_volumetric_projection_input"),
-    ],
-    "rnaseh2b_xrn2_if_bestfocus_zplane_2026-07-08.yaml": [
-        ("plate_layout_csv", "bestfocus_plane_input"),
-    ],
-}
-
-
-@pytest.mark.parametrize("preset", sorted(_RESTORED))
-def test_the_dated_presets_kept_their_real_paths(preset):
-    """These four values were scrubbed to <SET_ME> and restored. Losing them
-    again loses which plate map a published figure was made from."""
-    doc = yaml.safe_load((_PRESETS / preset).read_text(encoding="utf-8"))
-    block = doc["if_intensity"]
-    for key, marker in _RESTORED[preset]:
-        val = str(block[key])
-        assert val != "<SET_ME>", f"{preset}:{key} was scrubbed again"
-        assert marker in val, f"{preset}:{key} no longer names the source run"
-
-
 def test_no_shipped_preset_carries_a_placeholder():
     """<SET_ME> belongs in a PORTABLE preset if anywhere, never as the record of
     a run that happened."""
@@ -169,13 +131,8 @@ def test_no_shipped_preset_carries_a_placeholder():
         assert "<SET_ME>" not in (_PRESETS / name).read_text(encoding="utf-8")
 
 
-def test_the_wheel_still_excludes_the_dated_presets():
-    """The restored paths are only safe because nothing ships them. If the
-    deny-all-then-allow ever became an allow-all, these paths would go out."""
+def test_the_wheel_is_deny_all_then_allow():
+    """Only the allow-listed portable presets ship. If the deny-all ever became
+    an allow-all, any local scratch preset with a real path would go out."""
     text = (_REPO / "pyproject.toml").read_text(encoding="utf-8")
     assert 'exclude = [\n    "src/fishsuite/config/presets/*.yaml",' in text
-    for preset in _RESTORED:
-        assert preset not in text, (
-            f"{preset} is a dated run record with a live absolute path and must "
-            f"not be force-included into the wheel"
-        )

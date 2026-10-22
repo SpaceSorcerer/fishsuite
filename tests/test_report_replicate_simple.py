@@ -242,7 +242,7 @@ def test_cli_overrides_yaml(tmp_path, monkeypatch, args, expected):
     result = CliRunner().invoke(cli, ["report", "--run", str(tmp_path), "--groups-file", str(profile), *args])
     assert "captured before build" in result.output, result.output
     assert (seen["plot_style"], seen["technical_layer"]) == expected
-    assert seen["style"] == "brian"
+    assert seen["style"] == "default"
     assert load_groups_file(profile)["plot_style"] == "replicate-simple"
 
 

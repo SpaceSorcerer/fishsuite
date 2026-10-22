@@ -1,4 +1,4 @@
-"""coloc_backfill — CPU re-read QKI coloc backfill (Brian, 2026-06-06).
+"""coloc_backfill — CPU re-read QKI coloc backfill.
 
 The trusted MIAT x QKI run was produced BEFORE the native coloc-extra outputs
 existed, so it lacks ``coloc_null_draws.csv`` (the 1000 pooled null draws),
@@ -743,7 +743,7 @@ def test_print_gate_writes_to_cp1252_stream_without_error():
 
 
 # ===========================================================================
-# ROTATION-NULL backfill retrofit (Brian, 2026-06-19)
+# ROTATION-NULL backfill retrofit
 # The pure core also computes the rotation "proper background" when
 # ``do_rotation=True`` (keep-N redraw, constellation centroid, seeded). Default
 # OFF -> no rotation keys (byte-equivalent to the pre-feature core output).

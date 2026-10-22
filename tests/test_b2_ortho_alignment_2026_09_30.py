@@ -1,4 +1,4 @@
-"""B2 ortho (render_ortho_figure) fixes, Brian 2026-09-30: XZ/YZ nucleus edges = XY outline extent (not the 1-row
+"""B2 ortho (render_ortho_figure) fixes: XZ/YZ nucleus edges = XY outline extent (not the 1-row
 chord at the section row), true physical aspect, crosshairs 'none'|'single'|'all', dotted profile line by default."""
 import matplotlib
 matplotlib.use("Agg")

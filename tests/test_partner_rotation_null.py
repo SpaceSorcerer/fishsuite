@@ -1,5 +1,5 @@
 """Per-nucleus ROTATION (and optional TRANSLATION) "proper background" null for
-spot-centric partner colocalization — unit + integration tests (Brian, 2026-06-19).
+spot-centric partner colocalization — unit + integration tests.
 
 PIPELINE-NATIVE nativization of the adversarially-validated prototype
 ``rotation_null_prototype.py`` (F:\\Image Analysis Work\\MIAT-QKI-Coloc\\UD\\

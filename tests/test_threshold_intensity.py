@@ -1,6 +1,6 @@
 """Unit tests for the thresholded RNA intensity in compartments feature.
 
-Brian 2026-06-02. Covers:
+Covers:
   * the core threshold-and-integrate helper
     (``metrics.compute_thresholded_compartment_intensity``) on synthetic
     nucleus + cytoplasm masks with a known RNA array (pixels above/below the

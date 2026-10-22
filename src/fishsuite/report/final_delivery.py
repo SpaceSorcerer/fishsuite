@@ -181,8 +181,8 @@ def finalize(out,prior,run,panel):
     comp.to_csv(out/'nucleus_floor_comparison.csv',index=False)
     changed.to_csv(out/'floor_conclusion_changes.csv',index=False)
     (out/'deck_spec.resolved.yaml').write_text(yaml.safe_dump(spec,sort_keys=False),encoding='utf-8')
-    slides.build_deck(out/'REPORT.xlsx',spec,out/'Sam_RNASEH2B_BIN1.pptx')
-    ppt=Presentation(out/'Sam_RNASEH2B_BIN1.pptx')
+    slides.build_deck(out/'REPORT.xlsx',spec,out/'report_deck.pptx')
+    ppt=Presentation(out/'report_deck.pptx')
     slide=ppt.slides.add_slide(ppt.slide_layouts[6])
     box=slide.shapes.add_textbox(Inches(.4), Inches(.2), Inches(12.4), Inches(.8))
     box.text_frame.text='Nucleus selection and size floor'
@@ -202,9 +202,9 @@ def finalize(out,prior,run,panel):
             source_rows.append(dict(slide=len(ppt.slides),workbook=str(out/'REPORT.xlsx'),
                 sheet='Nucleus floor comparison',cell=f'{openpyxl.utils.get_column_letter(comp.columns.get_loc(column)+1)}{index+3}',value=row[column]))
     stamp_statistics(pd.DataFrame(source_rows),'slide_sources',force=True,fresh=True).to_csv(out/'slide_sources.csv',index=False)
-    ppt.save(out/'Sam_RNASEH2B_BIN1.pptx')
+    ppt.save(out/'report_deck.pptx')
     # Both focus and full-scale deck variants share the same inference and notes.
-    full=Presentation(out/'Sam_RNASEH2B_BIN1.pptx')
+    full=Presentation(out/'report_deck.pptx')
     from io import BytesIO
     replacements={Path(a['path']).read_bytes():Path(a['path']).with_name(Path(a['path']).name.replace('_focus.png','_full.png'))
                   for sl in spec['slides'] for a in sl.get('figures',[]) if '_focus.png' in a['path']}
@@ -224,7 +224,7 @@ def finalize(out,prior,run,panel):
         (out/name).write_text(DECISION+'\n\n'+text,encoding='utf-8')
     lineage=f'Run: {run}\nPanel: {panel}\nPrior floor comparison: {prior}/nucleus_floor_comparison.csv\n'
     shutil.copyfile(panel,out/'data/coloc_standard_panel_floor4000.xlsx')
-    (out/'README.md').write_text('v5: floor-4000 report and same-floor standard colocalization panel.\nStart with REPORT.xlsx and Sam_RNASEH2B_BIN1.pptx; full-scale variant: Sam_RNASEH2B_BIN1_full.pptx.\n'+DECISION+'\n'+lineage,encoding='utf-8')
+    (out/'README.md').write_text('v5: floor-4000 report and same-floor standard colocalization panel.\nStart with REPORT.xlsx and report_deck.pptx; full-scale variant: Sam_RNASEH2B_BIN1_full.pptx.\n'+DECISION+'\n'+lineage,encoding='utf-8')
     (out/'READOUT.md').write_text(DECISION+'\n\n'+'\n'.join(lines)+'\n'+lineage,encoding='utf-8')
     (out/'versions.txt').write_text((run/'versions.txt').read_text(encoding='utf-8')+'\nreporter: '+build._reporter_commit()+'\n'+lineage,encoding='utf-8')
     import sys
@@ -301,7 +301,7 @@ def refresh(out, prior, run, panel):
     workbook.write(out/'REPORT.xlsx',sheets,{},order=list(sheets),fresh=fresh_since(sheets,loaded))
     resolved['workbook_sha256']=sha256(out/'REPORT.xlsx')
     (out/'deck_spec.resolved.yaml').write_text(yaml.safe_dump(resolved,sort_keys=False),encoding='utf-8')
-    slides.build_deck(out/'REPORT.xlsx',resolved,out/'Sam_RNASEH2B_BIN1.pptx')
+    slides.build_deck(out/'REPORT.xlsx',resolved,out/'report_deck.pptx')
     finalize(out,prior,run,panel)
 
 

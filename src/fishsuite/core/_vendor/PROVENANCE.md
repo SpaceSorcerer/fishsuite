@@ -39,7 +39,7 @@ commits absent from the vendored ref, one of which touches
   `publication-ready` for that file, including the Okabe-Ito colour policy and
   the 600 DPI default.
 - The other commit, `77a7f8b`, changes only `README.md`, `CLAUDE.md` and
-  `file_map.md`, none of which is vendored.
+  the repository's own documentation, none of which is vendored.
 
 So the vendored ref is the newer and more complete source, and no cherry-pick
 was required.

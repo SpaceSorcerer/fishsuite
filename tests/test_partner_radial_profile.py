@@ -1,4 +1,4 @@
-"""Radial QKI-around-MIAT profile — unit tests (Brian, 2026-06-06).
+"""Radial QKI-around-MIAT profile — unit tests.
 
 PIPELINE-NATIVE radial colocalization profile: instead of a single disk-mean
 partner (QKI) intensity at the rna1 (MIAT) spots, sweep CONCENTRIC ANNULI of

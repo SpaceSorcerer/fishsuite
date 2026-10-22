@@ -74,7 +74,7 @@ def test_recorded_deck_semantic_assets_and_localization(tmp_path, monkeypatch):
                       if node.tag.endswith('}text'))
     assert 'per nucleus and assigned cell territory' in svg_text.lower()
     assert 'Assigned-cytoplasmic puncta count' in svg_text or 'cytoplasmic puncta' in svg_text
-    ppt = Presentation(result['out_dir']/'Sam_RNASEH2B_BIN1.pptx')
+    ppt = Presentation(result['out_dir']/'report_deck.pptx')
     panels = pd.read_excel(result['xlsx'], sheet_name='Micrograph panels', header=1)
     assert panels.groupby('group').size().eq(4).all()
     assert not panels.panel.str.contains('DAPI-only',case=False).any()

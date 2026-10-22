@@ -28,9 +28,9 @@ Run from the isolated FishSuite worktree. Replace the display bounds with the
 review window chosen for the new dataset:
 
 ```powershell
-& "C:\Users\ambur\miniconda3\envs\fishproc_dml\python.exe" -m tools.single_z_review `
-  "F:\Image Analysis Work\PROJECT\00_INVENTORY\image_inventory.csv" `
-  "F:\Image Analysis Work\PROJECT\01_Z_REVIEW_DAPI" `
+python -m tools.single_z_review `
+  "<project>\00_INVENTORY\image_inventory.csv" `
+  "<project>\01_Z_REVIEW_DAPI" `
   --channel "dapi=2" `
   --label "dapi=DAPI-405" `
   --window "dapi=<LOW>,<HIGH>" `
@@ -46,9 +46,9 @@ Roles and labels are free text. This role-neutral example deliberately avoids
 asserting the biological identity of channels 0 and 1:
 
 ```powershell
-& "C:\Users\ambur\miniconda3\envs\fishproc_dml\python.exe" -m tools.single_z_review `
-  "F:\Image Analysis Work\PROJECT\00_INVENTORY\image_inventory.csv" `
-  "F:\Image Analysis Work\PROJECT\01_Z_REVIEW_3CH" `
+python -m tools.single_z_review `
+  "<project>\00_INVENTORY\image_inventory.csv" `
+  "<project>\01_Z_REVIEW_3CH" `
   --channel "channel0=0" --label "channel0=640 channel" --window "channel0=<LOW>,<HIGH>" `
   --channel "channel1=1" --label "channel1=561 channel" --window "channel1=<LOW>,<HIGH>" `
   --channel "dapi=2"     --label "dapi=DAPI-405"          --window "dapi=<LOW>,<HIGH>" `

@@ -1,4 +1,4 @@
-"""Costes coloc-threshold wiring (Brian, 2026-07-08).
+"""Costes coloc-threshold wiring.
 
 Regression guard for the wiring gap where selecting ``threshold_mode:"costes"``
 silently fell back to MAD because the call sites in ``core/modes/rna_rna.py``

@@ -138,7 +138,7 @@ def test_fixed_n_shifts_left_with_outer_end():
 )
 def test_fixed_n_h9_miat_outer_bounds(peak_z, expected_ws, expected_we):
     """N=7 with outer_start=4, outer_end=14 (0-indexed; mirrors H9 MIAT preset's
-    1-indexed [5, 15]). Validates the practical window positions Brian will
+    1-indexed [5, 15]). Validates the practical window positions a user will
     see across all possible peak-z locations within the outer range.
     """
     stack = _make_stack_with_peak_at(peak_z=peak_z, nz=21)

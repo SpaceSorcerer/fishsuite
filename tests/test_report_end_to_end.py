@@ -1,6 +1,6 @@
 """``fishsuite report`` end to end, on a synthetic run.
 
-What this holds: the workbook opens with the plain sheet names Brian asked for,
+What this holds: the workbook opens with the plain sheet names requested,
 every sheet starts with a description row rather than a bare header, no sheet
 name or column carries a ``Q1``-style code, the readout names the producing run
 on its first line, and the run directory is not modified.

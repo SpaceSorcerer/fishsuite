@@ -975,11 +975,11 @@ def postrun(run_dir, staging, input_dir, image_key, seed):
                    "READOUT.md immediately after the run path, and recorded in the "
                    "Read me sheet. Use it to carry a calibration or interpretation "
                    "caveat from the analysis record into the deliverable.")
-@click.option("--style", type=click.Choice(["brian", "plain"]), default="brian",
+@click.option("--style", type=click.Choice(["default", "plain", "brian"]), default="default",
               show_default=True,
-              help="Figure style. 'brian' is the locked lab style: Okabe-Ito colours, "
-                   "600-dpi PNG plus editable-text SVG, filter line and single "
-                   "croppable footnote on every chart.")
+              help="Figure style. 'default': Okabe-Ito colours, 600-dpi PNG plus "
+                   "editable-text SVG, filter line and single croppable footnote on "
+                   "every chart. 'brian' is an alias kept for old commands.")
 @click.option("--plot-style", type=click.Choice(["superplot", "replicate-simple"]),
               default=None, help="Point layout; CLI overrides YAML plot_style. Default: superplot.")
 @click.option("--technical-layer", type=click.Choice(["none", "fov"]), default=None,

@@ -77,7 +77,7 @@ def validate_report(out):
     print('VALIDATED: unique spot identities; class accounting; retained-cell counts/fractions; object census; nucleus -> FOV -> well hierarchy; Welch 3 vs 3; localization Holm; legacy exclusions.')
 
 
-def preview_deck(out, filename='Sam_RNASEH2B_BIN1.pptx'):
+def preview_deck(out, filename='report_deck.pptx'):
     """Approximate Arial previews; never claim these are native Office renders."""
     from pptx import Presentation
     from PIL import Image, ImageDraw, ImageFont
@@ -192,7 +192,7 @@ def finalize(out, run, dispatch):
     staged.replace(out/'REPORT.xlsx')
     spec_path.write_text(yaml.safe_dump(resolved,sort_keys=False),encoding='utf-8')
     from .slides import build_deck
-    build_deck(out/'REPORT.xlsx',resolved,out/'Sam_RNASEH2B_BIN1.pptx')
+    build_deck(out/'REPORT.xlsx',resolved,out/'report_deck.pptx')
     # Copy only explicitly named source tables; no discovery below the run/raw tree.
     dest = out/'data'
     dest.mkdir(exist_ok=True)

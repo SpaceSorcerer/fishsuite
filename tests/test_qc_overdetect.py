@@ -1,4 +1,4 @@
-"""RNA1 over-detection QC-guard tests (Brian, 2026-07-05).
+"""RNA1 over-detection QC-guard tests.
 
 The guard is ADVISORY: it flags images whose RNA1 spots-per-nucleus is
 implausibly high (the symptom of an out-of-focus dim RNA channel collapsing the

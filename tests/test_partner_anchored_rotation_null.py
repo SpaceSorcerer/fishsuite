@@ -1,5 +1,5 @@
 """Per-channel BigFISH ``threshold_override`` + the PARTNER-ANCHORED rotation
-null (Brian, 2026-09-03).
+null.
 
 Two additive, default-OFF engine features:
 
