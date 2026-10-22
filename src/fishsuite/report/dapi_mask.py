@@ -385,7 +385,7 @@ Actual membership and finite-test counts are in REPORT.xlsx / Multiplicity plan 
 '''
     for name, text in [('METHODS.md', methods), ('FAMILY_AMENDMENTS.md', amendments),
         ('CHANGES_v4_to_v4b.md', 'Added DAPI spot reclassification, zero-overlap object census, corrected localization and separate all-object sensitivity.\nRebuilt localization and selection slides; matched-secondary-corrected IF beside N:C; question titles, excess-over-shuffle headlines and bracket/descriptive annotations retained.\n'+measured),
-        ('README.md', 'Start with REPORT.xlsx, report_deck.pptx and READOUT.md.\nThe dapi/ folder contains spot identities, object overlaps/areas, census, sensitivity tables and plane provenance.\nThe localization/ folder contains corrected full/focus figures and DAPI_QC.\nThis v4b is built in the authorized E: fallback because F: is outside the writable sandbox.\n'+measured)]:
+        ('README.md', 'Start with REPORT.xlsx, report_deck.pptx and READOUT.md.\nThe dapi/ folder contains spot identities, object overlaps/areas, census, sensitivity tables and plane provenance.\nThe localization/ folder contains corrected full/focus figures and DAPI_QC.\n'+measured)]:
         (out_dir/name).write_text(text, encoding='utf-8')
     readout = out_dir/'READOUT.md'
     readout.write_text(measured+'\n'+methods+'\n'+readout.read_text(encoding='utf-8'), encoding='utf-8')
