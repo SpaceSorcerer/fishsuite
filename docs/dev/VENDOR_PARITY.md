@@ -39,7 +39,7 @@ must change nothing at all.
 ## Self-containment, which is the point of the exercise
 
 Measured with a `sys.meta_path` finder that raises `ModuleNotFoundError` for any
-top-level import resolving under `F:\Image Analysis Work`, i.e. a simulated
+top-level import resolving under the upstream checkout, i.e. a simulated
 machine with no lab tree:
 
 | | Before vendoring | After vendoring |
@@ -49,7 +49,7 @@ machine with no lab tree:
 
 The 40 previous failures were all one root cause: `core/spots.py` and
 `core/segmentation.py` hard-coded
-`sys.path.insert(0, r"F:\Image Analysis Work\image-analysis-pipeline\python")`,
+`sys.path.insert(0, "<upstream checkout>/python")`,
 which no other machine has.
 
 Also verified directly: after `import fishsuite`, `sys.path` contains no

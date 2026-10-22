@@ -1,4 +1,4 @@
-"""Autofocus z-lock regression test (Brian, 2026-05-28).
+"""Autofocus z-lock regression test.
 
 Requirement: in ``z_mode == "autofocus"`` the pipeline must detect spots /
 measure every non-DAPI channel on the EXACT SAME single z-plane that DAPI
@@ -165,7 +165,7 @@ def test_autofocus_window_bounds_dapi_pick(fake_img):
 
 
 # ---------------------------------------------------------------------------
-# Intensity-weighted focus metric (Brian, 2026-05-28).
+# Intensity-weighted focus metric.
 #
 # On thick stacks the legacy mean-normalized Laplacian variance
 # var(laplace(plane/mean)) can be tipped by NOISE to a dim, badly out-of-focus

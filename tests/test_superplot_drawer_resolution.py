@@ -4,7 +4,7 @@
 ``from analysis.single_condition_plots import _superplot_into_axes`` as its second
 candidate, so on any machine with an unrelated importable ``analysis`` — an
 installed package, or a stray directory on ``sys.path`` — a third party's function
-would have been used to draw Brian's locked figures. Silently: the fallback
+would have been used to draw the locked figures. Silently: the fallback
 warning only fires when NOTHING resolves, and this candidate resolving IS
 something.
 

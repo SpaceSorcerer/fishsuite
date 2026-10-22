@@ -117,17 +117,7 @@ fishsuite = "fishsuite.cli:cli"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/fishsuite"]
-# Of the 48 presets in the repository, 42 are RUN RECORDS, not templates: they
-# carry `input_file_subset` naming the author's own .vsi files, or
-# `z_stack.file_overrides` keyed to literal filenames, or `cellpose_device:
-# directml` (AMD-only). An external user who ran one would discover zero images
-# with no clear error. They stay in the repository — they are the provenance of
-# published figures — but they must not ship to someone who cannot use them.
-#
-# This is deliberately DENY-ALL-THEN-ALLOW rather than a list of the 42 to drop.
-# An exclusion list would silently start shipping the next lab preset added to
-# this folder; an allowlist keeps that from being possible. To ship a new preset,
-# mark it `# portable: true` and add it to force-include below.
+# The presets directory holds only portable presets; the allow-list below is what ships.
 exclude = [
     "src/fishsuite/config/presets/*.yaml",
     "src/fishsuite/config/presets_archive_scratch_2026-07-09",

@@ -1,4 +1,4 @@
-"""Per-nucleus RANDOM-POSITION NULL coloc — unit tests (Brian, 2026-06-05).
+"""Per-nucleus RANDOM-POSITION NULL coloc — unit tests.
 
 PIPELINE-NATIVE version of the validated external script
 ``qki_at_miat_null_ALLARMS_tm1.0.py``: for each nucleus, compare the partner

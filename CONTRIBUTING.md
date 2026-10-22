@@ -98,7 +98,7 @@ Additive changes are welcome: a new opt-in metric, a new figure, a config field 
 ## Configuration and presets
 
 - The config is a Pydantic v2 model in `src/fishsuite/config/schema.py`. New fields need defaults that reproduce current behaviour.
-- Most presets in `src/fishsuite/config/presets/` are run records: the exact settings behind a result. Do not retune one; copy it under a new name.
+- `src/fishsuite/config/presets/` holds only portable presets that ship in the wheel. Run records (the exact settings behind a past result) live in the private records repository; copy one under a new name rather than retuning it.
 - Only presets marked `# portable: true` ship in the wheel. To add one, mark it, add it to `[tool.hatch.build.targets.wheel.force-include]` in `pyproject.toml`, and add it to the expected set in the CI wheel-contents gate.
 - Portable is a judgement, not a grep. A preset with no absolute paths can still be tied to one dataset's folder names or channels. Read it before promoting it.
 - Never commit an absolute path as an active config value. Use `<SET_ME>` as the placeholder.
@@ -107,7 +107,7 @@ Additive changes are welcome: a new opt-in metric, a new figure, a config field 
 
 ## Documentation
 
-User documentation is `README.md`, the guides in `docs/`, `POSTRUN_UTILITIES.md` and `THRESHOLD_INTENSITY_FEATURE.md`. Internal records (change notes, audits, parity runs) go in `docs/dev/`. Do not put test counts, dependency versions or dates in user documentation; point to `pyproject.toml` or the CI badge instead. Add changes to `CHANGELOG.md` and update `file_map.md` when you add, move or delete a file.
+User documentation is `README.md`, the guides in `docs/`, `POSTRUN_UTILITIES.md` and `THRESHOLD_INTENSITY_FEATURE.md`. The vendored-code parity record is `docs/dev/VENDOR_PARITY.md`; other internal records (change notes, audits, runbooks) go in the private records repository. Do not put test counts, dependency versions or dates in user documentation; point to `pyproject.toml` or the CI badge instead. Add changes to `CHANGELOG.md`.
 
 ---
 

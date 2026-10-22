@@ -258,7 +258,7 @@ def rnase(run,prior,out,a20=False):
         methods+='\nA20: '+(out/'FAMILY_AMENDMENTS.md').read_text(encoding='utf-8')
         methods+='\nManders of record uses per-channel intensity-weighted signal at or above the fixed manual display floors. The numerator requires both channels to meet their floors; each denominator contains its own above-floor signal. A coefficient with no qualifying denominator remains missing. Costes and median+2.5 MAD coefficients are sensitivity only.\n'
         (out/'METHODS.md').write_text(methods,encoding='utf-8')
-    return finish(out,sheets,spec,'REPORT.xlsx','Sam_RNASEH2B_BIN1.pptx',missing,fresh=fresh_since(sheets,loaded))
+    return finish(out,sheets,spec,'REPORT.xlsx','report_deck.pptx',missing,fresh=fresh_since(sheets,loaded))
 
 
 def rn_readout(contrasts,summary):

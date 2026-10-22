@@ -1,4 +1,4 @@
-"""RNA-anchored single-plane autofocus tests (Brian, 2026-07-05).
+"""RNA-anchored single-plane autofocus tests.
 
 Feature: ``z_stack.autofocus_channel`` = "dapi" (default, unchanged) / "rna"
 (pick the sharpest RNA1 plane, lock every channel to it) / "auto" (RNA-anchor
@@ -187,7 +187,7 @@ def test_one_plane_invariant_preserved(fake_img):
 
 
 # ════════════════════════════════════════════════════════════════════════════
-# JOINT multi-channel autofocus (2026-07-18 Brian): collapse the z-stack to a
+# JOINT multi-channel autofocus: collapse the z-stack to a
 # SINGLE shared plane in focus for DAPI AND rna AND rna2 (partner) at once, so
 # colocalization is measured on one jointly-focused optical section.
 # ════════════════════════════════════════════════════════════════════════════
@@ -361,7 +361,7 @@ def test_joint_one_plane_invariant(joint_img):
 
 
 # ════════════════════════════════════════════════════════════════════════════
-# NUCLEAR-MASKED joint scoring (2026-07-19 Brian): on real data the whole-plane
+# NUCLEAR-MASKED joint scoring: on real data the whole-plane
 # joint pick is hijacked by MIAT's CYTOPLASMIC autofluorescent haze (its var-of-
 # Laplacian peaks on cytoplasmic texture, not nuclear puncta). Fix: score joint
 # focus ONLY inside a DAPI-derived nuclear mask. This fixture reproduces the

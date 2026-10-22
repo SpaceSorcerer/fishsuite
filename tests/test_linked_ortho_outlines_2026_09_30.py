@@ -1,5 +1,5 @@
 """Linked ortho: nuclear outline on every nucleus-level panel (B2 XY merge + singles + XZ + YZ, B3 zoom), never on the
-B1 whole-field panel (Brian 2026-09-30). Checked on rendered pixels."""
+B1 whole-field panel. Checked on rendered pixels."""
 import matplotlib
 matplotlib.use("Agg")
 import numpy as np

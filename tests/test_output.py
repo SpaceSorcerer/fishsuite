@@ -267,7 +267,7 @@ def test_save_publication_images_bundle_writes_six(tmp_path):
 
 
 def test_rna_protein_pub_bundle_no_rna2_files_and_merge_all_has_three_channels(tmp_path):
-    """rna_protein render dedup (Brian 2026-05-28).
+    """rna_protein render dedup.
 
     The runner passes rna2=None + protein=<antibody> for rna_protein so the 2nd
     channel is rendered ONLY as the protein (antibody label/LUT). Assert: no

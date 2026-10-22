@@ -552,7 +552,7 @@ Six presets are portable starting points. They are marked `# portable: true` on 
 
 Copy one with `fishsuite presets show NAME > my_preset.yaml`, then retarget channels, pixel-size-dependent values, z-handling and floors.
 
-Every other preset in a source checkout is a run record: the exact settings behind a specific result. Most name specific files, folders or a GPU device and will find no images on another machine. They are excluded from the wheel. Read the header comment before reusing one. `presets list` also shows local scratch files such as `_tmp_*`.
+Run-record presets (the exact settings behind past results) are kept in a separate private repository; copy one under a new name rather than retuning it. `presets list` also shows local scratch files such as `_tmp_*`.
 
 ---
 
@@ -677,10 +677,10 @@ src/fishsuite/
   figures/             # figure-panel rendering
   gui/                 # PySide6 launcher
 tests/                 # pytest suite
-docs/                  # user guides; docs/dev/ holds internal development records
+docs/                  # user guides; docs/dev/ holds the vendored-code parity record
 ```
 
-[file_map.md](file_map.md) describes every file.
+Run records, development notes and delivery runbooks live in a separate private repository, not here.
 
 ---
 

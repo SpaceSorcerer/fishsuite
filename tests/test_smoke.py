@@ -5,14 +5,12 @@ def test_import():
     assert fishsuite.__version__
 
 
-def test_schema_h9_preset_loads():
+def test_schema_portable_preset_loads():
     from pathlib import Path
     from fishsuite.config.schema import FishsuiteConfig
-    p = Path(__file__).resolve().parents[1] / "src" / "fishsuite" / "config" / "presets" / "h9_hesc_100x.yaml"
+    p = Path(__file__).resolve().parents[1] / "src" / "fishsuite" / "config" / "presets" / "generic_100x_0p065.yaml"
     cfg = FishsuiteConfig.from_yaml(p)
     assert cfg.channels.analysis_mode == "rna_only"
-    assert cfg.channels.dapi == 2
-    assert cfg.channels.rna == 0
 
 
 def test_metrics_pearson_identity():

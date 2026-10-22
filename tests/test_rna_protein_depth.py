@@ -1,4 +1,4 @@
-"""rna_protein analysis-depth parity test (Brian, 2026-05-28).
+"""rna_protein analysis-depth parity test.
 
 Requirement: the upgraded ``rna_protein`` mode must analyze the PROTEIN /
 antibody channel at the SAME depth ``rna_rna`` gives its 2nd RNA channel —

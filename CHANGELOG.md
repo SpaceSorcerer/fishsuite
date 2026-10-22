@@ -4,6 +4,16 @@ All notable changes to fishsuite. A change that moves a computed number is calle
 
 ## Unreleased
 
+### Repository
+
+- Lab records moved to a separate private repository: the dated run-record presets, staging templates, development notes and runbooks, the dataset-specific publication methods text, the companion-workbook tooling, one-off scripts and the historical file map. `src/fishsuite/config/presets/` now holds only the portable presets that ship in the wheel. `docs/dev/` keeps only the vendored-code parity record.
+- Personal names, dates and machine paths removed from source comments, docstrings, tests and user-facing text. The report deck is written as `report_deck.pptx`; `report --style` defaults to `default` (the old value is accepted as an alias).
+
+### Fixed
+
+- `z_stack.mode: single` honours `single_slice` (config and per-file override); the GUI spinner now has an effect.
+- `pixelpattern` warns when it substitutes a pixel size instead of doing so silently.
+
 ### Documentation
 
 - README rewritten for outside users: generic install, organising images, pixel size and channel detection, the `if_intensity` plate map, one outputs table, and every subcommand grouped as core, post-run and dataset-specific.

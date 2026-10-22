@@ -514,7 +514,7 @@ def build_report(run_dir: Path, out_dir: Optional[Path] = None,
                  sec_outlier_k: float = 0.0,
                  qc_min_nuclei: int = 5, sec_min_nuclei: int = 10,
                  alpha: float = ALPHA, engine_repo: Optional[Path] = None,
-                 preset: Optional[Path] = None, style: str = "brian",
+                 preset: Optional[Path] = None, style: str = "default",
                  make_figures: bool = True, coloc_panel: bool = True,
                  stamp: str = "", argv: Optional[Sequence[str]] = None,
                  plot_style: str = "superplot", technical_layer: str = "none",
@@ -548,7 +548,7 @@ def build_report(run_dir: Path, out_dir: Optional[Path] = None,
     # Preflight siblings as well as the root: an existing child can be a link.
     for name in ('REPORT.xlsx', 'per_well.csv', 'contrasts.csv', 'figures',
                  'localization', 'coloc_existing', 'deck_figures',
-                 'deck_spec.resolved.yaml', 'Sam_RNASEH2B_BIN1.pptx', 'slide_sources.csv'):
+                 'deck_spec.resolved.yaml', 'report_deck.pptx', 'slide_sources.csv'):
         _prov.guard_output(out_dir / name)
     persisted = None
     template = None
@@ -860,7 +860,7 @@ def build_report(run_dir: Path, out_dir: Optional[Path] = None,
     # Preserve the completed report even when the optional deck dependency is missing.
     if deck:
         from .slides import build_deck
-        build_deck(xlsx,resolved_deck,out_dir/'Sam_RNASEH2B_BIN1.pptx')
+        build_deck(xlsx,resolved_deck,out_dir/'report_deck.pptx')
 
     if dapi is not None:
         from .dapi_mask import write_documents

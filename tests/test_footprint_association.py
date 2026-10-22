@@ -1,5 +1,5 @@
 """MIAT x QKI ASSOCIATION metrics — footprint-based per-spot QKI + continuous /
-floor-gated association ratios + threshold-free MOC/ICQ (Brian, 2026-07-07).
+floor-gated association ratios + threshold-free MOC/ICQ.
 
 Tests the additive, floor-robust association metrics from the approved spec
 (_SPEC_association_analysis_2026-07-06.md), gated behind
@@ -434,7 +434,7 @@ def test_defaults_off_byte_equivalent(fake_img, monkeypatch):
 
 
 # ===========================================================================
-# (e) MIAT x QKI CAPACITY (sponge-capacity) per-nucleus columns (Brian 2026-07-08)
+# (e) MIAT x QKI CAPACITY (sponge-capacity) per-nucleus columns
 #     qki_associated_with_miat / miat_mass_nuclear / capacity_qki_at_miat
 # ===========================================================================
 def _partner_plane_constant(value: float = 777.0) -> np.ndarray:

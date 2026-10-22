@@ -1,5 +1,5 @@
 """DAPI-plane reference for the partner-anchored null + per-image rna1 pedestal
-normalisation (Brian, 2026-09-04).
+normalisation.
 
 Two additive, default-OFF engine features:
 
